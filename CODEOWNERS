@@ -1,0 +1,8 @@
+# Default owners for everything in the repo
+* @agentlasso/maintainers
+
+# Core safety logic requires maintainer review
+/src/agentlasso/gateway.py @agentlasso/maintainers
+/src/agentlasso/guard.py @agentlasso/maintainers
+/src/agentlasso/policy/ @agentlasso/maintainers
+/src/agentlasso/anomaly/ @agentlasso/maintainers

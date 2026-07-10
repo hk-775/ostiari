@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ostiari-control-plane"
+version = "0.1.0"
+description = "Control plane for managing Ostiari sidecars"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.100",
+    "uvicorn[standard]>=0.20",
+    "httpx>=0.25",
+    "pydantic>=2.0",
+    "sqlalchemy>=2.0",
+    "alembic>=1.12",
+    "asyncpg>=0.28",
+    "pyyaml>=6.0",
+    "python-jose[cryptography]>=3.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.25",
+    "ruff>=0.4",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["control_plane"]

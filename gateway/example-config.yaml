@@ -1,0 +1,62 @@
+# Example sidecar configuration
+# Push this via POST /config or pass via --config flag
+
+sidecar_id: crm-agent-sidecar
+control_plane_url: ""
+
+tools:
+  - name: send_email
+    endpoint: http://email-service:8080/send
+    method: POST
+    description: "Send an email to a recipient"
+    timeout_seconds: 10
+    schema:
+      type: object
+      properties:
+        to: {type: string}
+        subject: {type: string}
+        body: {type: string}
+      required: [to, subject, body]
+
+  - name: db_query
+    endpoint: http://db-service:8080/query
+    method: POST
+    description: "Execute a database query"
+    timeout_seconds: 30
+    schema:
+      type: object
+      properties:
+        sql: {type: string}
+      required: [sql]
+
+  - name: slack_send
+    endpoint: http://slack-service:8080/message
+    method: POST
+    description: "Send a Slack message"
+    timeout_seconds: 5
+    schema:
+      type: object
+      properties:
+        channel: {type: string}
+        text: {type: string}
+      required: [channel, text]
+
+policy:
+  block:
+    - "*.delete"
+    - "*.drop"
+  allow:
+    - "db_query"
+  rules:
+    - type: risk_adjust
+      action: "send_email"
+      risk_adjust: 25
+      description: "Email has moderate risk"
+    - type: risk_adjust
+      action: "slack_send"
+      risk_adjust: 10
+      description: "Slack is low risk"
+  thresholds:
+    global:
+      allow_max: 30
+      intervene_max: 70

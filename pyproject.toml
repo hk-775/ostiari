@@ -1,0 +1,134 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ostiari"
+dynamic = ["version"]
+description = "Runtime safety and reliability layer for AI agents"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [{ name = "Ostiari Contributors" }]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+
+dependencies = [
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "click>=8.0",
+]
+
+[project.optional-dependencies]
+claude = ["anthropic>=0.25"]
+openai = ["openai>=1.0"]
+bedrock = ["boto3>=1.28"]
+strands = ["strands-agents>=0.1"]
+policy = ["httpx>=0.25", "boto3>=1.28"]
+fuzzy = ["rapidfuzz>=3.0"]
+tui = ["rich>=13.0", "textual>=0.40"]
+dashboard = ["fastapi>=0.100", "uvicorn[standard]>=0.20", "redis[hiredis]>=5.0"]
+all = ["ostiari[claude,openai,bedrock,strands,policy,fuzzy,tui,dashboard]"]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "pytest-asyncio>=0.23",
+    "hypothesis>=6.100",
+    "mypy>=1.10",
+    "ruff>=0.4",
+    "httpx>=0.25",
+    "types-PyYAML>=6.0",
+    "boto3-stubs>=1.28",
+    "starlette>=0.27",
+    "fastapi>=0.100",
+    "rich>=13.0",
+]
+
+[project.scripts]
+ostiari = "ostiari.cli:main"
+
+[tool.hatch.version]
+path = "src/ostiari/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ostiari"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM", "TCH"]
+ignore = [
+    "E501",   # line too long — formatter handles this
+    "B008",   # function call in default argument — common pattern with pydantic/click
+    "A002",   # builtin shadowing — acceptable for 'type', 'id' params
+    "TC001",  # typing-only first-party import — adds noise without value
+    "TC002",  # typing-only third-party import
+    "TC003",  # typing-only stdlib import
+    "SIM117", # multiple with statements — readability preference
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011", "E741", "F841", "B007", "N817"]
+"src/ostiari/exceptions.py" = ["N818"]
+
+[tool.mypy]
+strict = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = [
+    "openai.*",
+    "anthropic.*",
+    "strands.*",
+    "textual.*",
+    "redis.*",
+    "rapidfuzz.*",
+    "uvicorn.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "ostiari.tui.*",
+    "ostiari.dashboard.*",
+]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_decorators = false
+warn_return_any = false
+warn_unused_ignores = false
+disable_error_code = ["type-arg", "misc"]
+
+[[tool.mypy.overrides]]
+module = [
+    "ostiari.adapters.bedrock",
+    "ostiari.adapters.openai",
+    "ostiari.adapters.claude",
+    "ostiari.adapters.strands",
+]
+warn_unused_ignores = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers"
+
+[tool.coverage.run]
+source = ["ostiari"]
+omit = [
+    "src/ostiari/tui/*",
+    "src/ostiari/dashboard/*",
+]
+
+[tool.coverage.report]
+fail_under = 90

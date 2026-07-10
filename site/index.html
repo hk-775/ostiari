@@ -1,0 +1,803 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ostiari — Runtime Safety for AI Agents</title>
+    <meta name="description" content="Ostiari intercepts every tool call an AI agent makes, scores its risk, and enforces safety policies — regardless of framework.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0a0a0f;
+            --surface: #12121a;
+            --border: #1e1e2e;
+            --text: #e4e4e7;
+            --text-dim: #71717a;
+            --accent: #f59e0b;
+            --accent-glow: rgba(245, 158, 11, 0.15);
+            --green: #22c55e;
+            --red: #ef4444;
+            --blue: #3b82f6;
+            --purple: #a855f7;
+            --radius: 12px;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 24px;
+        }
+
+        nav {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 100;
+            padding: 16px 0;
+            background: rgba(10, 10, 15, 0.8);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
+        }
+
+        nav .container {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .logo {
+            font-size: 1.25rem;
+            font-weight: 800;
+            color: var(--accent);
+            text-decoration: none;
+            letter-spacing: -0.5px;
+        }
+
+        .logo span { color: var(--text); }
+
+        .nav-links {
+            display: flex;
+            gap: 32px;
+            list-style: none;
+        }
+
+        .nav-links a {
+            color: var(--text-dim);
+            text-decoration: none;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: color 0.2s;
+        }
+
+        .nav-links a:hover { color: var(--text); }
+
+        .nav-cta {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 18px;
+            background: var(--accent);
+            color: #000;
+            border-radius: 8px;
+            text-decoration: none;
+            font-size: 0.85rem;
+            font-weight: 600;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .nav-cta:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 20px var(--accent-glow);
+        }
+
+        .hero {
+            padding: 160px 0 100px;
+            text-align: center;
+            position: relative;
+        }
+
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 600px;
+            height: 600px;
+            background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%);
+            pointer-events: none;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 14px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 100px;
+            font-size: 0.8rem;
+            font-weight: 500;
+            color: var(--text-dim);
+            margin-bottom: 24px;
+        }
+
+        .badge-dot {
+            width: 6px;
+            height: 6px;
+            background: var(--green);
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        h1 {
+            font-size: clamp(3rem, 7vw, 4.5rem);
+            font-weight: 800;
+            letter-spacing: -2px;
+            line-height: 1.1;
+            margin-bottom: 24px;
+            position: relative;
+        }
+
+        h1 .highlight {
+            background: linear-gradient(135deg, var(--accent), #fbbf24);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .hero-sub {
+            font-size: 1.25rem;
+            color: var(--text-dim);
+            max-width: 640px;
+            margin: 0 auto 48px;
+            line-height: 1.7;
+        }
+
+        .hero-actions {
+            display: flex;
+            gap: 16px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .btn-primary {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 14px 28px;
+            background: var(--accent);
+            color: #000;
+            border-radius: 10px;
+            text-decoration: none;
+            font-size: 1rem;
+            font-weight: 600;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 30px var(--accent-glow);
+        }
+
+        .btn-secondary {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 14px 28px;
+            background: var(--surface);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            text-decoration: none;
+            font-size: 1rem;
+            font-weight: 500;
+            transition: border-color 0.2s, background 0.2s;
+        }
+
+        .btn-secondary:hover {
+            border-color: var(--text-dim);
+            background: #1a1a24;
+        }
+
+        .install-bar {
+            margin-top: 48px;
+            display: flex;
+            justify-content: center;
+        }
+
+        .install-cmd {
+            display: inline-flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 20px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.9rem;
+            color: var(--text-dim);
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+
+        .install-cmd:hover { border-color: var(--accent); }
+        .install-cmd code { color: var(--text); }
+        .install-cmd .copy-icon { opacity: 0.5; transition: opacity 0.2s; }
+        .install-cmd:hover .copy-icon { opacity: 1; }
+
+        .pipeline {
+            padding: 80px 0;
+        }
+
+        .pipeline-visual {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 40px;
+            overflow-x: auto;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8rem;
+            line-height: 1.8;
+            color: var(--text-dim);
+        }
+
+        .pipeline-visual .allow { color: var(--green); }
+        .pipeline-visual .block { color: var(--red); }
+        .pipeline-visual .intervene { color: var(--accent); }
+        .pipeline-visual .label { color: var(--text); }
+
+        .features {
+            padding: 80px 0;
+        }
+
+        .section-label {
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: var(--accent);
+            margin-bottom: 12px;
+        }
+
+        .section-title {
+            font-size: 2.5rem;
+            font-weight: 800;
+            letter-spacing: -1.5px;
+            margin-bottom: 16px;
+        }
+
+        .section-desc {
+            color: var(--text-dim);
+            font-size: 1.1rem;
+            max-width: 600px;
+            margin-bottom: 60px;
+        }
+
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 24px;
+        }
+
+        .feature-card {
+            padding: 32px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            transition: border-color 0.3s, transform 0.3s;
+        }
+
+        .feature-card:hover {
+            border-color: var(--accent);
+            transform: translateY(-4px);
+        }
+
+        .feature-icon {
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--accent-glow);
+            border-radius: 10px;
+            margin-bottom: 16px;
+            font-size: 1.2rem;
+        }
+
+        .feature-card h3 {
+            font-size: 1.1rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .feature-card p {
+            color: var(--text-dim);
+            font-size: 0.9rem;
+            line-height: 1.6;
+        }
+
+        .code-section {
+            padding: 80px 0;
+        }
+
+        .code-block {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            overflow: hidden;
+        }
+
+        .code-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 20px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .code-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .code-dot.red { background: #ff5f57; }
+        .code-dot.yellow { background: #febc2e; }
+        .code-dot.green { background: #28c840; }
+
+        .code-header span {
+            margin-left: 12px;
+            font-size: 0.8rem;
+            color: var(--text-dim);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .code-body {
+            padding: 24px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            line-height: 1.8;
+            overflow-x: auto;
+        }
+
+        .code-body .kw { color: #c678dd; }
+        .code-body .fn { color: #61afef; }
+        .code-body .str { color: #98c379; }
+        .code-body .cm { color: #5c6370; }
+        .code-body .num { color: #d19a66; }
+        .code-body .var { color: #e5c07b; }
+
+        .frameworks {
+            padding: 80px 0;
+            text-align: center;
+        }
+
+        .framework-logos {
+            display: flex;
+            justify-content: center;
+            gap: 40px;
+            flex-wrap: wrap;
+            margin-top: 48px;
+        }
+
+        .framework-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            opacity: 0.6;
+            transition: opacity 0.3s;
+        }
+
+        .framework-item:hover { opacity: 1; }
+
+        .framework-icon {
+            width: 56px;
+            height: 56px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            font-size: 1.5rem;
+        }
+
+        .framework-item span {
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            font-weight: 500;
+        }
+
+        .tiers {
+            padding: 80px 0;
+        }
+
+        .tier-cards {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 24px;
+        }
+
+        .tier-card {
+            padding: 32px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            text-align: center;
+        }
+
+        .tier-card.allow { border-top: 3px solid var(--green); }
+        .tier-card.intervene { border-top: 3px solid var(--accent); }
+        .tier-card.block { border-top: 3px solid var(--red); }
+
+        .tier-score {
+            font-size: 2.5rem;
+            font-weight: 800;
+            margin-bottom: 4px;
+        }
+
+        .tier-card.allow .tier-score { color: var(--green); }
+        .tier-card.intervene .tier-score { color: var(--accent); }
+        .tier-card.block .tier-score { color: var(--red); }
+
+        .tier-name {
+            font-size: 1rem;
+            font-weight: 700;
+            margin-bottom: 12px;
+        }
+
+        .tier-desc {
+            font-size: 0.85rem;
+            color: var(--text-dim);
+            line-height: 1.6;
+        }
+
+        .cta-section {
+            padding: 100px 0;
+            text-align: center;
+        }
+
+        .cta-box {
+            background: linear-gradient(135deg, rgba(245, 158, 11, 0.08), rgba(59, 130, 246, 0.05));
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            padding: 80px 40px;
+        }
+
+        .cta-box h2 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            letter-spacing: -1px;
+            margin-bottom: 16px;
+        }
+
+        .cta-box p {
+            color: var(--text-dim);
+            font-size: 1.1rem;
+            margin-bottom: 40px;
+        }
+
+        footer {
+            padding: 40px 0;
+            border-top: 1px solid var(--border);
+            text-align: center;
+        }
+
+        footer p {
+            color: var(--text-dim);
+            font-size: 0.85rem;
+        }
+
+        footer a {
+            color: var(--text-dim);
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+
+        footer a:hover { color: var(--text); }
+
+        @media (max-width: 768px) {
+            .nav-links { display: none; }
+            .tier-cards { grid-template-columns: 1fr; }
+            .feature-grid { grid-template-columns: 1fr; }
+            .pipeline-visual { font-size: 0.7rem; padding: 20px; }
+            .cta-box { padding: 48px 24px; }
+        }
+    </style>
+</head>
+<body>
+
+<nav>
+    <div class="container">
+        <a href="/" class="logo">Agent<span>Lasso</span></a>
+        <ul class="nav-links">
+            <li><a href="#features">Features</a></li>
+            <li><a href="#how-it-works">How It Works</a></li>
+            <li><a href="#frameworks">Frameworks</a></li>
+            <li><a href="architecture.html">Architecture</a></li>
+            <li><a href="https://github.com/aws/ostiari">Docs</a></li>
+        </ul>
+        <div style="display:flex;gap:10px;align-items:center;">
+            <a href="architecture.html" class="nav-cta" style="background:var(--surface);color:var(--text);border:1px solid var(--border);">
+                Architecture
+            </a>
+            <a href="https://d3npuiylu655tr.cloudfront.net" class="nav-cta" style="background:var(--surface);color:var(--text);border:1px solid var(--border);">
+                Dashboard
+            </a>
+            <a href="https://github.com/aws/ostiari" class="nav-cta">
+                <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+                GitHub
+            </a>
+        </div>
+    </div>
+</nav>
+
+<section class="hero">
+    <div class="container">
+        <div class="badge">
+            <span class="badge-dot"></span>
+            Open Source &middot; Apache 2.0
+        </div>
+        <h1>Lasso your agents<br>before they <span class="highlight">go wild</span></h1>
+        <p class="hero-sub">
+            Ostiari intercepts every tool call an AI agent makes, scores its risk, and enforces safety policies — regardless of which framework the agent runs on.
+        </p>
+        <div class="hero-actions">
+            <a href="https://github.com/aws/ostiari" class="btn-primary">
+                Get Started
+                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+            </a>
+            <a href="https://github.com/aws/ostiari" class="btn-secondary">
+                View on GitHub
+            </a>
+        </div>
+        <div class="install-bar">
+            <div class="install-cmd" onclick="navigator.clipboard.writeText('pip install ostiari')">
+                $ <code>pip install ostiari</code>
+                <svg class="copy-icon" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="pipeline" id="how-it-works">
+    <div class="container">
+        <div class="pipeline-visual">
+<pre>
+<span class="label">Agent</span>                        <span class="label">Ostiari</span>                              <span class="label">World</span>
+
+  tool_call("email.send")
+       |
+       |-------------------> <span class="label">Policy Engine</span> ---> <span class="label">Anomaly Detector</span>
+       |                         |                    |
+       |                    score: 45            no anomaly
+       |                         |
+       |                    <span class="label">Gateway</span>
+       |                    +-------------------------------------+
+       |                    |  0 -------- 30 -------- 70 --- 100  |
+       |                    |  <span class="allow">ALLOW</span>      <span class="intervene">INTERVENE</span>    <span class="block">BLOCK</span>    |
+       |                    +-------------------------------------+
+       |                              |
+       |                    tier: <span class="intervene">intervene</span>
+       |                              |
+       |                    +---------+----------+
+       |                    |  Human Approval?   |
+       |                    |    [Approve]       |
+       |                    +---------+----------+
+       |                              |
+       |                         approved
+       |                              |
+       +------------------------------+------------------------------> send_email()
+                                                                          |
+                                      <span class="label">Trace Stored</span> <------------------------------+
+</pre>
+        </div>
+    </div>
+</section>
+
+<section class="features" id="features">
+    <div class="container">
+        <p class="section-label">Capabilities</p>
+        <h2 class="section-title">Everything you need to govern AI agents</h2>
+        <p class="section-desc">One library. Every framework. Full control over what your agents can do.</p>
+
+        <div class="feature-grid">
+            <div class="feature-card">
+                <div class="feature-icon">&#9881;</div>
+                <h3>Policy Engine</h3>
+                <p>YAML-based rules that allow, score, or block actions by pattern. Hot-reload policies without restarting.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#9888;</div>
+                <h3>Risk Scoring</h3>
+                <p>Every tool call gets a 0-100 risk score. Configurable thresholds determine allow, intervene, or block.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#128269;</div>
+                <h3>Anomaly Detection</h3>
+                <p>Catches loops, drift, hallucinations, and contradictions before they cause damage.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#9889;</div>
+                <h3>Circuit Breaker</h3>
+                <p>Automatically trips when error rates spike. Protects downstream systems from runaway agents.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#128101;</div>
+                <h3>Human-in-the-Loop</h3>
+                <p>Medium-risk actions pause for approval. Configurable callbacks, webhooks, or dashboard-based review.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#128200;</div>
+                <h3>Full Observability</h3>
+                <p>Every evaluation is traced and stored. Web dashboard, metrics, real-time WebSocket streaming.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="code-section">
+    <div class="container">
+        <p class="section-label">Quick Start</p>
+        <h2 class="section-title">Five lines to safety</h2>
+        <p class="section-desc">Drop Ostiari into any agent in minutes. No framework lock-in.</p>
+
+        <div class="code-block">
+            <div class="code-header">
+                <div class="code-dot red"></div>
+                <div class="code-dot yellow"></div>
+                <div class="code-dot green"></div>
+                <span>main.py</span>
+            </div>
+            <div class="code-body">
+<pre><span class="kw">from</span> <span class="fn">ostiari</span> <span class="kw">import</span> Guard
+<span class="kw">from</span> <span class="fn">ostiari.models</span> <span class="kw">import</span> OstiariConfig, ThresholdConfig
+
+<span class="cm"># Configure: allow &lt;= 30, intervene 31-70, block &gt; 70</span>
+config = OstiariConfig(
+    thresholds=ThresholdConfig(allow_max=<span class="num">30</span>, intervene_max=<span class="num">70</span>),
+    fail_open=<span class="var">False</span>,
+)
+
+guard = Guard(config=config)
+guard.configure(<span class="str">"policy.yaml"</span>)
+guard.start()
+
+<span class="cm"># Validate before executing any tool call</span>
+result = guard.validate(
+    action=<span class="str">"email.send"</span>,
+    params={<span class="str">"to"</span>: <span class="str">"user@example.com"</span>, <span class="str">"subject"</span>: <span class="str">"Hello"</span>}
+)
+
+<span class="kw">if</span> result.tier == <span class="str">"allow"</span>:
+    send_email(result.params)  <span class="cm"># Low risk — proceed</span>
+<span class="kw">elif</span> result.tier == <span class="str">"intervene"</span>:
+    <span class="kw">if</span> get_human_approval(result):
+        send_email(result.params)  <span class="cm"># Approved</span>
+</pre>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="frameworks" id="frameworks">
+    <div class="container">
+        <p class="section-label">Integrations</p>
+        <h2 class="section-title">One guardrail for every framework</h2>
+        <p class="section-desc" style="margin: 0 auto 0;">Drop-in adapters for the frameworks you already use. Zero coupling — Ostiari never imports your framework's code at runtime.</p>
+
+        <div class="framework-logos">
+            <div class="framework-item">
+                <div class="framework-icon">O</div>
+                <span>OpenAI</span>
+            </div>
+            <div class="framework-item">
+                <div class="framework-icon">A</div>
+                <span>Anthropic</span>
+            </div>
+            <div class="framework-item">
+                <div class="framework-icon">B</div>
+                <span>Bedrock</span>
+            </div>
+            <div class="framework-item">
+                <div class="framework-icon">S</div>
+                <span>Strands</span>
+            </div>
+            <div class="framework-item">
+                <div class="framework-icon">C</div>
+                <span>CrewAI</span>
+            </div>
+            <div class="framework-item">
+                <div class="framework-icon">L</div>
+                <span>LangGraph</span>
+            </div>
+            <div class="framework-item">
+                <div class="framework-icon">AC</div>
+                <span>AgentCore</span>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="tiers">
+    <div class="container">
+        <p class="section-label">Decision Tiers</p>
+        <h2 class="section-title">Three outcomes, zero ambiguity</h2>
+        <p class="section-desc">Every action maps to a clear decision. No guesswork.</p>
+
+        <div class="tier-cards">
+            <div class="tier-card allow">
+                <div class="tier-score">0-30</div>
+                <div class="tier-name">Allow</div>
+                <p class="tier-desc">Low risk. Action proceeds immediately with no intervention. Read operations, safe searches, permitted queries.</p>
+            </div>
+            <div class="tier-card intervene">
+                <div class="tier-score">31-70</div>
+                <div class="tier-name">Intervene</div>
+                <p class="tier-desc">Medium risk. Pauses for human approval. Sends email, writes files, external API calls with side effects.</p>
+            </div>
+            <div class="tier-card block">
+                <div class="tier-score">71-100</div>
+                <div class="tier-name">Block</div>
+                <p class="tier-desc">High risk. Action rejected immediately. Deletes, code execution, system commands, privilege escalation.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="cta-section">
+    <div class="container">
+        <div class="cta-box">
+            <h2>Ready to lasso your agents?</h2>
+            <p>Open source. Production ready. Five minutes to integrate.</p>
+            <div class="hero-actions">
+                <a href="https://github.com/aws/ostiari" class="btn-primary">
+                    Get Started
+                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                </a>
+                <a href="https://github.com/aws/ostiari" class="btn-secondary">
+                    Read the Docs
+                </a>
+            </div>
+        </div>
+    </div>
+</section>
+
+<footer>
+    <div class="container">
+        <p>Ostiari is open source under the Apache 2.0 License &middot; <a href="https://github.com/aws/ostiari">GitHub</a> &middot; <a href="https://pypi.org/project/ostiari/">PyPI</a></p>
+    </div>
+</footer>
+
+<script>
+document.querySelectorAll('.install-cmd').forEach(el => {
+    el.addEventListener('click', () => {
+        const orig = el.querySelector('code').textContent;
+        el.querySelector('code').textContent = 'Copied!';
+        setTimeout(() => { el.querySelector('code').textContent = orig; }, 1500);
+    });
+});
+</script>
+
+</body>
+</html>
