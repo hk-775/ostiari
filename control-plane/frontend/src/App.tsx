@@ -1,5 +1,6 @@
+import { useEffect } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Route, Routes, Navigate, useLocation } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import { Dashboard } from "./pages/Dashboard";
 import { Gateways } from "./pages/Gateways";
@@ -17,35 +18,73 @@ import { Sandbox } from "./pages/Sandbox";
 import { Agents } from "./pages/Agents";
 import { Architecture } from "./pages/Architecture";
 import { Landing } from "./pages/Landing";
+import { LoginPage } from "./pages/LoginPage";
+import { Users } from "./pages/Users";
+import { useAuthStore } from "./stores/authStore";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchInterval: 10000 } },
 });
 
+function RequireAuth({ children }: { children: React.ReactNode }) {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const location = useLocation();
+
+  if (!isAuthenticated) {
+    return <Navigate to="/login" state={{ from: location }} replace />;
+  }
+  return <>{children}</>;
+}
+
+function RequireAdmin({ children }: { children: React.ReactNode }) {
+  const user = useAuthStore((s) => s.user);
+
+  if (user && user.role !== "admin") {
+    return <Navigate to="/dashboard" replace />;
+  }
+  return <>{children}</>;
+}
+
+function AuthInitializer({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated, fetchMe, user } = useAuthStore();
+
+  useEffect(() => {
+    if (isAuthenticated && !user) {
+      fetchMe();
+    }
+  }, [isAuthenticated, user, fetchMe]);
+
+  return <>{children}</>;
+}
+
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Landing />} />
-          <Route element={<Layout />}>
-            <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/architecture" element={<Architecture />} />
-            <Route path="/gateways" element={<Gateways />} />
-            <Route path="/agents" element={<Agents />} />
-            <Route path="/tools" element={<Tools />} />
-            <Route path="/mcp-servers" element={<McpServers />} />
-            <Route path="/policies" element={<Policies />} />
-            <Route path="/costs" element={<Costs />} />
-            <Route path="/experiments" element={<Experiments />} />
-            <Route path="/models" element={<Models />} />
-            <Route path="/efficiency" element={<Efficiency />} />
-            <Route path="/traces" element={<LiveTraces />} />
-            <Route path="/quotas" element={<Quotas />} />
-            <Route path="/sandbox" element={<Sandbox />} />
-            <Route path="/audit" element={<AuditLog />} />
-          </Route>
-        </Routes>
+        <AuthInitializer>
+          <Routes>
+            <Route path="/" element={<Landing />} />
+            <Route path="/login" element={<LoginPage />} />
+            <Route element={<RequireAuth><Layout /></RequireAuth>}>
+              <Route path="/dashboard" element={<Dashboard />} />
+              <Route path="/architecture" element={<Architecture />} />
+              <Route path="/gateways" element={<Gateways />} />
+              <Route path="/agents" element={<Agents />} />
+              <Route path="/tools" element={<Tools />} />
+              <Route path="/mcp-servers" element={<McpServers />} />
+              <Route path="/policies" element={<Policies />} />
+              <Route path="/costs" element={<Costs />} />
+              <Route path="/experiments" element={<Experiments />} />
+              <Route path="/models" element={<Models />} />
+              <Route path="/efficiency" element={<Efficiency />} />
+              <Route path="/traces" element={<LiveTraces />} />
+              <Route path="/quotas" element={<Quotas />} />
+              <Route path="/sandbox" element={<Sandbox />} />
+              <Route path="/audit" element={<AuditLog />} />
+              <Route path="/users" element={<RequireAdmin><Users /></RequireAdmin>} />
+            </Route>
+          </Routes>
+        </AuthInitializer>
       </BrowserRouter>
     </QueryClientProvider>
   );

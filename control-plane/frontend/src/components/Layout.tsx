@@ -1,7 +1,14 @@
-import { Link, Outlet, useLocation } from "react-router-dom";
-import { Shield, Server, Wrench, FileText, Activity, Plug, History, DollarSign, Radio, FlaskConical, Brain, ShieldCheck, Beaker, Bot, Network } from "lucide-react";
+import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { Shield, Server, Wrench, FileText, Activity, Plug, History, DollarSign, Radio, FlaskConical, Brain, ShieldCheck, Beaker, Bot, Network, Users, LogOut } from "lucide-react";
+import { useAuthStore } from "../stores/authStore";
 
-const NAV_SECTIONS = [
+const NAV_SECTIONS: {
+  label: string;
+  labelColor: string;
+  borderColor: string;
+  adminOnly?: boolean;
+  items: { path: string; label: string; icon: any; color: string; activeBg: string }[];
+}[] = [
   {
     label: "Observe",
     labelColor: "text-emerald-500",
@@ -44,6 +51,15 @@ const NAV_SECTIONS = [
       { path: "/architecture", label: "Architecture", icon: Network, color: "text-violet-600", activeBg: "bg-violet-50" },
     ],
   },
+  {
+    label: "Admin",
+    labelColor: "text-violet-500",
+    borderColor: "border-l-violet-400",
+    adminOnly: true,
+    items: [
+      { path: "/users", label: "Users", icon: Users, color: "text-violet-600", activeBg: "bg-violet-50" },
+    ],
+  },
 ];
 
 const ROUTE_BORDER_COLORS: Record<string, string> = {
@@ -62,11 +78,34 @@ const ROUTE_BORDER_COLORS: Record<string, string> = {
   "/sandbox": "rgba(192, 38, 211, 0.3)",   // fuchsia
   "/agents": "rgba(132, 204, 22, 0.3)",    // lime
   "/architecture": "rgba(139, 92, 246, 0.3)", // violet
+  "/users": "rgba(139, 92, 246, 0.3)",        // violet
 };
+
+const ROLE_BADGES: Record<string, string> = {
+  admin: "bg-violet-100 text-violet-700",
+  editor: "bg-sky-100 text-sky-700",
+  viewer: "bg-stone-100 text-stone-600",
+};
+
+// Sections that require write access (hidden for viewers)
+const WRITE_SECTIONS = ["Control", "Configure", "Test"];
 
 export function Layout() {
   const location = useLocation();
+  const navigate = useNavigate();
+  const { user, logout } = useAuthStore();
   const borderColor = ROUTE_BORDER_COLORS[location.pathname] || "rgba(214, 211, 209, 0.8)";
+
+  const handleLogout = () => {
+    logout();
+    navigate("/login");
+  };
+
+  const visibleSections = NAV_SECTIONS.filter((section) => {
+    if (section.adminOnly && user?.role !== "admin") return false;
+    if (user?.role === "viewer" && WRITE_SECTIONS.includes(section.label)) return false;
+    return true;
+  });
 
   return (
     <div className="flex min-h-screen">
@@ -79,7 +118,7 @@ export function Layout() {
 
         {/* Nav */}
         <nav className="flex-1 overflow-y-auto px-3 py-4">
-          {NAV_SECTIONS.map((section) => (
+          {visibleSections.map((section) => (
             <div key={section.label} className={`mb-4 border-l-2 ${section.borderColor} pl-2 ml-1`}>
               <p className={`mb-1.5 px-2 text-[10px] font-bold uppercase tracking-widest ${section.labelColor}`}>
                 {section.label}
@@ -107,9 +146,32 @@ export function Layout() {
           ))}
         </nav>
 
-        {/* Footer */}
-        <div className="border-t border-stone-100 px-6 py-4">
-          <p className="text-[11px] text-stone-400">v0.1.0</p>
+        {/* User Menu Footer */}
+        <div className="border-t border-stone-100 px-4 py-3">
+          {user ? (
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-stone-100 text-xs font-medium text-stone-600">
+                  {user.name?.charAt(0)?.toUpperCase() || user.email.charAt(0).toUpperCase()}
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-medium text-stone-700 truncate">{user.name}</p>
+                  <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-medium ${ROLE_BADGES[user.role] || ROLE_BADGES.viewer}`}>
+                    {user.role}
+                  </span>
+                </div>
+              </div>
+              <button
+                onClick={handleLogout}
+                className="rounded-lg p-1.5 text-stone-400 transition hover:bg-stone-100 hover:text-stone-600"
+                title="Sign out"
+              >
+                <LogOut className="h-4 w-4" />
+              </button>
+            </div>
+          ) : (
+            <p className="text-[11px] text-stone-400">v0.1.0</p>
+          )}
         </div>
       </aside>
 
