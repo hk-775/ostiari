@@ -21,14 +21,18 @@ DATABASE_URL = os.environ.get("DATABASE_URL", _DEFAULT_DB)
 
 _is_postgres = DATABASE_URL.startswith("postgresql")
 
-engine = create_async_engine(
-    DATABASE_URL,
-    echo=os.environ.get("DB_ECHO", "").lower() == "true",
-    pool_pre_ping=True if _is_postgres else False,
-    poolclass=NullPool if not _is_postgres else None,
-    pool_size=20 if _is_postgres else None,
-    max_overflow=10 if _is_postgres else None,
-)
+_engine_kwargs = {
+    "echo": os.environ.get("DB_ECHO", "").lower() == "true",
+}
+
+if _is_postgres:
+    _engine_kwargs["pool_pre_ping"] = True
+    _engine_kwargs["pool_size"] = 20
+    _engine_kwargs["max_overflow"] = 10
+else:
+    _engine_kwargs["poolclass"] = NullPool
+
+engine = create_async_engine(DATABASE_URL, **_engine_kwargs)
 
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
