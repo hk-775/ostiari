@@ -73,14 +73,8 @@ export function Layout() {
       {/* Sidebar */}
       <aside className="fixed inset-y-0 left-0 z-30 flex w-60 flex-col border-r border-stone-200 bg-white">
         {/* Logo */}
-        <div className="flex h-16 items-center gap-3 px-6 border-b border-stone-100">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-violet-500 to-indigo-600 shadow-sm">
-            <Shield className="h-4.5 w-4.5 text-white" />
-          </div>
-          <div>
-            <span className="text-[15px] font-semibold text-stone-900 tracking-tight">Ostiari</span>
-            <p className="text-[10px] text-stone-400 -mt-0.5">Control Plane</p>
-          </div>
+        <div className="flex h-16 items-center px-5 border-b border-stone-100">
+          <img src="/logo.svg" alt="Ostiari" className="h-8" />
         </div>
 
         {/* Nav */}

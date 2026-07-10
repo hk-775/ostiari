@@ -26,14 +26,8 @@ export function Landing() {
     <div className="min-h-screen bg-gradient-to-br from-stone-50 via-white to-violet-50/30">
       {/* Hero */}
       <div className="max-w-5xl mx-auto px-8 pt-16 pb-12">
-        <div className="flex items-center gap-3 mb-6">
-          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-500 to-indigo-600 shadow-lg">
-            <Shield className="h-6 w-6 text-white" />
-          </div>
-          <div>
-            <h1 className="text-3xl font-extrabold text-stone-900 tracking-tight">Ostiari</h1>
-            <p className="text-sm text-stone-500">Agent Gateway + Control Plane</p>
-          </div>
+        <div className="mb-6">
+          <img src="/logo.svg" alt="Ostiari" className="h-12" />
         </div>
 
         <p className="text-xl text-stone-700 max-w-2xl leading-relaxed">
