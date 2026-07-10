@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 60" fill="none">
+  <!-- Dark background version -->
+  <rect x="8" y="6" width="28" height="48" rx="14" ry="14" stroke="#a78bfa" stroke-width="3" fill="none"/>
+  <line x1="22" y1="16" x2="22" y2="44" stroke="#a78bfa" stroke-width="2" stroke-linecap="round" opacity="0.3"/>
+  <circle cx="28" cy="30" r="3.5" fill="#f59e0b"/>
+
+  <text x="48" y="39" font-family="system-ui, -apple-system, sans-serif" font-size="26" font-weight="600" letter-spacing="0.5" fill="#f5f3ff">ostiari</text>
+  <text x="48" y="52" font-family="system-ui, -apple-system, sans-serif" font-size="9" fill="#9ca3af" letter-spacing="1.5">AGENT GATEWAY</text>
+</svg>
