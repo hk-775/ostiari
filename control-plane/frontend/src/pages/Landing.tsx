@@ -35,7 +35,7 @@ export function Landing() {
         </p>
 
         <div className="flex gap-3 mt-8">
-          <Link to="/" className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 px-6 py-3 text-sm font-semibold text-white shadow-lg hover:shadow-xl transition">
+          <Link to="/dashboard" className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 px-6 py-3 text-sm font-semibold text-white shadow-lg hover:shadow-xl transition">
             Open Control Plane <ArrowRight className="h-4 w-4" />
           </Link>
           <Link to="/architecture" className="inline-flex items-center gap-2 rounded-xl border border-stone-200 bg-white px-6 py-3 text-sm font-semibold text-stone-700 hover:bg-stone-50 transition">
@@ -122,7 +122,7 @@ export function Landing() {
       {/* CTA */}
       <div className="max-w-5xl mx-auto px-8 py-16 text-center">
         <p className="text-sm text-stone-500 mb-4">Ready to explore?</p>
-        <Link to="/" className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 px-8 py-3.5 text-sm font-semibold text-white shadow-lg hover:shadow-xl transition">
+        <Link to="/dashboard" className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 px-8 py-3.5 text-sm font-semibold text-white shadow-lg hover:shadow-xl transition">
           Enter Control Plane <ArrowRight className="h-4 w-4" />
         </Link>
       </div>
