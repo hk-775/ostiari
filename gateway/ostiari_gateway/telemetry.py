@@ -1,25 +1,72 @@
-"""OpenTelemetry integration for the sidecar.
+"""OpenTelemetry integration for the gateway.
 
 Extracts trace context from incoming requests, creates spans for validation
 and tool proxying, and propagates context to downstream tool endpoints
 (whether or not they support OpenTelemetry).
+
+OTLP Export:
+  Set OTEL_EXPORTER_OTLP_ENDPOINT to export traces to your observability stack.
+  Supports Datadog, Splunk, Jaeger, AWS X-Ray, Grafana, etc.
+
+  Environment variables (standard OTel SDK):
+    OTEL_EXPORTER_OTLP_ENDPOINT  — e.g., http://localhost:4317
+    OTEL_SERVICE_NAME            — defaults to "ostiari-gateway"
+    OTEL_TRACES_EXPORTER         — "otlp" (default when endpoint set) or "console"
+    OTEL_PROPAGATORS             — "tracecontext,baggage" (default) or "xray" for AWS
 """
 
 import logging
+import os
 from typing import Any
 
 from opentelemetry import context, trace
 from opentelemetry.context import Context
 from opentelemetry.propagate import extract, inject
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
 from opentelemetry.trace import SpanKind, StatusCode, Tracer
 
-log = logging.getLogger("ostiari.sidecar.telemetry")
+log = logging.getLogger("ostiari.gateway.telemetry")
 
-TRACER_NAME = "ostiari.sidecar"
+TRACER_NAME = "ostiari.gateway"
+_initialized = False
+
+
+def init_telemetry(service_name: str = "ostiari-gateway", gateway_id: str = "") -> None:
+    """Initialize OpenTelemetry with OTLP export if configured."""
+    global _initialized
+    if _initialized:
+        return
+    _initialized = True
+
+    resource = Resource.create({
+        "service.name": os.environ.get("OTEL_SERVICE_NAME", service_name),
+        "service.instance.id": gateway_id or os.environ.get("OSTIARI_GATEWAY_ID", "gateway-1"),
+    })
+
+    provider = TracerProvider(resource=resource)
+
+    otlp_endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+    exporter_type = os.environ.get("OTEL_TRACES_EXPORTER", "otlp" if otlp_endpoint else "none")
+
+    if exporter_type == "otlp" and otlp_endpoint:
+        try:
+            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+            exporter = OTLPSpanExporter(endpoint=otlp_endpoint)
+            provider.add_span_processor(BatchSpanProcessor(exporter))
+            log.info("OTLP trace export enabled: %s", otlp_endpoint)
+        except ImportError:
+            log.warning("OTLP exporter not installed (pip install opentelemetry-exporter-otlp)")
+    elif exporter_type == "console":
+        provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
+        log.info("Console trace export enabled (debug mode)")
+
+    trace.set_tracer_provider(provider)
 
 
 def get_tracer() -> Tracer:
-    """Get the sidecar's tracer instance."""
+    """Get the gateway's tracer instance."""
     return trace.get_tracer(TRACER_NAME)
 
 

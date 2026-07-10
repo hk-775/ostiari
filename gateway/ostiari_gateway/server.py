@@ -15,6 +15,7 @@ from ostiari_gateway.models import PolicyConfig, SidecarConfig, ToolDefinition
 from ostiari_gateway.telemetry import (
     extract_context_from_headers,
     get_tracer,
+    init_telemetry,
     inject_context_into_headers,
     record_proxy_result,
     record_validate_result,
@@ -32,6 +33,8 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
     from ostiari_gateway.modules import ModuleRegistry
     from ostiari_gateway.quota_enforcer import QuotaEnforcer
     from ostiari_gateway.trace_reporter import TraceReporter
+
+    init_telemetry(gateway_id=initial_config.sidecar_id if initial_config else "")
 
     manager = ConfigManager()
     mcp_manager = MCPManager()
