@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ostiari — Architecture</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0a0a0f;
+            --surface: #12121a;
+            --border: #1e1e2e;
+            --text: #e4e4e7;
+            --text-dim: #71717a;
+            --accent: #f59e0b;
+            --accent-glow: rgba(245, 158, 11, 0.15);
+            --green: #22c55e;
+            --red: #ef4444;
+            --blue: #3b82f6;
+            --radius: 12px;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+        .container { max-width: 1400px; margin: 0 auto; padding: 0 24px; }
+
+        nav {
+            position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+            padding: 16px 0; background: rgba(10,10,15,0.8); backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
+        }
+        nav .container { display: flex; align-items: center; justify-content: space-between; }
+        .logo { font-size: 1.25rem; font-weight: 800; color: var(--accent); text-decoration: none; letter-spacing: -0.5px; }
+        .logo span { color: var(--text); }
+        .nav-links { display: flex; gap: 32px; list-style: none; }
+        .nav-links a { color: var(--text-dim); text-decoration: none; font-size: 0.9rem; font-weight: 500; transition: color 0.2s; }
+        .nav-links a:hover { color: var(--text); }
+        .nav-links a.active { color: var(--accent); }
+        .nav-cta { display: inline-flex; align-items: center; gap: 8px; padding: 8px 18px; background: var(--accent); color: #000; border-radius: 8px; text-decoration: none; font-size: 0.85rem; font-weight: 600; }
+
+        .page { padding: 120px 0 80px; }
+        .page h1 { font-size: 2.5rem; font-weight: 800; letter-spacing: -1.5px; margin-bottom: 8px; }
+        .page .subtitle { color: var(--text-dim); font-size: 1.1rem; margin-bottom: 32px; }
+
+        .download-link { display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--text); text-decoration: none; font-size: 0.85rem; font-weight: 500; margin-bottom: 32px; transition: border-color 0.2s; }
+        .download-link:hover { border-color: var(--accent); }
+
+        .diagram-embed { background: #fff; border-radius: var(--radius); overflow: hidden; border: 1px solid var(--border); margin-bottom: 48px; }
+        .diagram-embed iframe { width: 100%; height: 700px; border: none; }
+
+        .arch-section { margin-bottom: 48px; }
+        .arch-section h2 { font-size: 1.5rem; font-weight: 700; margin-bottom: 12px; letter-spacing: -0.5px; }
+        .arch-section p { color: var(--text-dim); font-size: 0.95rem; max-width: 800px; line-height: 1.7; margin-bottom: 16px; }
+
+        .component-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-top: 24px; }
+        .component-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; }
+        .component-card h3 { font-size: 1rem; font-weight: 700; margin-bottom: 6px; color: var(--accent); }
+        .component-card p { color: var(--text-dim); font-size: 0.85rem; line-height: 1.6; }
+
+        .flow-list { list-style: none; counter-reset: step; }
+        .flow-list li { position: relative; padding-left: 40px; margin-bottom: 16px; color: var(--text-dim); font-size: 0.9rem; }
+        .flow-list li::before { counter-increment: step; content: counter(step); position: absolute; left: 0; width: 28px; height: 28px; background: var(--surface); border: 1px solid var(--border); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: 700; color: var(--accent); }
+
+        @media (max-width: 768px) {
+            .nav-links { display: none; }
+            .diagram-embed iframe { height: 400px; }
+        }
+    </style>
+</head>
+<body>
+
+<nav>
+    <div class="container">
+        <a href="/" class="logo">Agent<span>Lasso</span></a>
+        <ul class="nav-links">
+            <li><a href="/#features">Features</a></li>
+            <li><a href="/#how-it-works">How It Works</a></li>
+            <li><a href="/#frameworks">Frameworks</a></li>
+            <li><a href="architecture.html" class="active">Architecture</a></li>
+            <li><a href="https://github.com/aws/ostiari">Docs</a></li>
+        </ul>
+        <a href="https://github.com/aws/ostiari" class="nav-cta">GitHub</a>
+    </div>
+</nav>
+
+<section class="page">
+    <div class="container">
+        <h1>Technical Architecture</h1>
+        <p class="subtitle">How Ostiari integrates with your agent infrastructure on AWS.</p>
+
+        <a href="architecture.drawio" download class="download-link">
+            <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+            Download .drawio file (open in draw.io / diagrams.net)
+        </a>
+
+        <div class="diagram-embed">
+            <iframe src="https://viewer.diagrams.net/?lightbox=1&highlight=0000ff&edit=_blank&layers=1&nav=1#Uhttps%3A%2F%2Fd1gpo95wusv6o2.cloudfront.net%2Farchitecture.drawio"></iframe>
+        </div>
+
+        <div class="arch-section">
+            <h2>Request Flow</h2>
+            <p>Every agent tool call passes through the Ostiari pipeline before reaching the outside world.</p>
+            <ol class="flow-list">
+                <li><strong>Agent invokes a tool</strong> — any framework (OpenAI, Strands, Anthropic, Bedrock, CrewAI, LangGraph, AgentCore)</li>
+                <li><strong>Ostiari intercepts</strong> via the framework adapter or Agent Harness middleware</li>
+                <li><strong>Policy Engine evaluates</strong> — matches YAML rules, applies risk adjustments</li>
+                <li><strong>Anomaly Detector checks</strong> — loops, drift, hallucination, contradiction</li>
+                <li><strong>Gateway scores</strong> — combines signals into a 0-100 risk score and assigns a tier</li>
+                <li><strong>Decision: Allow / Intervene / Block</strong> — tier determines outcome</li>
+                <li><strong>Trace stored</strong> — full evaluation result persisted for observability</li>
+            </ol>
+        </div>
+
+        <div class="arch-section">
+            <h2>AWS Services</h2>
+            <div class="component-grid">
+                <div class="component-card">
+                    <h3>Amazon CloudFront</h3>
+                    <p>Global CDN serving the landing page and dashboard static assets. Routes /api/* requests to API Gateway origin.</p>
+                </div>
+                <div class="component-card">
+                    <h3>Amazon S3</h3>
+                    <p>Stores the landing page HTML, dashboard UI, and architecture diagrams. Private bucket accessible only via CloudFront OAI.</p>
+                </div>
+                <div class="component-card">
+                    <h3>API Gateway (HTTP API)</h3>
+                    <p>Serverless HTTP endpoint fronting the Lambda function. Handles /api/traces, /api/policy, /api/harness, /api/registry routes.</p>
+                </div>
+                <div class="component-card">
+                    <h3>AWS Lambda</h3>
+                    <p>Runs the FastAPI dashboard backend via Mangum adapter. Handles trace queries, policy CRUD, harness invocations, and registry operations.</p>
+                </div>
+                <div class="component-card">
+                    <h3>Amazon Bedrock</h3>
+                    <p>Provides LLM inference via the Converse API. All 7 agents use Bedrock models (configurable model ID via environment variable).</p>
+                </div>
+                <div class="component-card">
+                    <h3>Bedrock AgentCore</h3>
+                    <p>Agent Registry for semantic search across registered agents. Stores agent metadata, tools, risk profiles, and policy associations.</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="arch-section">
+            <h2>Ostiari Core Components</h2>
+            <div class="component-grid">
+                <div class="component-card">
+                    <h3>Policy Engine</h3>
+                    <p>Evaluates YAML-based rules with pattern matching, wildcards, and risk adjustments. Supports hot-reload via polling.</p>
+                </div>
+                <div class="component-card">
+                    <h3>Anomaly Detector</h3>
+                    <p>Four detectors: loop detection (repeated actions), drift (deviation from patterns), hallucination (non-existent resources), contradiction (conflicting actions).</p>
+                </div>
+                <div class="component-card">
+                    <h3>Gateway (Risk Scorer)</h3>
+                    <p>Combines policy score + anomaly signals into a final 0-100 risk score. Maps to tier: allow (0-30), intervene (31-70), block (71-100).</p>
+                </div>
+                <div class="component-card">
+                    <h3>Circuit Breaker</h3>
+                    <p>Trips when error/block rates exceed thresholds. States: closed (normal) → open (all blocked) → half-open (test calls).</p>
+                </div>
+                <div class="component-card">
+                    <h3>Agent Harness</h3>
+                    <p>Managed runtime wrapping agents with session management, rate limiting, memory, and guardrail middleware on the tool invocation path.</p>
+                </div>
+                <div class="component-card">
+                    <h3>Trace Storage</h3>
+                    <p>Records every evaluation: action, params, score, tier, anomalies, latency. SQLite locally, DynamoDB in production. Includes redaction filter.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+</body>
+</html>

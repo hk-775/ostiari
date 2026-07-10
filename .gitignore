@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+*.db.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+
+# Testing
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.hypothesis/
+
+# Typing
+.mypy_cache/
+
+# Build
+*.whl
+
+# Node (dashboard-ui)
+node_modules/
+dashboard-ui/dist/
+
+# Development workflow artifacts (not part of the library)
+.aidlc-rule-details/
+aidlc-docs/
+aidlc-rules/
+CLAUDE.md
+
+# Research docs (not part of library)
+ai-agent-issues-research.*
+ai-dlc-rules-*.zip
+
+# Misc
+*.log
+
+# CDK artifacts
+site/infra/cdk.out/
+site/infra/.venv/

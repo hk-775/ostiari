@@ -1,0 +1,9 @@
+# Default owner for the public repository.
+* @hk-775
+
+# Production enforcement and release surfaces require owner review.
+/src/ @hk-775
+/gateway/ @hk-775
+/control-plane/backend/ @hk-775
+/.github/workflows/ @hk-775
+/deploy/ @hk-775

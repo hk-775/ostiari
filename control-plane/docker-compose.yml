@@ -1,0 +1,16 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8400:8400"
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///./data/control_plane.db
+    volumes:
+      - ./data:/app/data
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=http://localhost:8400
