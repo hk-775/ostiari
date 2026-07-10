@@ -7,12 +7,15 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from control_plane.database import engine
 from control_plane.models.database import Base
+from control_plane.auth.router import router as auth_router
 from control_plane.routers import agents, audit, costs, experiments, mcp_servers, model_config, policies, proxy, quotas, gateways, tools, traces
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from control_plane.persistence import load_state, save_state
+
+    import control_plane.auth.models  # noqa: F401 — register auth tables
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -67,6 +70,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth_router)
 app.include_router(gateways.router)
 app.include_router(agents.router)
 app.include_router(tools.router)
