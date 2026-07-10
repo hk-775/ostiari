@@ -26,11 +26,12 @@ export function Landing() {
     <div className="min-h-screen bg-gradient-to-br from-stone-50 via-white to-violet-50/30">
       {/* Hero */}
       <div className="max-w-5xl mx-auto px-8 pt-16 pb-12">
-        <div className="mb-6">
-          <img src="/logo.svg" alt="Ostiari" className="h-12" />
+        <div className="mb-8">
+          <img src="/logo.svg" alt="Ostiari" className="h-20" />
+          <p className="mt-4 text-2xl font-semibold text-stone-900 leading-snug">AI agents are autonomous.<br /><span className="text-violet-700">Your risk shouldn't be.</span></p>
         </div>
 
-        <p className="text-xl text-stone-700 max-w-2xl leading-relaxed">
+        <p className="text-lg text-stone-600 max-w-2xl leading-relaxed">
           The runtime safety layer for AI agents. Every tool call validated, every model access controlled, every dollar tracked — without changing agent code.
         </p>
 
