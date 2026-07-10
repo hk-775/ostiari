@@ -1,0 +1,82 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ostiari-gateway-config
+  namespace: default
+data:
+  OSTIARI_GATEWAY_ID: "gateway-sidecar-1"
+  OSTIARI_CONTROL_PLANE_URL: "http://ostiari-control-plane:8400"
+  OSTIARI_PORT: "8421"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: agent-with-ostiari
+  labels:
+    app: agent-with-ostiari
+spec:
+  containers:
+    - name: agent
+      image: your-agent-image:latest
+      ports:
+        - containerPort: 8080
+          name: agent
+      env:
+        - name: OSTIARI_GATEWAY_URL
+          value: "http://localhost:8421"
+
+    - name: ostiari-gateway
+      image: ostiari-gateway:latest
+      ports:
+        - containerPort: 8421
+          name: gateway
+      envFrom:
+        - configMapRef:
+            name: ostiari-gateway-config
+      env:
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ostiari-secrets
+              key: anthropic-api-key
+              optional: true
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ostiari-secrets
+              key: openai-api-key
+              optional: true
+      readinessProbe:
+        httpGet:
+          path: /health
+          port: 8421
+        initialDelaySeconds: 3
+        periodSeconds: 5
+      livenessProbe:
+        httpGet:
+          path: /health
+          port: 8421
+        initialDelaySeconds: 5
+        periodSeconds: 10
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-with-ostiari
+spec:
+  selector:
+    app: agent-with-ostiari
+  ports:
+    - name: agent
+      port: 8080
+      targetPort: 8080
+    - name: gateway
+      port: 8421
+      targetPort: 8421

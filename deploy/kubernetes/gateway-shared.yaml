@@ -1,0 +1,108 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ostiari-gateway-config
+  namespace: default
+data:
+  OSTIARI_GATEWAY_ID: "gateway-shared"
+  OSTIARI_CONTROL_PLANE_URL: "http://ostiari-control-plane:8400"
+  OSTIARI_PORT: "8421"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ostiari-gateway
+  labels:
+    app: ostiari-gateway
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ostiari-gateway
+  template:
+    metadata:
+      labels:
+        app: ostiari-gateway
+    spec:
+      containers:
+        - name: gateway
+          image: ostiari-gateway:latest
+          ports:
+            - containerPort: 8421
+          envFrom:
+            - configMapRef:
+                name: ostiari-gateway-config
+          env:
+            - name: REDIS_ENDPOINT
+              value: "ostiari-redis"
+            - name: REDIS_PORT
+              value: "6379"
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ostiari-secrets
+                  key: anthropic-api-key
+                  optional: true
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ostiari-secrets
+                  key: openai-api-key
+                  optional: true
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8421
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8421
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ostiari-gateway
+spec:
+  selector:
+    app: ostiari-gateway
+  ports:
+    - port: 8421
+      targetPort: 8421
+      protocol: TCP
+  type: ClusterIP
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ostiari-gateway
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ostiari-gateway
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80

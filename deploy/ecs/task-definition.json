@@ -1,0 +1,57 @@
+{
+  "family": "ostiari-gateway",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ostiari-gateway-task-role",
+  "containerDefinitions": [
+    {
+      "name": "ostiari-gateway",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/ostiari-gateway:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8421,
+          "protocol": "tcp"
+        }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:8421/health || exit 1"],
+        "interval": 10,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 10
+      },
+      "environment": [
+        { "name": "OSTIARI_GATEWAY_ID", "value": "gateway-1" },
+        { "name": "OSTIARI_CONTROL_PLANE_URL", "value": "http://control-plane.internal:8400" },
+        { "name": "OSTIARI_PORT", "value": "8421" },
+        { "name": "REDIS_PORT", "value": "6379" }
+      ],
+      "secrets": [
+        {
+          "name": "ANTHROPIC_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:ostiari/anthropic-api-key"
+        },
+        {
+          "name": "OPENAI_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:ostiari/openai-api-key"
+        },
+        {
+          "name": "REDIS_ENDPOINT",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:ostiari/redis-endpoint"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/ostiari-gateway",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "gateway"
+        }
+      }
+    }
+  ]
+}
