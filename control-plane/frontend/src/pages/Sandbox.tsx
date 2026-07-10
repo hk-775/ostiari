@@ -52,7 +52,7 @@ export function Sandbox() {
 
   // A2A state
   const [a2aAgents, setA2aAgents] = useState<{ name: string; url: string; skills: string[] }[]>([]);
-  const [a2aNewUrl, setA2aNewUrl] = useState("");
+  const [a2aNewUrl, setA2aNewUrl] = useState("http://localhost:9200");
   const [a2aDiscovering, setA2aDiscovering] = useState(false);
   const [a2aTaskInput, setA2aTaskInput] = useState("");
   const [a2aSelectedAgent, setA2aSelectedAgent] = useState("");
