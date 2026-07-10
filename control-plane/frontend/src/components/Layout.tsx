@@ -7,7 +7,7 @@ const NAV_SECTIONS = [
     labelColor: "text-emerald-500",
     borderColor: "border-l-emerald-400",
     items: [
-      { path: "/", label: "Dashboard", icon: Activity, color: "text-emerald-600", activeBg: "bg-emerald-50" },
+      { path: "/dashboard", label: "Dashboard", icon: Activity, color: "text-emerald-600", activeBg: "bg-emerald-50" },
       { path: "/traces", label: "Live Traces", icon: Radio, color: "text-emerald-600", activeBg: "bg-emerald-50" },
       { path: "/costs", label: "Costs", icon: DollarSign, color: "text-orange-600", activeBg: "bg-orange-50" },
       { path: "/audit", label: "Audit Log", icon: History, color: "text-stone-600", activeBg: "bg-stone-100" },
