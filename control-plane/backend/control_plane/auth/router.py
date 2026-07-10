@@ -1,0 +1,113 @@
+"""Auth API endpoints."""
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from control_plane.auth.dependencies import get_current_user, require_role
+from control_plane.auth.models import User
+from control_plane.auth.schemas import AuthUser, LoginRequest, LoginResponse, UserCreate, UserResponse
+from control_plane.auth.service import create_access_token, hash_password, verify_password
+from control_plane.database import get_db
+
+router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+_seeded = False
+
+
+async def _seed_admin(db: AsyncSession) -> None:
+    """Create default admin user if no users exist."""
+    global _seeded
+    if _seeded:
+        return
+    result = await db.execute(select(User).limit(1))
+    if result.scalar_one_or_none() is None:
+        admin = User(
+            email="admin@ostiari.ai",
+            name="Admin",
+            hashed_password=hash_password("admin"),
+            role="admin",
+            is_active=True,
+        )
+        db.add(admin)
+        await db.flush()
+    _seeded = True
+
+
+@router.post("/login", response_model=LoginResponse)
+async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
+    """Authenticate user and return JWT."""
+    await _seed_admin(db)
+    result = await db.execute(select(User).where(User.email == body.email))
+    user = result.scalar_one_or_none()
+    if not user or not verify_password(body.password, user.hashed_password):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")
+    token = create_access_token(user.id, user.email, user.role)
+    return LoginResponse(
+        access_token=token,
+        user=UserResponse(id=user.id, email=user.email, name=user.name, role=user.role),
+    )
+
+
+@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+async def register(
+    body: UserCreate,
+    user: AuthUser = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a new user (admin only)."""
+    existing = await db.execute(select(User).where(User.email == body.email))
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
+    new_user = User(
+        email=body.email,
+        name=body.name,
+        hashed_password=hash_password(body.password),
+        role=body.role,
+        is_active=True,
+    )
+    db.add(new_user)
+    await db.flush()
+    return UserResponse(id=new_user.id, email=new_user.email, name=new_user.name, role=new_user.role)
+
+
+@router.get("/me", response_model=UserResponse)
+async def me(
+    current_user: AuthUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get current authenticated user info."""
+    result = await db.execute(select(User).where(User.id == current_user.id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return UserResponse(id=user.id, email=user.email, name=user.name, role=user.role)
+
+
+@router.get("/users", response_model=list[UserResponse])
+async def list_users(
+    user: AuthUser = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all users (admin only)."""
+    result = await db.execute(select(User).order_by(User.id))
+    users = result.scalars().all()
+    return [UserResponse(id=u.id, email=u.email, name=u.name, role=u.role) for u in users]
+
+
+@router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_user(
+    user_id: int,
+    user: AuthUser = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a user (admin only)."""
+    if user.id == user_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot delete yourself")
+    result = await db.execute(select(User).where(User.id == user_id))
+    target = result.scalar_one_or_none()
+    if not target:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    await db.delete(target)
