@@ -21,6 +21,17 @@ class User(Base):
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
 
+    # SSO/OIDC fields
+    sso_provider: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, default=None
+    )  # okta | cognito | azure_ad | oidc
+    sso_subject_id: Mapped[str | None] = mapped_column(
+        String(256), nullable=True, default=None
+    )  # 'sub' claim from IdP
+    last_login: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
+
     sessions: Mapped[list["Session"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 

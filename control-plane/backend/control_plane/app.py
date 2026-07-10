@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from control_plane.database import engine
 from control_plane.models.database import Base
 from control_plane.auth.router import router as auth_router
+from control_plane.auth.sso_router import router as sso_router
 from control_plane.routers import agents, audit, costs, experiments, mcp_servers, model_config, policies, proxy, quotas, gateways, tools, traces
 
 
@@ -71,6 +72,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.include_router(sso_router)
 app.include_router(gateways.router)
 app.include_router(agents.router)
 app.include_router(tools.router)
