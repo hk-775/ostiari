@@ -99,7 +99,9 @@ class AgentAuthPolicy:
 
     def __init__(self) -> None:
         self._grants: dict[str, AgentGrants] = {}
-        self._default_grants: list[str] = []  # empty = deny unregistered agents
+        self._default_grants: list[str] = []
+        self._default_models: list[str] = ["*"]
+        self._default_providers: list[str] = ["*"]
         self._enabled: bool = False
 
     def configure(self, config: dict[str, Any]) -> None:
