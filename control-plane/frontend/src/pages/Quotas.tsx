@@ -52,7 +52,7 @@ export function Quotas() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-stone-900">Quotas</h1>
-          <p className="mt-1 text-sm text-stone-500">Rate limits, budget caps, and model restrictions per gateway/agent/project</p>
+          <p className="mt-1 text-sm text-stone-500">Rate limits, budget caps, and token limits per gateway</p>
         </div>
         <button onClick={() => setShowForm(true)} className="btn-amber">
           <Plus className="h-4 w-4" /> Add Quota
@@ -74,7 +74,6 @@ export function Quotas() {
             <input placeholder="Budget limit (USD)" value={form.budget_limit_usd} onChange={(e) => setForm({ ...form, budget_limit_usd: e.target.value })} className="input" />
             <input placeholder="Max tokens per request" value={form.max_tokens_per_request} onChange={(e) => setForm({ ...form, max_tokens_per_request: e.target.value })} className="input" />
           </div>
-          <input placeholder="Allowed models (comma-separated, empty = all)" value={form.allowed_models} onChange={(e) => setForm({ ...form, allowed_models: e.target.value })} className="input w-full" />
           <div className="flex gap-2">
             <button type="submit" className="btn-amber">Create</button>
             <button type="button" onClick={() => setShowForm(false)} className="btn-secondary">Cancel</button>
@@ -129,16 +128,6 @@ export function Quotas() {
                   <div className="rounded-xl bg-stone-50 border border-stone-100 p-3">
                     <p className="text-xs text-stone-500">Max Tokens/Req</p>
                     <p className="text-sm font-medium text-stone-900">{q.max_tokens_per_request.toLocaleString()}</p>
-                  </div>
-                )}
-                {q.allowed_models.length > 0 && (
-                  <div className="rounded-xl bg-stone-50 border border-stone-100 p-3">
-                    <p className="text-xs text-stone-500">Allowed Models</p>
-                    <div className="flex flex-wrap gap-1 mt-1">
-                      {q.allowed_models.map(m => (
-                        <span key={m} className="badge bg-violet-50 text-violet-700 ring-1 ring-inset ring-violet-200">{m}</span>
-                      ))}
-                    </div>
                   </div>
                 )}
               </div>
