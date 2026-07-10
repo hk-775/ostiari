@@ -1,0 +1,59 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Ostiari Gateway - Serverless deployment via AWS Lambda
+
+Globals:
+  Function:
+    Timeout: 30
+    Runtime: python3.11
+    MemorySize: 512
+
+Parameters:
+  ControlPlaneUrl:
+    Type: String
+    Default: "https://control-plane.example.com"
+  GatewayId:
+    Type: String
+    Default: "gateway-lambda-1"
+
+Resources:
+  OstiariGatewayFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: handler.handler
+      CodeUri: .
+      Description: Ostiari Agent Gateway
+      Environment:
+        Variables:
+          OSTIARI_GATEWAY_ID: !Ref GatewayId
+          OSTIARI_CONTROL_PLANE_URL: !Ref ControlPlaneUrl
+          OSTIARI_PORT: "8421"
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref OstiariHttpApi
+
+  OstiariHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: prod
+      CorsConfiguration:
+        AllowMethods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+        AllowHeaders:
+          - "*"
+        AllowOrigins:
+          - "*"
+
+Outputs:
+  ApiEndpoint:
+    Description: Ostiari Gateway API endpoint
+    Value: !Sub "https://${OstiariHttpApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
+  FunctionArn:
+    Description: Lambda function ARN
+    Value: !GetAtt OstiariGatewayFunction.Arn

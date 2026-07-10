@@ -1,0 +1,30 @@
+{
+  "serviceName": "ostiari-gateway",
+  "cluster": "ostiari-cluster",
+  "taskDefinition": "ostiari-gateway",
+  "desiredCount": 2,
+  "launchType": "FARGATE",
+  "networkConfiguration": {
+    "awsvpcConfiguration": {
+      "subnets": ["subnet-PLACEHOLDER_1", "subnet-PLACEHOLDER_2"],
+      "securityGroups": ["sg-PLACEHOLDER"],
+      "assignPublicIp": "DISABLED"
+    }
+  },
+  "loadBalancers": [
+    {
+      "targetGroupArn": "arn:aws:elasticloadbalancing:REGION:ACCOUNT_ID:targetgroup/ostiari-gateway/PLACEHOLDER",
+      "containerName": "ostiari-gateway",
+      "containerPort": 8421
+    }
+  ],
+  "deploymentConfiguration": {
+    "maximumPercent": 200,
+    "minimumHealthyPercent": 100,
+    "deploymentCircuitBreaker": {
+      "enable": true,
+      "rollback": true
+    }
+  },
+  "healthCheckGracePeriodSeconds": 30
+}

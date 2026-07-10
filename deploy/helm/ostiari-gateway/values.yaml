@@ -1,0 +1,39 @@
+replicaCount: 3
+
+image:
+  repository: ostiari-gateway
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8421
+
+gateway:
+  id: "gateway-1"
+  port: 8421
+  controlPlaneUrl: "http://ostiari-control-plane:8400"
+
+redis:
+  enabled: true
+  endpoint: "ostiari-redis"
+  port: 6379
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+secrets:
+  # Reference to existing K8s secret containing API keys
+  existingSecret: "ostiari-secrets"
