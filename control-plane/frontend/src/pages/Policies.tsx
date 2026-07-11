@@ -67,7 +67,7 @@ export function Policies() {
                 <div>
                   <p className="text-sm font-medium text-stone-900">{p.name}</p>
                   <p className="text-xs text-stone-500">
-                    {p.gateway_id ? `${p.gateway_id.split("-").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")} Gateway` : "Global policy"}
+                    {p.gateway_id ? `${p.gateway_id.replace("-agent","").split("-").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ").replace("Devops","DevOps").replace("Crm","CRM") + " Gateway"}` : "Global policy"}
                     {" · "}
                     <span className={p.is_active ? "text-emerald-600" : "text-stone-400"}>{p.is_active ? "Active" : "Inactive"}</span>
                   </p>
