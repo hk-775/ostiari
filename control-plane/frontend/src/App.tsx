@@ -17,6 +17,7 @@ import { Sandbox } from "./pages/Sandbox";
 import { Agents } from "./pages/Agents";
 import { Architecture } from "./pages/Architecture";
 import { Landing } from "./pages/Landing";
+import { AgentQuotas } from "./pages/AgentQuotas";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchInterval: 10000 } },
@@ -42,6 +43,7 @@ export default function App() {
             <Route path="/efficiency" element={<Efficiency />} />
             <Route path="/traces" element={<LiveTraces />} />
             <Route path="/quotas" element={<Quotas />} />
+            <Route path="/agent-quotas" element={<AgentQuotas />} />
             <Route path="/sandbox" element={<Sandbox />} />
             <Route path="/audit" element={<AuditLog />} />
           </Route>
