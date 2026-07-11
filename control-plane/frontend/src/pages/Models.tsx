@@ -417,12 +417,12 @@ export function Models() {
                       <Brain className="h-4 w-4" />
                     </div>
                     <div>
-                      <button className="text-sm font-medium text-stone-800 hover:text-indigo-600 transition text-left" onClick={() => { const el = document.getElementById("per-agent-access"); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); }}>
+                      <button className="text-sm font-medium text-stone-800 hover:text-indigo-600 transition text-left" onClick={() => startEdit(m)}>
                         {m.name}
                       </button>
                       <p className="text-xs text-stone-400">{m.description}</p>
                     </div>
-                    <button className="rounded-lg p-1 text-stone-300 hover:text-indigo-600 hover:bg-indigo-50 transition" title="Configure access" onClick={() => { const el = document.getElementById("per-agent-access"); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); }}>
+                    <button className="rounded-lg p-1 text-stone-300 hover:text-indigo-600 hover:bg-indigo-50 transition" title="Edit model" onClick={() => startEdit(m)}>
                       <Pencil className="h-3.5 w-3.5" />
                     </button>
                   </div>
