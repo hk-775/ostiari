@@ -54,7 +54,7 @@ export function Landing() {
       </div>
 
       {/* How it works */}
-      <div className="max-w-5xl mx-auto px-8 py-8">
+      <div className="max-w-5xl mx-auto px-8 py-4 border-t border-stone-100/50">
         <h2 className="text-lg font-bold text-stone-900 mb-6">How it works</h2>
         <div className="flex items-center gap-2 overflow-x-auto pb-4">
           {ARCHITECTURE_FLOW.map((item, i) => (
@@ -73,7 +73,7 @@ export function Landing() {
       </div>
 
       {/* Features grid */}
-      <div className="max-w-5xl mx-auto px-8 py-12">
+      <div className="max-w-5xl mx-auto px-8 py-4 border-t border-stone-100/50">
         <h2 className="text-lg font-bold text-stone-900 mb-6">Capabilities</h2>
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {FEATURES.map(f => (
@@ -89,7 +89,7 @@ export function Landing() {
       </div>
 
       {/* Two paths */}
-      <div className="max-w-5xl mx-auto px-8 py-12">
+      <div className="max-w-5xl mx-auto px-8 py-4 border-t border-stone-100/50">
         <h2 className="text-lg font-bold text-stone-900 mb-6">Two paths through the gateway</h2>
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-6">
@@ -110,7 +110,7 @@ export function Landing() {
       </div>
 
       {/* Deployment */}
-      <div className="max-w-5xl mx-auto px-8 py-12">
+      <div className="max-w-5xl mx-auto px-8 py-4 border-t border-stone-100/50">
         <h2 className="text-lg font-bold text-stone-900 mb-4">Deployment</h2>
         <div className="grid gap-3 sm:grid-cols-3">
           <div className="rounded-xl border border-stone-200 bg-white p-4">
@@ -129,7 +129,7 @@ export function Landing() {
       </div>
 
       {/* CTA */}
-      <div className="max-w-5xl mx-auto px-8 py-16 text-center">
+      <div className="max-w-5xl mx-auto px-8 py-6 border-t border-stone-100/50 text-center">
         <p className="text-sm text-stone-500 mb-4">Ready to explore?</p>
         <Link to="/dashboard" className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 px-8 py-3.5 text-sm font-semibold text-white shadow-lg hover:shadow-xl transition">
           Enter Control Plane <ArrowRight className="h-4 w-4" />
