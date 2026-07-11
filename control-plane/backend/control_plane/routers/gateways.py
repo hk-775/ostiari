@@ -1,20 +1,67 @@
 """Gateway management API."""
 
+import asyncio
+import logging
 from datetime import datetime, timezone
+from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from control_plane.database import get_db
+from control_plane.database import get_db, async_session
 from control_plane.models.database import Gateway, Tool
 from control_plane.models.schemas import GatewayCreate, GatewayResponse, GatewayUpdate
 from control_plane.services.audit_service import audit
 from control_plane.services.push_service import PushService
 
+log = logging.getLogger("control_plane.gateways")
+
 router = APIRouter(prefix="/api/gateways", tags=["gateways"])
 push_service = PushService()
+
+# In-memory config queue for offline gateways
+config_queue: dict[str, list[dict[str, Any]]] = {}
+
+# Health check background task handle
+_health_check_task: asyncio.Task | None = None
+HEARTBEAT_TIMEOUT_SECONDS = 90
+
+
+async def _health_check_loop() -> None:
+    """Background loop: mark gateways unhealthy if heartbeat > 90s ago."""
+    while True:
+        await asyncio.sleep(15)
+        try:
+            async with async_session() as db:
+                result = await db.execute(select(Gateway))
+                gateways = result.scalars().all()
+                now = datetime.now(timezone.utc)
+                for gw in gateways:
+                    if gw.status == "healthy" and gw.last_heartbeat:
+                        delta = (now - gw.last_heartbeat).total_seconds()
+                        if delta > HEARTBEAT_TIMEOUT_SECONDS:
+                            gw.status = "unhealthy"
+                            log.info(f"Gateway {gw.id} marked unhealthy (last heartbeat {delta:.0f}s ago)")
+                await db.commit()
+        except Exception as e:
+            log.warning(f"Health check loop error: {e}")
+
+
+def start_health_check() -> None:
+    """Start the background health-check task (call once at app startup)."""
+    global _health_check_task
+    if _health_check_task is None or _health_check_task.done():
+        _health_check_task = asyncio.create_task(_health_check_loop())
+
+
+def stop_health_check() -> None:
+    """Cancel the background health-check task."""
+    global _health_check_task
+    if _health_check_task and not _health_check_task.done():
+        _health_check_task.cancel()
+        _health_check_task = None
 
 
 def _get_actor(request: Request) -> str:
@@ -135,3 +182,109 @@ async def check_health(gateway_id: str, db: AsyncSession = Depends(get_db)):
             gateway.status = "unreachable"
             await db.commit()
             return {"gateway_id": gateway_id, "status": "unreachable", "error": str(e)}
+
+
+# ─── Gateway Lifecycle Endpoints ─────────────────────────────────────────
+
+
+@router.post("/{gateway_id}/register")
+async def gateway_register(gateway_id: str, db: AsyncSession = Depends(get_db)):
+    """Gateway calls this on startup. Marks healthy, returns full config bundle."""
+    gateway = await db.get(Gateway, gateway_id)
+    if not gateway:
+        raise HTTPException(status_code=404, detail="Gateway not found")
+
+    gateway.status = "healthy"
+    gateway.last_heartbeat = datetime.now(timezone.utc)
+    await db.commit()
+
+    # Build and return the full config bundle
+    bundle = await push_service._build_config(db, gateway)
+
+    # Include quotas and agent_auth from gateway config if stored
+    bundle.setdefault("quotas", gateway.config.get("quotas", {}))
+    bundle.setdefault("agent_auth", gateway.config.get("agent_auth", {}))
+
+    # Drain any queued config
+    queued = config_queue.pop(gateway_id, [])
+    if queued:
+        bundle["queued_updates"] = queued
+
+    log.info(f"Gateway {gateway_id} registered (healthy)")
+    return {"status": "registered", "config": bundle}
+
+
+@router.post("/{gateway_id}/heartbeat")
+async def gateway_heartbeat(gateway_id: str, db: AsyncSession = Depends(get_db)):
+    """Gateway heartbeat every 30s. Returns pending config changes if any."""
+    gateway = await db.get(Gateway, gateway_id)
+    if not gateway:
+        raise HTTPException(status_code=404, detail="Gateway not found")
+
+    was_unhealthy = gateway.status != "healthy"
+    gateway.status = "healthy"
+    gateway.last_heartbeat = datetime.now(timezone.utc)
+    await db.commit()
+
+    response: dict[str, Any] = {"status": "ok"}
+
+    # If reconnecting from unhealthy state, send full bundle
+    if was_unhealthy:
+        bundle = await push_service._build_config(db, gateway)
+        bundle.setdefault("quotas", gateway.config.get("quotas", {}))
+        bundle.setdefault("agent_auth", gateway.config.get("agent_auth", {}))
+        response["config"] = bundle
+        response["reason"] = "reconnect"
+        log.info(f"Gateway {gateway_id} reconnected — sending full config")
+
+    # Drain queued config
+    queued = config_queue.pop(gateway_id, [])
+    if queued:
+        response["config_updates"] = queued
+
+    return response
+
+
+@router.get("/{gateway_id}/config-bundle")
+async def get_config_bundle(gateway_id: str, db: AsyncSession = Depends(get_db)):
+    """Returns full current config for a gateway."""
+    gateway = await db.get(Gateway, gateway_id)
+    if not gateway:
+        raise HTTPException(status_code=404, detail="Gateway not found")
+
+    bundle = await push_service._build_config(db, gateway)
+    bundle.setdefault("quotas", gateway.config.get("quotas", {}))
+    bundle.setdefault("agent_auth", gateway.config.get("agent_auth", {}))
+    return bundle
+
+
+@router.post("/{gateway_id}/push-config")
+async def push_config_lifecycle(
+    gateway_id: str, request: Request, db: AsyncSession = Depends(get_db)
+):
+    """Operator pushes config NOW. If healthy -> forward immediately. If unhealthy -> queue."""
+    gateway = await db.get(Gateway, gateway_id)
+    if not gateway:
+        raise HTTPException(status_code=404, detail="Gateway not found")
+
+    body = await request.json()
+
+    if gateway.status == "healthy":
+        # Forward immediately via the existing push mechanism
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            try:
+                resp = await client.post(f"{gateway.endpoint}/config", json=body)
+                if resp.status_code == 200:
+                    return {"status": "applied", "gateway_id": gateway_id}
+                else:
+                    return {"status": "error", "gateway_id": gateway_id, "detail": resp.text[:200]}
+            except (httpx.ConnectError, httpx.TimeoutException):
+                # Gateway became unreachable — queue instead
+                gateway.status = "unhealthy"
+                await db.commit()
+                config_queue.setdefault(gateway_id, []).append(body)
+                return {"status": "queued", "gateway_id": gateway_id, "reason": "became_unreachable"}
+    else:
+        # Queue for later delivery on heartbeat
+        config_queue.setdefault(gateway_id, []).append(body)
+        return {"status": "queued", "gateway_id": gateway_id, "reason": "gateway_offline"}
