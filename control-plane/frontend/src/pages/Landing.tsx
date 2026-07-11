@@ -197,6 +197,47 @@ export function Landing() {
             <span>🔴 Offline gateway: <strong className="text-stone-700">queued</strong>, syncs on reconnect (≤ 30s)</span>
           </div>
         </div>
+
+        {/* Lifecycle example */}
+        <div className="rounded-xl border border-stone-200 bg-stone-50/50 p-5 mt-4">
+          <p className="text-xs font-bold text-stone-700 uppercase tracking-wide mb-3">Lifecycle in action</p>
+          <pre className="text-[10px] text-stone-600 leading-relaxed overflow-x-auto whitespace-pre">{`CP starts
+  ← Gateway 1 registers (POST /api/gateways/crm-agent/register)
+  ← Gateway 2 registers (POST /api/gateways/devops-agent/register)
+  ← Gateway 3 registers (POST /api/gateways/ops-agent/register)
+
+Running:
+  ← Gateway 1 heartbeats every 30s
+  ← Gateway 2 heartbeats every 30s
+  ← Gateway 3 heartbeats every 30s
+
+Operator pushes policy change to Gateway 2:
+  → CP checks: Gateway 2 healthy? Yes → forward immediately ✓
+
+Gateway 3 goes down:
+  → CP marks unhealthy after 90s (red dot)
+  → Operator pushes quota change to Gateway 3
+  → CP queues it
+
+Gateway 3 restarts:
+  → Registers → gets full config bundle (including the queued quota change)
+  → Starts heartbeating → green dot again`}</pre>
+        </div>
+
+        {/* Fleet status */}
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50/30 p-5 mt-4">
+          <p className="text-xs font-bold text-emerald-800 uppercase tracking-wide mb-3">Fleet status (live)</p>
+          <div className="grid grid-cols-3 gap-x-4 gap-y-1 text-[10px]">
+            <span className="font-semibold text-stone-600">Service</span>
+            <span className="font-semibold text-stone-600">Port</span>
+            <span className="font-semibold text-stone-600">Status</span>
+            <span className="text-stone-700">Control Plane</span><span className="text-stone-500">8400</span><span className="text-emerald-600">✅ Running</span>
+            <span className="text-stone-700">CRM Gateway</span><span className="text-stone-500">8421</span><span className="text-emerald-600">✅ Registered, heartbeating, 3 tools</span>
+            <span className="text-stone-700">Ops Gateway</span><span className="text-stone-500">8422</span><span className="text-emerald-600">✅ Registered, heartbeating, 2 tools</span>
+            <span className="text-stone-700">DevOps Gateway</span><span className="text-stone-500">8423</span><span className="text-emerald-600">✅ Registered, heartbeating, 4 tools + policy</span>
+            <span className="text-stone-700">Analytics Gateway</span><span className="text-stone-500">8424</span><span className="text-emerald-600">✅ Registered, heartbeating, 1 tool</span>
+          </div>
+        </div>
       </div>
 
       {/* CTA */}

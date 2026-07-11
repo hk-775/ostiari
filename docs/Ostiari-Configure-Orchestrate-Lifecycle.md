@@ -114,14 +114,57 @@ Ostiari Control Plane:
 
 ---
 
+## Lifecycle in Action (Example)
+
+```
+CP starts
+  ← Gateway 1 registers (POST /api/gateways/crm-agent/register)
+  ← Gateway 2 registers (POST /api/gateways/devops-agent/register)
+  ← Gateway 3 registers (POST /api/gateways/ops-agent/register)
+
+Running:
+  ← Gateway 1 heartbeats every 30s
+  ← Gateway 2 heartbeats every 30s
+  ← Gateway 3 heartbeats every 30s
+
+Operator pushes policy change to Gateway 2:
+  → CP checks: Gateway 2 healthy? Yes → forward immediately ✓
+
+Gateway 3 goes down:
+  → CP marks unhealthy after 90s (red dot)
+  → Operator pushes quota change to Gateway 3
+  → CP queues it
+
+Gateway 3 restarts:
+  → Registers → gets full config bundle (including the queued quota change)
+  → Starts heartbeating → green dot again
+```
+
+---
+
+## Fleet Status (Live Demo)
+
+| Service | Port | Status |
+|---------|------|--------|
+| Control Plane Backend | 8400 | ✅ |
+| Control Plane Frontend | 9000 | ✅ |
+| CRM Gateway | 8421 | ✅ Registered, heartbeating, 3 tools loaded |
+| Ops Gateway | 8422 | ✅ Registered, heartbeating, 2 tools loaded |
+| DevOps Gateway | 8423 | ✅ Registered, heartbeating, 4 tools + policy loaded |
+| Analytics Gateway | 8424 | ✅ Registered, heartbeating, 1 tool loaded |
+
+Open http://localhost:9000 → Gateways page. You should see all 4 with green health dots, heartbeating every 30s. Push a policy change and it'll go to the correct gateway immediately (✓).
+
+---
+
 ## For the Demo
 
 In a demo environment:
-- Gateway IS running (port 8421) — Push works immediately
+- Gateways ARE running (ports 8421-8424) — Push works immediately
 - Traces ARE flowing — Live Traces shows real data
-- Health IS green — heartbeat active
+- Health IS green — all heartbeats active
 
-If the gateway isn't running:
+If a gateway isn't running:
 - Push shows "Gateway offline — config saved, will sync on reconnect"
 - Health shows red
 - Traces stop (obviously)
