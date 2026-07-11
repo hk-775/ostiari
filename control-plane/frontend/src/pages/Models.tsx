@@ -314,7 +314,7 @@ export function Models() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-stone-900">Models</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-stone-900">Agent Models</h1>
           <p className="mt-1 text-sm text-stone-500">Model registry — configure providers, pricing, and routing</p>
         </div>
         <button onClick={() => { setForm({ ...EMPTY_FORM }); setEditingModel(null); setShowForm(true); }} className="btn-indigo">
