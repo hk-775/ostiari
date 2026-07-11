@@ -166,6 +166,13 @@ _KNOWN_MODELS: dict[str, list[str]] = {
         "amazon.nova-pro-v1:0",
         "amazon.nova-lite-v1:0",
     ],
+    "bedrock-mantle": [
+        "anthropic.claude-sonnet-4-6",
+        "anthropic.claude-haiku-4-5",
+        "amazon.nova-pro",
+        "amazon.nova-lite",
+        "meta.llama-4-maverick",
+    ],
     "azure": [
         "gpt-4o",
         "gpt-4o-mini",
@@ -328,6 +335,30 @@ async def test_provider(name: str, _user=_admin_dep):
                         error_msg = "boto3 not installed"
                     except Exception as e:
                         error_msg = str(e)[:200]
+
+            elif name == "bedrock-mantle":
+                if not rec.region:
+                    error_msg = "Region is required for Bedrock Mantle"
+                elif not api_key:
+                    error_msg = "API key is required for Bedrock Mantle"
+                else:
+                    base_url = f"https://bedrock-mantle.{rec.region}.api.aws"
+                    resp = await client.post(
+                        f"{base_url}/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": "anthropic.claude-haiku-4-5",
+                            "max_tokens": 1,
+                            "messages": [{"role": "user", "content": "hi"}],
+                        },
+                    )
+                    success = resp.status_code in (200, 400) or (resp.status_code < 500)
+                    if resp.status_code == 401 or resp.status_code == 403:
+                        success = False
+                        error_msg = "Invalid API key or insufficient permissions"
 
             elif name == "azure":
                 base = rec.api_base_url
