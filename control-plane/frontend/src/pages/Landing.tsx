@@ -26,12 +26,11 @@ export function Landing() {
     <div className="min-h-screen bg-gradient-to-br from-stone-50 via-white to-violet-50/30">
       {/* Hero */}
       <div className="max-w-5xl mx-auto px-8 pt-10 pb-5">
-        <div className="flex items-start justify-between gap-8">
-          <div>
-            <img src="/logo.svg" alt="Ostiari" className="h-20" />
-            <p className="mt-4 text-2xl font-semibold text-stone-900 leading-snug">AI agents are autonomous.<br /><span className="text-violet-700">Your risk shouldn't be.</span></p>
-          </div>
-          <div className="flex flex-col gap-2.5 pt-4">
+        <img src="/logo.svg" alt="Ostiari" className="h-20" />
+
+        <div className="flex items-center justify-between gap-8 mt-5">
+          <p className="text-2xl font-semibold text-stone-900 leading-snug">AI agents are autonomous.<br /><span className="text-violet-700">Your risk shouldn't be.</span></p>
+          <div className="flex flex-col gap-2.5 shrink-0">
             <Link to="/dashboard" className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg hover:shadow-xl transition">
               Open Control Plane <ArrowRight className="h-4 w-4" />
             </Link>
@@ -41,7 +40,7 @@ export function Landing() {
           </div>
         </div>
 
-        <p className="mt-6 text-lg text-stone-600 max-w-2xl leading-relaxed">
+        <p className="mt-5 text-lg text-stone-600 max-w-2xl leading-relaxed">
           The runtime safety layer for AI agents. Every tool call validated, every model access controlled, every dollar tracked — without changing agent code.
         </p>
       </div>
