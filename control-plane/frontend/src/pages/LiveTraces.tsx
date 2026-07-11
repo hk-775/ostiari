@@ -45,6 +45,18 @@ export function LiveTraces() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    const API_BASE = (import.meta.env.VITE_API_URL || "http://localhost:8400");
+    fetch(`${API_BASE}/api/traces/recent`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.traces && data.traces.length > 0) {
+          setTraces(data.traces.slice(-100));
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
     const ws = new WebSocket(`${WS_URL}/ws/traces`);
     wsRef.current = ws;
 
