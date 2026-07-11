@@ -128,7 +128,7 @@ export function LiveTraces() {
         <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-xs border-t border-stone-200 pt-3">
           <div className="flex justify-between"><span className="text-stone-500">Action</span><span className="text-stone-900 font-mono">{trace.action}</span></div>
           <div className="flex justify-between"><span className="text-stone-500">Total Duration</span><span className="text-stone-900">{trace.duration_ms.toFixed(2)}ms</span></div>
-          <div className="flex justify-between"><span className="text-stone-500">Gateway</span><span className="text-stone-900">{trace.gateway_id}</span></div>
+          <div className="flex justify-between"><span className="text-stone-500">Gateway</span><span className="text-stone-900">{trace.gateway_id.split("-").map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")}</span></div>
           <div className="flex justify-between"><span className="text-stone-500">Agent</span><span className="text-stone-900">{trace.agent_id}</span></div>
           <div className="flex justify-between"><span className="text-stone-500">Framework</span><span className="text-stone-900">{trace.framework}</span></div>
           <div className="flex justify-between"><span className="text-stone-500">Type</span><span className="text-stone-900">{trace.is_mcp ? "MCP Tool" : "HTTP Tool"}</span></div>
@@ -274,7 +274,7 @@ export function LiveTraces() {
                         {isGroupExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                       </button>
                       <span className="w-28 text-xs font-medium text-stone-700">{group.traces[0].trace.agent_id}</span>
-                      <span className="w-28 text-xs text-stone-500">{group.traces[0].trace.gateway_id}</span>
+                      <span className="w-28 text-xs text-stone-500">{group.traces[0].trace.gateway_id.split("-").map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")}</span>
                       <span className="w-16 badge bg-violet-50 text-violet-700 ring-1 ring-inset ring-violet-200 text-center">session</span>
                       <span className="w-10 text-right text-xs text-stone-500">{group.traces.length}</span>
                       <span className="flex-1 text-xs font-medium text-stone-900 pl-4">
@@ -344,7 +344,7 @@ export function LiveTraces() {
                     {isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
                   </button>
                   <span className="w-28 truncate text-xs text-stone-700 font-medium" title={trace.agent_id}>{trace.agent_id}</span>
-                  <span className="w-28 truncate text-xs text-stone-500" title={trace.gateway_id}>{trace.gateway_id}</span>
+                  <span className="w-28 truncate text-xs text-stone-500" title={trace.gateway_id.split("-").map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")}>{trace.gateway_id.split("-").map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")}</span>
                   <span className={`w-16 badge text-center ${TIER_BADGES[trace.tier] || "text-stone-500"}`}>
                     {trace.tier}
                   </span>
