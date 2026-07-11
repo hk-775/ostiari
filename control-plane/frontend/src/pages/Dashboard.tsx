@@ -60,6 +60,11 @@ export function Dashboard() {
         </Link>
       </div>
 
+      {/* Control Plane Overview Diagram */}
+      <div className="rounded-2xl border border-violet-100 bg-gradient-to-br from-white to-violet-50/30 p-1 shadow-sm">
+        <img src="/control-plane-overview.svg" alt="How the Control Plane manages gateways, agents, and tools" className="w-full rounded-xl" />
+      </div>
+
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard label="Agent Gateways" value={gateways.length} sub={`${healthy} healthy`} icon={Server} href="/gateways" colorIdx={0} />
         <StatCard label="Tools" value={tools.length} sub="registered" icon={Wrench} href="/tools" colorIdx={1} />
