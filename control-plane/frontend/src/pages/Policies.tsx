@@ -29,7 +29,7 @@ export function Policies() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-stone-900">Tool Policies</h1>
-          <p className="mt-1 text-sm text-stone-500">Define safety rules for your agents</p>
+          <p className="mt-1 text-sm text-stone-500">Per-tool allow/block rules, risk scoring, and thresholds</p>
         </div>
         <button onClick={() => setShowForm(true)} className="btn-rose">
           <Plus className="h-4 w-4" /> New Policy
