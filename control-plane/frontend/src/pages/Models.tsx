@@ -410,7 +410,7 @@ export function Models() {
           </thead>
           <tbody className="divide-y divide-stone-50">
             {models.map((m, idx) => (
-              <tr key={m.name} className={`transition hover:bg-indigo-50 ${idx % 2 === 1 ? "bg-stone-100" : "bg-white"}`}>
+              <tr key={m.name} className={`transition hover:bg-indigo-50 cursor-pointer ${idx % 2 === 1 ? "bg-stone-100" : "bg-white"}`} onClick={() => startEdit(m)}>
                 <td className="px-6 py-4">
                   <div className="flex items-center gap-2">
                     <div className={`flex h-8 w-8 items-center justify-center rounded-lg ${CATEGORY_COLORS[m.category] || "bg-stone-100 text-stone-600"}`}>
