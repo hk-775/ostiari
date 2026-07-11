@@ -30,7 +30,7 @@ interface ProviderCreate {
   enabled: boolean;
 }
 
-const PROVIDER_NAMES = ["anthropic", "openai", "bedrock", "azure", "vertex", "cohere"];
+const PROVIDER_NAMES = ["anthropic", "openai", "bedrock", "bedrock-mantle", "azure", "vertex", "cohere"];
 
 const PROVIDER_COLORS: Record<string, { bg: string; text: string; border: string; icon: string }> = {
   anthropic: { bg: "bg-amber-50", text: "text-amber-700", border: "border-amber-200", icon: "text-amber-600" },
@@ -178,7 +178,7 @@ export function Providers() {
   };
 
   // Which extra fields to show based on provider type
-  const showRegion = ["bedrock", "vertex", "azure"].includes(form.name);
+  const showRegion = ["bedrock", "bedrock-mantle", "vertex", "azure"].includes(form.name);
   const showProjectId = form.name === "vertex";
   const showTenantId = form.name === "azure";
   const showApiBaseUrl = ["openai", "azure", "anthropic", "cohere", "vertex"].includes(form.name);
