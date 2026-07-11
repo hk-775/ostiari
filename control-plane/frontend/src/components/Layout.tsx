@@ -115,6 +115,14 @@ export function Layout() {
 
       {/* Main content */}
       <main className="ml-60 flex-1 min-h-screen" style={{ "--card-border": borderColor } as React.CSSProperties}>
+        {/* Sticky ribbon */}
+        <div className="sticky top-0 z-20 border-b border-stone-100 bg-white/80 backdrop-blur-sm px-8 py-2 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+            <span className="text-[11px] font-medium text-stone-500 tracking-wide uppercase">Ostiari Control Plane</span>
+          </div>
+          <span className="text-[10px] text-stone-400">Gateway fleet management · Real-time enforcement</span>
+        </div>
         <div className="mx-auto max-w-6xl px-8 py-8">
           <Outlet />
         </div>
