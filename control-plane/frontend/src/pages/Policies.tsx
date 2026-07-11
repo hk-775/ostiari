@@ -28,7 +28,7 @@ export function Policies() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-stone-900">Policies</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-stone-900">Tool Policies</h1>
           <p className="mt-1 text-sm text-stone-500">Define safety rules for your agents</p>
         </div>
         <button onClick={() => setShowForm(true)} className="btn-rose">
