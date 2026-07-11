@@ -1,5 +1,5 @@
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { Shield, Server, Wrench, FileText, Activity, Plug, History, DollarSign, Radio, FlaskConical, Brain, ShieldCheck, Beaker, Bot, Network, Users, LogOut } from "lucide-react";
+import { Shield, Server, Wrench, FileText, Activity, Plug, History, DollarSign, Radio, FlaskConical, Brain, ShieldCheck, Beaker, Bot, Network, Users, Key, LogOut } from "lucide-react";
 import { useAuthStore } from "../stores/authStore";
 
 const NAV_SECTIONS: {
@@ -57,6 +57,7 @@ const NAV_SECTIONS: {
     borderColor: "border-l-violet-400",
     adminOnly: true,
     items: [
+      { path: "/providers", label: "Providers", icon: Key, color: "text-violet-600", activeBg: "bg-violet-50" },
       { path: "/users", label: "Users", icon: Users, color: "text-violet-600", activeBg: "bg-violet-50" },
     ],
   },
@@ -78,6 +79,7 @@ const ROUTE_BORDER_COLORS: Record<string, string> = {
   "/sandbox": "rgba(192, 38, 211, 0.3)",   // fuchsia
   "/agents": "rgba(132, 204, 22, 0.3)",    // lime
   "/architecture": "rgba(139, 92, 246, 0.3)", // violet
+  "/providers": "rgba(139, 92, 246, 0.3)",     // violet
   "/users": "rgba(139, 92, 246, 0.3)",        // violet
 };
 

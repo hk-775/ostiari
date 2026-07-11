@@ -20,6 +20,7 @@ import { Architecture } from "./pages/Architecture";
 import { Landing } from "./pages/Landing";
 import { LoginPage } from "./pages/LoginPage";
 import { Users } from "./pages/Users";
+import { Providers } from "./pages/Providers";
 import { useAuthStore } from "./stores/authStore";
 
 const queryClient = new QueryClient({
@@ -81,6 +82,7 @@ export default function App() {
               <Route path="/quotas" element={<Quotas />} />
               <Route path="/sandbox" element={<Sandbox />} />
               <Route path="/audit" element={<AuditLog />} />
+              <Route path="/providers" element={<RequireAdmin><Providers /></RequireAdmin>} />
               <Route path="/users" element={<RequireAdmin><Users /></RequireAdmin>} />
             </Route>
           </Routes>
