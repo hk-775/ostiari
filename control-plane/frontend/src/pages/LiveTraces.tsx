@@ -269,23 +269,22 @@ export function LiveTraces() {
                 const blockedCount = group.traces.filter(t => t.trace.tier === "block").length;
                 return (
                   <div key={`g-${gi}`} className={`border-l-2 ${allAllowed ? "border-emerald-300 bg-emerald-50/50" : "border-amber-300 bg-amber-50/50"}`}>
-                    <div className="flex items-center gap-4 px-4 py-2.5 cursor-pointer hover:bg-stone-50" onClick={toggleGroup}>
-                      <button className="text-stone-400">
+                    <div className="flex items-center px-4 py-2.5 cursor-pointer hover:bg-stone-50" onClick={toggleGroup}>
+                      <button className="w-8 text-stone-400">
                         {isGroupExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                       </button>
-                      <span className="w-16 text-xs text-stone-500 tabular-nums">
-                        {new Date(group.traces[0].trace.timestamp * 1000).toLocaleTimeString()}
+                      <span className="w-28 text-xs font-medium text-stone-700">{group.traces[0].trace.agent_id}</span>
+                      <span className="w-28 text-xs text-stone-500">{group.traces[0].trace.gateway_id}</span>
+                      <span className="w-16 badge bg-violet-50 text-violet-700 ring-1 ring-inset ring-violet-200 text-center">session</span>
+                      <span className="w-10 text-right text-xs text-stone-500">{group.traces.length}</span>
+                      <span className="flex-1 text-xs font-medium text-stone-900 pl-4">
+                        📋 {group.plan || `Session ${group.session_id.slice(0, 12)}`}
+                        {blockedCount > 0 && <span className="ml-2 text-rose-600">({blockedCount} blocked)</span>}
                       </span>
-                      <span className="badge bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-200">
-                        session
+                      <span className="w-20 text-right text-xs text-stone-500">{totalDuration.toFixed(0)}ms</span>
+                      <span className="w-20 text-right text-xs text-stone-400 tabular-nums">
+                        {typeof group.traces[0].trace.timestamp === "number" ? new Date(group.traces[0].trace.timestamp * 1000).toLocaleTimeString() : new Date(group.traces[0].trace.timestamp).toLocaleTimeString()}
                       </span>
-                      <span className="flex-1 text-sm text-stone-900">
-                        {group.plan || `Session ${group.session_id}`}
-                      </span>
-                      <span className="text-xs text-stone-500">{group.traces.length} steps</span>
-                      <span className="text-xs text-stone-400">{totalDuration.toFixed(0)}ms total</span>
-                      <span className="text-xs text-stone-500">{group.traces[0].trace.agent_id}</span>
-                      {blockedCount > 0 && <span className="text-xs text-rose-600">{blockedCount} blocked</span>}
                     </div>
                     {isGroupExpanded && (
                       <div className="pl-10 pb-2 space-y-0.5">
