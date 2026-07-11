@@ -36,7 +36,7 @@ const TIER_BADGES: Record<string, string> = {
   error: "bg-orange-50 text-orange-700 ring-1 ring-inset ring-orange-200",
 };
 
-type SortKey = "agent_id" | "gateway_id" | "action" | "timestamp";
+type SortKey = "agent_id" | "gateway_id" | "action" | "timestamp" | "tier" | "score" | "duration_ms";
 type SortDir = "asc" | "desc";
 
 export function LiveTraces() {
@@ -185,21 +185,27 @@ export function LiveTraces() {
 
       <div className="card overflow-hidden">
         {/* Sticky table header */}
-        <div className="sticky top-0 z-10 bg-stone-50 border-b border-stone-200 flex items-center px-4 py-2.5 text-[10px] font-bold text-stone-500 uppercase tracking-wider">
+        <div className="sticky top-0 z-10 bg-gradient-to-r from-violet-50 to-indigo-50 border-b border-violet-200/60 flex items-center px-4 py-3 text-[10px] font-bold text-violet-700 uppercase tracking-wider select-none">
           <button className="w-8" />
-          <button className="w-28 text-left hover:text-stone-900 transition" onClick={() => { setSortKey("agent_id"); setSortDir(sortKey === "agent_id" && sortDir === "asc" ? "desc" : "asc"); }}>
+          <button className="w-28 text-left hover:text-violet-900 transition cursor-pointer" onClick={() => { setSortKey("agent_id"); setSortDir(sortKey === "agent_id" && sortDir === "asc" ? "desc" : "asc"); }}>
             Agent {sortKey === "agent_id" && (sortDir === "asc" ? "↑" : "↓")}
           </button>
-          <button className="w-28 text-left hover:text-stone-900 transition" onClick={() => { setSortKey("gateway_id"); setSortDir(sortKey === "gateway_id" && sortDir === "asc" ? "desc" : "asc"); }}>
+          <button className="w-28 text-left hover:text-violet-900 transition cursor-pointer" onClick={() => { setSortKey("gateway_id"); setSortDir(sortKey === "gateway_id" && sortDir === "asc" ? "desc" : "asc"); }}>
             Gateway {sortKey === "gateway_id" && (sortDir === "asc" ? "↑" : "↓")}
           </button>
-          <span className="w-16 text-center">Tier</span>
-          <span className="w-10 text-right">Score</span>
-          <button className="flex-1 text-left pl-4 hover:text-stone-900 transition" onClick={() => { setSortKey("action"); setSortDir(sortKey === "action" && sortDir === "asc" ? "desc" : "asc"); }}>
+          <button className="w-16 text-center hover:text-violet-900 transition cursor-pointer" onClick={() => { setSortKey("tier"); setSortDir(sortKey === "tier" && sortDir === "asc" ? "desc" : "asc"); }}>
+            Tier {sortKey === "tier" && (sortDir === "asc" ? "↑" : "↓")}
+          </button>
+          <button className="w-10 text-right hover:text-violet-900 transition cursor-pointer" onClick={() => { setSortKey("score"); setSortDir(sortKey === "score" && sortDir === "asc" ? "desc" : "asc"); }}>
+            Score {sortKey === "score" && (sortDir === "asc" ? "↑" : "↓")}
+          </button>
+          <button className="flex-1 text-left pl-4 hover:text-violet-900 transition cursor-pointer" onClick={() => { setSortKey("action"); setSortDir(sortKey === "action" && sortDir === "asc" ? "desc" : "asc"); }}>
             Action {sortKey === "action" && (sortDir === "asc" ? "↑" : "↓")}
           </button>
-          <span className="w-20 text-right">Duration</span>
-          <button className="w-20 text-right hover:text-stone-900 transition" onClick={() => { setSortKey("timestamp"); setSortDir(sortKey === "timestamp" && sortDir === "asc" ? "desc" : "asc"); }}>
+          <button className="w-20 text-right hover:text-violet-900 transition cursor-pointer" onClick={() => { setSortKey("duration_ms"); setSortDir(sortKey === "duration_ms" && sortDir === "asc" ? "desc" : "asc"); }}>
+            Duration {sortKey === "duration_ms" && (sortDir === "asc" ? "↑" : "↓")}
+          </button>
+          <button className="w-20 text-right hover:text-violet-900 transition cursor-pointer" onClick={() => { setSortKey("timestamp"); setSortDir(sortKey === "timestamp" && sortDir === "asc" ? "desc" : "asc"); }}>
             Time {sortKey === "timestamp" && (sortDir === "asc" ? "↑" : "↓")}
           </button>
         </div>
