@@ -73,7 +73,6 @@ export function Gateways() {
               <tr key={s.id} className="transition hover:bg-stone-50/50">
                 <td className="px-6 py-4">
                   <p className="text-sm font-medium text-stone-800">{s.name}</p>
-                  <p className="text-xs text-stone-400 font-mono">{s.id}</p>
                 </td>
                 <td className="px-6 py-4 text-sm text-stone-500 font-mono">{s.endpoint}</td>
                 <td className="px-6 py-4">

@@ -301,7 +301,7 @@ export function Agents() {
                     <span className={`badge ${colors.bg} ${colors.text}`}>{a.framework}</span>
                   </td>
                   <td className="px-6 py-4 text-sm text-stone-600 font-mono">{a.model}</td>
-                  <td className="px-6 py-4 text-sm text-stone-500">{a.gateway_id}</td>
+                  <td className="px-6 py-4 text-sm text-stone-500">{a.gateway_id.split("-").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")} Gateway</td>
                   <td className="px-6 py-4">
                     <div className="flex gap-1 flex-wrap max-w-48">
                       {a.tools.slice(0, 3).map(t => (

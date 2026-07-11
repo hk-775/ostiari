@@ -105,7 +105,7 @@ export function Experiments() {
                 </div>
                 <div>
                   <p className="text-sm font-medium text-stone-900">{exp.name}</p>
-                  <p className="text-xs text-stone-500">Gateway: {exp.gateway_id}</p>
+                  <p className="text-xs text-stone-500">Gateway: {exp.gateway_id.split("-").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")}</p>
                 </div>
               </div>
               <div className="flex items-center gap-1">
