@@ -410,20 +410,21 @@ export function Models() {
           </thead>
           <tbody className="divide-y divide-stone-50">
             {models.map((m, idx) => (
-              <tr key={m.name} className={`transition hover:bg-indigo-50 cursor-pointer ${idx % 2 === 1 ? "bg-stone-100" : "bg-white"}`}
-                onClick={() => {
-                  const el = document.getElementById("per-agent-access");
-                  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-                }}>
+              <tr key={m.name} className={`transition hover:bg-indigo-50 ${idx % 2 === 1 ? "bg-stone-100" : "bg-white"}`}>
                 <td className="px-6 py-4">
                   <div className="flex items-center gap-2">
                     <div className={`flex h-8 w-8 items-center justify-center rounded-lg ${CATEGORY_COLORS[m.category] || "bg-stone-100 text-stone-600"}`}>
                       <Brain className="h-4 w-4" />
                     </div>
                     <div>
-                      <p className="text-sm font-medium text-stone-800">{m.name}</p>
+                      <button className="text-sm font-medium text-stone-800 hover:text-indigo-600 transition text-left" onClick={() => { const el = document.getElementById("per-agent-access"); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); }}>
+                        {m.name}
+                      </button>
                       <p className="text-xs text-stone-400">{m.description}</p>
                     </div>
+                    <button className="rounded-lg p-1 text-stone-300 hover:text-indigo-600 hover:bg-indigo-50 transition" title="Configure access" onClick={() => { const el = document.getElementById("per-agent-access"); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); }}>
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
                   </div>
                 </td>
                 <td className="px-6 py-4">
