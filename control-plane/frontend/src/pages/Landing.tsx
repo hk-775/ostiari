@@ -25,35 +25,36 @@ export function Landing() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-stone-50 via-white to-violet-50/30">
       {/* Hero */}
-      <div className="max-w-5xl mx-auto px-8 pt-16 pb-12">
-        <div className="mb-8">
-          <img src="/logo.svg" alt="Ostiari" className="h-20" />
-          <p className="mt-4 text-2xl font-semibold text-stone-900 leading-snug">AI agents are autonomous.<br /><span className="text-violet-700">Your risk shouldn't be.</span></p>
+      <div className="max-w-5xl mx-auto px-8 pt-14 pb-8">
+        <div className="flex items-start justify-between gap-8">
+          <div>
+            <img src="/logo.svg" alt="Ostiari" className="h-20" />
+            <p className="mt-4 text-2xl font-semibold text-stone-900 leading-snug">AI agents are autonomous.<br /><span className="text-violet-700">Your risk shouldn't be.</span></p>
+          </div>
+          <div className="flex flex-col gap-2.5 pt-4">
+            <Link to="/dashboard" className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg hover:shadow-xl transition">
+              Open Control Plane <ArrowRight className="h-4 w-4" />
+            </Link>
+            <Link to="/architecture" className="inline-flex items-center gap-2 rounded-xl border border-stone-200 bg-white px-5 py-2.5 text-sm font-semibold text-stone-700 hover:bg-stone-50 transition">
+              Watch Architecture Demo
+            </Link>
+          </div>
         </div>
 
-        <p className="text-lg text-stone-600 max-w-2xl leading-relaxed">
+        <p className="mt-6 text-lg text-stone-600 max-w-2xl leading-relaxed">
           The runtime safety layer for AI agents. Every tool call validated, every model access controlled, every dollar tracked — without changing agent code.
         </p>
-
-        <div className="flex gap-3 mt-8">
-          <Link to="/dashboard" className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 px-6 py-3 text-sm font-semibold text-white shadow-lg hover:shadow-xl transition">
-            Open Control Plane <ArrowRight className="h-4 w-4" />
-          </Link>
-          <Link to="/architecture" className="inline-flex items-center gap-2 rounded-xl border border-stone-200 bg-white px-6 py-3 text-sm font-semibold text-stone-700 hover:bg-stone-50 transition">
-            Watch Architecture Demo
-          </Link>
-        </div>
       </div>
 
       {/* Control Plane Overview Diagram */}
-      <div className="max-w-5xl mx-auto px-8 py-6">
+      <div className="max-w-5xl mx-auto px-8 py-4">
         <div className="rounded-2xl border border-violet-100 bg-gradient-to-br from-white to-violet-50/20 p-2 shadow-sm">
           <img src="/control-plane-overview.svg" alt="How the Control Plane works" className="w-full rounded-xl" />
         </div>
       </div>
 
       {/* How it works */}
-      <div className="max-w-5xl mx-auto px-8 py-12">
+      <div className="max-w-5xl mx-auto px-8 py-8">
         <h2 className="text-lg font-bold text-stone-900 mb-6">How it works</h2>
         <div className="flex items-center gap-2 overflow-x-auto pb-4">
           {ARCHITECTURE_FLOW.map((item, i) => (
