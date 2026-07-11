@@ -134,7 +134,7 @@ export function LiveTraces() {
           {trace.blocked_reason && <div className="col-span-2 flex justify-between"><span className="text-stone-500">Blocked Reason</span><span className="text-rose-600">{trace.blocked_reason}</span></div>}
           {trace.step && <div className="col-span-2 flex justify-between"><span className="text-stone-500">Step</span><span className="text-stone-900">{trace.step}</span></div>}
           {trace.session_id && <div className="col-span-2 flex justify-between"><span className="text-stone-500">Session</span><span className="text-stone-900 font-mono">{trace.session_id}</span></div>}
-          <div className="col-span-2 flex justify-between"><span className="text-stone-500">Timestamp</span><span className="text-stone-900">{new Date(trace.timestamp * 1000).toISOString()}</span></div>
+          <div className="col-span-2 flex justify-between"><span className="text-stone-500">Timestamp</span><span className="text-stone-900">{typeof trace.timestamp === "number" ? new Date(trace.timestamp * 1000).toISOString() : trace.timestamp}</span></div>
         </div>
         {trace.params && Object.keys(trace.params).length > 0 && (
           <details className="border-t border-stone-200 pt-2">
@@ -300,7 +300,7 @@ export function LiveTraces() {
                     {isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
                   </button>
                   <span className="w-16 text-xs text-stone-500 tabular-nums">
-                    {new Date(trace.timestamp * 1000).toLocaleTimeString()}
+                    {typeof trace.timestamp === "number" ? new Date(trace.timestamp * 1000).toLocaleTimeString() : new Date(trace.timestamp).toLocaleTimeString()}
                   </span>
                   <span className={`w-16 badge text-center ${TIER_BADGES[trace.tier] || "text-stone-500"}`}>
                     {trace.tier}
