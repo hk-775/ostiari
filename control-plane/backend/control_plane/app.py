@@ -13,6 +13,7 @@ from control_plane.routers import agents, audit, costs, experiments, mcp_servers
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from control_plane.persistence import load_state, save_state
+    from control_plane.routers.gateways import start_health_check, stop_health_check
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -36,7 +37,13 @@ async def lifespan(app: FastAPI):
         for m in state["models"]:
             _models[m["name"]] = ModelConfig(**m)
 
+    # Start background health-check loop for gateways
+    start_health_check()
+
     yield
+
+    # Stop health-check loop
+    stop_health_check()
 
     # Save in-memory state before shutdown
     from control_plane.routers.quotas import _quotas

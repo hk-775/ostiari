@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ShieldCheck, Plus, Trash2, AlertTriangle, Upload } from "lucide-react";
+import { ShieldCheck, Plus, Trash2, AlertTriangle, Upload, Check, Clock } from "lucide-react";
+import { api } from "../lib/api";
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
 
@@ -28,6 +29,7 @@ export function Quotas() {
   const { data: quotas = [] } = useQuery({ queryKey: ["quotas"], queryFn: fetchQuotas });
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ name: "", scope: "gateway", scope_id: "", rate_limit_rpm: "", budget_limit_usd: "", max_tokens_per_request: "", allowed_models: "" });
+  const [pushStatus, setPushStatus] = useState<Record<number, string>>({});
 
   const createMutation = useMutation({
     mutationFn: async (data: typeof form) => {
@@ -97,8 +99,37 @@ export function Quotas() {
                   </div>
                 </div>
                 <div className="flex gap-1">
-                  <button onClick={async () => { await fetch(`${API_BASE}/api/quotas/${q.id}/push`, { method: "POST" }); }} title="Push to gateway" className="rounded-xl p-2 text-stone-400 hover:bg-amber-50 hover:text-amber-600 transition">
-                    <Upload className="h-4 w-4" />
+                  <button onClick={async () => {
+                    if (q.scope !== "gateway" || !q.scope_id) {
+                      setPushStatus(prev => ({ ...prev, [q.id]: "error" }));
+                      setTimeout(() => setPushStatus(prev => ({ ...prev, [q.id]: "" })), 2000);
+                      return;
+                    }
+                    setPushStatus(prev => ({ ...prev, [q.id]: "pushing" }));
+                    try {
+                      const quotaPayload = {
+                        rate_limit_rpm: q.rate_limit_rpm,
+                        budget_limit_usd: q.budget_limit_usd,
+                        max_tokens_per_request: q.max_tokens_per_request,
+                        allowed_models: q.allowed_models,
+                      };
+                      const res = await api.gateways.pushConfig(q.scope_id, { quota: quotaPayload });
+                      if (res.status === "applied") {
+                        setPushStatus(prev => ({ ...prev, [q.id]: "done" }));
+                      } else if (res.status === "queued") {
+                        setPushStatus(prev => ({ ...prev, [q.id]: "queued" }));
+                      } else {
+                        setPushStatus(prev => ({ ...prev, [q.id]: "error" }));
+                      }
+                      setTimeout(() => setPushStatus(prev => ({ ...prev, [q.id]: "" })), 3000);
+                    } catch {
+                      setPushStatus(prev => ({ ...prev, [q.id]: "error" }));
+                      setTimeout(() => setPushStatus(prev => ({ ...prev, [q.id]: "" })), 2000);
+                    }
+                  }} title="Push to gateway" className="rounded-xl p-2 text-stone-400 hover:bg-amber-50 hover:text-amber-600 transition">
+                    {pushStatus[q.id] === "done" ? <Check className="h-4 w-4 text-emerald-600" /> :
+                     pushStatus[q.id] === "queued" ? <Clock className="h-4 w-4 text-amber-500" /> :
+                     <Upload className="h-4 w-4" />}
                   </button>
                   <button onClick={() => deleteMutation.mutate(q.id)} title="Delete" className="rounded-xl p-2 text-stone-400 hover:bg-rose-50 hover:text-rose-600 transition">
                     <Trash2 className="h-4 w-4" />

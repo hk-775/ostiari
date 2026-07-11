@@ -58,6 +58,42 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
     if initial_config is not None:
         manager.apply_config(initial_config)
 
+    # Lifecycle manager (CP registration + heartbeat)
+    lifecycle = None
+    if initial_config and initial_config.control_plane_url:
+        from ostiari_gateway.lifecycle import LifecycleManager
+
+        lifecycle = LifecycleManager(
+            gateway_id=initial_config.sidecar_id,
+            control_plane_url=initial_config.control_plane_url,
+        )
+
+        def _apply_bundle(bundle: dict) -> None:
+            """Apply a config bundle from the control plane."""
+            from ostiari_gateway.models import PolicyConfig, SidecarConfig, ToolDefinition
+
+            # Apply tools
+            if "tools" in bundle:
+                tools = [ToolDefinition(**t) for t in bundle["tools"]]
+                manager.apply_tools(tools)
+
+            # Apply policy
+            if "policy" in bundle:
+                policy = PolicyConfig(**bundle["policy"])
+                manager.apply_policy(policy)
+
+            # Apply quota
+            if "quotas" in bundle and bundle["quotas"]:
+                quota_enforcer.configure(bundle["quotas"])
+            elif "quota" in bundle and bundle["quota"]:
+                quota_enforcer.configure(bundle["quota"])
+
+            # Apply agent auth
+            if "agent_auth" in bundle and bundle["agent_auth"]:
+                agent_auth.configure(bundle["agent_auth"])
+
+        lifecycle.set_config_callback(_apply_bundle)
+
     @asynccontextmanager
     async def lifespan(app: Any) -> Any:
         # Initialize MCP servers from config
@@ -66,7 +102,20 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
                 from ostiari_gateway.mcp.models import MCPServerConfig
                 server_config = MCPServerConfig(**mcp_cfg) if isinstance(mcp_cfg, dict) else mcp_cfg
                 await mcp_manager.add_server(server_config)
+
+        # Register with control plane and start heartbeat
+        if lifecycle:
+            try:
+                await lifecycle.register()
+                await lifecycle.start_heartbeat(interval=30)
+            except Exception as e:
+                log.warning(f"Control plane registration failed: {e} — running standalone")
+
         yield
+
+        # Shutdown lifecycle
+        if lifecycle:
+            await lifecycle.stop()
         await trace_reporter.close()
         await mcp_manager.shutdown()
         module_registry.shutdown_all()

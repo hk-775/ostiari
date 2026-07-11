@@ -1,10 +1,9 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Trash2, Upload, FileText, Pencil, Check } from "lucide-react";
+import { Plus, Trash2, Upload, FileText, Pencil, Check, Clock } from "lucide-react";
 import { api, Policy } from "../lib/api";
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
-const GATEWAY_BASE = `${API_BASE}/api/proxy/gateway/crm-agent`;
 
 export function Policies() {
   const queryClient = useQueryClient();
@@ -84,17 +83,31 @@ export function Policies() {
                   <Pencil className="h-4 w-4" />
                 </button>
                 <button onClick={async () => {
+                  const gatewayId = p.gateway_id || "";
+                  if (!gatewayId) {
+                    setPushStatus(prev => ({ ...prev, [p.id]: "error" }));
+                    setTimeout(() => setPushStatus(prev => ({ ...prev, [p.id]: "" })), 2000);
+                    return;
+                  }
                   setPushStatus(prev => ({ ...prev, [p.id]: "pushing" }));
                   try {
-                    await fetch(`${GATEWAY_BASE}/config/policy`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p.content) });
-                    setPushStatus(prev => ({ ...prev, [p.id]: "done" }));
-                    setTimeout(() => setPushStatus(prev => ({ ...prev, [p.id]: "" })), 2000);
+                    const res = await api.gateways.pushConfig(gatewayId, { policy: p.content });
+                    if (res.status === "applied") {
+                      setPushStatus(prev => ({ ...prev, [p.id]: "done" }));
+                    } else if (res.status === "queued") {
+                      setPushStatus(prev => ({ ...prev, [p.id]: "queued" }));
+                    } else {
+                      setPushStatus(prev => ({ ...prev, [p.id]: "error" }));
+                    }
+                    setTimeout(() => setPushStatus(prev => ({ ...prev, [p.id]: "" })), 3000);
                   } catch {
                     setPushStatus(prev => ({ ...prev, [p.id]: "error" }));
                     setTimeout(() => setPushStatus(prev => ({ ...prev, [p.id]: "" })), 2000);
                   }
                 }} title="Push to gateway" className="rounded-xl p-2 text-stone-400 hover:bg-violet-50 hover:text-violet-600 transition">
-                  {pushStatus[p.id] === "done" ? <Check className="h-4 w-4 text-emerald-600" /> : <Upload className="h-4 w-4" />}
+                  {pushStatus[p.id] === "done" ? <Check className="h-4 w-4 text-emerald-600" /> :
+                   pushStatus[p.id] === "queued" ? <Clock className="h-4 w-4 text-amber-500" /> :
+                   <Upload className="h-4 w-4" />}
                 </button>
                 <button onClick={() => deleteMutation.mutate(p.id)} title="Delete" className="rounded-xl p-2 text-stone-400 hover:bg-rose-50 hover:text-rose-600 transition">
                   <Trash2 className="h-4 w-4" />
