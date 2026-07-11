@@ -1,4 +1,5 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { useLocation } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Brain, Plus, Trash2, Pencil, X, Wrench, Eye, Server, Shield, Lock, ArrowUp, ArrowDown, Save, Clock } from "lucide-react";
 
@@ -240,12 +241,15 @@ function TaskClassificationRules({ models }: { models: ModelConfig[] }) {
 
 export function Models() {
   const queryClient = useQueryClient();
+  const location = useLocation();
   const { data: models = [], isLoading } = useQuery({ queryKey: ["model-config"], queryFn: fetchModels });
   const { data: agentAccessList = [] } = useQuery({ queryKey: ["agent-access"], queryFn: fetchAgentAccess });
   const { data: budgetResetConfig = { schedule: "manual" as const } } = useQuery({ queryKey: ["budget-reset"], queryFn: fetchBudgetReset });
   const [showForm, setShowForm] = useState(false);
   const [editingModel, setEditingModel] = useState<string | null>(null);
   const [form, setForm] = useState<ModelConfig>({ ...EMPTY_FORM });
+
+  useEffect(() => { setShowForm(false); setEditingModel(null); }, [location.key]);
 
   // Agent access state
   const [editingAgent, setEditingAgent] = useState<string | null>(null);
