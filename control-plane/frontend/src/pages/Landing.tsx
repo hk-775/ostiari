@@ -45,6 +45,13 @@ export function Landing() {
         </div>
       </div>
 
+      {/* Control Plane Overview Diagram */}
+      <div className="max-w-5xl mx-auto px-8 py-6">
+        <div className="rounded-2xl border border-violet-100 bg-gradient-to-br from-white to-violet-50/20 p-2 shadow-sm">
+          <img src="/control-plane-overview.svg" alt="How the Control Plane works" className="w-full rounded-xl" />
+        </div>
+      </div>
+
       {/* How it works */}
       <div className="max-w-5xl mx-auto px-8 py-12">
         <h2 className="text-lg font-bold text-stone-900 mb-6">How it works</h2>
