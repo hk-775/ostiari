@@ -25,7 +25,7 @@ export function Landing() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-stone-50 via-white to-violet-50/30">
       {/* Hero */}
-      <div className="max-w-5xl mx-auto px-8 pt-14 pb-8">
+      <div className="max-w-5xl mx-auto px-8 pt-10 pb-5">
         <div className="flex items-start justify-between gap-8">
           <div>
             <img src="/logo.svg" alt="Ostiari" className="h-20" />
