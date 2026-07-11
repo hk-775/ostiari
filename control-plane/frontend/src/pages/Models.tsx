@@ -410,7 +410,11 @@ export function Models() {
           </thead>
           <tbody className="divide-y divide-stone-50">
             {models.map((m, idx) => (
-              <tr key={m.name} className={`transition hover:bg-indigo-50 ${idx % 2 === 1 ? "bg-stone-100" : "bg-white"}`}>
+              <tr key={m.name} className={`transition hover:bg-indigo-50 cursor-pointer ${idx % 2 === 1 ? "bg-stone-100" : "bg-white"}`}
+                onClick={() => {
+                  const el = document.getElementById("per-agent-access");
+                  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+                }}>
                 <td className="px-6 py-4">
                   <div className="flex items-center gap-2">
                     <div className={`flex h-8 w-8 items-center justify-center rounded-lg ${CATEGORY_COLORS[m.category] || "bg-stone-100 text-stone-600"}`}>
@@ -492,7 +496,7 @@ export function Models() {
       )}
 
       {/* Per-Agent Model Access */}
-      <div className="space-y-3">
+      <div id="per-agent-access" className="space-y-3 scroll-mt-16">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Shield className="h-5 w-5 text-violet-600" />
