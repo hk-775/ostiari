@@ -94,7 +94,6 @@ export function Quotas() {
                   </div>
                   <div>
                     <p className="text-sm font-medium text-stone-900">{q.name}</p>
-                    <p className="text-xs text-stone-500">{q.scope}: {q.scope_id}</p>
                   </div>
                 </div>
                 <div className="flex gap-1">
