@@ -127,6 +127,78 @@ export function Landing() {
         </div>
       </div>
 
+      {/* Control Plane Philosophy */}
+      <div className="max-w-5xl mx-auto px-8 py-4 border-t border-stone-100/50">
+        <h2 className="text-lg font-bold text-stone-900 mb-2">How the Control Plane governs</h2>
+        <p className="text-xs text-stone-500 mb-5">The Control Plane is the single source of truth. Gateways are stateless consumers that pull config on startup and receive updates via heartbeat. Config changes propagate in under 1 second to healthy gateways — no restart required.</p>
+
+        <div className="grid gap-4 sm:grid-cols-2 mb-5">
+          {/* What CP manages */}
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50/30 p-5">
+            <p className="text-xs font-bold text-emerald-800 uppercase tracking-wide mb-3">What the Control Plane manages</p>
+            <div className="space-y-2">
+              {[
+                { label: "Policies", desc: "Define and push allow/block/score rules" },
+                { label: "Quotas", desc: "Per-gateway and per-agent rate/budget limits" },
+                { label: "Model access", desc: "Who uses which models and providers" },
+                { label: "Budgets", desc: "Per-agent spend tracking, alerts, auto-reset" },
+                { label: "Provider keys", desc: "Encrypted at rest, test connectivity" },
+                { label: "Traces & costs", desc: "Collect, aggregate, display in real-time" },
+                { label: "Health", desc: "Heartbeat-based monitoring of gateway fleet" },
+              ].map(item => (
+                <div key={item.label} className="flex items-start gap-2">
+                  <span className="text-emerald-500 mt-0.5 text-xs">●</span>
+                  <div><span className="text-xs font-semibold text-stone-800">{item.label}</span><span className="text-[10px] text-stone-500"> — {item.desc}</span></div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* What CP does NOT manage */}
+          <div className="rounded-xl border border-stone-200 bg-stone-50/50 p-5">
+            <p className="text-xs font-bold text-stone-600 uppercase tracking-wide mb-3">What it does NOT manage</p>
+            <div className="space-y-2">
+              {[
+                { label: "Starting/stopping gateways", desc: "That's your orchestrator (K8s, ECS, systemd)" },
+                { label: "Deploying agents", desc: "CP controls what agents can do, not where they run" },
+                { label: "Infrastructure", desc: "Terraform, CDK, CloudFormation own provisioning" },
+                { label: "Network routing", desc: "Service mesh, DNS, load balancers" },
+                { label: "Secret rotation", desc: "Secrets Manager / Vault handle rotation" },
+              ].map(item => (
+                <div key={item.label} className="flex items-start gap-2">
+                  <span className="text-stone-400 mt-0.5 text-xs">○</span>
+                  <div><span className="text-xs font-semibold text-stone-700">{item.label}</span><span className="text-[10px] text-stone-500"> — {item.desc}</span></div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Config propagation */}
+        <div className="rounded-xl border border-indigo-100 bg-indigo-50/30 p-5">
+          <p className="text-xs font-bold text-indigo-800 uppercase tracking-wide mb-3">Config propagation</p>
+          <div className="flex items-center gap-2 flex-wrap text-[10px]">
+            {[
+              "Operator changes config in UI",
+              "Control Plane saves to DB",
+              "Push to gateway (or queue if offline)",
+              "Gateway applies immediately (hot-reload)",
+              "Next call uses new rules",
+              "Trace shows result in < 1s",
+            ].map((step, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <span className="rounded-full bg-white border border-indigo-200 px-2.5 py-1 text-indigo-700 font-medium shadow-sm">{step}</span>
+                {i < 5 && <ArrowRight className="h-3 w-3 text-indigo-300 shrink-0" />}
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 flex gap-4 text-[10px] text-stone-500">
+            <span>🟢 Healthy gateway: <strong className="text-stone-700">&lt; 1s</strong> propagation</span>
+            <span>🔴 Offline gateway: <strong className="text-stone-700">queued</strong>, syncs on reconnect (≤ 30s)</span>
+          </div>
+        </div>
+      </div>
+
       {/* CTA */}
       <div className="max-w-5xl mx-auto px-8 py-6 border-t border-stone-100/50 text-center">
         <p className="text-sm text-stone-500 mb-4">Ready to explore?</p>
