@@ -36,10 +36,15 @@ const TIER_BADGES: Record<string, string> = {
   error: "bg-orange-50 text-orange-700 ring-1 ring-inset ring-orange-200",
 };
 
+type SortKey = "agent_id" | "gateway_id" | "action" | "timestamp";
+type SortDir = "asc" | "desc";
+
 export function LiveTraces() {
   const [traces, setTraces] = useState<TraceEvent[]>([]);
   const [connected, setConnected] = useState(false);
   const [paused, setPaused] = useState(false);
+  const [sortKey, setSortKey] = useState<SortKey>("timestamp");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const wsRef = useRef<WebSocket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -178,10 +183,31 @@ export function LiveTraces() {
         </div>
       </div>
 
-      <div
-        ref={scrollRef}
-        className="h-[calc(100vh-200px)] overflow-y-auto card"
-      >
+      <div className="card overflow-hidden">
+        {/* Sticky table header */}
+        <div className="sticky top-0 z-10 bg-stone-50 border-b border-stone-200 flex items-center px-4 py-2.5 text-[10px] font-bold text-stone-500 uppercase tracking-wider">
+          <button className="w-8" />
+          <button className="w-28 text-left hover:text-stone-900 transition" onClick={() => { setSortKey("agent_id"); setSortDir(sortKey === "agent_id" && sortDir === "asc" ? "desc" : "asc"); }}>
+            Agent {sortKey === "agent_id" && (sortDir === "asc" ? "↑" : "↓")}
+          </button>
+          <button className="w-28 text-left hover:text-stone-900 transition" onClick={() => { setSortKey("gateway_id"); setSortDir(sortKey === "gateway_id" && sortDir === "asc" ? "desc" : "asc"); }}>
+            Gateway {sortKey === "gateway_id" && (sortDir === "asc" ? "↑" : "↓")}
+          </button>
+          <span className="w-16 text-center">Tier</span>
+          <span className="w-10 text-right">Score</span>
+          <button className="flex-1 text-left pl-4 hover:text-stone-900 transition" onClick={() => { setSortKey("action"); setSortDir(sortKey === "action" && sortDir === "asc" ? "desc" : "asc"); }}>
+            Action {sortKey === "action" && (sortDir === "asc" ? "↑" : "↓")}
+          </button>
+          <span className="w-20 text-right">Duration</span>
+          <button className="w-20 text-right hover:text-stone-900 transition" onClick={() => { setSortKey("timestamp"); setSortDir(sortKey === "timestamp" && sortDir === "asc" ? "desc" : "asc"); }}>
+            Time {sortKey === "timestamp" && (sortDir === "asc" ? "↑" : "↓")}
+          </button>
+        </div>
+
+        <div
+          ref={scrollRef}
+          className="h-[calc(100vh-260px)] overflow-y-auto"
+        >
         {traces.length === 0 && (
           <div className="flex flex-col items-center gap-3 py-16">
             <Radio className="h-8 w-8 text-stone-300 animate-pulse" />
@@ -192,11 +218,24 @@ export function LiveTraces() {
 
         <div className="divide-y divide-stone-100">
           {(() => {
+            // Sort traces
+            const sorted = [...traces].sort((a, b) => {
+              let aVal = a[sortKey] || "";
+              let bVal = b[sortKey] || "";
+              if (sortKey === "timestamp") {
+                aVal = typeof a.timestamp === "number" ? a.timestamp : new Date(a.timestamp).getTime() / 1000;
+                bVal = typeof b.timestamp === "number" ? b.timestamp : new Date(b.timestamp).getTime() / 1000;
+              }
+              if (aVal < bVal) return sortDir === "asc" ? -1 : 1;
+              if (aVal > bVal) return sortDir === "asc" ? 1 : -1;
+              return 0;
+            });
+
             // Group traces by session_id (ungrouped traces get rendered individually)
             const groups: { session_id: string; plan: string; traces: { trace: TraceEvent; idx: number }[] }[] = [];
             const seen_sessions = new Map<string, number>();
 
-            traces.forEach((trace, i) => {
+            sorted.forEach((trace, i) => {
               if (trace.session_id) {
                 if (seen_sessions.has(trace.session_id)) {
                   groups[seen_sessions.get(trace.session_id)!].traces.push({ trace, idx: i });
@@ -295,29 +334,24 @@ export function LiveTraces() {
               });
             return (
               <div key={`s-${gi}`} className={`border-l-2 ${TIER_STYLES[trace.tier] || ""}`}>
-                <div className="flex items-center gap-4 px-4 py-2 cursor-pointer hover:bg-stone-50" onClick={toggle}>
-                  <button className="text-stone-400">
+                <div className="flex items-center px-4 py-2 cursor-pointer hover:bg-stone-50" onClick={toggle}>
+                  <button className="w-8 text-stone-400">
                     {isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
                   </button>
-                  <span className="w-16 text-xs text-stone-500 tabular-nums">
-                    {typeof trace.timestamp === "number" ? new Date(trace.timestamp * 1000).toLocaleTimeString() : new Date(trace.timestamp).toLocaleTimeString()}
-                  </span>
+                  <span className="w-28 truncate text-xs text-stone-700 font-medium" title={trace.agent_id}>{trace.agent_id}</span>
+                  <span className="w-28 truncate text-xs text-stone-500" title={trace.gateway_id}>{trace.gateway_id}</span>
                   <span className={`w-16 badge text-center ${TIER_BADGES[trace.tier] || "text-stone-500"}`}>
                     {trace.tier}
                   </span>
                   <span className="w-10 text-right text-xs text-stone-500 tabular-nums">{trace.score}</span>
-                  <span className="flex-1 font-mono text-sm text-stone-900">
+                  <span className="flex-1 font-mono text-xs text-stone-900 pl-4">
                     {trace.is_mcp && <span className="mr-1.5 text-violet-600">[MCP]</span>}
                     {trace.action}
                   </span>
                   <span className="w-20 text-right text-xs text-stone-500">{trace.duration_ms.toFixed(1)}ms</span>
-                  <span className="w-24 truncate text-xs text-stone-400" title={trace.gateway_id}>{trace.gateway_id}</span>
-                  <span className="w-20 truncate text-xs text-stone-400" title={trace.agent_id}>{trace.agent_id}</span>
-                  {trace.blocked_reason && (
-                    <span className="text-xs text-rose-600 truncate max-w-32" title={trace.blocked_reason}>
-                      {trace.blocked_reason}
-                    </span>
-                  )}
+                  <span className="w-20 text-right text-xs text-stone-400 tabular-nums">
+                    {typeof trace.timestamp === "number" ? new Date(trace.timestamp * 1000).toLocaleTimeString() : new Date(trace.timestamp).toLocaleTimeString()}
+                  </span>
                 </div>
                 {isExpanded && renderSpanDetail(trace)}
               </div>
@@ -325,6 +359,7 @@ export function LiveTraces() {
             });
           })()}
         </div>
+      </div>
       </div>
     </div>
   );
