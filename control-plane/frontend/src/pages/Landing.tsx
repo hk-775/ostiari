@@ -27,8 +27,9 @@ export function Landing() {
       {/* Hero */}
       <div className="max-w-5xl mx-auto px-8 pt-10 pb-5">
         <img src="/logo.svg" alt="Ostiari" className="h-20" />
+        <p className="mt-2 text-sm font-medium text-stone-500 tracking-wide">Secures what AI does.</p>
 
-        <div className="flex items-center justify-between gap-8 mt-5">
+        <div className="flex items-center justify-between gap-8 mt-4">
           <p className="text-2xl font-semibold text-stone-900 leading-snug">AI agents are autonomous.<br /><span className="text-violet-700">Your risk shouldn't be.</span></p>
           <div className="flex flex-col gap-2.5 shrink-0">
             <Link to="/dashboard" className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg hover:shadow-xl transition">
