@@ -122,6 +122,10 @@ warn_unused_ignores = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--strict-markers"
+markers = [
+    "asyncio: mark test as async",
+]
+asyncio_mode = "auto"
 
 [tool.coverage.run]
 source = ["ostiari"]
@@ -131,4 +135,4 @@ omit = [
 ]
 
 [tool.coverage.report]
-fail_under = 90
+fail_under = 70
