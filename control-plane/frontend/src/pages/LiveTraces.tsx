@@ -276,7 +276,7 @@ export function LiveTraces() {
                         {isGroupExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                       </button>
                       <span className="w-28 text-xs font-medium text-stone-700">{group.traces[0].trace.agent_id}</span>
-                      <span className="w-28 text-xs text-stone-500">{group.traces[0].(trace.gateway_id || "").replace("-agent","").split("-").map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ").replace("Devops","DevOps").replace("Crm","CRM") + " Gateway"}</span>
+                      <span className="w-28 text-xs text-stone-500">{(group.traces[0].trace.gateway_id || "").replace("-agent","").split("-").map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ").replace("Devops","DevOps").replace("Crm","CRM") + " Gateway"}</span>
                       <span className="w-16 badge bg-violet-50 text-violet-700 ring-1 ring-inset ring-violet-200 text-center">session</span>
                       <span className="w-10 text-right text-xs text-stone-500">{group.traces.length}</span>
                       <span className="flex-1 text-xs font-medium text-stone-900 pl-4">
