@@ -1,10 +1,9 @@
 """Tests for MCP integration — embedded and remote modes."""
 
 import pytest
-from starlette.testclient import TestClient
-
 from ostiari_sidecar.mcp.manager import MCPManager
-from ostiari_sidecar.mcp.models import MCPServerConfig, MCPTool
+from ostiari_sidecar.mcp.models import MCPServerConfig
+from starlette.testclient import TestClient
 
 
 class FakeMCPServer:

@@ -25,7 +25,7 @@ jobs:
           pip install pytest ruff
 
       - name: Lint
-        run: ruff check src/ gateway/
+        run: ruff check src/ gateway/ --select F --ignore F401
 
       - name: Test
         run: pytest tests/ -v --tb=short

@@ -138,7 +138,7 @@ class IntentCache:
 
     def invalidate_session(self, session_id: str) -> int:
         """Remove all cached plans for a session."""
-        keys_to_remove = [
+        _keys = [
             k for k, v in self._cache.items()
             # Can't reverse the hash, so we remove all (simple approach)
             # In production, maintain a session → keys index

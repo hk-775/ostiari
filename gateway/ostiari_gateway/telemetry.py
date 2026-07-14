@@ -19,7 +19,7 @@ import logging
 import os
 from typing import Any
 
-from opentelemetry import context, trace
+from opentelemetry import trace
 from opentelemetry.context import Context
 from opentelemetry.propagate import extract, inject
 from opentelemetry.sdk.resources import Resource

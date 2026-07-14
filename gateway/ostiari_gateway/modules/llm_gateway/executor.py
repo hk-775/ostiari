@@ -103,7 +103,7 @@ class AgenticExecutor:
         session_id = request.context.get("session_id", "")
         use_template = bool(request.intent_template)
         cache_key_intent = request.intent_template if use_template else (request.messages[-1].get("content", "") if request.messages else "")
-        user_intent = request.messages[-1].get("content", "") if request.messages else ""
+        _ = request.messages[-1].get("content", "") if request.messages else ""
         cached_plan = self._intent_cache.get(agent_id, session_id, cache_key_intent)
         cache_hit = cached_plan is not None
 

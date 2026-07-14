@@ -13,7 +13,6 @@ from ostiari_gateway.a2a.models import (
     AgentCapabilities,
     AgentCard,
     AgentSkill,
-    Artifact,
     Message,
     Task,
     TaskState,
