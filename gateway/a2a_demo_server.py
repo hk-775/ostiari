@@ -13,12 +13,11 @@ Use from the Control Plane Sandbox A2A tab:
 
 import json
 import uuid
-from datetime import datetime, timezone
 
+import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-import uvicorn
 
 app = FastAPI(title="A2A Demo Agent")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])

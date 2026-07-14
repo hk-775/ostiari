@@ -6,7 +6,6 @@ from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from opentelemetry import context as otel_context
 from opentelemetry import trace
 
 from ostiari.exceptions import ActionBlockedError
@@ -70,7 +69,7 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
 
         def _apply_bundle(bundle: dict) -> None:
             """Apply a config bundle from the control plane."""
-            from ostiari_gateway.models import PolicyConfig, SidecarConfig, ToolDefinition
+            from ostiari_gateway.models import PolicyConfig, ToolDefinition
 
             # Apply tools
             if "tools" in bundle:

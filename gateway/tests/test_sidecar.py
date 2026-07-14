@@ -3,10 +3,9 @@
 import json
 
 import pytest
-from starlette.testclient import TestClient
-
 from ostiari_sidecar.models import PolicyConfig, SidecarConfig, ToolDefinition
 from ostiari_sidecar.server import create_app
+from starlette.testclient import TestClient
 
 
 @pytest.fixture
@@ -157,9 +156,8 @@ class TestToolProxy:
             SpanExporter,
             SpanExportResult,
         )
-        from werkzeug import Response as WerkzeugResponse
-
         from ostiari_sidecar.server import create_app
+        from werkzeug import Response as WerkzeugResponse
 
         # Simple in-memory exporter to capture spans
         class MemoryExporter(SpanExporter):
