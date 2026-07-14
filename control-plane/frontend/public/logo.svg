@@ -8,5 +8,5 @@
   <text x="48" y="39" font-family="system-ui, -apple-system, sans-serif" font-size="26" font-weight="600" letter-spacing="0.5" fill="#1e1b4b">ostiari</text>
 
   <!-- Tagline -->
-  <text x="48" y="52" font-family="system-ui, -apple-system, sans-serif" font-size="9" fill="#6b7280" letter-spacing="1.5">AGENT GATEWAY</text>
+  <text x="48" y="52" font-family="system-ui, -apple-system, sans-serif" font-size="9" fill="#6b7280" letter-spacing="1">Secures what AI does.</text>
 </svg>
