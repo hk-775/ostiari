@@ -188,3 +188,73 @@ Operator changes policy in UI
 
 Total propagation time (healthy gateway): **< 1 second**
 Total propagation time (reconnecting gateway): **≤ heartbeat interval (30s)**
+
+---
+
+## Gateway Lifecycle Management — Separation of Concerns
+
+### The Rule: CP manages config. Orchestrator manages lifecycle.
+
+| Concern | Owner | Tool |
+|---|---|---|
+| **Start/stop gateways** | Platform team via orchestrator | K8s Deployment, ECS Service, systemd |
+| **Scale gateways** | HPA / auto-scaling | K8s HPA, ECS target tracking, KEDA |
+| **Restart on crash** | Orchestrator | K8s restartPolicy, ECS task restart |
+| **Deploy new version** | CI/CD pipeline | ArgoCD, Flux, CodePipeline |
+| **Config (policies, quotas, models)** | Ostiari Control Plane | Push via UI or API |
+| **Health visibility** | Ostiari Control Plane | Heartbeat → green/red dots |
+| **Drain before shutdown** | Gateway itself | Graceful shutdown hook |
+
+### Why NOT from the CP
+
+1. **Blast radius** — if the CP has a bug and accidentally stops all gateways, every agent goes dark. Separation of concerns prevents this.
+2. **Auth scope** — a policy operator shouldn't have "kill gateway" power. K8s RBAC handles infra access separately.
+3. **Reliability** — if the CP goes down, gateways keep running with cached config. If the CP could stop gateways, a CP outage = total outage.
+4. **Existing tooling** — K8s, ECS, Terraform already solve lifecycle perfectly. Rebuilding it in the CP adds complexity with no value.
+
+### What the CP SHOULD show (observability, not control)
+
+- 🟢 Gateway healthy (heartbeating)
+- 🔴 Gateway unhealthy (missed heartbeats)
+- 📊 Gateway metrics (requests/sec, latency, error rate)
+- ⚠️ "Gateway X hasn't heartbeated in 5 min" alert
+- 📝 "Last config push: 2 min ago, applied successfully"
+
+### What the CP should NOT have
+
+- ❌ "Stop Gateway" button
+- ❌ "Restart Gateway" button
+- ❌ "Scale to N replicas" slider
+- ❌ "Deploy version X" action
+
+### The Pattern (how enterprises do it)
+
+```
+Developer commits policy change
+  → CP API receives it
+  → CP stores in DB
+  → CP pushes to healthy gateways (< 1s)
+
+Platform team deploys new gateway version
+  → CI/CD builds new image
+  → K8s rolling update (one pod at a time)
+  → New pod starts → registers with CP → pulls config
+  → Old pod drains → graceful shutdown
+  → Zero downtime
+
+Gateway crashes
+  → K8s detects (liveness probe fails)
+  → K8s restarts pod
+  → New instance registers → pulls config → healthy
+  → CP showed red dot for ~30s, then green again
+
+Scale event (traffic spike)
+  → HPA triggers (CPU > 70%)
+  → New pods start → register → pull config
+  → CP shows 5 gateways instead of 3
+  → No operator action needed
+```
+
+### Analogy
+
+The CP is like a thermostat — it sets the desired temperature (config) and shows the current temperature (health). It does NOT turn the furnace on/off (that's the HVAC system / orchestrator).
