@@ -29,7 +29,9 @@ demo: ## Demo mode — frontend only with mock data (http://localhost:9000)
 
 dev: ## Start backend + frontend + primary gateway (seeded demo data)
 	cd control-plane/backend && python main.py &
+	cd gateway && python demo_tools_server.py &
 	sleep 3 && cd gateway && $(LOAD_LLM_ENV) python -m ostiari_gateway.main --port 8421 --sidecar-id crm-agent --control-plane http://localhost:8400 --config llm-gateway-config.yaml &
+	sleep 6 && cd gateway && python register_demo_tools.py &
 	cd control-plane/frontend && npm run dev &
 
 # NOTE: sidecar IDs and ports MUST match the gateway records seeded in the
@@ -37,14 +39,18 @@ dev: ## Start backend + frontend + primary gateway (seeded demo data)
 # analytics-agent:8425). On registration the control plane pushes each gateway
 # its tools/policy by ID — a mismatched ID means no tools and no traces.
 # The crm-agent gateway also loads llm-gateway-config.yaml (enables the LLM
-# module + credentials) so the Sandbox chat's /invoke endpoint works.
+# module + credentials) so the Sandbox chat's /invoke endpoint works, and
+# register_demo_tools.py points its tools at demo_tools_server.py (canned
+# web_search/db_query/github.* responses) so chat tool calls return real data.
 demo-full: ## Full demo — all gateways, A2A agent, control plane (seeded demo data)
 	cd control-plane/backend && python main.py &
+	cd gateway && python demo_tools_server.py &
 	sleep 3 && cd gateway && $(LOAD_LLM_ENV) python -m ostiari_gateway.main --port 8421 --sidecar-id crm-agent --control-plane http://localhost:8400 --config llm-gateway-config.yaml &
 	sleep 3 && cd gateway && python -m ostiari_gateway.main --port 8422 --sidecar-id ops-agent --control-plane http://localhost:8400 &
 	sleep 3 && cd gateway && python -m ostiari_gateway.main --port 8424 --sidecar-id devops-agent --control-plane http://localhost:8400 &
 	sleep 3 && cd gateway && python -m ostiari_gateway.main --port 8425 --sidecar-id analytics-agent --control-plane http://localhost:8400 &
 	sleep 3 && cd gateway && python a2a_demo_server.py &
+	sleep 6 && cd gateway && python register_demo_tools.py &
 	cd control-plane/frontend && npm run dev &
 
 clean-start: ## Clean install — wipe demo data, start all components empty

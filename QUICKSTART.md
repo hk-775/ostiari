@@ -66,8 +66,11 @@ This starts everything in the background:
 - **Control Plane frontend** on http://localhost:9000
 - **4 Gateways** on ports 8421, 8422, 8424, 8425
 - **A2A Demo Agent** on port 9200
+- **Demo Tools server** on port 9300 (canned backends for web_search/db_query/github.*/drawio.*)
 
 Each gateway starts with the **same ID as its control-plane record** (`crm-agent`, `ops-agent`, `devops-agent`, `analytics-agent`). That's what lets the control plane push each gateway its seeded tools and policy on registration — start them with any other ID and they come up with no tools, and Sandbox calls won't resolve or produce traces.
+
+The `crm-agent` gateway also loads `llm-gateway-config.yaml` (enables the LLM module + credentials for the Sandbox **Chat** tab), and `register_demo_tools.py` points its tools at the demo tools server so tool calls return real data and the block policy actually blocks destructive actions.
 
 ### What's running
 
@@ -75,11 +78,14 @@ Each gateway starts with the **same ID as its control-plane record** (`crm-agent
 |---|---|---|---|
 | Control Plane UI | http://localhost:9000 | — | — |
 | Control Plane API | http://localhost:8400 | — | — |
-| CRM Gateway | http://localhost:8421 | `crm-agent` | web_search, db_query, send_email |
+| CRM Gateway | http://localhost:8421 | `crm-agent` | web_search, db_query, send_email, github.*, drawio.* |
 | Ops Gateway | http://localhost:8422 | `ops-agent` | deploy, slack_send |
 | DevOps Gateway | http://localhost:8424 | `devops-agent` | github.* (MCP) |
 | Analytics Gateway | http://localhost:8425 | `analytics-agent` | file_read (MCP) |
 | A2A Demo Agent | http://localhost:9200 | — | deploy, rollback, status |
+| Demo Tools | http://localhost:9300 | — | canned tool backends |
+
+All four **Sandbox** tabs work against this stack: Chat (LLM + tool calls), Scenarios (allow/block guard demo), Code (tool call), and A2A (discover + send task, routed through the gateway).
 
 ### Try it
 

@@ -11,7 +11,6 @@ Use from the Control Plane Sandbox A2A tab:
   3. Send a task message
 """
 
-import json
 import uuid
 
 import uvicorn
@@ -168,7 +167,7 @@ async def handle_a2a(request: Request):
                 {"role": "agent", "parts": [{"type": "text", "text": result["response"]}]},
             ],
             "artifacts": [
-                {"name": a["name"], "parts": [{"type": "data", "data": json.dumps(a["data"])}]}
+                {"name": a["name"], "parts": [{"type": "data", "data": a["data"]}]}
                 for a in result.get("artifacts", [])
             ],
         }
