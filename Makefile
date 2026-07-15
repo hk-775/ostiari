@@ -19,25 +19,28 @@ lint: ## Run linters
 demo: ## Demo mode — frontend only with mock data (http://localhost:9000)
 	cd control-plane/frontend && npm run dev
 
-dev: ## Start backend + frontend + one gateway (seeded demo data)
+dev: ## Start backend + frontend + primary gateway (seeded demo data)
 	cd control-plane/backend && python main.py &
+	sleep 3 && cd gateway && python -m ostiari_gateway.main --port 8421 --sidecar-id crm-agent --control-plane http://localhost:8400 &
 	cd control-plane/frontend && npm run dev &
-	cd gateway && python -m ostiari_gateway.main --port 8421 --sidecar-id dev-gateway --control-plane http://localhost:8400 &
 
+# NOTE: sidecar IDs and ports MUST match the gateway records seeded in the
+# control plane DB (crm-agent:8421, ops-agent:8422, devops-agent:8424,
+# analytics-agent:8425). On registration the control plane pushes each gateway
+# its tools/policy by ID — a mismatched ID means no tools and no traces.
 demo-full: ## Full demo — all gateways, A2A agent, control plane (seeded demo data)
 	cd control-plane/backend && python main.py &
+	sleep 3 && cd gateway && python -m ostiari_gateway.main --port 8421 --sidecar-id crm-agent --control-plane http://localhost:8400 &
+	sleep 3 && cd gateway && python -m ostiari_gateway.main --port 8422 --sidecar-id ops-agent --control-plane http://localhost:8400 &
+	sleep 3 && cd gateway && python -m ostiari_gateway.main --port 8424 --sidecar-id devops-agent --control-plane http://localhost:8400 &
+	sleep 3 && cd gateway && python -m ostiari_gateway.main --port 8425 --sidecar-id analytics-agent --control-plane http://localhost:8400 &
+	sleep 3 && cd gateway && python a2a_demo_server.py &
 	cd control-plane/frontend && npm run dev &
-	cd gateway && python -m ostiari_gateway.main --port 8421 --sidecar-id dev-gateway --control-plane http://localhost:8400 &
-	cd gateway && python -m ostiari_gateway.main --port 8422 --sidecar-id ops-gateway --control-plane http://localhost:8400 &
-	cd gateway && python -m ostiari_gateway.main --port 8423 --sidecar-id devops-gateway --control-plane http://localhost:8400 &
-	cd gateway && python -m ostiari_gateway.main --port 8424 --sidecar-id analytics-gateway --control-plane http://localhost:8400 &
-	cd gateway && python -m ostiari_gateway.main --port 8425 --sidecar-id crm-gateway --control-plane http://localhost:8400 --config example-config.yaml &
-	cd gateway && python a2a_demo_server.py &
 
 clean-start: ## Clean install — wipe demo data, start all components empty
 	rm -f control-plane/backend/data/state.json
 	rm -f ostiari.db ostiari.db.lock
-	cd control-plane/backend && python main.py &
+	cd control-plane/backend && OSTIARI_NO_DEMO=1 python main.py &
 	cd control-plane/frontend && npm run dev &
 	cd gateway && python -m ostiari_gateway.main --port 8421 --sidecar-id my-gateway --control-plane http://localhost:8400 &
 

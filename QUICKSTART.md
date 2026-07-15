@@ -64,33 +64,34 @@ make demo-full
 This starts everything in the background:
 - **Control Plane backend** on port 8400 (loads demo data from `control-plane/backend/data/state.json`)
 - **Control Plane frontend** on http://localhost:9000
-- **5 Gateways** on ports 8421–8425
+- **4 Gateways** on ports 8421, 8422, 8424, 8425
 - **A2A Demo Agent** on port 9200
+
+Each gateway starts with the **same ID as its control-plane record** (`crm-agent`, `ops-agent`, `devops-agent`, `analytics-agent`). That's what lets the control plane push each gateway its seeded tools and policy on registration — start them with any other ID and they come up with no tools, and Sandbox calls won't resolve or produce traces.
 
 ### What's running
 
-| Component | URL | Description |
-|---|---|---|
-| Control Plane UI | http://localhost:9000 | Dashboard, config, sandbox |
-| Control Plane API | http://localhost:8400 | Backend API |
-| Primary Gateway | http://localhost:8421 | `dev-gateway` |
-| Ops Gateway | http://localhost:8422 | `ops-gateway` |
-| DevOps Gateway | http://localhost:8423 | `devops-gateway` |
-| Analytics Gateway | http://localhost:8424 | `analytics-gateway` |
-| CRM Gateway | http://localhost:8425 | `crm-gateway` (3 tools pre-loaded) |
-| A2A Demo Agent | http://localhost:9200 | DevOps Assistant (deploy, rollback, status) |
+| Component | URL | Gateway ID | Tools |
+|---|---|---|---|
+| Control Plane UI | http://localhost:9000 | — | — |
+| Control Plane API | http://localhost:8400 | — | — |
+| CRM Gateway | http://localhost:8421 | `crm-agent` | web_search, db_query, send_email |
+| Ops Gateway | http://localhost:8422 | `ops-agent` | deploy, slack_send |
+| DevOps Gateway | http://localhost:8424 | `devops-agent` | github.* (MCP) |
+| Analytics Gateway | http://localhost:8425 | `analytics-agent` | file_read (MCP) |
+| A2A Demo Agent | http://localhost:9200 | — | deploy, rollback, status |
 
 ### Try it
 
 ```bash
-# Verify gateways are healthy
-curl http://localhost:8421/health
-curl http://localhost:8422/health
+# Verify gateways are healthy and have their tools
+curl http://localhost:8421/tools
+curl http://localhost:8422/tools
 
-# Call a tool through the CRM gateway (pre-configured with example-config.yaml)
-curl -X POST http://localhost:8425/tool/send_email \
+# Call a tool through the CRM gateway
+curl -X POST http://localhost:8421/tool/send_email \
   -H "Content-Type: application/json" \
-  -H "X-Agent-Id: crm-agent" \
+  -H "X-Agent-Id: research-agent" \
   -d '{"to": "user@example.com", "subject": "test", "body": "hello"}'
 
 # A2A: discover the demo agent
@@ -103,10 +104,12 @@ curl -X POST http://localhost:9200/a2a \
 ```
 
 In the Control Plane UI:
-1. **Sandbox > A2A tab** — enter `http://localhost:9200`, click Discover, send tasks
-2. **Gateways** — see all 5 gateways registered and heartbeating
-3. **Models** — 14 models with routing rules and pricing
-4. **Agents** — 9 pre-configured agents across frameworks
+1. **Sandbox** — run a scenario or tool call; it routes through the CRM gateway and appears in Live Traces
+2. **Sandbox > A2A tab** — enter `http://localhost:9200`, click Discover, send tasks
+3. **Live Traces** — pre-seeded with demo traces on startup; new Sandbox/gateway calls stream in live
+4. **Gateways** — see all 4 gateways registered and heartbeating
+5. **Models** — 14 models with routing rules and pricing
+6. **Agents** — 9 pre-configured agents across frameworks
 
 ### Demo data details
 
@@ -115,10 +118,14 @@ The backend loads seeded state from `control-plane/backend/data/state.json`:
 - 14 model routing configs (Anthropic, OpenAI, Bedrock, Mistral)
 - 5 experiments (A/B tests, canary deployments)
 
+Gateways, tools, and MCP servers are seeded in the control plane DB (`control-plane/data/control_plane.db`) and pushed to each gateway on registration.
+
 Agents are seeded in-memory (see `control-plane/backend/control_plane/routers/agents.py`):
 - research-agent (OpenAI), ops-agent (Strands), claude-agent (Anthropic)
 - bedrock-agent, agentcore-agent, crewai-agent, langgraph-agent
 - planner-bot, smart-router-bot (gateway-invoke)
+
+Live Traces are seeded on startup (see `seed_traces()` in `control-plane/backend/control_plane/routers/traces.py`) so the view isn't empty. Real Sandbox/gateway calls take precedence and stream in live.
 
 ---
 
