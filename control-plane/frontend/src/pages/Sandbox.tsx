@@ -444,19 +444,24 @@ export function Sandbox() {
                   const agent = a2aAgents.find(a => a.name === a2aSelectedAgent);
                   if (!agent) return;
                   try {
-                    const resp = await fetch(`${agent.url}/a2a`, {
+                    // Route through gateway for tracing + policy enforcement
+                    const a2aPayload = {
+                      jsonrpc: "2.0",
+                      method: "tasks/send",
+                      params: {
+                        message: { role: "user", parts: [{ type: "text", text: a2aTaskInput }] }
+                      },
+                      id: `task-${Date.now()}`
+                    };
+                    const toolName = `a2a.${agent.name.toLowerCase().replace(/\s+/g, "_")}`;
+                    const resp = await fetch(`${GATEWAY_PROXY}/tool/${toolName}`, {
                       method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({
-                        jsonrpc: "2.0",
-                        method: "tasks/send",
-                        params: {
-                          message: { role: "user", parts: [{ type: "text", text: a2aTaskInput }] }
-                        },
-                        id: `task-${Date.now()}`
-                      }),
+                      headers: { "Content-Type": "application/json", "X-Agent-Id": "sandbox-a2a", "X-Framework": "a2a" },
+                      body: JSON.stringify(a2aPayload),
                     });
-                    const data = await resp.json();
+                    const raw = await resp.json();
+                    // Gateway wraps: {result: <a2a_jsonrpc_response>} — unwrap
+                    const data = raw.result?.result ? raw.result : raw;
                     if (data.result) {
                       const task = data.result;
                       const messages = (task.history || []).map((m: any) => ({
