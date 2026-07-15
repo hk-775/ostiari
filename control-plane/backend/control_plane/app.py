@@ -37,6 +37,12 @@ async def lifespan(app: FastAPI):
         for m in state["models"]:
             _models[m["name"]] = ModelConfig(**m)
 
+    # Seed demo traces so the Live Traces view isn't empty (skip in clean-install mode)
+    import os
+    if os.environ.get("OSTIARI_NO_DEMO", "").lower() not in ("1", "true", "yes"):
+        from control_plane.routers.traces import seed_traces
+        seed_traces()
+
     # Start background health-check loop for gateways
     start_health_check()
 
