@@ -1,0 +1,27 @@
+# Gateway config that enables the LLM Gateway module for the Sandbox chat.
+# Credentials are resolved from environment variables at startup (see main.py
+# _resolve_env_vars). Load them from AxonLLM/.env before starting:
+#   set -a && source ../../AxonLLM/.env && set +a
+#
+# Tools/policy/MCP are still pushed by the control plane on registration —
+# this file only adds the llm_gateway module + credentials, which must be set
+# at startup because /invoke is registered when the module activates.
+
+sidecar_id: crm-agent
+control_plane_url: http://localhost:8400
+
+modules:
+  core: true
+  llm_gateway: true
+
+llm:
+  default_model: claude-sonnet-4-6
+  fallback_chain:
+    - gpt-4o
+    - claude-haiku-4-5-20251001
+  max_tokens: 1024
+  temperature: 0.7
+  max_tool_rounds: 5
+  credentials:
+    anthropic: ${ANTHROPIC_API_KEY}
+    openai: ${OPENAI_API_KEY}
