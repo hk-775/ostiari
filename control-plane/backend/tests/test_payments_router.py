@@ -139,6 +139,41 @@ class TestBuildConfig:
         assert bundle["wallets"][0]["agent_id"] == "a"
 
 
+class TestIngest:
+    async def test_settled_charge_decrements_wallet(self, client):
+        await _wallet(client, agent_id="a", balance=1.0)
+        r = await client.post("/api/payments/ingest", json={
+            "agent_id": "a", "gateway_id": "crm-agent", "action": "premium_search",
+            "amount_usdc": 0.005, "settled": True, "tx_hash": "sim-1",
+        })
+        assert r.status_code == 200
+        rows = (await client.get("/api/payments/wallets")).json()
+        w = next(x for x in rows if x["agent_id"] == "a")
+        assert w["balance_usdc"] == pytest.approx(0.995)
+        assert w["spent_today_usdc"] == pytest.approx(0.005)
+        # ledger + summary reflect it
+        assert len((await client.get("/api/payments/ledger")).json()) == 1
+        assert (await client.get("/api/payments/summary")).json()["settled_count"] == 1
+
+    async def test_blocked_charge_recorded_no_debit(self, client):
+        await _wallet(client, agent_id="a", balance=0.001)
+        await client.post("/api/payments/ingest", json={
+            "agent_id": "a", "action": "premium_search",
+            "amount_usdc": 0.005, "settled": False,
+        })
+        w = next(x for x in (await client.get("/api/payments/wallets")).json() if x["agent_id"] == "a")
+        assert w["balance_usdc"] == pytest.approx(0.001)  # untouched
+        assert (await client.get("/api/payments/summary")).json()["blocked_count"] == 1
+
+    async def test_ingest_auto_pauses_at_daily_limit(self, client):
+        await _wallet(client, agent_id="a", balance=1.0, daily_limit_usdc=0.005)
+        await client.post("/api/payments/ingest", json={
+            "agent_id": "a", "action": "x", "amount_usdc": 0.005, "settled": True,
+        })
+        w = next(x for x in (await client.get("/api/payments/wallets")).json() if x["agent_id"] == "a")
+        assert w["status"] == "paused"
+
+
 class TestPush:
     async def test_push_missing_gateway_404(self, client):
         assert (await client.post("/api/payments/push?gateway_id=nope")).status_code == 404

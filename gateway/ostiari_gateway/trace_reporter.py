@@ -103,6 +103,34 @@ class TraceReporter:
         except Exception as e:
             log.debug("Failed to report trace: %s", e)
 
+    async def report_payment(
+        self,
+        *,
+        agent_id: str,
+        action: str,
+        amount_usdc: float,
+        settled: bool,
+        tx_hash: str = "",
+        mode: str = "simulated",
+        source: str = "policy",
+    ) -> None:
+        """Report an x402 charge (settled or blocked) to the control-plane ledger.
+
+        Fire-and-forget, like trace reporting — never blocks the response.
+        """
+        if not self.enabled:
+            return
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=3.0)
+        try:
+            await self._client.post(f"{self._url}/api/payments/ingest", json={
+                "agent_id": agent_id, "gateway_id": self._sidecar_id, "action": action,
+                "amount_usdc": amount_usdc, "settled": settled, "tx_hash": tx_hash,
+                "mode": mode, "source": source,
+            })
+        except Exception as e:
+            log.debug("Failed to report payment: %s", e)
+
     async def push_spend_snapshot(self) -> None:
         """Push current per-agent spend to the Control Plane for persistence."""
         if not self.enabled or not self._agent_auth:

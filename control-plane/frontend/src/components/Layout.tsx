@@ -1,5 +1,5 @@
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { Shield, Server, Wrench, FileText, Activity, Plug, History, DollarSign, Radio, FlaskConical, Brain, ShieldCheck, Beaker, Bot, Network, Users, Key, LogOut, EyeOff, FileCheck, Gauge } from "lucide-react";
+import { Shield, Server, Wrench, FileText, Activity, Plug, History, DollarSign, Radio, FlaskConical, Brain, ShieldCheck, Beaker, Bot, Network, Users, Key, LogOut, EyeOff, FileCheck, Gauge, Wallet } from "lucide-react";
 import { useAuthStore } from "../stores/authStore";
 
 const NAV_SECTIONS: {
@@ -33,6 +33,14 @@ const NAV_SECTIONS: {
       { path: "/quotas", label: "Quotas (per gateway)", icon: ShieldCheck, color: "text-amber-600", activeBg: "bg-amber-50" },
       { path: "/agent-quotas", label: "Quotas (per agent)", icon: ShieldCheck, color: "text-violet-600", activeBg: "bg-violet-50" },
       { path: "/protocol-governance", label: "Protocol (agent↔agent)", icon: Network, color: "text-violet-600", activeBg: "bg-violet-50" },
+    ],
+  },
+  {
+    label: "Monetize",
+    labelColor: "text-emerald-500",
+    borderColor: "border-l-emerald-400",
+    items: [
+      { path: "/payments", label: "Payments (x402)", icon: Wallet, color: "text-emerald-600", activeBg: "bg-emerald-50" },
     ],
   },
   {
