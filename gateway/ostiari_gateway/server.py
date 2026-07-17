@@ -455,6 +455,67 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
         quota_enforcer.reset_spend()
         return {"status": "reset", "current_spend": 0}
 
+    # ─── Routing / Budget / Classification Config Endpoints ─────────────────
+    # In-memory config the dashboard reads and writes. Persists for the
+    # process lifetime (same model as agent_auth / quota above).
+    runtime_config: dict[str, Any] = {
+        "budget_reset": {"schedule": "manual"},
+        "task_classification": {"rules": [], "model_mapping": {}},
+        "llm": {"routing_rules": []},
+        "routing_overrides": {"overrides": []},
+    }
+
+    @app.get("/config/budget-reset")
+    async def get_budget_reset() -> Any:
+        """Return the current budget-reset schedule."""
+        return runtime_config["budget_reset"]
+
+    @app.post("/config/budget-reset")
+    async def set_budget_reset(request: Request) -> Any:
+        """Set the budget-reset schedule (manual | daily | weekly | monthly)."""
+        body = await request.json()
+        runtime_config["budget_reset"] = body
+        return {"status": "applied", **body}
+
+    @app.get("/config/task-classification")
+    async def get_task_classification() -> Any:
+        """Return task-classification rules and model mapping."""
+        return runtime_config["task_classification"]
+
+    @app.post("/config/task-classification")
+    async def set_task_classification(request: Request) -> Any:
+        """Set task-classification rules and per-category model mapping."""
+        body = await request.json()
+        runtime_config["task_classification"] = {
+            "rules": body.get("rules", []),
+            "model_mapping": body.get("model_mapping", {}),
+        }
+        return {"status": "applied", **runtime_config["task_classification"]}
+
+    @app.get("/config/llm")
+    async def get_llm_config() -> Any:
+        """Return LLM routing policy (routing rules)."""
+        return runtime_config["llm"]
+
+    @app.post("/config/llm")
+    async def set_llm_config(request: Request) -> Any:
+        """Set LLM routing policy (routing rules)."""
+        body = await request.json()
+        runtime_config["llm"] = {"routing_rules": body.get("routing_rules", [])}
+        return {"status": "applied", **runtime_config["llm"]}
+
+    @app.get("/config/routing-overrides")
+    async def get_routing_overrides() -> Any:
+        """Return per-agent routing overrides."""
+        return runtime_config["routing_overrides"]
+
+    @app.post("/config/routing-overrides")
+    async def set_routing_overrides(request: Request) -> Any:
+        """Set per-agent routing overrides."""
+        body = await request.json()
+        runtime_config["routing_overrides"] = {"overrides": body.get("overrides", [])}
+        return {"status": "applied", **runtime_config["routing_overrides"]}
+
     # ─── MCP Server Config Endpoints ────────────────────────────────────────
 
     @app.post("/config/mcp-servers")
