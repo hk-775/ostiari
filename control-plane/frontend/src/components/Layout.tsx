@@ -1,5 +1,5 @@
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { Shield, Server, Wrench, FileText, Activity, Plug, History, DollarSign, Radio, FlaskConical, Brain, ShieldCheck, Beaker, Bot, Network, Users, Key, LogOut, EyeOff } from "lucide-react";
+import { Shield, Server, Wrench, FileText, Activity, Plug, History, DollarSign, Radio, FlaskConical, Brain, ShieldCheck, Beaker, Bot, Network, Users, Key, LogOut, EyeOff, FileCheck } from "lucide-react";
 import { useAuthStore } from "../stores/authStore";
 
 const NAV_SECTIONS: {
@@ -19,6 +19,7 @@ const NAV_SECTIONS: {
       { path: "/shadow-report", label: "Shadow Report", icon: EyeOff, color: "text-amber-600", activeBg: "bg-amber-50" },
       { path: "/costs", label: "Costs", icon: DollarSign, color: "text-orange-600", activeBg: "bg-orange-50" },
       { path: "/audit", label: "Audit Log", icon: History, color: "text-stone-600", activeBg: "bg-stone-100" },
+      { path: "/compliance", label: "Compliance", icon: FileCheck, color: "text-sky-600", activeBg: "bg-sky-50" },
     ],
   },
   {
