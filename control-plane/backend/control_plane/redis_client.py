@@ -2,18 +2,17 @@
 
 import logging
 import os
-from typing import Optional
 
 import redis.asyncio as redis
 
 logger = logging.getLogger(__name__)
 
-REDIS_URL: Optional[str] = os.environ.get("REDIS_URL")
+REDIS_URL: str | None = os.environ.get("REDIS_URL")
 
-_redis: Optional[redis.Redis] = None
+_redis: redis.Redis | None = None
 
 
-async def get_redis() -> Optional[redis.Redis]:
+async def get_redis() -> redis.Redis | None:
     """Get Redis connection, or None if not configured/available."""
     global _redis
     if not REDIS_URL:

@@ -1,13 +1,13 @@
 """LLM Provider Configuration API — manage provider credentials and connectivity."""
 
+import logging
 import os
 import time
-import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel, Field
 import httpx
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 
 from control_plane.auth.dependencies import require_role
 
@@ -323,10 +323,6 @@ async def test_provider(name: str, _user=_admin_dep):
                 else:
                     try:
                         import boto3
-                        bedrock_client = boto3.client(
-                            "bedrock-runtime",
-                            region_name=rec.region,
-                        )
                         # Try listing foundation models as a connectivity check
                         bedrock_mgmt = boto3.client("bedrock", region_name=rec.region)
                         bedrock_mgmt.list_foundation_models(byOutputModality="TEXT")

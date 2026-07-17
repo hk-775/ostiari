@@ -6,7 +6,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.auth.dependencies import get_current_user, require_role
 from control_plane.auth.models import User
-from control_plane.auth.schemas import AuthUser, LoginRequest, LoginResponse, UserCreate, UserResponse
+from control_plane.auth.schemas import (
+    AuthUser,
+    LoginRequest,
+    LoginResponse,
+    UserCreate,
+    UserResponse,
+)
 from control_plane.auth.service import create_access_token, hash_password, verify_password
 from control_plane.database import get_db
 

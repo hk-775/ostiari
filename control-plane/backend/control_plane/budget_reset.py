@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Literal, Optional
+from typing import Literal
 
 import httpx
 
@@ -17,11 +17,11 @@ class BudgetResetScheduler:
 
     def __init__(self) -> None:
         self.schedule: Schedule = "manual"
-        self.next_reset: Optional[datetime] = None
-        self._task: Optional[asyncio.Task] = None
+        self.next_reset: datetime | None = None
+        self._task: asyncio.Task | None = None
         self._gateway_endpoints: list[str] = []
 
-    def configure(self, schedule: Schedule, gateway_endpoints: Optional[list[str]] = None) -> None:
+    def configure(self, schedule: Schedule, gateway_endpoints: list[str] | None = None) -> None:
         """Configure the reset schedule and restart the background task."""
         self.schedule = schedule
         if gateway_endpoints is not None:

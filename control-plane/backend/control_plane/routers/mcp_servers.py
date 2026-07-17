@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.database import get_db
-from control_plane.models.database import McpServer, Gateway
+from control_plane.models.database import Gateway, McpServer
 from control_plane.models.schemas import McpServerCreate, McpServerResponse
 
 router = APIRouter(prefix="/api/mcp-servers", tags=["mcp-servers"])

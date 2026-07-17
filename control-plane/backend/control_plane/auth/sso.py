@@ -7,7 +7,6 @@ Supports any OIDC-compliant Identity Provider including:
 - Generic OIDC: any provider implementing OpenID Connect Discovery
 """
 
-import hashlib
 import os
 import secrets
 from dataclasses import dataclass, field
@@ -128,7 +127,6 @@ async def get_authorization_url(config: OIDCConfig) -> tuple[str, str, str]:
         "nonce": nonce,
     }
 
-    query_string = "&".join(f"{k}={httpx.QueryParams({k: v})}" for k, v in params.items())
     # Use httpx URL building for proper encoding
     url = httpx.URL(authorization_endpoint, params=params)
 

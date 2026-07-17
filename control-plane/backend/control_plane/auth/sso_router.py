@@ -17,7 +17,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from control_plane.auth.models import User
 from control_plane.auth.service import create_access_token
 from control_plane.auth.sso import (
-    OIDCConfig,
     detect_provider,
     exchange_code,
     extract_roles_from_claims,
