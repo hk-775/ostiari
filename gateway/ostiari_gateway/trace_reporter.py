@@ -61,6 +61,8 @@ class TraceReporter:
         model: str = "",
         shadow: bool = False,
         would_block: bool = False,
+        delegation_chain: list[str] | None = None,
+        limit_type: str = "",
     ) -> None:
         """Report a single tool call event to the control plane.
 
@@ -91,6 +93,8 @@ class TraceReporter:
             "model": model,
             "shadow": shadow,
             "would_block": would_block,
+            "delegation_chain": delegation_chain or [],
+            "limit_type": limit_type,
             "timestamp": time.time(),
         }
 

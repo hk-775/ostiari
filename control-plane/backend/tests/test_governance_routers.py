@@ -183,3 +183,36 @@ class TestShadowReport:
         assert offenders[0]["count"] == 2
         assert offenders[0]["max_score"] == 90
         assert offenders[0]["reasons"] == ["PII"]
+
+
+class TestDelegationReport:
+    async def test_empty(self, client):
+        r = await client.get("/api/traces/delegation-report")
+        assert r.status_code == 200
+        b = r.json()
+        assert b["blocked_delegation_count"] == 0 and b["edges"] == []
+
+    async def test_aggregates_blocked_edges(self, client):
+        events = [
+            {"action": "a2a.payments", "limit_type": "cross_agent_delegation", "would_block": True,
+             "shadow": False, "blocked_reason": "not permitted", "delegation_chain": ["research"]},
+            {"action": "a2a.payments", "limit_type": "cross_agent_delegation", "would_block": True,
+             "shadow": False, "blocked_reason": "not permitted", "delegation_chain": ["research"]},
+            {"action": "a2a.db", "limit_type": "cross_agent_delegation", "would_block": True,
+             "shadow": True, "blocked_reason": "low trust", "delegation_chain": ["ops", "coder"]},
+            # noise: a non-delegation trace must be ignored
+            {"action": "send_email", "limit_type": "", "would_block": True, "shadow": True},
+        ]
+        for e in events:
+            await client.post("/api/traces/ingest", json=e)
+        b = (await client.get("/api/traces/delegation-report")).json()
+        assert b["blocked_delegation_count"] == 3
+        assert b["distinct_edges"] == 2
+        top = b["edges"][0]
+        assert top["caller"] == "research" and top["callee"] == "payments"
+        assert top["count"] == 2
+        assert top["reasons"] == ["not permitted"]
+        # the ops->coder edge came from a shadow trace
+        db_edge = next(e for e in b["edges"] if e["callee"] == "db")
+        assert db_edge["caller"] == "coder"  # chain[-1]
+        assert db_edge["shadow"] is True
