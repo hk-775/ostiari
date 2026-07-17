@@ -135,8 +135,15 @@ class A2AManager:
                 })
         return skills
 
-    async def call_agent(self, name: str, message: str) -> dict[str, Any]:
-        """Send a text message to an agent and return the result."""
+    async def call_agent(
+        self, name: str, message: str, headers: dict[str, str] | None = None
+    ) -> dict[str, Any]:
+        """Send a text message to an agent and return the result.
+
+        ``headers`` carries delegation provenance (caller identity + chain) to
+        the downstream agent's gateway so it can govern the interaction with
+        full knowledge of who originated the request.
+        """
         client = self._clients.get(name)
         if client is None:
             return {"error": f"A2A agent '{name}' not connected"}
@@ -149,20 +156,22 @@ class A2AManager:
             ),
         )
 
-        result = await client.send_task(task_params)
+        result = await client.send_task(task_params, headers=headers)
 
         if isinstance(result, JSONRPCError):
             return {"error": result.message, "code": result.code}
 
         return self._task_to_response(result)
 
-    async def call_skill(self, qualified_name: str, message: str) -> dict[str, Any]:
+    async def call_skill(
+        self, qualified_name: str, message: str, headers: dict[str, str] | None = None
+    ) -> dict[str, Any]:
         """Call a specific skill by its qualified name (agent.skill_id)."""
         agent_name = self._skill_to_agent.get(qualified_name)
         if agent_name is None:
             return {"error": f"A2A skill '{qualified_name}' not found"}
 
-        return await self.call_agent(agent_name, message)
+        return await self.call_agent(agent_name, message, headers=headers)
 
     async def shutdown(self) -> None:
         """Close all A2A agent connections."""

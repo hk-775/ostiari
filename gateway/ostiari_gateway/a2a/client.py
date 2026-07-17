@@ -47,8 +47,12 @@ class A2AClient:
     def url(self) -> str:
         return self._base_url
 
-    async def send_task(self, params: TaskSendParams) -> Task | JSONRPCError:
-        return await self._call_task_method("tasks/send", params.model_dump(exclude_none=True))
+    async def send_task(
+        self, params: TaskSendParams, headers: dict[str, str] | None = None
+    ) -> Task | JSONRPCError:
+        return await self._call_task_method(
+            "tasks/send", params.model_dump(exclude_none=True), headers=headers
+        )
 
     async def get_task(self, params: TaskQueryParams) -> Task | JSONRPCError:
         return await self._call_task_method("tasks/get", params.model_dump(exclude_none=True))
@@ -107,7 +111,7 @@ class A2AClient:
                 )
 
     async def _call_task_method(
-        self, method: str, params: dict[str, Any]
+        self, method: str, params: dict[str, Any], headers: dict[str, str] | None = None
     ) -> Task | JSONRPCError:
         request = JSONRPCRequest(
             id=str(uuid.uuid4()),
@@ -119,6 +123,7 @@ class A2AClient:
             response = await self._client.post(
                 self._base_url,
                 json=request.model_dump(),
+                headers=headers or None,
             )
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
