@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from control_plane.database import get_db, async_session
+from control_plane.database import async_session, get_db
 from control_plane.models.database import Gateway, Tool
 from control_plane.models.schemas import GatewayCreate, GatewayResponse, GatewayUpdate
 from control_plane.services.audit_service import audit

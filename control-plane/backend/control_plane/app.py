@@ -7,7 +7,20 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from control_plane.database import engine
 from control_plane.models.database import Base
-from control_plane.routers import agents, audit, costs, experiments, mcp_servers, model_config, policies, proxy, quotas, gateways, tools, traces
+from control_plane.routers import (
+    agents,
+    audit,
+    costs,
+    experiments,
+    gateways,
+    mcp_servers,
+    model_config,
+    policies,
+    proxy,
+    quotas,
+    tools,
+    traces,
+)
 
 
 @asynccontextmanager
@@ -21,19 +34,19 @@ async def lifespan(app: FastAPI):
     # Restore in-memory state from previous session
     state = load_state()
     if "quotas" in state:
-        from control_plane.routers.quotas import _quotas, _next_id, QuotaResponse
+        from control_plane.routers.quotas import QuotaResponse, _next_id, _quotas
         for q in state["quotas"]:
             _quotas[q["id"]] = QuotaResponse(**q)
         if state["quotas"]:
             _next_id[0] = max(q["id"] for q in state["quotas"]) + 1
 
     if "experiments" in state:
-        from control_plane.routers.experiments import _experiments, ExperimentResponse
+        from control_plane.routers.experiments import ExperimentResponse, _experiments
         for e in state["experiments"]:
             _experiments[e["name"]] = ExperimentResponse(**e)
 
     if "models" in state:
-        from control_plane.routers.model_config import _models, ModelConfig
+        from control_plane.routers.model_config import ModelConfig, _models
         for m in state["models"]:
             _models[m["name"]] = ModelConfig(**m)
 
@@ -52,9 +65,9 @@ async def lifespan(app: FastAPI):
     stop_health_check()
 
     # Save in-memory state before shutdown
-    from control_plane.routers.quotas import _quotas
     from control_plane.routers.experiments import _experiments
     from control_plane.routers.model_config import _models
+    from control_plane.routers.quotas import _quotas
 
     save_state({
         "quotas": [q.model_dump() for q in _quotas.values()],

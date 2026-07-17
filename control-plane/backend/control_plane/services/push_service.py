@@ -7,7 +7,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from control_plane.models.database import McpServer, Policy, Gateway, Tool
+from control_plane.models.database import Gateway, McpServer, Policy, Tool
 from control_plane.models.schemas import PushResponse, PushResult
 
 log = logging.getLogger("control_plane.push")

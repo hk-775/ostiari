@@ -76,12 +76,9 @@ class LLMProvider:
             return
 
         try:
-            from gateway.adapters.registry import AdapterRegistry
             from gateway.config import DEFAULT_CONFIG
             from gateway.cost_tracker import CostTracker
             from gateway.health_tracker import ProviderHealthTracker
-            from gateway.model_registry import ModelRegistry
-            from gateway.models import ProviderModelMapping, RoutingStrategy, TokenPricing
             from gateway.router import Router
 
             self._health_tracker = ProviderHealthTracker()
