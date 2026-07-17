@@ -52,9 +52,25 @@ async def record_usage(body: UsageRecordCreate, db: AsyncSession = Depends(get_d
         action=body.action,
     )
     db.add(record)
+    # Broker pilot: draw the consumed tokens down against the provider pool, at
+    # our bulk cost (retail x (1 - discount)). Best-effort; no-op if unprovisioned.
+    await _broker_drawdown(db, model=body.model, tokens=body.total_tokens, retail_cost=cost)
     await db.commit()
     await db.refresh(record)
     return record
+
+
+async def _broker_drawdown(db, *, model: str, tokens: int, retail_cost: float) -> None:
+    """Decrement the broker token pool for this usage (pilot). Never raises."""
+    if tokens <= 0:
+        return
+    try:
+        from control_plane.routers.broker_pilot import draw_down
+        from control_plane.routers.token_broker import _config as _tb
+        our_cost = retail_cost * (1 - _tb.get("bulk_discount", 0.0))
+        await draw_down(db, model=model, tokens=tokens, our_cost_usd=our_cost)
+    except Exception:  # noqa: BLE001 — pool accounting must never block usage recording
+        pass
 
 
 @router.post("/record/batch")
