@@ -11,6 +11,7 @@ import { AuditLog } from "./pages/AuditLog";
 import { Costs } from "./pages/Costs";
 import { LiveTraces } from "./pages/LiveTraces";
 import { ShadowReport } from "./pages/ShadowReport";
+import { ProtocolGovernance } from "./pages/ProtocolGovernance";
 import { Experiments } from "./pages/Experiments";
 import { Models } from "./pages/Models";
 import { Efficiency } from "./pages/Efficiency";
@@ -84,6 +85,7 @@ export default function App() {
               <Route path="/shadow-report" element={<ShadowReport />} />
               <Route path="/quotas" element={<Quotas />} />
               <Route path="/agent-quotas" element={<AgentQuotas />} />
+              <Route path="/protocol-governance" element={<ProtocolGovernance />} />
               <Route path="/sandbox" element={<Sandbox />} />
               <Route path="/audit" element={<AuditLog />} />
               <Route path="/providers" element={<RequireAdmin><Providers /></RequireAdmin>} />
