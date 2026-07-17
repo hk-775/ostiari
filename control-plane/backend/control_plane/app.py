@@ -62,11 +62,18 @@ async def lifespan(app: FastAPI):
         for p in state["providers"]:
             _providers[p["name"]] = _ProviderRecord(**p)
 
-    # Seed demo traces so the Live Traces view isn't empty (skip in clean-install mode)
+    # Seed demo data so the dashboard isn't empty (skip in clean-install mode).
+    # Traces + experiments are in-memory; metering usage records are DB-backed.
+    # All seeders are idempotent (no-op when data already exists).
     import os
     if os.environ.get("OSTIARI_NO_DEMO", "").lower() not in ("1", "true", "yes"):
+        from control_plane.demo_seed import seed_demo_db, seed_demo_experiments
         from control_plane.routers.traces import seed_traces
         seed_traces()
+        seed_demo_experiments()
+        from control_plane.database import async_session
+        async with async_session() as db:
+            await seed_demo_db(db)
 
     # Start background health-check loop for gateways
     start_health_check()

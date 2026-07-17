@@ -158,10 +158,63 @@ def seed_traces() -> None:
                params={"service": "auth-service", "environment": "production"}, age_seconds=12, now=now),
     ]
 
+    # --- Volume: a broader spread of activity so Live Traces / Metering /
+    #     Compliance / Trust look like a real fleet, not a handful of rows. ---
+    import random as _rnd
+    _rnd.seed(42)  # deterministic demo
+    agents_fw = [
+        ("research-agent", "openai"), ("coder-agent", "anthropic"),
+        ("db-agent", "langgraph"), ("payments-agent", "crewai"),
+        ("ops-agent", "strands"), ("analytics-agent", "autogen"),
+        ("support-agent", "openai"), ("planner-agent", "langgraph"),
+    ]
+    safe_tools = ["web_search", "db_query", "file_read", "github.search_code", "calendar.create"]
+    risky_tools = ["db_delete", "file_write", "github.create_pr", "send_email", "slack.post"]
+    for i in range(90):
+        agent, fw = _rnd.choice(agents_fw)
+        risky = _rnd.random() < 0.4
+        tool = _rnd.choice(risky_tools if risky else safe_tools)
+        if risky:
+            tier = _rnd.choices(["allow", "intervene", "block"], weights=[45, 30, 25])[0]
+        else:
+            tier = _rnd.choices(["allow", "intervene", "block"], weights=[86, 11, 3])[0]
+        score = {"allow": _rnd.randint(2, 28), "intervene": _rnd.randint(38, 68),
+                 "block": _rnd.randint(74, 100)}[tier]
+        events.append(_trace(
+            gateway_id=_rnd.choice(["crm-agent", "ops-agent", "devops-agent", "analytics-agent"]),
+            action=tool, tier=tier, score=score, duration_ms=round(_rnd.uniform(15, 420), 1),
+            agent_id=agent, framework=fw,
+            blocked_reason=(f"policy: {tool} restricted" if tier == "block" else None),
+            model=_rnd.choice(["claude-haiku", "gpt-4o", "claude-sonnet", "gpt-4o-mini"]),
+            age_seconds=_rnd.uniform(5, 3600), now=now,
+        ))
+
     for e in events:
         _recent_traces.append(e)
 
-    log.info("Seeded %d demo traces", len(events))
+    # --- Blocked cross-agent delegations (Protocol Governance + Shadow feeds).
+    #     These carry limit_type/would_block/delegation_chain, which _trace()
+    #     doesn't model, so append them directly. ---
+    delegations = [
+        ("research-agent", "payments-agent", "research-agent -> payments-agent not permitted", False, 3),
+        ("coder-agent", "payments-agent", "coder-agent -> payments-agent not permitted", True, 2),
+        ("support-agent", "db-agent", "callee db-agent trust 55 below minimum 60", True, 2),
+        ("analytics-agent", "payments-agent", "analytics-agent -> payments-agent not permitted", False, 2),
+        ("planner-agent", "ops-agent", "delegation chain depth 5 exceeds max 4", True, 1),
+    ]
+    for caller, callee, reason, shadow, count in delegations:
+        for _ in range(count):
+            _recent_traces.append({
+                "sidecar_id": "crm-agent", "gateway_id": "crm-agent",
+                "action": f"a2a.{callee}", "tier": "block", "score": 0,
+                "agent_id": caller, "framework": "gateway-invoke", "is_mcp": False,
+                "blocked_reason": reason, "limit_type": "cross_agent_delegation",
+                "would_block": True, "shadow": shadow, "delegation_chain": [caller],
+                "endpoint": f"a2a://{callee}", "params": {}, "model": "",
+                "timestamp": now - _rnd.uniform(10, 1800),
+            })
+
+    log.info("Seeded %d demo traces", len(_recent_traces))
 
 
 @router.post("/api/traces/ingest")
