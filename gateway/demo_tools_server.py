@@ -12,8 +12,9 @@ register_demo_tools.py, which the Makefile runs automatically.
 """
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 app = FastAPI(title="Ostiari Demo Tools")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -129,6 +130,43 @@ async def github_delete_repo(body: dict) -> dict:
 @app.post("/drawio.delete_diagram")
 async def drawio_delete_diagram(body: dict) -> dict:
     return {"status": "deleted", "id": body.get("id", "")}
+
+
+# ─── Paywalled tool (native x402 passthrough demo) ──────────────────────────
+# Returns HTTP 402 Payment Required unless the request carries an X-PAYMENT
+# header. Ostiari's payment gate (passthrough mode) settles the charge from the
+# agent's wallet and retries with that header, so a funded agent gets results
+# and an unfunded one is blocked at 402 — all without touching a blockchain.
+
+PREMIUM_SEARCH_PRICE_USDC = 0.005
+
+
+@app.post("/premium_search")
+async def premium_search(request: Request) -> JSONResponse:
+    if not request.headers.get("X-PAYMENT"):
+        # x402 challenge: tell the caller what to pay.
+        return JSONResponse(
+            status_code=402,
+            content={
+                "error": "Payment required",
+                "amount_usdc": PREMIUM_SEARCH_PRICE_USDC,
+                "asset": "USDC",
+                "pay_to": "0xDemoMerchantWalletF0rPremiumSearch",
+                "nonce": "premium-search",
+            },
+        )
+    body = await request.json()
+    query = body.get("query", "")
+    return JSONResponse(content={
+        "query": query,
+        "paid_usdc": PREMIUM_SEARCH_PRICE_USDC,
+        "results": [
+            {"title": f"[Premium] Deep report on '{query}'", "url": "https://premium.example/report",
+             "snippet": "Full-text analysis, citations, and competitive breakdown."},
+            {"title": f"[Premium] Dataset: {query}", "url": "https://premium.example/data",
+             "snippet": "Structured, licensed dataset behind the paywall."},
+        ],
+    })
 
 
 @app.get("/health")

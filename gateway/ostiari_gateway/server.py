@@ -129,6 +129,16 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
     quota_enforcer = QuotaEnforcer()
     agent_auth = AgentAuthPolicy()
     cross_agent = CrossAgentPolicy()
+
+    # Payment gate — mode chosen by env: simulated (default, no chain) or live.
+    import os as _os
+
+    from ostiari_gateway.payments import PaymentGate, SimulatedSettler, X402Settler, parse_402
+    if _os.environ.get("OSTIARI_X402_MODE", "simulated").lower() == "live":
+        _settler = X402Settler(facilitator_url=_os.environ.get("OSTIARI_X402_FACILITATOR", ""))
+    else:
+        _settler = SimulatedSettler()
+    payment_gate = PaymentGate(settler=_settler)
     trace_reporter = TraceReporter(
         control_plane_url=(initial_config.control_plane_url if initial_config else ""),
         sidecar_id=(initial_config.sidecar_id if initial_config else ""),
@@ -145,6 +155,10 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
     # Apply cross-agent (A2A delegation) policy from initial config
     if initial_config and getattr(initial_config, "cross_agent", None):
         cross_agent.configure(initial_config.cross_agent)
+
+    # Apply payment config from initial config
+    if initial_config and getattr(initial_config, "payments", None):
+        payment_gate.configure(initial_config.payments)
 
     if initial_config is not None:
         manager.apply_config(initial_config)
@@ -182,6 +196,10 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
             # Apply agent auth
             if "agent_auth" in bundle and bundle["agent_auth"]:
                 agent_auth.configure(bundle["agent_auth"])
+
+            # Apply payment config (pricing + wallets)
+            if "payments" in bundle and bundle["payments"]:
+                payment_gate.configure(bundle["payments"])
 
         lifecycle.set_config_callback(_apply_bundle)
 
@@ -407,6 +425,33 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
                 action, endpoint, schema=tool.schema_ if tool else None
             )
 
+        # Payment gate (metered mode): price the call and settle from the agent
+        # wallet BEFORE execution. In off/passthrough mode this is a no-op here
+        # (passthrough settles reactively on a downstream 402, below). Runs after
+        # the safety/risk checks so we never charge for a call we'd block, and
+        # is skipped in shadow mode (which returned above — no real money moves).
+        pay = await payment_gate.charge_before(agent_id=agent_id, action=action)
+        if not pay.settled:
+            await trace_reporter.report(
+                action=action, tier="block", score=0, duration_ms=0,
+                agent_id=agent_id, framework=framework, is_mcp=is_mcp_tool,
+                blocked_reason=pay.reason,
+                endpoint=tool.endpoint if tool else "",
+                session_id=session_id, plan=plan, step=step, params=params,
+                limit_type="payment",
+            )
+            return JSONResponse(
+                status_code=402,
+                content={
+                    "blocked": True,
+                    "action": action,
+                    "reason": pay.reason,
+                    "limit_type": "payment",
+                    "amount_usdc": pay.amount_usdc,
+                    "wallet_balance_usdc": pay.balance_usdc,
+                },
+            )
+
         # Execute: route to A2A agent, MCP client, or HTTP proxy
         if is_a2a_tool:
             import time as _time
@@ -496,6 +541,38 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
             proxy_result = await manager.tool_proxy.execute(
                 action, params, propagate_headers=propagation_headers
             )
+
+            # Passthrough x402: the tool demanded payment (HTTP 402). Settle from
+            # the agent wallet, then retry the call carrying the X-PAYMENT proof.
+            quote_402 = parse_402(
+                proxy_result.get("result"), proxy_result.get("status_code", 200), action
+            )
+            if quote_402 is not None and payment_gate.mode == "passthrough":
+                pay = await payment_gate.settle_402(
+                    agent_id=agent_id, action=action, quote=quote_402
+                )
+                if not pay.settled:
+                    await trace_reporter.report(
+                        action=action, tier="block", score=0,
+                        duration_ms=proxy_result.get("duration_ms", 0),
+                        agent_id=agent_id, framework=framework, is_mcp=False,
+                        blocked_reason=pay.reason, endpoint=tool.endpoint,
+                        session_id=session_id, plan=plan, step=step, params=params,
+                        limit_type="payment",
+                    )
+                    return JSONResponse(
+                        status_code=402,
+                        content={
+                            "blocked": True, "action": action, "reason": pay.reason,
+                            "limit_type": "payment", "amount_usdc": pay.amount_usdc,
+                            "wallet_balance_usdc": pay.balance_usdc,
+                        },
+                    )
+                # Paid — retry with the payment proof header.
+                proxy_result = await manager.tool_proxy.execute(
+                    action, params,
+                    propagate_headers={**propagation_headers, **pay.retry_header},
+                )
 
             record_proxy_result(
                 proxy_span,
@@ -640,6 +717,20 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
     async def get_cross_agent() -> Any:
         """Get current cross-agent delegation policy."""
         return cross_agent.get_status()
+
+    # ─── Payment (x402) Config Endpoints ───────────────────────────────────
+
+    @app.post("/config/payments")
+    async def apply_payments(request: Request) -> Any:
+        """Hot-reload payment config (mode + pricing + wallets)."""
+        body = await request.json()
+        payment_gate.configure(body)
+        return {"status": "applied", **payment_gate.status()}
+
+    @app.get("/config/payments")
+    async def get_payments() -> Any:
+        """Get current payment config + wallet balances."""
+        return payment_gate.status()
 
     @app.post("/config/policy")
     async def apply_policy(request: Request) -> Any:
