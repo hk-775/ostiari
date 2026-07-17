@@ -1,25 +1,27 @@
 """Idempotent demo-data seeding for DB- and memory-backed resources.
 
 The trace buffer is seeded in routers/traces.py. This covers metering (usage
-records in the DB) and A/B experiments (in-memory) so those pages are populated
-on a fresh start. Runs from the app lifespan; only seeds when empty, so it
-never duplicates or clobbers real data.
+records in the DB), A/B experiments (in-memory), and MCP server records (DB) so
+those pages are populated on a fresh start. Runs from the app lifespan; only
+seeds when empty, so it never duplicates or clobbers real data.
 
-MCP servers are intentionally not seeded here: they carry a gateway_id foreign
-key to gateways.id, which only exist once a real gateway registers at runtime —
-seeding them at startup would create dangling references.
+The seeded MCP servers are *real* stdio servers (draw.io + filesystem, run via
+npx). The DB record is only the config; the crm-agent gateway actually spawns
+the subprocess and discovers tools — at startup (from llm-gateway-config.yaml)
+or when register_demo_mcp.py pushes them to a running gateway.
 """
 
 from __future__ import annotations
 
 import logging
 import random
+import shutil
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from control_plane.models.database import UsageRecord
+from control_plane.models.database import McpServer, UsageRecord
 
 log = logging.getLogger("control_plane.demo_seed")
 
@@ -32,8 +34,66 @@ _MODELS = ["claude-haiku", "gpt-4o-mini", "claude-sonnet", "gpt-4o"]
 _TOOLS = ["web_search", "db_query", "send_email", "github.search_code", "file_read"]
 
 
+# Real MCP servers to seed on crm-agent. `command` is filled in at seed time
+# from the resolved npx path (portable across machines). filesystem is sandboxed
+# to a scratch dir so its tools actually execute end-to-end in the demo; draw.io
+# discovers 28 real tools (calls need a browser-extension bridge).
+DEMO_MCP_SANDBOX = "/tmp/ostiari-mcp-sandbox"
+_MCP_SERVERS = [
+    {
+        "name": "drawio", "prefix": "drawio",
+        "npx_args": ["-y", "drawio-mcp-server"],
+    },
+    {
+        "name": "filesystem", "prefix": "fs",
+        "npx_args": ["-y", "@modelcontextprotocol/server-filesystem", DEMO_MCP_SANDBOX],
+    },
+]
+
+
+def demo_mcp_specs() -> list[dict]:
+    """Real MCP server configs for the demo, or [] if npx isn't available.
+
+    Shared by the DB seeder and register_demo_mcp.py so both agree on the
+    exact command. Returns stdio configs with an absolute npx path.
+    """
+    npx = shutil.which("npx")
+    if not npx:
+        return []
+    return [
+        {
+            "name": s["name"], "mode": "stdio", "prefix": s["prefix"],
+            "command": [npx, *s["npx_args"]],
+        }
+        for s in _MCP_SERVERS
+    ]
+
+
+async def seed_demo_mcp(db: AsyncSession, gateway_id: str = "crm-agent") -> None:
+    """Seed real MCP server records (idempotent; skips if any already exist)."""
+    existing = (await db.execute(select(func.count()).select_from(McpServer))).scalar_one()
+    if existing:
+        return
+
+    specs = demo_mcp_specs()
+    if not specs:
+        log.info("npx not found — skipping MCP server seed (install Node.js for the MCP demo)")
+        return
+
+    for spec in specs:
+        db.add(McpServer(
+            name=spec["name"], mode="stdio", prefix=spec["prefix"],
+            command=spec["command"], gateway_id=gateway_id,
+        ))
+    await db.commit()
+    log.info("Seeded %d real MCP server records (%s)", len(specs),
+             ", ".join(s["name"] for s in specs))
+
+
 async def seed_demo_db(db: AsyncSession) -> None:
     """Populate DB-backed demo data; idempotent (skips if already present)."""
+    await seed_demo_mcp(db)
+
     existing = (await db.execute(select(func.count()).select_from(UsageRecord))).scalar_one()
     if existing:
         return
