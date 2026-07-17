@@ -318,3 +318,44 @@ class TestShadowMode:
         # Would be 403 in enforce mode; shadowed -> 200 with would_block.
         assert resp.status_code == 200
         assert resp.json()["would_block"] is True
+
+
+class TestShadowSchemaMock:
+    def test_schema_shaped_response(self, httpserver):
+        httpserver.expect_request("/run", method="POST").respond_with_json({"real": True})
+        config = SidecarConfig(
+            sidecar_id="sc", mode="shadow",
+            tools=[ToolDefinition(
+                name="lookup",
+                endpoint=httpserver.url_for("/run"),
+                schema={"type": "object", "properties": {
+                    "rows": {"type": "array", "items": {"type": "object", "properties": {
+                        "id": {"type": "integer"}, "name": {"type": "string"}}}},
+                    "count": {"type": "integer"},
+                }},
+            )],
+            policy=PolicyConfig(allow=["lookup"]),
+        )
+        client = TestClient(create_app(initial_config=config))
+        resp = client.post("/tool/lookup", json={"q": "x"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["shadow"] is True
+        syn = body["result"]["synthesized"]
+        # Shaped to the schema: rows is a list of {id,name}; count is a number.
+        assert "rows" in syn and isinstance(syn["rows"], list)
+        assert syn["rows"][0].keys() == {"id", "name"}
+        assert "count" in syn
+        # Real backend never hit.
+        assert len(httpserver.log) == 0
+
+    def test_no_schema_falls_back_to_marker(self, httpserver):
+        httpserver.expect_request("/run", method="POST").respond_with_json({"real": True})
+        config = SidecarConfig(
+            sidecar_id="sc", mode="shadow",
+            tools=[ToolDefinition(name="plain", endpoint=httpserver.url_for("/run"))],
+            policy=PolicyConfig(allow=["plain"]),
+        )
+        client = TestClient(create_app(initial_config=config))
+        body = client.post("/tool/plain", json={}).json()
+        assert body["result"]["note"].startswith("shadowed")
