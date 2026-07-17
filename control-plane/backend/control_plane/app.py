@@ -24,6 +24,7 @@ from control_plane.routers import (
     providers,
     proxy,
     quotas,
+    roi,
     tools,
     traces,
     trust,
@@ -63,6 +64,10 @@ async def lifespan(app: FastAPI):
         for p in state["providers"]:
             _providers[p["name"]] = _ProviderRecord(**p)
 
+    if "roi_cost_model" in state and state["roi_cost_model"]:
+        from control_plane.routers.roi import _cost_model
+        _cost_model.update(state["roi_cost_model"])
+
     # Seed demo data so the dashboard isn't empty (skip in clean-install mode).
     # Traces + experiments are in-memory; metering usage records are DB-backed.
     # All seeders are idempotent (no-op when data already exists).
@@ -94,12 +99,14 @@ async def lifespan(app: FastAPI):
     from control_plane.routers.model_config import _models
     from control_plane.routers.providers import _providers
     from control_plane.routers.quotas import _quotas
+    from control_plane.routers.roi import _cost_model
 
     save_state({
         "quotas": [q.model_dump() for q in _quotas.values()],
         "experiments": [e.model_dump() for e in _experiments.values()],
         "models": [m.model_dump() for m in _models.values()],
         "providers": [p.model_dump() for p in _providers.values()],
+        "roi_cost_model": _cost_model,
     })
 
     await engine.dispose()
@@ -139,6 +146,7 @@ app.include_router(compliance.router)
 app.include_router(metering.router)
 app.include_router(trust.router)
 app.include_router(payments.router)
+app.include_router(roi.router)
 
 
 @app.get("/api/health")
