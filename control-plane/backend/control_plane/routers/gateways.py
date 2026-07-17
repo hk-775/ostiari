@@ -73,6 +73,17 @@ def _get_actor(request: Request) -> str:
     return request.headers.get("X-Actor", "system")
 
 
+def _to_response(gateway: Gateway, tools_count: int = 0) -> GatewayResponse:
+    """Build a GatewayResponse, surfacing the stored enforcement mode."""
+    return GatewayResponse(
+        id=gateway.id, name=gateway.name, endpoint=gateway.endpoint,
+        description=gateway.description, status=gateway.status,
+        last_heartbeat=gateway.last_heartbeat, tools_count=tools_count,
+        mode=(gateway.config or {}).get("mode", "enforce"),
+        created_at=gateway.created_at, updated_at=gateway.updated_at,
+    )
+
+
 @router.get("", response_model=list[GatewayResponse])
 async def list_gateways(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Gateway))
@@ -81,12 +92,7 @@ async def list_gateways(db: AsyncSession = Depends(get_db)):
     for s in gateways:
         tools_result = await db.execute(select(Tool).where(Tool.gateway_id == s.id))
         tools_count = len(tools_result.scalars().all())
-        responses.append(GatewayResponse(
-            id=s.id, name=s.name, endpoint=s.endpoint,
-            description=s.description, status=s.status,
-            last_heartbeat=s.last_heartbeat, tools_count=tools_count,
-            created_at=s.created_at, updated_at=s.updated_at,
-        ))
+        responses.append(_to_response(s, tools_count))
     return responses
 
 
@@ -100,12 +106,7 @@ async def register_gateway(body: GatewayCreate, request: Request, db: AsyncSessi
     await audit.log(db, _get_actor(request), "create", "gateway", body.id, {"name": body.name, "endpoint": body.endpoint})
     await db.commit()
     await db.refresh(gateway)
-    return GatewayResponse(
-        id=gateway.id, name=gateway.name, endpoint=gateway.endpoint,
-        description=gateway.description, status=gateway.status,
-        last_heartbeat=gateway.last_heartbeat, tools_count=0,
-        created_at=gateway.created_at, updated_at=gateway.updated_at,
-    )
+    return _to_response(gateway, 0)
 
 
 @router.get("/{gateway_id}", response_model=GatewayResponse)
@@ -115,12 +116,7 @@ async def get_gateway(gateway_id: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Gateway not found")
     tools_result = await db.execute(select(Tool).where(Tool.gateway_id == gateway_id))
     tools_count = len(tools_result.scalars().all())
-    return GatewayResponse(
-        id=gateway.id, name=gateway.name, endpoint=gateway.endpoint,
-        description=gateway.description, status=gateway.status,
-        last_heartbeat=gateway.last_heartbeat, tools_count=tools_count,
-        created_at=gateway.created_at, updated_at=gateway.updated_at,
-    )
+    return _to_response(gateway, tools_count)
 
 
 @router.patch("/{gateway_id}", response_model=GatewayResponse)
@@ -146,6 +142,38 @@ async def delete_gateway(gateway_id: str, request: Request, db: AsyncSession = D
     await db.delete(gateway)
     await db.commit()
     return {"deleted": gateway_id}
+
+
+@router.put("/{gateway_id}/mode", response_model=GatewayResponse)
+async def set_mode(gateway_id: str, body: dict, request: Request, db: AsyncSession = Depends(get_db)):
+    """Set a gateway's enforcement mode (enforce | shadow) and push it live.
+
+    The mode is persisted in the gateway's config so it survives restarts and
+    is re-applied on every subsequent push. If the gateway is reachable, the
+    new mode is pushed immediately; if not, it takes effect on the next push.
+    """
+    mode = body.get("mode")
+    if mode not in ("enforce", "shadow"):
+        raise HTTPException(status_code=400, detail="mode must be 'enforce' or 'shadow'")
+
+    gateway = await db.get(Gateway, gateway_id)
+    if not gateway:
+        raise HTTPException(status_code=404, detail="Gateway not found")
+
+    # Persist mode in the gateway config (JSON column reassigned so SQLAlchemy
+    # detects the change).
+    gateway.config = {**(gateway.config or {}), "mode": mode}
+    await audit.log(db, _get_actor(request), "set_mode", "gateway", gateway_id, {"mode": mode})
+    await db.commit()
+    await db.refresh(gateway)
+
+    # Best-effort live push so the change is immediate; ignore transport errors.
+    try:
+        await push_service.push_to_gateway(db, gateway_id)
+    except Exception as exc:  # noqa: BLE001 — push is best-effort
+        log.warning("mode set but live push failed for %s: %s", gateway_id, exc)
+
+    return _to_response(gateway, 0)
 
 
 @router.post("/{gateway_id}/push")

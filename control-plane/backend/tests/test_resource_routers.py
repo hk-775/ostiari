@@ -147,3 +147,33 @@ class TestMcpServers:
 
     async def test_get_missing_404(self, client):
         assert (await client.get("/api/mcp-servers/99999")).status_code == 404
+
+
+class TestGatewayMode:
+    """Control-plane-configurable shadow/enforce mode per gateway."""
+
+    async def test_default_mode_is_enforce(self, client):
+        await _make_gateway(client, "gwm")
+        r = await client.get("/api/gateways/gwm")
+        assert r.json()["mode"] == "enforce"
+
+    async def test_set_shadow_mode_persists(self, client):
+        await _make_gateway(client, "gwm")
+        # push will fail (no live gateway at the endpoint) but mode must persist
+        r = await client.put("/api/gateways/gwm/mode", json={"mode": "shadow"})
+        assert r.status_code == 200, r.text
+        assert r.json()["mode"] == "shadow"
+        # re-read confirms persistence
+        assert (await client.get("/api/gateways/gwm")).json()["mode"] == "shadow"
+        # and it shows in the list view
+        listed = {g["id"]: g["mode"] for g in (await client.get("/api/gateways")).json()}
+        assert listed["gwm"] == "shadow"
+
+    async def test_invalid_mode_400(self, client):
+        await _make_gateway(client, "gwm")
+        r = await client.put("/api/gateways/gwm/mode", json={"mode": "bogus"})
+        assert r.status_code == 400
+
+    async def test_mode_unknown_gateway_404(self, client):
+        r = await client.put("/api/gateways/ghost/mode", json={"mode": "shadow"})
+        assert r.status_code == 404
