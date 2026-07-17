@@ -52,7 +52,7 @@ demo-full: ## Full demo — all gateways, A2A agent, control plane (seeded demo 
 	sleep 3 && cd gateway && python -m ostiari_gateway.main --port 8424 --sidecar-id devops-agent --control-plane http://localhost:8400 &
 	sleep 3 && cd gateway && python -m ostiari_gateway.main --port 8425 --sidecar-id analytics-agent --control-plane http://localhost:8400 &
 	sleep 3 && cd gateway && python a2a_demo_server.py &
-	sleep 6 && cd gateway && python register_demo_tools.py && python register_demo_mcp.py &
+	sleep 6 && cd gateway && python register_demo_tools.py && python register_demo_mcp.py && python register_demo_a2a.py &
 	cd control-plane/frontend && npm run dev &
 
 clean-start: ## Clean install — wipe demo data, start all components empty
