@@ -28,6 +28,7 @@ const NAV_SECTIONS: {
       { path: "/models", label: "Models (per agent)", icon: Brain, color: "text-indigo-600", activeBg: "bg-indigo-50" },
       { path: "/policies", label: "Policies (per tool)", icon: FileText, color: "text-rose-600", activeBg: "bg-rose-50" },
       { path: "/quotas", label: "Quotas (per gateway)", icon: ShieldCheck, color: "text-amber-600", activeBg: "bg-amber-50" },
+      { path: "/agent-quotas", label: "Quotas (per agent)", icon: ShieldCheck, color: "text-violet-600", activeBg: "bg-violet-50" },
     ],
   },
   {
@@ -179,6 +180,18 @@ export function Layout() {
 
       {/* Main content */}
       <main className="ml-60 flex-1 min-h-screen" style={{ "--card-border": borderColor } as React.CSSProperties}>
+        {/* Sticky ribbon */}
+        <div className="sticky top-0 z-20 border-b border-violet-100/60 bg-gradient-to-r from-violet-50/70 via-white/80 to-indigo-50/70 backdrop-blur-sm px-8 py-2.5 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="flex items-center gap-1.5 rounded-full bg-white/80 border border-violet-200/60 px-3 py-1 shadow-sm">
+              <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+              <span className="text-[11px] font-semibold text-violet-700 tracking-wide uppercase">Ostiari Control Plane</span>
+            </div>
+          </div>
+          <div className="rounded-full bg-white/60 border border-stone-200/50 px-3 py-1">
+            <span className="text-[10px] text-stone-500">Gateway fleet management · Real-time enforcement</span>
+          </div>
+        </div>
         <div className="mx-auto max-w-6xl px-8 py-8">
           <Outlet />
         </div>

@@ -63,7 +63,7 @@ export function Tools() {
                 <td className="px-6 py-4">
                   <span className="badge bg-stone-100 text-stone-700 ring-1 ring-inset ring-stone-200">{t.method}</span>
                 </td>
-                <td className="px-6 py-4 text-sm text-stone-500">{t.gateway_id}</td>
+                <td className="px-6 py-4 text-sm text-stone-500">{t.gateway_id.replace("-agent","").split("-").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ").replace("Devops","DevOps").replace("Crm","CRM") + " Gateway"}</td>
                 <td className="px-6 py-4 text-sm text-stone-500">{t.timeout_seconds}s</td>
               </tr>
             ))}

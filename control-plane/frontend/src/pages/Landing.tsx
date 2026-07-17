@@ -25,28 +25,35 @@ export function Landing() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-stone-50 via-white to-violet-50/30">
       {/* Hero */}
-      <div className="max-w-5xl mx-auto px-8 pt-16 pb-12">
-        <div className="mb-8">
-          <img src="/logo.svg" alt="Ostiari" className="h-20" />
-          <p className="mt-4 text-2xl font-semibold text-stone-900 leading-snug">AI agents are autonomous.<br /><span className="text-violet-700">Your risk shouldn't be.</span></p>
+      <div className="max-w-5xl mx-auto px-8 pt-10 pb-5">
+        <img src="/logo.svg" alt="Ostiari" className="h-20" />
+
+        <div className="flex items-center justify-between gap-8 mt-5">
+          <p className="text-2xl font-semibold text-stone-900 leading-snug">AI agents are autonomous.<br /><span className="text-violet-700">Your risk shouldn't be.</span></p>
+          <div className="flex flex-col gap-2.5 shrink-0">
+            <Link to="/dashboard" className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg hover:shadow-xl transition">
+              Open Control Plane <ArrowRight className="h-4 w-4" />
+            </Link>
+            <Link to="/architecture" className="inline-flex items-center gap-2 rounded-xl border border-stone-200 bg-white px-5 py-2.5 text-sm font-semibold text-stone-700 hover:bg-stone-50 transition">
+              Watch Architecture Demo
+            </Link>
+          </div>
         </div>
 
-        <p className="text-lg text-stone-600 max-w-2xl leading-relaxed">
+        <p className="mt-5 text-lg text-stone-600 max-w-2xl leading-relaxed">
           The runtime safety layer for AI agents. Every tool call validated, every model access controlled, every dollar tracked — without changing agent code.
         </p>
+      </div>
 
-        <div className="flex gap-3 mt-8">
-          <Link to="/dashboard" className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 px-6 py-3 text-sm font-semibold text-white shadow-lg hover:shadow-xl transition">
-            Open Control Plane <ArrowRight className="h-4 w-4" />
-          </Link>
-          <Link to="/architecture" className="inline-flex items-center gap-2 rounded-xl border border-stone-200 bg-white px-6 py-3 text-sm font-semibold text-stone-700 hover:bg-stone-50 transition">
-            Watch Architecture Demo
-          </Link>
+      {/* Control Plane Overview Diagram */}
+      <div className="max-w-5xl mx-auto px-8 py-4">
+        <div className="rounded-2xl border border-violet-100 bg-gradient-to-br from-white to-violet-50/20 p-2 shadow-sm">
+          <img src="/control-plane-overview.svg" alt="How the Control Plane works" className="w-full rounded-xl" />
         </div>
       </div>
 
       {/* How it works */}
-      <div className="max-w-5xl mx-auto px-8 py-12">
+      <div className="max-w-5xl mx-auto px-8 py-4 border-t border-stone-100/50">
         <h2 className="text-lg font-bold text-stone-900 mb-6">How it works</h2>
         <div className="flex items-center gap-2 overflow-x-auto pb-4">
           {ARCHITECTURE_FLOW.map((item, i) => (
@@ -65,7 +72,7 @@ export function Landing() {
       </div>
 
       {/* Features grid */}
-      <div className="max-w-5xl mx-auto px-8 py-12">
+      <div className="max-w-5xl mx-auto px-8 py-4 border-t border-stone-100/50">
         <h2 className="text-lg font-bold text-stone-900 mb-6">Capabilities</h2>
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {FEATURES.map(f => (
@@ -81,7 +88,7 @@ export function Landing() {
       </div>
 
       {/* Two paths */}
-      <div className="max-w-5xl mx-auto px-8 py-12">
+      <div className="max-w-5xl mx-auto px-8 py-4 border-t border-stone-100/50">
         <h2 className="text-lg font-bold text-stone-900 mb-6">Two paths through the gateway</h2>
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-6">
@@ -102,7 +109,7 @@ export function Landing() {
       </div>
 
       {/* Deployment */}
-      <div className="max-w-5xl mx-auto px-8 py-12">
+      <div className="max-w-5xl mx-auto px-8 py-4 border-t border-stone-100/50">
         <h2 className="text-lg font-bold text-stone-900 mb-4">Deployment</h2>
         <div className="grid gap-3 sm:grid-cols-3">
           <div className="rounded-xl border border-stone-200 bg-white p-4">
@@ -120,8 +127,121 @@ export function Landing() {
         </div>
       </div>
 
+      {/* Control Plane Philosophy */}
+      <div className="max-w-5xl mx-auto px-8 py-4 border-t border-stone-100/50">
+        <h2 className="text-lg font-bold text-stone-900 mb-2">How the Control Plane governs</h2>
+        <p className="text-xs text-stone-500 mb-5">The Control Plane is the single source of truth. Gateways are stateless consumers that pull config on startup and receive updates via heartbeat. Config changes propagate in under 1 second to healthy gateways — no restart required.</p>
+
+        <div className="grid gap-4 sm:grid-cols-2 mb-5">
+          {/* What CP manages */}
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50/30 p-5">
+            <p className="text-xs font-bold text-emerald-800 uppercase tracking-wide mb-3">What the Control Plane manages</p>
+            <div className="space-y-2">
+              {[
+                { label: "Policies", desc: "Define and push allow/block/score rules" },
+                { label: "Quotas", desc: "Per-gateway and per-agent rate/budget limits" },
+                { label: "Model access", desc: "Who uses which models and providers" },
+                { label: "Budgets", desc: "Per-agent spend tracking, alerts, auto-reset" },
+                { label: "Provider keys", desc: "Encrypted at rest, test connectivity" },
+                { label: "Traces & costs", desc: "Collect, aggregate, display in real-time" },
+                { label: "Health", desc: "Heartbeat-based monitoring of gateway fleet" },
+              ].map(item => (
+                <div key={item.label} className="flex items-start gap-2">
+                  <span className="text-emerald-500 mt-0.5 text-xs">●</span>
+                  <div><span className="text-xs font-semibold text-stone-800">{item.label}</span><span className="text-[10px] text-stone-500"> — {item.desc}</span></div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* What CP does NOT manage */}
+          <div className="rounded-xl border border-stone-200 bg-stone-50/50 p-5">
+            <p className="text-xs font-bold text-stone-600 uppercase tracking-wide mb-3">What it does NOT manage</p>
+            <div className="space-y-2">
+              {[
+                { label: "Starting/stopping gateways", desc: "That's your orchestrator (K8s, ECS, systemd)" },
+                { label: "Deploying agents", desc: "CP controls what agents can do, not where they run" },
+                { label: "Infrastructure", desc: "Terraform, CDK, CloudFormation own provisioning" },
+                { label: "Network routing", desc: "Service mesh, DNS, load balancers" },
+                { label: "Secret rotation", desc: "Secrets Manager / Vault handle rotation" },
+              ].map(item => (
+                <div key={item.label} className="flex items-start gap-2">
+                  <span className="text-stone-400 mt-0.5 text-xs">○</span>
+                  <div><span className="text-xs font-semibold text-stone-700">{item.label}</span><span className="text-[10px] text-stone-500"> — {item.desc}</span></div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Config propagation */}
+        <div className="rounded-xl border border-indigo-100 bg-indigo-50/30 p-5">
+          <p className="text-xs font-bold text-indigo-800 uppercase tracking-wide mb-3">Config propagation</p>
+          <div className="flex items-center gap-2 flex-wrap text-[10px]">
+            {[
+              "Operator changes config in UI",
+              "Control Plane saves to DB",
+              "Push to gateway (or queue if offline)",
+              "Gateway applies immediately (hot-reload)",
+              "Next call uses new rules",
+              "Trace shows result in < 1s",
+            ].map((step, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <span className="rounded-full bg-white border border-indigo-200 px-2.5 py-1 text-indigo-700 font-medium shadow-sm">{step}</span>
+                {i < 5 && <ArrowRight className="h-3 w-3 text-indigo-300 shrink-0" />}
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 flex gap-4 text-[10px] text-stone-500">
+            <span>🟢 Healthy gateway: <strong className="text-stone-700">&lt; 1s</strong> propagation</span>
+            <span>🔴 Offline gateway: <strong className="text-stone-700">queued</strong>, syncs on reconnect (≤ 30s)</span>
+          </div>
+        </div>
+
+        {/* Lifecycle example */}
+        <div className="rounded-xl border border-stone-200 bg-stone-50/50 p-5 mt-4">
+          <p className="text-xs font-bold text-stone-700 uppercase tracking-wide mb-3">Lifecycle in action</p>
+          <pre className="text-[10px] text-stone-600 leading-relaxed overflow-x-auto whitespace-pre">{`CP starts
+  ← Gateway 1 registers (POST /api/gateways/crm-agent/register)
+  ← Gateway 2 registers (POST /api/gateways/devops-agent/register)
+  ← Gateway 3 registers (POST /api/gateways/ops-agent/register)
+
+Running:
+  ← Gateway 1 heartbeats every 30s
+  ← Gateway 2 heartbeats every 30s
+  ← Gateway 3 heartbeats every 30s
+
+Operator pushes policy change to Gateway 2:
+  → CP checks: Gateway 2 healthy? Yes → forward immediately ✓
+
+Gateway 3 goes down:
+  → CP marks unhealthy after 90s (red dot)
+  → Operator pushes quota change to Gateway 3
+  → CP queues it
+
+Gateway 3 restarts:
+  → Registers → gets full config bundle (including the queued quota change)
+  → Starts heartbeating → green dot again`}</pre>
+        </div>
+
+        {/* Fleet status */}
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50/30 p-5 mt-4">
+          <p className="text-xs font-bold text-emerald-800 uppercase tracking-wide mb-3">Fleet status (live)</p>
+          <div className="grid grid-cols-3 gap-x-4 gap-y-1 text-[10px]">
+            <span className="font-semibold text-stone-600">Service</span>
+            <span className="font-semibold text-stone-600">Port</span>
+            <span className="font-semibold text-stone-600">Status</span>
+            <span className="text-stone-700">Control Plane</span><span className="text-stone-500">8400</span><span className="text-emerald-600">✅ Running</span>
+            <span className="text-stone-700">CRM Gateway</span><span className="text-stone-500">8421</span><span className="text-emerald-600">✅ Registered, heartbeating, 3 tools</span>
+            <span className="text-stone-700">Ops Gateway</span><span className="text-stone-500">8422</span><span className="text-emerald-600">✅ Registered, heartbeating, 2 tools</span>
+            <span className="text-stone-700">DevOps Gateway</span><span className="text-stone-500">8423</span><span className="text-emerald-600">✅ Registered, heartbeating, 4 tools + policy</span>
+            <span className="text-stone-700">Analytics Gateway</span><span className="text-stone-500">8424</span><span className="text-emerald-600">✅ Registered, heartbeating, 1 tool</span>
+          </div>
+        </div>
+      </div>
+
       {/* CTA */}
-      <div className="max-w-5xl mx-auto px-8 py-16 text-center">
+      <div className="max-w-5xl mx-auto px-8 py-6 border-t border-stone-100/50 text-center">
         <p className="text-sm text-stone-500 mb-4">Ready to explore?</p>
         <Link to="/dashboard" className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 px-8 py-3.5 text-sm font-semibold text-white shadow-lg hover:shadow-xl transition">
           Enter Control Plane <ArrowRight className="h-4 w-4" />

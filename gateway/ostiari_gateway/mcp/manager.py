@@ -36,7 +36,7 @@ class MCPManager:
 
         # Initialize connection
         try:
-            server_info = await client.initialize()
+            await client.initialize()
         except Exception as e:
             log.error("Failed to initialize MCP server '%s': %s", config.name, e)
             del self._clients[config.name]

@@ -1,6 +1,5 @@
 """A2A client — sends tasks to remote A2A agents via JSON-RPC over HTTP."""
 
-import json
 import logging
 import uuid
 from collections.abc import AsyncIterator

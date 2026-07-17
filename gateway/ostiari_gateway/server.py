@@ -6,7 +6,6 @@ from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from opentelemetry import context as otel_context
 from opentelemetry import trace
 
 from ostiari.exceptions import ActionBlockedError
@@ -36,8 +35,11 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
 
     init_telemetry(gateway_id=initial_config.sidecar_id if initial_config else "")
 
+    from ostiari_gateway.a2a.manager import A2AManager
+
     manager = ConfigManager()
     mcp_manager = MCPManager()
+    a2a_manager = A2AManager()
     module_registry = ModuleRegistry()
     module_registry.discover()
     quota_enforcer = QuotaEnforcer()
@@ -58,6 +60,42 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
     if initial_config is not None:
         manager.apply_config(initial_config)
 
+    # Lifecycle manager (CP registration + heartbeat)
+    lifecycle = None
+    if initial_config and initial_config.control_plane_url:
+        from ostiari_gateway.lifecycle import LifecycleManager
+
+        lifecycle = LifecycleManager(
+            gateway_id=initial_config.sidecar_id,
+            control_plane_url=initial_config.control_plane_url,
+        )
+
+        def _apply_bundle(bundle: dict) -> None:
+            """Apply a config bundle from the control plane."""
+            from ostiari_gateway.models import PolicyConfig, ToolDefinition
+
+            # Apply tools
+            if "tools" in bundle:
+                tools = [ToolDefinition(**t) for t in bundle["tools"]]
+                manager.apply_tools(tools)
+
+            # Apply policy
+            if "policy" in bundle:
+                policy = PolicyConfig(**bundle["policy"])
+                manager.apply_policy(policy)
+
+            # Apply quota
+            if "quotas" in bundle and bundle["quotas"]:
+                quota_enforcer.configure(bundle["quotas"])
+            elif "quota" in bundle and bundle["quota"]:
+                quota_enforcer.configure(bundle["quota"])
+
+            # Apply agent auth
+            if "agent_auth" in bundle and bundle["agent_auth"]:
+                agent_auth.configure(bundle["agent_auth"])
+
+        lifecycle.set_config_callback(_apply_bundle)
+
     @asynccontextmanager
     async def lifespan(app: Any) -> Any:
         # Initialize MCP servers from config
@@ -66,9 +104,23 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
                 from ostiari_gateway.mcp.models import MCPServerConfig
                 server_config = MCPServerConfig(**mcp_cfg) if isinstance(mcp_cfg, dict) else mcp_cfg
                 await mcp_manager.add_server(server_config)
+
+        # Register with control plane and start heartbeat
+        if lifecycle:
+            try:
+                await lifecycle.register()
+                await lifecycle.start_heartbeat(interval=30)
+            except Exception as e:
+                log.warning(f"Control plane registration failed: {e} — running standalone")
+
         yield
+
+        # Shutdown lifecycle
+        if lifecycle:
+            await lifecycle.stop()
         await trace_reporter.close()
         await mcp_manager.shutdown()
+        await a2a_manager.shutdown()
         module_registry.shutdown_all()
         await manager.shutdown()
 
@@ -100,18 +152,29 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
         parent_ctx = extract_context_from_headers(incoming_headers)
         tracer = get_tracer()
 
-        # Check tool exists (HTTP tools first, then MCP tools)
+        # Check tool exists (HTTP tools first, then MCP tools, then A2A agents)
         tool = manager.tool_proxy.get(action)
         is_mcp_tool = False
-        if tool is None:
+        is_a2a_tool = action.startswith("a2a.")
+        if tool is None and not is_a2a_tool:
             if mcp_manager.has_tool(action):
                 is_mcp_tool = True
             else:
                 all_tools = [t["name"] for t in manager.tool_proxy.list_tools()]
                 all_tools.extend(t["name"] for t in mcp_manager.list_tools())
+                all_tools.extend(f"a2a.{a['name']}" for a in a2a_manager.list_agents())
                 return JSONResponse(
                     status_code=404,
                     content={"error": f"Unknown tool: {action}", "available": all_tools},
+                )
+        if is_a2a_tool:
+            agent_key = action[len("a2a."):]
+            card = a2a_manager.get_agent_card(agent_key)
+            if card is None:
+                return JSONResponse(
+                    status_code=404,
+                    content={"error": f"A2A agent not connected: {agent_key}",
+                             "available": [f"a2a.{a['name']}" for a in a2a_manager.list_agents()]},
                 )
 
         # Agent authorization check (least privilege — before everything else)
@@ -170,7 +233,47 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
                 },
             )
 
-        # Execute: route to HTTP proxy or MCP client
+        # Execute: route to A2A agent, MCP client, or HTTP proxy
+        if is_a2a_tool:
+            import time as _time
+            agent_key = action[len("a2a."):]
+            # Accept either a raw text message or an A2A JSON-RPC envelope
+            message = params.get("message")
+            if isinstance(message, dict):
+                text_parts = [p.get("text", "") for p in message.get("parts", []) if isinstance(p, dict)]
+                message = " ".join(t for t in text_parts if t)
+            if not message:
+                inner = params.get("params", {}).get("message", {})
+                text_parts = [p.get("text", "") for p in inner.get("parts", []) if isinstance(p, dict)]
+                message = " ".join(t for t in text_parts if t)
+            proxy_span = start_proxy_span(tracer, action, f"a2a://{agent_key}", "CALL", parent_ctx)
+            _start = _time.monotonic()
+            a2a_result = await a2a_manager.call_agent(agent_key, message or "")
+            _duration = (_time.monotonic() - _start) * 1000
+            has_error = "error" in a2a_result
+            record_proxy_result(
+                proxy_span, status_code=500 if has_error else 200,
+                duration_ms=_duration, error=a2a_result.get("error"),
+            )
+            await trace_reporter.report(
+                action=action, tier="allow" if not has_error else "error",
+                score=result.score, duration_ms=_duration,
+                agent_id=agent_id, framework=framework or "a2a", is_mcp=False,
+                endpoint=f"a2a://{agent_key}",
+                session_id=session_id, plan=plan, step=step, params=params,
+            )
+            if has_error:
+                return JSONResponse(status_code=502, content=a2a_result)
+            # Wrap in a JSON-RPC-style result so the Sandbox A2A tab can unwrap it
+            return {"result": {"result": {
+                "id": a2a_result.get("task_id", ""),
+                "status": {"state": a2a_result.get("state", "completed")},
+                "history": [
+                    {"role": "user", "parts": [{"type": "text", "text": message or ""}]},
+                    {"role": "agent", "parts": [{"type": "text", "text": a2a_result.get("response", "")}]},
+                ],
+                "artifacts": a2a_result.get("artifacts", []),
+            }}, "action": action, "duration_ms": round(_duration, 2)}
         if is_mcp_tool:
             # MCP tool — call via MCP manager (in-process or remote, depending on config)
             import time as _time
@@ -384,6 +487,55 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
         """Re-discover tools from an MCP server."""
         tools = await mcp_manager.refresh_tools(name)
         return {"server": name, "tools_discovered": len(tools), "tools": [t.qualified_name for t in tools]}
+
+    # ─── A2A Agent Config Endpoints ─────────────────────────────────────────
+
+    @app.post("/config/a2a-agents")
+    async def add_a2a_agent(request: Request) -> Any:
+        """Discover a remote A2A agent and expose its skills as a2a.<name> tools."""
+        from ostiari_gateway.a2a.models import A2AAgentConfig
+
+        body = await request.json()
+        url = body.get("url", "").rstrip("/")
+        if not url:
+            return JSONResponse(status_code=400, content={"error": "url is required"})
+
+        # Derive a stable agent key (lowercase, underscores) matching the UI's tool name
+        provided_name = body.get("name", "")
+        try:
+            from ostiari_gateway.a2a.discovery import fetch_agent_card
+            card = await fetch_agent_card(url, timeout=body.get("timeout_seconds", 10.0),
+                                          auth_token=body.get("auth_token", ""))
+            display_name = provided_name or card.name
+        except Exception as e:
+            return JSONResponse(status_code=502, content={"error": f"Discovery failed: {e}"})
+
+        agent_key = display_name.lower().replace(" ", "_")
+        result = await a2a_manager.add_agent(A2AAgentConfig(
+            name=agent_key, url=url, auth_token=body.get("auth_token", ""),
+        ))
+        if result.get("status") == "error":
+            return JSONResponse(status_code=502, content=result)
+        return {
+            "name": display_name,
+            "agent_key": agent_key,
+            "url": url,
+            "skills": [s.id for s in card.skills],
+            "tools": [f"a2a.{agent_key}"],
+        }
+
+    @app.get("/config/a2a-agents")
+    async def list_a2a_agents() -> Any:
+        """List connected A2A agents."""
+        return {"agents": a2a_manager.list_agents()}
+
+    @app.delete("/config/a2a-agents/{name}")
+    async def remove_a2a_agent(name: str) -> Any:
+        """Disconnect an A2A agent."""
+        removed = await a2a_manager.remove_agent(name)
+        if not removed:
+            return JSONResponse(status_code=404, content={"error": f"A2A agent not found: {name}"})
+        return {"agent": name, "status": "removed"}
 
     # ─── Health & Info ────────────────────────────────────────────────────
 

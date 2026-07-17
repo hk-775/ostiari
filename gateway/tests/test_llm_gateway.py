@@ -1,13 +1,12 @@
 """Tests for the LLM Gateway module."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
-from starlette.testclient import TestClient
-
 from ostiari_sidecar.models import ModulesConfig, PolicyConfig, SidecarConfig, ToolDefinition
 from ostiari_sidecar.modules.llm_gateway.models import LLMConfig, RoutingRule
 from ostiari_sidecar.modules.llm_gateway.router import ModelRouter
+from starlette.testclient import TestClient
 
 
 class TestModelRouter:
@@ -125,7 +124,6 @@ class TestLLMGatewayInvoke:
     @pytest.fixture
     def client_with_mock_llm(self, httpserver):
         """Client with LLM Gateway active and a mocked LLM provider."""
-        from werkzeug import Response as WerkzeugResponse
 
         from ostiari_sidecar.server import create_app
 

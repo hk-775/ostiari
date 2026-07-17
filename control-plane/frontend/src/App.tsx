@@ -22,6 +22,7 @@ import { LoginPage } from "./pages/LoginPage";
 import { Users } from "./pages/Users";
 import { Providers } from "./pages/Providers";
 import { useAuthStore } from "./stores/authStore";
+import { AgentQuotas } from "./pages/AgentQuotas";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchInterval: 10000 } },
@@ -80,6 +81,7 @@ export default function App() {
               <Route path="/efficiency" element={<Efficiency />} />
               <Route path="/traces" element={<LiveTraces />} />
               <Route path="/quotas" element={<Quotas />} />
+              <Route path="/agent-quotas" element={<AgentQuotas />} />
               <Route path="/sandbox" element={<Sandbox />} />
               <Route path="/audit" element={<AuditLog />} />
               <Route path="/providers" element={<RequireAdmin><Providers /></RequireAdmin>} />

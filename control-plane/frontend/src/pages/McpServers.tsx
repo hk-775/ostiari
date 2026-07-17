@@ -128,7 +128,7 @@ export function McpServers() {
                     <p className="text-sm font-medium text-stone-900">{m.name}</p>
                     <div className="mt-1 flex items-center gap-2">
                       <span className={`badge ${MODE_COLORS[m.mode]}`}>{m.mode}</span>
-                      <span className="text-xs text-stone-500">{m.gateway_id}</span>
+                      <span className="text-xs text-stone-500">{m.gateway_id.replace("-agent","").split("-").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ").replace("Devops","DevOps").replace("Crm","CRM") + " Gateway"}</span>
                       <span className="text-xs text-stone-400">prefix: {m.prefix}</span>
                     </div>
                   </div>

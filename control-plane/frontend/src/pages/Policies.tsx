@@ -1,13 +1,18 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Trash2, Upload, FileText } from "lucide-react";
+import { Plus, Trash2, Upload, FileText, Pencil, Check, Clock } from "lucide-react";
 import { api, Policy } from "../lib/api";
+
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
 
 export function Policies() {
   const queryClient = useQueryClient();
   const { data: policies = [] } = useQuery({ queryKey: ["policies"], queryFn: api.policies.list });
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ name: "", content: "" });
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editContent, setEditContent] = useState("");
+  const [pushStatus, setPushStatus] = useState<Record<number, string>>({});
 
   const createMutation = useMutation({
     mutationFn: (data: { name: string; content: string }) =>
@@ -28,8 +33,8 @@ export function Policies() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-stone-900">Policies</h1>
-          <p className="mt-1 text-sm text-stone-500">Define safety rules for your agents</p>
+          <h1 className="text-2xl font-semibold tracking-tight text-stone-900">Tool Policies</h1>
+          <p className="mt-1 text-sm text-stone-500">Per-tool allow/block rules, risk scoring, and thresholds</p>
         </div>
         <button onClick={() => setShowForm(true)} className="btn-rose">
           <Plus className="h-4 w-4" /> New Policy
@@ -67,24 +72,65 @@ export function Policies() {
                 <div>
                   <p className="text-sm font-medium text-stone-900">{p.name}</p>
                   <p className="text-xs text-stone-500">
-                    {p.gateway_id ? `Assigned to: ${p.gateway_id}` : "Global policy"}
+                    {p.gateway_id ? `${p.gateway_id.replace("-agent","").split("-").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ").replace("Devops","DevOps").replace("Crm","CRM") + " Gateway"}` : "Global policy"}
                     {" · "}
                     <span className={p.is_active ? "text-emerald-600" : "text-stone-400"}>{p.is_active ? "Active" : "Inactive"}</span>
                   </p>
                 </div>
               </div>
               <div className="flex gap-1">
-                <button onClick={() => api.policies.push(p.id)} title="Push" className="rounded-xl p-2 text-stone-400 hover:bg-violet-50 hover:text-violet-600 transition">
-                  <Upload className="h-4 w-4" />
+                <button onClick={() => { setEditingId(editingId === p.id ? null : p.id); setEditContent(JSON.stringify(p.content, null, 2)); }} title="Edit" className="rounded-xl p-2 text-stone-400 hover:bg-indigo-50 hover:text-indigo-600 transition">
+                  <Pencil className="h-4 w-4" />
+                </button>
+                <button onClick={async () => {
+                  const gatewayId = p.gateway_id || "";
+                  if (!gatewayId) {
+                    setPushStatus(prev => ({ ...prev, [p.id]: "error" }));
+                    setTimeout(() => setPushStatus(prev => ({ ...prev, [p.id]: "" })), 2000);
+                    return;
+                  }
+                  setPushStatus(prev => ({ ...prev, [p.id]: "pushing" }));
+                  try {
+                    const res = await api.gateways.pushConfig(gatewayId, { policy: p.content });
+                    if (res.status === "applied") {
+                      setPushStatus(prev => ({ ...prev, [p.id]: "done" }));
+                    } else if (res.status === "queued") {
+                      setPushStatus(prev => ({ ...prev, [p.id]: "queued" }));
+                    } else {
+                      setPushStatus(prev => ({ ...prev, [p.id]: "error" }));
+                    }
+                    setTimeout(() => setPushStatus(prev => ({ ...prev, [p.id]: "" })), 3000);
+                  } catch {
+                    setPushStatus(prev => ({ ...prev, [p.id]: "error" }));
+                    setTimeout(() => setPushStatus(prev => ({ ...prev, [p.id]: "" })), 2000);
+                  }
+                }} title="Push to gateway" className="rounded-xl p-2 text-stone-400 hover:bg-violet-50 hover:text-violet-600 transition">
+                  {pushStatus[p.id] === "done" ? <Check className="h-4 w-4 text-emerald-600" /> :
+                   pushStatus[p.id] === "queued" ? <Clock className="h-4 w-4 text-amber-500" /> :
+                   <Upload className="h-4 w-4" />}
                 </button>
                 <button onClick={() => deleteMutation.mutate(p.id)} title="Delete" className="rounded-xl p-2 text-stone-400 hover:bg-rose-50 hover:text-rose-600 transition">
                   <Trash2 className="h-4 w-4" />
                 </button>
               </div>
             </div>
-            <pre className="mt-3 overflow-x-auto rounded-xl bg-stone-50 p-3 text-xs text-stone-600 border border-stone-100">
-              {JSON.stringify(p.content, null, 2)}
-            </pre>
+            {editingId === p.id ? (
+              <div className="mt-3 space-y-2">
+                <textarea value={editContent} onChange={(e) => setEditContent(e.target.value)} rows={8} className="input w-full font-mono text-xs" />
+                <div className="flex gap-2">
+                  <button onClick={async () => {
+                    await fetch(`${API_BASE}/api/policies/${p.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: p.name, content: JSON.parse(editContent) }) });
+                    queryClient.invalidateQueries({ queryKey: ["policies"] });
+                    setEditingId(null);
+                  }} className="btn-primary text-xs">Save</button>
+                  <button onClick={() => setEditingId(null)} className="btn-secondary text-xs">Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <pre className="mt-3 overflow-x-auto rounded-xl bg-stone-50 p-3 text-xs text-stone-600 border border-stone-100">
+                {JSON.stringify(p.content, null, 2)}
+              </pre>
+            )}
           </div>
         ))}
         {policies.length === 0 && (

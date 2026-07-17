@@ -12,18 +12,17 @@ from ostiari.decorators import protect
 from ostiari.exceptions import (
     ActionBlockedError,
     AdapterNotInstalledError,
-    OstiariError,
     AgentTerminatedError,
     BreakerTrippedError,
     CheckpointNotFoundError,
     ConfigError,
+    OstiariError,
     StorageError,
 )
 from ostiari.gateway import ActionGateway, SignalProvider
 from ostiari.guard import Guard
 from ostiari.health import HealthChecker
 from ostiari.models import (
-    OstiariConfig,
     AnomalySignal,
     BreakerConfig,
     BreakerState,
@@ -31,6 +30,7 @@ from ostiari.models import (
     EvalContext,
     GatewayDecision,
     MetricType,
+    OstiariConfig,
     PolicyResult,
     PolicySet,
     RetentionPolicy,

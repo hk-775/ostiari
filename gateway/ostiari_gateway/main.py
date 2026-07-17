@@ -1,6 +1,5 @@
 """CLI entrypoint for the Ostiari sidecar."""
 
-import json
 import logging
 from pathlib import Path
 
@@ -37,7 +36,8 @@ def cli(
 
     def _resolve_env_vars(obj):
         """Recursively resolve ${ENV_VAR} references in config values."""
-        import os, re
+        import os
+        import re
         if isinstance(obj, str):
             return re.sub(r'\$\{(\w+)\}', lambda m: os.environ.get(m.group(1), m.group(0)), obj)
         if isinstance(obj, dict):
