@@ -252,3 +252,38 @@ class TestComplianceReport:
             result = runner.invoke(main, ["compliance", "report", "--framework", "bogus"])
         assert result.exit_code == 1
         assert "unknown framework" in result.output
+
+
+class TestMeteringCLI:
+    def _mock(self, summary):
+        client = MagicMock()
+        resp = MagicMock(status_code=200)
+        resp.raise_for_status.return_value = None
+        resp.json.return_value = summary
+        client.get.return_value = resp
+        cm = MagicMock(); cm.__enter__.return_value = client; cm.__exit__.return_value = False
+        return cm
+
+    def test_metering_summary_output(self, runner):
+        summary = {
+            "group_by": "agent", "total_governed_calls": 12, "distinct_subjects": 2,
+            "overall_tier": "free", "total_tokens": 100,
+            "breakdown": [
+                {"key": "bot", "calls": 8, "tokens": 60, "tier": "free",
+                 "next_tier": {"tier": "pro", "calls_to_next": 49992}},
+            ],
+            "tiers": [], "period_days": 30,
+        }
+        with patch("httpx.Client", return_value=self._mock(summary)):
+            result = runner.invoke(main, ["metering"])
+        assert result.exit_code == 0, result.output
+        assert "12 governed calls" in result.output
+        assert "bot" in result.output and "free" in result.output
+
+    def test_metering_json(self, runner):
+        summary = {"group_by": "tool", "total_governed_calls": 0, "distinct_subjects": 0,
+                   "overall_tier": "free", "total_tokens": 0, "breakdown": [], "tiers": [], "period_days": 30}
+        with patch("httpx.Client", return_value=self._mock(summary)):
+            result = runner.invoke(main, ["metering", "--group-by", "tool", "--json"])
+        assert result.exit_code == 0
+        assert '"group_by": "tool"' in result.output
