@@ -120,4 +120,59 @@ export const api = {
       fetchAPI<McpServer>(`/api/mcp-servers/${gatewayId}`, { method: "POST", body: JSON.stringify(data) }),
     delete: (id: number) => fetchAPI(`/api/mcp-servers/${id}`, { method: "DELETE" }),
   },
+  payments: {
+    wallets: () => fetchAPI<Wallet[]>("/api/payments/wallets"),
+    fund: (agentId: string, amount: number) =>
+      fetchAPI<Wallet>(`/api/payments/wallets/${agentId}/fund`, {
+        method: "POST", body: JSON.stringify({ amount_usdc: amount }),
+      }),
+    patchWallet: (agentId: string, data: Partial<Pick<Wallet, "daily_limit_usdc" | "per_call_limit_usdc" | "status">>) =>
+      fetchAPI<Wallet>(`/api/payments/wallets/${agentId}`, { method: "PATCH", body: JSON.stringify(data) }),
+    ledger: (agentId?: string) =>
+      fetchAPI<PaymentRecord[]>(`/api/payments/ledger${agentId ? `?agent_id=${agentId}` : ""}`),
+    summary: () => fetchAPI<PaymentSummary>("/api/payments/summary"),
+    pricing: (gatewayId = "crm-agent") =>
+      fetchAPI<Pricing>(`/api/payments/pricing?gateway_id=${gatewayId}`),
+    push: (gatewayId = "crm-agent") =>
+      fetchAPI(`/api/payments/push?gateway_id=${gatewayId}`, { method: "POST" }),
+  },
 };
+
+export interface Wallet {
+  agent_id: string;
+  address: string;
+  balance_usdc: number;
+  daily_limit_usdc: number | null;
+  per_call_limit_usdc: number | null;
+  spent_today_usdc: number;
+  status: "active" | "paused";
+}
+
+export interface PaymentRecord {
+  id: number;
+  agent_id: string;
+  gateway_id: string;
+  action: string;
+  amount_usdc: number;
+  settled: boolean;
+  tx_hash: string;
+  mode: string;
+  source: string;
+  timestamp: string;
+}
+
+export interface PaymentSummary {
+  total_settled_usdc: number;
+  settled_count: number;
+  blocked_count: number;
+  fee_rate: number;
+  fees_captured_usdc: number;
+  by_agent: { agent_id: string; spent_usdc: number; calls: number }[];
+}
+
+export interface Pricing {
+  gateway_id: string;
+  mode: string;
+  default: number;
+  overrides: Record<string, number>;
+}
