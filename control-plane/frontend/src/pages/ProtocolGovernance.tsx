@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Network, Save, Check, ShieldAlert, Ban, Activity, ArrowRight } from "lucide-react";
+import { Network, Save, Check, ShieldAlert, Ban, Activity, ArrowRight, Bot } from "lucide-react";
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
 const GATEWAY_BASE = `${API_BASE}/api/proxy/gateway/crm-agent`;
@@ -58,6 +58,25 @@ async function fetchTrust(): Promise<TrustScores> {
   }
 }
 
+interface A2AAgent {
+  name: string;
+  url: string;
+  connected: boolean;
+  skills_count: number;
+  description: string;
+}
+
+async function fetchA2AAgents(): Promise<A2AAgent[]> {
+  try {
+    const res = await fetch(`${GATEWAY_BASE}/config/a2a-agents`);
+    if (!res.ok) throw new Error();
+    const data = await res.json();
+    return data.agents ?? [];
+  } catch {
+    return [];
+  }
+}
+
 interface CrossAgentConfig {
   enabled: boolean;
   default_allow: boolean;
@@ -101,6 +120,12 @@ export function ProtocolGovernance() {
   const { data: report } = useQuery({
     queryKey: ["delegation-report"],
     queryFn: fetchDelegationReport,
+    refetchInterval: 5000,
+  });
+
+  const { data: a2aAgents } = useQuery({
+    queryKey: ["a2a-agents"],
+    queryFn: fetchA2AAgents,
     refetchInterval: 5000,
   });
 
@@ -210,6 +235,55 @@ export function ProtocolGovernance() {
             onChange={(e) => setCfg({ ...cfg, max_chain_depth: e.target.value ? Number(e.target.value) : null })}
             className="input mt-1" />
         </label>
+      </div>
+
+      {/* Connected A2A agents — real remote agents this gateway can delegate to */}
+      <div className="card overflow-hidden">
+        <div className="flex items-center justify-between border-b border-stone-100 px-6 py-4">
+          <div>
+            <h2 className="flex items-center gap-2 text-sm font-semibold text-stone-800">
+              <Bot className="h-4 w-4 text-lime-600" /> Connected A2A agents
+            </h2>
+            <p className="mt-0.5 text-xs text-stone-500">
+              Remote agents discovered on crm-agent (via A2A agent cards). Their skills
+              are callable as <span className="font-mono">a2a.&lt;agent&gt;</span>, subject to the
+              delegation matrix and trust below.
+            </p>
+          </div>
+          <span className="text-xs text-stone-500">{a2aAgents?.length ?? 0} connected</span>
+        </div>
+        <table className="w-full">
+          <thead>
+            <tr className="border-b border-stone-100 text-left text-xs font-semibold uppercase tracking-wider text-stone-500">
+              <th className="px-6 py-3.5">Agent</th>
+              <th className="px-6 py-3.5">Description</th>
+              <th className="px-6 py-3.5">Skills</th>
+              <th className="px-6 py-3.5">Endpoint</th>
+              <th className="px-6 py-3.5">Status</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-stone-50">
+            {(a2aAgents ?? []).map((a) => (
+              <tr key={a.name} className="transition hover:bg-stone-50/50">
+                <td className="px-6 py-4 font-mono text-sm text-stone-800">a2a.{a.name}</td>
+                <td className="px-6 py-4 text-sm text-stone-600">{a.description || "—"}</td>
+                <td className="px-6 py-4 text-sm text-stone-600">{a.skills_count}</td>
+                <td className="px-6 py-4 font-mono text-xs text-stone-500">{a.url}</td>
+                <td className="px-6 py-4">
+                  <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                    a.connected ? "bg-emerald-50 text-emerald-700" : "bg-stone-100 text-stone-500"
+                  }`}>{a.connected ? "connected" : "offline"}</span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {(a2aAgents?.length ?? 0) === 0 && (
+          <div className="flex flex-col items-center gap-2 py-10 text-center">
+            <Bot className="h-7 w-7 text-stone-300" />
+            <p className="text-sm text-stone-500">No A2A agents connected to this gateway yet.</p>
+          </div>
+        )}
       </div>
 
       {/* Delegation matrix */}
