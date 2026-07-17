@@ -18,6 +18,8 @@ install: ## Install all dependencies
 
 test: ## Run all tests
 	pytest tests/ -v
+	cd gateway && PYTHONPATH=. pytest tests/ -v
+	cd control-plane/backend && PYTHONPATH=. pytest tests/ -v
 	cd control-plane/frontend && npx vitest run 2>/dev/null || true
 
 lint: ## Run linters

@@ -26,9 +26,16 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "anyio>=4.0",
     "httpx>=0.25",
+    "aiosqlite>=0.19",
     "ruff>=0.4",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Tests are marked with @pytest.mark.anyio and run on the asyncio backend
+# (see the anyio_backend fixture in tests/conftest.py).
 
 [tool.hatch.build.targets.wheel]
 packages = ["control_plane"]
