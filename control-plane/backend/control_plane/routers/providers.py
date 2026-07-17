@@ -21,16 +21,33 @@ router = APIRouter(prefix="/api/providers", tags=["providers"])
 
 _ENCRYPTION_KEY = os.environ.get("OSTIARI_ENCRYPTION_KEY", "")
 
+# Cached cipher so encrypt and decrypt share the same key for the process
+# lifetime. Without this, an unset OSTIARI_ENCRYPTION_KEY would mint a NEW
+# transient key on every call, so anything encrypted could never be decrypted
+# (the key-reveal endpoint would silently return "").
+_fernet = None
+
 
 def _get_fernet():
-    """Lazy-load Fernet cipher using OSTIARI_ENCRYPTION_KEY env var."""
+    """Return a cached Fernet cipher, building it once per process.
+
+    Uses OSTIARI_ENCRYPTION_KEY when set; otherwise falls back to a single
+    transient key generated on first use (not production safe — keys won't
+    survive a restart, but they stay stable within the running process).
+    """
+    global _fernet
+    if _fernet is not None:
+        return _fernet
+
     from cryptography.fernet import Fernet
 
     if not _ENCRYPTION_KEY:
-        # Fallback: generate a transient key (keys won't survive restart without env var)
-        log.warning("OSTIARI_ENCRYPTION_KEY not set — using transient key (not production safe)")
-        return Fernet(Fernet.generate_key())
-    return Fernet(_ENCRYPTION_KEY.encode() if isinstance(_ENCRYPTION_KEY, str) else _ENCRYPTION_KEY)
+        log.warning("OSTIARI_ENCRYPTION_KEY not set — using a transient key (not production safe)")
+        _fernet = Fernet(Fernet.generate_key())
+    else:
+        key = _ENCRYPTION_KEY.encode() if isinstance(_ENCRYPTION_KEY, str) else _ENCRYPTION_KEY
+        _fernet = Fernet(key)
+    return _fernet
 
 
 def _encrypt(plaintext: str) -> str:

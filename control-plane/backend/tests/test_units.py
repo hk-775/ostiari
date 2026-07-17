@@ -116,3 +116,27 @@ class TestPersistence:
         f.write_text("{not valid json")
         monkeypatch.setattr(persistence, "STATE_FILE", f)
         assert persistence.load_state() == {}
+
+
+# ─── Provider api-key encryption ─────────────────────────────────────────────
+
+class TestProviderEncryption:
+    def test_roundtrip_with_configured_key(self):
+        from control_plane.routers import providers
+        secret = "sk-configured-abc123"
+        assert providers._decrypt(providers._encrypt(secret)) == secret
+
+    def test_roundtrip_with_transient_key(self, monkeypatch):
+        # Simulate OSTIARI_ENCRYPTION_KEY unset: the cached cipher must stay
+        # stable so encrypt/decrypt use the SAME transient key (regression test
+        # for a bug where a fresh key was minted on every call).
+        from control_plane.routers import providers
+        monkeypatch.setattr(providers, "_ENCRYPTION_KEY", "")
+        monkeypatch.setattr(providers, "_fernet", None)
+        token = providers._encrypt("sk-transient-xyz")
+        assert providers._decrypt(token) == "sk-transient-xyz"
+
+    def test_empty_string_passthrough(self):
+        from control_plane.routers import providers
+        assert providers._encrypt("") == ""
+        assert providers._decrypt("") == ""
