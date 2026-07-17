@@ -2,14 +2,14 @@ name: CI
 
 on:
   push:
-    branches: [main, enterprise]
+    branches: [main]
   pull_request:
-    branches: [main, enterprise]
+    branches: [main]
   workflow_dispatch:
 
 jobs:
-  backend:
-    name: Backend (Python)
+  core:
+    name: Core (root package)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,15 +21,60 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -e ".[dev]"
-          pip install -e gateway/
-          pip install pytest-asyncio hypothesis httpx starlette
-          pip install pytest ruff
+          pip install pytest pytest-asyncio anyio hypothesis httpx starlette ruff
 
       - name: Lint
         run: ruff check src/ gateway/ --select F --ignore F401
 
-      - name: Test
+      - name: Test (root suite)
         run: pytest tests/ -v --tb=short
+
+  gateway:
+    name: Gateway
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -e .
+          pip install -e gateway/
+          pip install pytest pytest-asyncio anyio pytest-httpserver werkzeug \
+                      opentelemetry-api opentelemetry-sdk httpx starlette
+
+      - name: Verify imports
+        run: |
+          python -c "from ostiari_gateway.server import create_app; print('Gateway OK')"
+          python -c "from ostiari_gateway.cross_agent import CrossAgentPolicy; print('CrossAgent OK')"
+          python -c "from ostiari_gateway.a2a import A2AManager; print('A2A OK')"
+
+      - name: Test (gateway suite)
+        working-directory: gateway
+        run: PYTHONPATH=. pytest tests/ -v --tb=short
+
+  control-plane:
+    name: Control Plane (backend)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        working-directory: control-plane/backend
+        run: |
+          pip install -e ".[dev]"
+          pip install aiosqlite greenlet pytest pytest-asyncio anyio httpx
+
+      - name: Test (control-plane suite)
+        working-directory: control-plane/backend
+        run: PYTHONPATH=. pytest tests/ -v --tb=short
 
   frontend:
     name: Frontend (React)
@@ -39,7 +84,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 20
           cache: npm
           cache-dependency-path: control-plane/frontend/package-lock.json
 
@@ -54,24 +99,3 @@ jobs:
       - name: Build
         working-directory: control-plane/frontend
         run: npx vite build
-
-  gateway:
-    name: Gateway
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install
-        run: |
-          pip install -e .
-          pip install -e gateway/
-
-      - name: Verify imports
-        run: |
-          python -c "from ostiari_gateway.server import create_app; print('Gateway OK')"
-          python -c "from ostiari_gateway.agent_auth import AgentAuthPolicy; print('Auth OK')"
-          python -c "from ostiari_gateway.a2a import A2AManager; print('A2A OK')"
