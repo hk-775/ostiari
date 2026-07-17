@@ -1,9 +1,8 @@
 """Gateway proxy — forwards requests from the UI to gateways."""
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-import httpx
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.database import get_db
