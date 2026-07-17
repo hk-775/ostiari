@@ -124,8 +124,11 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
     a2a_manager = A2AManager()
     module_registry = ModuleRegistry()
     module_registry.discover()
+    from ostiari_gateway.cross_agent import CrossAgentPolicy
+
     quota_enforcer = QuotaEnforcer()
     agent_auth = AgentAuthPolicy()
+    cross_agent = CrossAgentPolicy()
     trace_reporter = TraceReporter(
         control_plane_url=(initial_config.control_plane_url if initial_config else ""),
         sidecar_id=(initial_config.sidecar_id if initial_config else ""),
@@ -138,6 +141,10 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
     # Apply agent auth from initial config
     if initial_config and hasattr(initial_config, "agent_auth") and initial_config.agent_auth:
         agent_auth.configure(initial_config.agent_auth)
+
+    # Apply cross-agent (A2A delegation) policy from initial config
+    if initial_config and getattr(initial_config, "cross_agent", None):
+        cross_agent.configure(initial_config.cross_agent)
 
     if initial_config is not None:
         manager.apply_config(initial_config)
@@ -235,6 +242,14 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
         plan = request.headers.get("X-Plan", "")
         step = request.headers.get("X-Step", "")
 
+        # Delegation provenance: the chain of agents that led to this call.
+        # An inbound X-Delegation-Chain means this request itself arrived via a
+        # prior agent's delegation; append the current agent to extend it.
+        incoming_chain = request.headers.get("X-Delegation-Chain", "")
+        delegation_chain = [c for c in incoming_chain.split(">") if c]
+        if agent_id and agent_id not in delegation_chain:
+            delegation_chain.append(agent_id)
+
         shadow = manager.config.mode == "shadow"
 
         # Extract OTel context from incoming request (if present)
@@ -266,6 +281,30 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
                     content={"error": f"A2A agent not connected: {agent_key}",
                              "available": [f"a2a.{a['name']}" for a in a2a_manager.list_agents()]},
                 )
+
+            # Cross-agent delegation gate: may `agent_id` delegate to `agent_key`?
+            # (edge rules + callee trust score + chain-depth guard)
+            xa_allowed, xa_reason = cross_agent.check(agent_id, agent_key, chain=delegation_chain)
+            if not xa_allowed:
+                if not shadow:
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "blocked": True,
+                            "action": action,
+                            "reason": xa_reason,
+                            "limit_type": "cross_agent_delegation",
+                            "delegation_chain": delegation_chain,
+                        },
+                    )
+                await trace_reporter.report(
+                    action=action, tier="block", score=0, duration_ms=0,
+                    agent_id=agent_id, framework=framework, blocked_reason=xa_reason,
+                    endpoint=f"a2a://{agent_key}",
+                    session_id=session_id, plan=plan, step=step, params=params,
+                    shadow=True, would_block=True, delegation_chain=delegation_chain,
+                )
+                return _shadow_response(action, "cross_agent_delegation", xa_reason)
 
         # Agent authorization check (least privilege — before everything else)
         auth_allowed, auth_reason = agent_auth.check(agent_id, action)
@@ -380,7 +419,18 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
                 message = " ".join(t for t in text_parts if t)
             proxy_span = start_proxy_span(tracer, action, f"a2a://{agent_key}", "CALL", parent_ctx)
             _start = _time.monotonic()
-            a2a_result = await a2a_manager.call_agent(agent_key, message or "")
+            # Forward delegation provenance so the downstream agent's gateway
+            # sees the real caller and the full chain (prevents privilege
+            # laundering and enables end-to-end audit).
+            delegation_headers = {
+                "X-Agent-Id": agent_id,
+                "X-Delegation-Chain": ">".join(delegation_chain),
+            }
+            if session_id:
+                delegation_headers["X-Session-Id"] = session_id
+            a2a_result = await a2a_manager.call_agent(
+                agent_key, message or "", headers=delegation_headers
+            )
             _duration = (_time.monotonic() - _start) * 1000
             has_error = "error" in a2a_result
             record_proxy_result(
@@ -393,6 +443,7 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
                 agent_id=agent_id, framework=framework or "a2a", is_mcp=False,
                 endpoint=f"a2a://{agent_key}",
                 session_id=session_id, plan=plan, step=step, params=params,
+                delegation_chain=delegation_chain,
             )
             if has_error:
                 return JSONResponse(status_code=502, content=a2a_result)
@@ -574,6 +625,18 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
     async def get_agent_auth() -> Any:
         """Get current agent authorization config."""
         return {**agent_auth.get_status(), "agents": agent_auth.list_agents()}
+
+    @app.post("/config/cross-agent")
+    async def apply_cross_agent(request: Request) -> Any:
+        """Hot-reload cross-agent (A2A) delegation policy."""
+        body = await request.json()
+        cross_agent.configure(body)
+        return {"status": "applied", **cross_agent.get_status()}
+
+    @app.get("/config/cross-agent")
+    async def get_cross_agent() -> Any:
+        """Get current cross-agent delegation policy."""
+        return cross_agent.get_status()
 
     @app.post("/config/policy")
     async def apply_policy(request: Request) -> Any:
@@ -780,5 +843,12 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
             "active": module_registry.get_active(),
             "available": module_registry.get_available(),
         }
+
+    # Expose core components for tests and introspection.
+    app.state.manager = manager
+    app.state.a2a_manager = a2a_manager
+    app.state.mcp_manager = mcp_manager
+    app.state.cross_agent = cross_agent
+    app.state.agent_auth = agent_auth
 
     return app

@@ -44,6 +44,7 @@ class SidecarConfig(BaseModel):
     mcp_servers: list[dict] = Field(default_factory=list)
     quota: dict = Field(default_factory=dict)
     agent_auth: dict = Field(default_factory=dict)
+    cross_agent: dict = Field(default_factory=dict)
     sidecar_id: str = ""
     control_plane_url: str = ""
     poll_interval_seconds: int = 60
