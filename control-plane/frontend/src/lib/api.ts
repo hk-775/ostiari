@@ -153,8 +153,39 @@ export const api = {
     setConfig: (bulk_discount: number, markup: number) =>
       fetchAPI<BrokerConfig>("/api/token-broker/config", { method: "POST", body: JSON.stringify({ bulk_discount, markup }) }),
     resetConfig: () => fetchAPI<BrokerConfig>("/api/token-broker/config/reset", { method: "POST" }),
+    pools: () => fetchAPI<TokenPool[]>("/api/token-broker/pilot/pools"),
+    fundPool: (data: { provider: string; tokens: number; cost_usd: number; low_threshold_tokens?: number }) =>
+      fetchAPI<TokenPool>("/api/token-broker/pilot/pools/fund", { method: "POST", body: JSON.stringify(data) }),
+    reconcile: (provider: string, invoiced_cost_usd: number, period_days = 30) =>
+      fetchAPI<Reconciliation>("/api/token-broker/pilot/reconcile", { method: "POST", body: JSON.stringify({ provider, invoiced_cost_usd, period_days }) }),
+    reconciliations: () => fetchAPI<Reconciliation[]>("/api/token-broker/pilot/reconciliations"),
+    collector: () => fetchAPI<{ mode: string }>("/api/token-broker/pilot/collector"),
   },
 };
+
+export interface TokenPool {
+  provider: string;
+  purchased_tokens: number;
+  purchased_cost_usd: number;
+  consumed_tokens: number;
+  consumed_cost_usd: number;
+  remaining_tokens: number;
+  remaining_pct: number;
+  low_threshold_tokens: number;
+  status: "active" | "depleted";
+}
+
+export interface Reconciliation {
+  id: number;
+  provider: string;
+  period_start: string;
+  period_end: string;
+  computed_cost_usd: number;
+  invoiced_cost_usd: number;
+  drift_usd: number;
+  drift_pct: number;
+  consumed_tokens: number;
+}
 
 export interface BrokerModelRow {
   model: string;

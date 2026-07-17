@@ -12,6 +12,7 @@ from control_plane.models.database import Base
 from control_plane.routers import (
     agents,
     audit,
+    broker_pilot,
     compliance,
     costs,
     experiments,
@@ -155,6 +156,7 @@ app.include_router(trust.router)
 app.include_router(payments.router)
 app.include_router(roi.router)
 app.include_router(token_broker.router)
+app.include_router(broker_pilot.router)
 
 
 @app.get("/api/health")
