@@ -136,6 +136,12 @@ class PushService:
             ],
         }
 
+        # Payment config (x402 pricing + wallet balances), if any.
+        from control_plane.routers.payments import build_payment_config
+        payments = await build_payment_config(db, gateway.id)
+        if payments.get("mode", "off") != "off" or payments.get("wallets"):
+            config["payments"] = payments
+
         # Include any stored gateway-level config (modules, llm, mode, etc.)
         if gateway.config:
             config.update(gateway.config)

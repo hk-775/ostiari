@@ -110,6 +110,48 @@ class UsageRecord(Base):
     )
 
 
+class Wallet(Base):
+    """Per-agent USDC wallet for the x402 payment gate.
+
+    The control plane is the source of truth for balances/limits and pushes
+    them to gateways. `spent_today_usdc` drives the daily-cap auto-pause. The
+    address is empty in simulated mode and holds the agent's Base address when
+    live; private keys never live here (KMS/secrets manager).
+    """
+
+    __tablename__ = "wallets"
+
+    agent_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    address: Mapped[str] = mapped_column(String(128), default="")
+    balance_usdc: Mapped[float] = mapped_column(Float, default=0.0)
+    daily_limit_usdc: Mapped[float | None] = mapped_column(Float, nullable=True)
+    per_call_limit_usdc: Mapped[float | None] = mapped_column(Float, nullable=True)
+    spent_today_usdc: Mapped[float] = mapped_column(Float, default=0.0)
+    status: Mapped[str] = mapped_column(String(20), default="active")  # active | paused
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class PaymentRecord(Base):
+    """Ledger of x402 charges — the billing/audit trail and dashboard source."""
+
+    __tablename__ = "payment_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    agent_id: Mapped[str] = mapped_column(String(128), default="unknown")
+    gateway_id: Mapped[str] = mapped_column(String(64), default="")
+    action: Mapped[str] = mapped_column(String(128), default="")
+    amount_usdc: Mapped[float] = mapped_column(Float, default=0.0)
+    settled: Mapped[bool] = mapped_column(Boolean, default=True)
+    tx_hash: Mapped[str] = mapped_column(String(128), default="")
+    mode: Mapped[str] = mapped_column(String(20), default="simulated")  # simulated | live
+    source: Mapped[str] = mapped_column(String(20), default="policy")  # policy | tool_402
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 
