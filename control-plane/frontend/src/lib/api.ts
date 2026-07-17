@@ -136,7 +136,38 @@ export const api = {
     push: (gatewayId = "crm-agent") =>
       fetchAPI(`/api/payments/push?gateway_id=${gatewayId}`, { method: "POST" }),
   },
+  roi: {
+    report: (weightByScore = true) =>
+      fetchAPI<RoiReport>(`/api/roi/report?weight_by_score=${weightByScore}`),
+    costModel: () => fetchAPI<CostModel>("/api/roi/cost-model"),
+    setCostModel: (entries: { pattern: string; cost: number }[], fallback: number) =>
+      fetchAPI<CostModel>("/api/roi/cost-model", { method: "POST", body: JSON.stringify({ entries, fallback }) }),
+    resetCostModel: () => fetchAPI<CostModel>("/api/roi/cost-model/reset", { method: "POST" }),
+  },
 };
+
+export interface RoiActionSaving {
+  action: string;
+  count: number;
+  unit_cost: number;
+  prevented_usd: number;
+  max_score: number;
+}
+
+export interface RoiReport {
+  blocked_count: number;
+  distinct_actions: number;
+  total_prevented_usd: number;
+  fallback_cost: number;
+  weight_by_score: boolean;
+  actions: RoiActionSaving[];
+}
+
+export interface CostModel {
+  entries: { pattern: string; cost: number }[];
+  fallback: number;
+  customized: boolean;
+}
 
 export interface Wallet {
   agent_id: string;

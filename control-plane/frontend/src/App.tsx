@@ -15,6 +15,7 @@ import { ProtocolGovernance } from "./pages/ProtocolGovernance";
 import { Compliance } from "./pages/Compliance";
 import { Metering } from "./pages/Metering";
 import { Payments } from "./pages/Payments";
+import { Roi } from "./pages/Roi";
 import { Experiments } from "./pages/Experiments";
 import { Models } from "./pages/Models";
 import { Efficiency } from "./pages/Efficiency";
@@ -94,6 +95,7 @@ export default function App() {
               <Route path="/compliance" element={<Compliance />} />
               <Route path="/metering" element={<Metering />} />
               <Route path="/payments" element={<Payments />} />
+              <Route path="/roi" element={<Roi />} />
               <Route path="/providers" element={<RequireAdmin><Providers /></RequireAdmin>} />
               <Route path="/users" element={<RequireAdmin><Users /></RequireAdmin>} />
             </Route>
