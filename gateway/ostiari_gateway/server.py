@@ -440,6 +440,10 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
                 session_id=session_id, plan=plan, step=step, params=params,
                 limit_type="payment",
             )
+            await trace_reporter.report_payment(
+                agent_id=agent_id, action=action, amount_usdc=pay.amount_usdc,
+                settled=False, mode=payment_gate.settler_mode, source="policy",
+            )
             return JSONResponse(
                 status_code=402,
                 content={
@@ -450,6 +454,12 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
                     "amount_usdc": pay.amount_usdc,
                     "wallet_balance_usdc": pay.balance_usdc,
                 },
+            )
+        if not pay.free:
+            await trace_reporter.report_payment(
+                agent_id=agent_id, action=action, amount_usdc=pay.amount_usdc,
+                settled=True, tx_hash=pay.receipt.tx_hash if pay.receipt else "",
+                mode=payment_gate.settler_mode, source="policy",
             )
 
         # Execute: route to A2A agent, MCP client, or HTTP proxy
@@ -560,6 +570,10 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
                         session_id=session_id, plan=plan, step=step, params=params,
                         limit_type="payment",
                     )
+                    await trace_reporter.report_payment(
+                        agent_id=agent_id, action=action, amount_usdc=pay.amount_usdc,
+                        settled=False, mode=payment_gate.settler_mode, source="tool_402",
+                    )
                     return JSONResponse(
                         status_code=402,
                         content={
@@ -568,6 +582,11 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
                             "wallet_balance_usdc": pay.balance_usdc,
                         },
                     )
+                await trace_reporter.report_payment(
+                    agent_id=agent_id, action=action, amount_usdc=pay.amount_usdc,
+                    settled=True, tx_hash=pay.receipt.tx_hash if pay.receipt else "",
+                    mode=payment_gate.settler_mode, source="tool_402",
+                )
                 # Paid — retry with the payment proof header.
                 proxy_result = await manager.tool_proxy.execute(
                     action, params,

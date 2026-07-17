@@ -142,6 +142,11 @@ class PaymentGate:
     def mode(self) -> str:
         return self._mode
 
+    @property
+    def settler_mode(self) -> str:
+        """'simulated' or 'live' — which settlement backend is active."""
+        return self._settler.mode
+
     def get_wallet(self, agent_id: str) -> Wallet | None:
         return self._wallets.get(agent_id)
 

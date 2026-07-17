@@ -428,5 +428,84 @@ def metering_cmd(group_by: str, control_plane: str, period_days: int, as_json: b
         click.echo(f"  {row['key']:24s} {row['calls']:>8,} calls  [{row['tier']}]{tail}")
 
 
+@main.group()
+def wallet() -> None:
+    """Agent wallets — x402 balances, funding, and spend (pay-per-tool-call)."""
+
+
+def _wallet_client(control_plane: str):
+    try:
+        import httpx
+    except ImportError:
+        click.echo("Error: httpx is required for 'wallet' (pip install httpx).", err=True)
+        raise SystemExit(1) from None
+    return httpx, control_plane.rstrip("/")
+
+
+@wallet.command("list")
+@click.option("--control-plane", default="http://localhost:8400", help="Control plane base URL")
+@click.option("--json", "as_json", is_flag=True, help="Emit raw JSON")
+def wallet_list(control_plane: str, as_json: bool) -> None:
+    """List agent wallets and balances."""
+    httpx, base = _wallet_client(control_plane)
+    with httpx.Client(timeout=10.0) as client:
+        wallets = client.get(f"{base}/api/payments/wallets").json()
+    if as_json:
+        click.echo(json.dumps(wallets, indent=2))
+        return
+    if not wallets:
+        click.echo("No wallets provisioned.")
+        return
+    click.echo(click.style("Agent Wallets", bold=True))
+    for w in wallets:
+        status_color = "green" if w["status"] == "active" else "red"
+        limit = f" · daily ${w['daily_limit_usdc']:.2f}" if w["daily_limit_usdc"] is not None else ""
+        click.echo(
+            f"  {w['agent_id']:24s} ${w['balance_usdc']:>8.4f}  "
+            + click.style(w["status"], fg=status_color)
+            + f"  (spent today ${w['spent_today_usdc']:.4f}{limit})"
+        )
+
+
+@wallet.command("fund")
+@click.option("--agent", required=True, help="Agent ID whose wallet to fund")
+@click.option("--amount", required=True, type=float, help="USDC amount to deposit")
+@click.option("--control-plane", default="http://localhost:8400", help="Control plane base URL")
+def wallet_fund(agent: str, amount: float, control_plane: str) -> None:
+    """Deposit USDC into an agent wallet."""
+    httpx, base = _wallet_client(control_plane)
+    with httpx.Client(timeout=10.0) as client:
+        r = client.post(f"{base}/api/payments/wallets/{agent}/fund", json={"amount_usdc": amount})
+        if r.status_code == 404:
+            click.echo(f"Error: wallet for '{agent}' not found.", err=True)
+            raise SystemExit(1)
+        r.raise_for_status()
+        w = r.json()
+    click.echo(click.style(f"● Funded {agent}: +${amount:.4f} → ${w['balance_usdc']:.4f}", fg="green"))
+
+
+@wallet.command("ledger")
+@click.option("--agent", default=None, help="Filter by agent ID")
+@click.option("--control-plane", default="http://localhost:8400", help="Control plane base URL")
+@click.option("--json", "as_json", is_flag=True, help="Emit raw JSON")
+def wallet_ledger(agent: str | None, control_plane: str, as_json: bool) -> None:
+    """Show the payment transaction ledger."""
+    httpx, base = _wallet_client(control_plane)
+    params = {"agent_id": agent} if agent else {}
+    with httpx.Client(timeout=10.0) as client:
+        rows = client.get(f"{base}/api/payments/ledger", params=params).json()
+    if as_json:
+        click.echo(json.dumps(rows, indent=2))
+        return
+    if not rows:
+        click.echo("No transactions.")
+        return
+    click.echo(click.style("Payment Ledger", bold=True))
+    for p in rows:
+        mark, color = ("✓", "green") if p["settled"] else ("✗", "red")
+        click.echo("  " + click.style(mark, fg=color)
+                   + f" {p['agent_id']:20s} {p['action']:20s} ${p['amount_usdc']:.4f}  {p['tx_hash']}")
+
+
 if __name__ == "__main__":
     main()

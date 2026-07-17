@@ -54,6 +54,43 @@ class PricingConfig(BaseModel):
     overrides: dict[str, float] = {}
 
 
+class PaymentIngest(BaseModel):
+    agent_id: str
+    gateway_id: str = ""
+    action: str = ""
+    amount_usdc: float = 0.0
+    settled: bool = True
+    tx_hash: str = ""
+    mode: str = "simulated"
+    source: str = "policy"
+
+
+# ─── Ingest (from gateways) ──────────────────────────────────────────────────
+
+@router.post("/ingest")
+async def ingest_payment(body: PaymentIngest, db: AsyncSession = Depends(get_db)):
+    """Record a charge reported by a gateway; mirror the settled balance in DB.
+
+    The gateway settles against its local wallet copy and reports here so the
+    ledger, summary, and dashboard reflect real spend. On a settled charge we
+    also decrement the DB wallet so CP balances track the gateway's.
+    """
+    db.add(PaymentRecord(
+        agent_id=body.agent_id, gateway_id=body.gateway_id, action=body.action,
+        amount_usdc=body.amount_usdc, settled=body.settled, tx_hash=body.tx_hash,
+        mode=body.mode, source=body.source,
+    ))
+    if body.settled:
+        w = await db.get(Wallet, body.agent_id)
+        if w is not None:
+            w.balance_usdc -= body.amount_usdc
+            w.spent_today_usdc += body.amount_usdc
+            if w.daily_limit_usdc is not None and w.spent_today_usdc >= w.daily_limit_usdc:
+                w.status = "paused"
+    await db.commit()
+    return {"recorded": True}
+
+
 # ─── Wallets ─────────────────────────────────────────────────────────────────
 
 @router.get("/wallets")
