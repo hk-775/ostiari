@@ -1,5 +1,5 @@
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { Shield, Server, Wrench, FileText, Activity, Plug, History, DollarSign, Radio, FlaskConical, Brain, ShieldCheck, Beaker, Bot, Network, Users, Key, LogOut, EyeOff, FileCheck, Gauge, Wallet, TrendingUp } from "lucide-react";
+import { Shield, Server, Wrench, FileText, Activity, Plug, History, DollarSign, Radio, FlaskConical, Brain, ShieldCheck, Beaker, Bot, Network, Users, Key, LogOut, EyeOff, FileCheck, Gauge, Wallet, TrendingUp, Coins } from "lucide-react";
 import { useAuthStore } from "../stores/authStore";
 
 const NAV_SECTIONS: {
@@ -42,6 +42,7 @@ const NAV_SECTIONS: {
     borderColor: "border-l-emerald-400",
     items: [
       { path: "/payments", label: "Payments (x402)", icon: Wallet, color: "text-emerald-600", activeBg: "bg-emerald-50" },
+      { path: "/token-broker", label: "Token Broker", icon: Coins, color: "text-amber-600", activeBg: "bg-amber-50" },
     ],
   },
   {
