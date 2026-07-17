@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Coins, Save, RotateCcw, Info, TrendingDown } from "lucide-react";
+import { Coins, Save, RotateCcw, Info, TrendingDown, Database, Scale, AlertTriangle } from "lucide-react";
 import { api } from "../lib/api";
 
 const usd = (n: number) => `$${n.toLocaleString(undefined, { maximumFractionDigits: n < 1 ? 4 : 2 })}`;
@@ -13,6 +13,12 @@ export function TokenBroker() {
     refetchInterval: 5000,
   });
   const { data: config } = useQuery({ queryKey: ["broker-config"], queryFn: api.tokenBroker.config });
+  const { data: pools } = useQuery({ queryKey: ["broker-pools"], queryFn: api.tokenBroker.pools, refetchInterval: 5000 });
+  const { data: recons } = useQuery({ queryKey: ["broker-recons"], queryFn: api.tokenBroker.reconciliations, refetchInterval: 5000 });
+  const { data: collector } = useQuery({ queryKey: ["broker-collector"], queryFn: api.tokenBroker.collector });
+
+  const [poolForm, setPoolForm] = useState({ provider: "anthropic", tokens: 10_000_000, cost_usd: 22.5, low_threshold_tokens: 1_000_000 });
+  const [recon, setRecon] = useState({ provider: "anthropic", invoiced_cost_usd: 0 });
 
   const [discount, setDiscount] = useState(0.25);
   const [markup, setMarkup] = useState(0.12);
@@ -30,6 +36,14 @@ export function TokenBroker() {
     onSuccess: () => { invalidate(); setSaved(true); setTimeout(() => setSaved(false), 2000); },
   });
   const reset = useMutation({ mutationFn: () => api.tokenBroker.resetConfig(), onSuccess: invalidate });
+  const fundPool = useMutation({
+    mutationFn: () => api.tokenBroker.fundPool(poolForm),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["broker-pools"] }),
+  });
+  const doReconcile = useMutation({
+    mutationFn: () => api.tokenBroker.reconcile(recon.provider, recon.invoiced_cost_usd),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["broker-recons"] }),
+  });
 
   return (
     <div className="space-y-6">
@@ -142,6 +156,115 @@ export function TokenBroker() {
             <p className="text-sm text-stone-500">No usage in this period to broker.</p>
           </div>
         )}
+      </div>
+
+      {/* ── Pilot: token pool inventory ── */}
+      <div className="card overflow-hidden">
+        <div className="flex items-center justify-between border-b border-stone-100 px-6 py-4">
+          <h2 className="flex items-center gap-2 text-sm font-semibold text-stone-800">
+            <Database className="h-4 w-4 text-indigo-500" /> Token pools
+            <span className="text-xs font-normal text-stone-400">
+              billing: {collector?.mode ?? "…"}
+            </span>
+          </h2>
+        </div>
+        <table className="w-full">
+          <thead>
+            <tr className="border-b border-stone-100 text-left text-xs font-semibold uppercase tracking-wider text-stone-500">
+              <th className="px-6 py-3.5">Provider</th>
+              <th className="px-6 py-3.5">Remaining</th>
+              <th className="px-6 py-3.5">Consumed</th>
+              <th className="px-6 py-3.5">Bulk cost</th>
+              <th className="px-6 py-3.5">Status</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-stone-50">
+            {(pools ?? []).map((p) => (
+              <tr key={p.provider} className="transition hover:bg-stone-50/50">
+                <td className="px-6 py-4 text-sm font-medium text-stone-800">{p.provider}</td>
+                <td className="px-6 py-4 text-sm text-stone-700">
+                  {p.remaining_tokens.toLocaleString()} <span className="text-stone-400">({p.remaining_pct}%)</span>
+                </td>
+                <td className="px-6 py-4 text-sm text-stone-500">{p.consumed_tokens.toLocaleString()}</td>
+                <td className="px-6 py-4 text-sm text-stone-500">{usd(p.purchased_cost_usd)}</td>
+                <td className="px-6 py-4">
+                  <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${
+                    p.status === "active" ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"
+                  }`}>{p.status === "depleted" && <AlertTriangle className="h-3 w-3" />}{p.status}</span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {/* Fund a pool */}
+        <div className="flex flex-wrap items-end gap-2 border-t border-stone-100 bg-stone-50/40 px-6 py-3 text-sm">
+          <label className="text-stone-600">Provider
+            <input value={poolForm.provider} onChange={(e) => setPoolForm({ ...poolForm, provider: e.target.value })}
+              className="ml-2 w-28 rounded border border-stone-200 px-2 py-1" />
+          </label>
+          <label className="text-stone-600">Tokens
+            <input type="number" value={poolForm.tokens} onChange={(e) => setPoolForm({ ...poolForm, tokens: Number(e.target.value) })}
+              className="ml-2 w-32 rounded border border-stone-200 px-2 py-1" />
+          </label>
+          <label className="text-stone-600">Bulk cost $
+            <input type="number" step={0.01} value={poolForm.cost_usd} onChange={(e) => setPoolForm({ ...poolForm, cost_usd: Number(e.target.value) })}
+              className="ml-2 w-24 rounded border border-stone-200 px-2 py-1" />
+          </label>
+          <label className="text-stone-600">Low-alert
+            <input type="number" value={poolForm.low_threshold_tokens} onChange={(e) => setPoolForm({ ...poolForm, low_threshold_tokens: Number(e.target.value) })}
+              className="ml-2 w-28 rounded border border-stone-200 px-2 py-1" />
+          </label>
+          <button onClick={() => fundPool.mutate()} disabled={fundPool.isPending}
+            className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-40">
+            Fund pool
+          </button>
+        </div>
+      </div>
+
+      {/* ── Pilot: reconciliation ── */}
+      <div className="card overflow-hidden">
+        <div className="border-b border-stone-100 px-6 py-4">
+          <h2 className="flex items-center gap-2 text-sm font-semibold text-stone-800">
+            <Scale className="h-4 w-4 text-amber-500" /> Reconciliation
+          </h2>
+          <p className="mt-0.5 text-xs text-stone-500">Compare our tracked consumption against the provider's actual invoice — catch drift.</p>
+        </div>
+        <table className="w-full">
+          <thead>
+            <tr className="border-b border-stone-100 text-left text-xs font-semibold uppercase tracking-wider text-stone-500">
+              <th className="px-6 py-3.5">Provider</th>
+              <th className="px-6 py-3.5">Computed</th>
+              <th className="px-6 py-3.5">Invoiced</th>
+              <th className="px-6 py-3.5 text-right">Drift</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-stone-50">
+            {(recons ?? []).map((r) => (
+              <tr key={r.id} className="transition hover:bg-stone-50/50">
+                <td className="px-6 py-4 text-sm font-medium text-stone-800">{r.provider}</td>
+                <td className="px-6 py-4 text-sm text-stone-500">{usd(r.computed_cost_usd)}</td>
+                <td className="px-6 py-4 text-sm text-stone-500">{usd(r.invoiced_cost_usd)}</td>
+                <td className={`px-6 py-4 text-right font-semibold ${Math.abs(r.drift_pct) > 5 ? "text-rose-600" : "text-stone-600"}`}>
+                  {r.drift_usd >= 0 ? "+" : ""}{usd(r.drift_usd)} <span className="text-xs">({r.drift_pct}%)</span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div className="flex flex-wrap items-end gap-2 border-t border-stone-100 bg-stone-50/40 px-6 py-3 text-sm">
+          <label className="text-stone-600">Provider
+            <input value={recon.provider} onChange={(e) => setRecon({ ...recon, provider: e.target.value })}
+              className="ml-2 w-28 rounded border border-stone-200 px-2 py-1" />
+          </label>
+          <label className="text-stone-600">Provider invoice $
+            <input type="number" step={0.01} value={recon.invoiced_cost_usd} onChange={(e) => setRecon({ ...recon, invoiced_cost_usd: Number(e.target.value) })}
+              className="ml-2 w-28 rounded border border-stone-200 px-2 py-1" />
+          </label>
+          <button onClick={() => doReconcile.mutate()} disabled={doReconcile.isPending}
+            className="rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-40">
+            Reconcile 30d
+          </button>
+        </div>
       </div>
     </div>
   );

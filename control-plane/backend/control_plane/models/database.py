@@ -110,6 +110,52 @@ class UsageRecord(Base):
     )
 
 
+class TokenPool(Base):
+    """Purchased token inventory for the broker, per provider.
+
+    A pilot broker buys tokens in bulk (committed-use / prepaid) and draws down
+    the pool as customer traffic consumes them. We track tokens and the dollars
+    those tokens represent at our bulk cost, plus the total consumed, so the
+    remaining balance and burn are auditable and depletion can halt routing.
+    """
+
+    __tablename__ = "token_pools"
+
+    provider: Mapped[str] = mapped_column(String(64), primary_key=True)  # anthropic | openai | ...
+    purchased_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    purchased_cost_usd: Mapped[float] = mapped_column(Float, default=0.0)  # our bulk cost for them
+    consumed_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    consumed_cost_usd: Mapped[float] = mapped_column(Float, default=0.0)   # our-cost of consumption
+    low_threshold_tokens: Mapped[int] = mapped_column(Integer, default=0)  # alert/halt below this
+    status: Mapped[str] = mapped_column(String(20), default="active")      # active | depleted
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class ReconciliationRecord(Base):
+    """A period reconciliation: our computed pool cost vs the provider's invoice.
+
+    The operator enters the provider's actual billed amount for a period; we
+    compare it to what our consumption tracking computed, and record the delta
+    (drift). Persistent audit trail — this is where a broker catches the pool
+    math diverging from the real bill.
+    """
+
+    __tablename__ = "reconciliation_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(64))
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    computed_cost_usd: Mapped[float] = mapped_column(Float, default=0.0)   # what we tracked
+    invoiced_cost_usd: Mapped[float] = mapped_column(Float, default=0.0)   # provider's actual bill
+    consumed_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
 class Wallet(Base):
     """Per-agent USDC wallet for the x402 payment gate.
 
