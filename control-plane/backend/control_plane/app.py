@@ -25,6 +25,7 @@ from control_plane.routers import (
     quotas,
     tools,
     traces,
+    trust,
 )
 
 
@@ -123,6 +124,7 @@ app.include_router(traces.router)
 app.include_router(audit.router)
 app.include_router(compliance.router)
 app.include_router(metering.router)
+app.include_router(trust.router)
 
 
 @app.get("/api/health")

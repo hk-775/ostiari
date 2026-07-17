@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Network, Save, Check, ShieldAlert, Ban } from "lucide-react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Network, Save, Check, ShieldAlert, Ban, Activity, ArrowRight } from "lucide-react";
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
 const GATEWAY_BASE = `${API_BASE}/api/proxy/gateway/crm-agent`;
@@ -29,6 +29,32 @@ async function fetchDelegationReport(): Promise<DelegationReport> {
     return await res.json();
   } catch {
     return { blocked_delegation_count: 0, distinct_edges: 0, edges: [] };
+  }
+}
+
+interface TrustRow {
+  agent_id: string;
+  derived_score: number;
+  configured_score: number | null;
+  delta: number | null;
+  sample_size: number;
+}
+
+interface TrustScores {
+  gateway_id: string;
+  enforced: boolean;
+  agents: TrustRow[];
+  would_change_count: number;
+  baseline: number;
+}
+
+async function fetchTrust(): Promise<TrustScores> {
+  try {
+    const res = await fetch(`${API_BASE}/api/trust/scores`);
+    if (!res.ok) throw new Error();
+    return await res.json();
+  } catch {
+    return { gateway_id: "crm-agent", enforced: false, agents: [], would_change_count: 0, baseline: 50 };
   }
 }
 
@@ -76,6 +102,23 @@ export function ProtocolGovernance() {
     queryKey: ["delegation-report"],
     queryFn: fetchDelegationReport,
     refetchInterval: 5000,
+  });
+
+  const qc = useQueryClient();
+  const { data: trust } = useQuery({
+    queryKey: ["trust-scores"],
+    queryFn: fetchTrust,
+    refetchInterval: 5000,
+  });
+  const applyTrust = useMutation({
+    mutationFn: async (enable: boolean) => {
+      const path = enable ? "apply" : "disable";
+      await fetch(`${API_BASE}/api/trust/${path}?gateway_id=crm-agent`, { method: "POST" });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["trust-scores"] });
+      qc.invalidateQueries({ queryKey: ["cross-agent"] });
+    },
   });
 
   useEffect(() => {
@@ -263,6 +306,78 @@ export function ProtocolGovernance() {
           <div className="flex flex-col items-center gap-2 py-10 text-center">
             <Ban className="h-7 w-7 text-stone-300" />
             <p className="text-sm text-stone-500">No blocked delegations yet.</p>
+          </div>
+        )}
+      </div>
+
+      {/* Behavior-derived trust (shadow-first) */}
+      <div className="card overflow-hidden">
+        <div className="flex items-center justify-between border-b border-stone-100 px-6 py-4">
+          <div>
+            <h2 className="flex items-center gap-2 text-sm font-semibold text-stone-800">
+              <Activity className="h-4 w-4 text-violet-500" /> Behavior-derived trust
+            </h2>
+            <p className="mt-0.5 text-xs text-stone-500">
+              Trust scored from each agent's actual risk/block history.{" "}
+              {trust?.enforced
+                ? "Enforced — derived scores drive delegation decisions."
+                : "Shadow only — computed, not applied. Review, then enable."}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${
+              trust?.enforced ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"
+            }`}>{trust?.enforced ? "Enforced" : "Shadow"}</span>
+            <button
+              onClick={() => applyTrust.mutate(!trust?.enforced)}
+              disabled={applyTrust.isPending}
+              className={trust?.enforced ? "btn-secondary" : "btn-sky"}
+            >
+              {trust?.enforced ? "Disable enforcement" : "Enable enforcement"}
+            </button>
+          </div>
+        </div>
+        <table className="w-full">
+          <thead>
+            <tr className="border-b border-stone-100 text-left text-xs font-semibold uppercase tracking-wider text-stone-500">
+              <th className="px-6 py-3.5">Agent</th>
+              <th className="px-6 py-3.5">Configured</th>
+              <th className="px-6 py-3.5">Derived</th>
+              <th className="px-6 py-3.5">Would change</th>
+              <th className="px-6 py-3.5">Samples</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-stone-50">
+            {(trust?.agents ?? []).map((a) => (
+              <tr key={a.agent_id} className="transition hover:bg-stone-50/50">
+                <td className="px-6 py-4 text-sm font-medium text-stone-800">{a.agent_id}</td>
+                <td className="px-6 py-4 text-sm text-stone-500">{a.configured_score ?? "—"}</td>
+                <td className="px-6 py-4">
+                  <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
+                    a.derived_score >= 70 ? "bg-emerald-50 text-emerald-700"
+                    : a.derived_score >= 40 ? "bg-amber-50 text-amber-700"
+                    : "bg-rose-50 text-rose-700"
+                  }`}>{a.derived_score}</span>
+                </td>
+                <td className="px-6 py-4 text-sm">
+                  {a.delta === null ? <span className="text-stone-400">—</span>
+                    : a.delta === 0 ? <span className="text-stone-400">no change</span>
+                    : (
+                      <span className={`inline-flex items-center gap-1 ${a.delta < 0 ? "text-rose-600" : "text-emerald-600"}`}>
+                        {a.configured_score} <ArrowRight className="h-3 w-3" /> {a.derived_score}
+                        <span className="text-xs">({a.delta > 0 ? "+" : ""}{a.delta})</span>
+                      </span>
+                    )}
+                </td>
+                <td className="px-6 py-4 text-xs text-stone-400">{a.sample_size}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {(trust?.agents.length ?? 0) === 0 && (
+          <div className="flex flex-col items-center gap-2 py-10 text-center">
+            <Activity className="h-7 w-7 text-stone-300" />
+            <p className="text-sm text-stone-500">No agent activity yet to score.</p>
           </div>
         )}
       </div>
