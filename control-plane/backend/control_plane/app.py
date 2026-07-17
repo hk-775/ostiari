@@ -19,6 +19,7 @@ from control_plane.routers import (
     mcp_servers,
     metering,
     model_config,
+    payments,
     policies,
     providers,
     proxy,
@@ -132,6 +133,7 @@ app.include_router(audit.router)
 app.include_router(compliance.router)
 app.include_router(metering.router)
 app.include_router(trust.router)
+app.include_router(payments.router)
 
 
 @app.get("/api/health")

@@ -1,0 +1,223 @@
+"""Payments API — x402 wallets, pricing, ledger, and push-to-gateway.
+
+The control plane owns wallet balances/limits (DB) and the per-gateway pricing
+policy (mode + priced patterns). Both are pushed to the gateway's payment gate
+via POST /config/payments. The ledger (PaymentRecord) is the billing/audit
+trail and the dashboard's data source.
+"""
+
+from __future__ import annotations
+
+import httpx
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from control_plane.database import get_db
+from control_plane.models.database import Gateway, PaymentRecord, Wallet
+
+router = APIRouter(prefix="/api/payments", tags=["payments"])
+
+# Per-gateway pricing policy (mode + priced patterns). Kept in the control
+# plane; pushed to gateways alongside wallet balances. Defaults to off.
+_pricing: dict[str, dict] = {}
+
+
+def _gateway_pricing(gateway_id: str) -> dict:
+    return _pricing.get(gateway_id, {"mode": "off", "default": 0.0, "overrides": {}})
+
+
+# ─── Schemas ─────────────────────────────────────────────────────────────────
+
+class WalletUpsert(BaseModel):
+    agent_id: str
+    balance_usdc: float = 0.0
+    address: str = ""
+    daily_limit_usdc: float | None = None
+    per_call_limit_usdc: float | None = None
+
+
+class WalletPatch(BaseModel):
+    daily_limit_usdc: float | None = None
+    per_call_limit_usdc: float | None = None
+    status: str | None = None  # active | paused
+
+
+class FundRequest(BaseModel):
+    amount_usdc: float
+
+
+class PricingConfig(BaseModel):
+    mode: str = "off"                     # off | metered | passthrough
+    default: float = 0.0
+    overrides: dict[str, float] = {}
+
+
+# ─── Wallets ─────────────────────────────────────────────────────────────────
+
+@router.get("/wallets")
+async def list_wallets(db: AsyncSession = Depends(get_db)):
+    rows = (await db.execute(select(Wallet))).scalars().all()
+    return [_wallet_dict(w) for w in rows]
+
+
+@router.post("/wallets")
+async def upsert_wallet(body: WalletUpsert, db: AsyncSession = Depends(get_db)):
+    w = await db.get(Wallet, body.agent_id)
+    if w is None:
+        w = Wallet(agent_id=body.agent_id)
+        db.add(w)
+    w.balance_usdc = body.balance_usdc
+    w.address = body.address
+    w.daily_limit_usdc = body.daily_limit_usdc
+    w.per_call_limit_usdc = body.per_call_limit_usdc
+    await db.commit()
+    await db.refresh(w)
+    return _wallet_dict(w)
+
+
+@router.post("/wallets/{agent_id}/fund")
+async def fund_wallet(agent_id: str, body: FundRequest, db: AsyncSession = Depends(get_db)):
+    """Deposit USDC into an agent wallet (sim: bump balance; reactivates if paused)."""
+    w = await db.get(Wallet, agent_id)
+    if w is None:
+        raise HTTPException(status_code=404, detail="Wallet not found")
+    w.balance_usdc += body.amount_usdc
+    if w.status == "paused" and (
+        w.daily_limit_usdc is None or w.spent_today_usdc < w.daily_limit_usdc
+    ):
+        w.status = "active"
+    await db.commit()
+    await db.refresh(w)
+    return _wallet_dict(w)
+
+
+@router.patch("/wallets/{agent_id}")
+async def patch_wallet(agent_id: str, body: WalletPatch, db: AsyncSession = Depends(get_db)):
+    w = await db.get(Wallet, agent_id)
+    if w is None:
+        raise HTTPException(status_code=404, detail="Wallet not found")
+    if body.daily_limit_usdc is not None:
+        w.daily_limit_usdc = body.daily_limit_usdc
+    if body.per_call_limit_usdc is not None:
+        w.per_call_limit_usdc = body.per_call_limit_usdc
+    if body.status in ("active", "paused"):
+        w.status = body.status
+    await db.commit()
+    await db.refresh(w)
+    return _wallet_dict(w)
+
+
+# ─── Ledger + summary ────────────────────────────────────────────────────────
+
+@router.get("/ledger")
+async def ledger(agent_id: str | None = None, limit: int = 100, db: AsyncSession = Depends(get_db)):
+    query = select(PaymentRecord).order_by(PaymentRecord.timestamp.desc()).limit(limit)
+    if agent_id:
+        query = query.where(PaymentRecord.agent_id == agent_id)
+    rows = (await db.execute(query)).scalars().all()
+    return [_payment_dict(p) for p in rows]
+
+
+@router.get("/summary")
+async def summary(db: AsyncSession = Depends(get_db)):
+    """Totals + spend-by-agent for the payments dashboard."""
+    total_settled = (await db.execute(
+        select(func.coalesce(func.sum(PaymentRecord.amount_usdc), 0.0))
+        .where(PaymentRecord.settled == True)  # noqa: E712
+    )).scalar_one()
+    count = (await db.execute(
+        select(func.count()).select_from(PaymentRecord).where(PaymentRecord.settled == True)  # noqa: E712
+    )).scalar_one()
+    blocked = (await db.execute(
+        select(func.count()).select_from(PaymentRecord).where(PaymentRecord.settled == False)  # noqa: E712
+    )).scalar_one()
+    by_agent_rows = (await db.execute(
+        select(PaymentRecord.agent_id, func.coalesce(func.sum(PaymentRecord.amount_usdc), 0.0),
+               func.count())
+        .where(PaymentRecord.settled == True)  # noqa: E712
+        .group_by(PaymentRecord.agent_id)
+    )).all()
+    fee_rate = 0.03
+    return {
+        "total_settled_usdc": round(total_settled, 6),
+        "settled_count": count,
+        "blocked_count": blocked,
+        "fee_rate": fee_rate,
+        "fees_captured_usdc": round(total_settled * fee_rate, 6),
+        "by_agent": [
+            {"agent_id": a, "spent_usdc": round(s, 6), "calls": c}
+            for a, s, c in sorted(by_agent_rows, key=lambda r: r[1], reverse=True)
+        ],
+    }
+
+
+# ─── Pricing + push ──────────────────────────────────────────────────────────
+
+@router.get("/pricing")
+async def get_pricing(gateway_id: str = "crm-agent"):
+    return {"gateway_id": gateway_id, **_gateway_pricing(gateway_id)}
+
+
+@router.post("/pricing")
+async def set_pricing(body: PricingConfig, gateway_id: str = "crm-agent"):
+    _pricing[gateway_id] = body.model_dump()
+    return {"gateway_id": gateway_id, **_pricing[gateway_id]}
+
+
+@router.post("/push")
+async def push_payments(gateway_id: str = "crm-agent", db: AsyncSession = Depends(get_db)):
+    """Push the full payment config (pricing + wallet balances) to a gateway."""
+    gateway = await db.get(Gateway, gateway_id)
+    if gateway is None:
+        raise HTTPException(status_code=404, detail="Gateway not found")
+
+    payload = await build_payment_config(db, gateway_id)
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.post(f"{gateway.endpoint}/config/payments", json=payload)
+            resp.raise_for_status()
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"Failed to push: {exc}") from None
+    return {"gateway_id": gateway_id, "pushed": True, "wallets": len(payload["wallets"])}
+
+
+async def build_payment_config(db: AsyncSession, gateway_id: str) -> dict:
+    """Assemble the gateway payment bundle: pricing policy + all wallet balances."""
+    wallets = (await db.execute(select(Wallet))).scalars().all()
+    pricing = _gateway_pricing(gateway_id)
+    return {
+        **pricing,
+        "wallets": [
+            {
+                "agent_id": w.agent_id, "balance_usdc": w.balance_usdc,
+                "address": w.address, "daily_limit_usdc": w.daily_limit_usdc,
+                "per_call_limit_usdc": w.per_call_limit_usdc,
+                "spent_today_usdc": w.spent_today_usdc, "status": w.status,
+            }
+            for w in wallets
+        ],
+    }
+
+
+# ─── Serializers ─────────────────────────────────────────────────────────────
+
+def _wallet_dict(w: Wallet) -> dict:
+    return {
+        "agent_id": w.agent_id, "address": w.address,
+        "balance_usdc": round(w.balance_usdc, 6),
+        "daily_limit_usdc": w.daily_limit_usdc,
+        "per_call_limit_usdc": w.per_call_limit_usdc,
+        "spent_today_usdc": round(w.spent_today_usdc, 6),
+        "status": w.status,
+    }
+
+
+def _payment_dict(p: PaymentRecord) -> dict:
+    return {
+        "id": p.id, "agent_id": p.agent_id, "gateway_id": p.gateway_id,
+        "action": p.action, "amount_usdc": round(p.amount_usdc, 6),
+        "settled": p.settled, "tx_hash": p.tx_hash, "mode": p.mode,
+        "source": p.source, "timestamp": p.timestamp.isoformat() if p.timestamp else "",
+    }
