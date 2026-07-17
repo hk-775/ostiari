@@ -65,3 +65,6 @@ ai-dlc-rules-*.zip
 # CDK artifacts
 site/infra/cdk.out/
 site/infra/.venv/
+
+# Microsoft Office lock/temp files
+~$*
