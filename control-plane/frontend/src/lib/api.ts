@@ -122,6 +122,8 @@ export const api = {
   },
   payments: {
     wallets: () => fetchAPI<Wallet[]>("/api/payments/wallets"),
+    upsert: (data: { agent_id: string; balance_usdc?: number; daily_limit_usdc?: number | null; per_call_limit_usdc?: number | null }) =>
+      fetchAPI<Wallet>("/api/payments/wallets", { method: "POST", body: JSON.stringify(data) }),
     fund: (agentId: string, amount: number) =>
       fetchAPI<Wallet>(`/api/payments/wallets/${agentId}/fund`, {
         method: "POST", body: JSON.stringify({ amount_usdc: amount }),
