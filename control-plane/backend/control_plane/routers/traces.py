@@ -231,6 +231,47 @@ async def shadow_report() -> Any:
     }
 
 
+@router.get("/api/traces/delegation-report")
+async def delegation_report() -> Any:
+    """Summarize blocked (and would-be-blocked) cross-agent delegations.
+
+    Surfaces the A2A edges that governance stopped: which caller tried to
+    delegate to which callee, how often, why, and the delegation chain — for
+    the Protocol Governance "would-block" feed.
+    """
+    blocked = [
+        t for t in _recent_traces
+        if t.get("limit_type") == "cross_agent_delegation" and t.get("would_block")
+    ]
+
+    by_edge: dict[str, dict[str, Any]] = {}
+    for t in blocked:
+        chain = t.get("delegation_chain") or []
+        caller = chain[-1] if chain else t.get("agent_id", "unknown")
+        # action is "a2a.<callee>"
+        action = t.get("action", "")
+        callee = action[len("a2a."):] if action.startswith("a2a.") else action
+        key = f"{caller}->{callee}"
+        entry = by_edge.setdefault(key, {
+            "caller": caller, "callee": callee, "count": 0,
+            "reasons": set(), "example_chain": chain, "shadow": bool(t.get("shadow")),
+        })
+        entry["count"] += 1
+        if t.get("blocked_reason"):
+            entry["reasons"].add(t["blocked_reason"])
+
+    edges = sorted(
+        ({**e, "reasons": sorted(e["reasons"])} for e in by_edge.values()),
+        key=lambda e: e["count"],
+        reverse=True,
+    )
+    return {
+        "blocked_delegation_count": len(blocked),
+        "distinct_edges": len(edges),
+        "edges": edges,
+    }
+
+
 @router.websocket("/ws/traces")
 async def websocket_traces(websocket: WebSocket) -> None:
     """WebSocket endpoint for live trace streaming.

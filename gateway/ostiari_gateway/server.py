@@ -286,6 +286,16 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
             # (edge rules + callee trust score + chain-depth guard)
             xa_allowed, xa_reason = cross_agent.check(agent_id, agent_key, chain=delegation_chain)
             if not xa_allowed:
+                # Report the block either way so the delegation report captures
+                # both real (enforce) and would-be (shadow) blocks.
+                await trace_reporter.report(
+                    action=action, tier="block", score=0, duration_ms=0,
+                    agent_id=agent_id, framework=framework, blocked_reason=xa_reason,
+                    endpoint=f"a2a://{agent_key}",
+                    session_id=session_id, plan=plan, step=step, params=params,
+                    shadow=shadow, would_block=True, delegation_chain=delegation_chain,
+                    limit_type="cross_agent_delegation",
+                )
                 if not shadow:
                     return JSONResponse(
                         status_code=403,
@@ -297,13 +307,6 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
                             "delegation_chain": delegation_chain,
                         },
                     )
-                await trace_reporter.report(
-                    action=action, tier="block", score=0, duration_ms=0,
-                    agent_id=agent_id, framework=framework, blocked_reason=xa_reason,
-                    endpoint=f"a2a://{agent_key}",
-                    session_id=session_id, plan=plan, step=step, params=params,
-                    shadow=True, would_block=True, delegation_chain=delegation_chain,
-                )
                 return _shadow_response(action, "cross_agent_delegation", xa_reason)
 
         # Agent authorization check (least privilege — before everything else)
