@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Trash2, Upload, Server, Check } from "lucide-react";
+import { Plus, Trash2, Upload, Server, Check, EyeOff, ShieldCheck } from "lucide-react";
 import { api, Gateway } from "../lib/api";
 
 function GatewayHealthDot({ gateway }: { gateway: Gateway }) {
@@ -61,6 +61,12 @@ export function Gateways() {
   });
   const pushAllMutation = useMutation({ mutationFn: api.gateways.pushAll });
 
+  const modeMutation = useMutation({
+    mutationFn: ({ id, mode }: { id: string; mode: "enforce" | "shadow" }) =>
+      api.gateways.setMode(id, mode),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["gateways"] }),
+  });
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -99,6 +105,7 @@ export function Gateways() {
               <th className="px-6 py-3.5">Name</th>
               <th className="px-6 py-3.5">Endpoint</th>
               <th className="px-6 py-3.5">Status</th>
+              <th className="px-6 py-3.5">Mode</th>
               <th className="px-6 py-3.5">Tools</th>
               <th className="px-6 py-3.5 text-right">Actions</th>
             </tr>
@@ -112,6 +119,23 @@ export function Gateways() {
                 <td className="px-6 py-4 text-sm text-stone-500 font-mono">{s.endpoint}</td>
                 <td className="px-6 py-4">
                   <GatewayHealthDot gateway={s} />
+                </td>
+                <td className="px-6 py-4">
+                  <button
+                    onClick={() => modeMutation.mutate({ id: s.id, mode: s.mode === "shadow" ? "enforce" : "shadow" })}
+                    disabled={modeMutation.isPending}
+                    title={s.mode === "shadow"
+                      ? "Shadow: policies evaluate but never block. Click to enforce."
+                      : "Enforce: policies are applied. Click to switch to shadow."}
+                    className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition ${
+                      s.mode === "shadow"
+                        ? "bg-amber-50 text-amber-700 hover:bg-amber-100"
+                        : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                    }`}
+                  >
+                    {s.mode === "shadow" ? <EyeOff className="h-3.5 w-3.5" /> : <ShieldCheck className="h-3.5 w-3.5" />}
+                    {s.mode === "shadow" ? "Shadow" : "Enforce"}
+                  </button>
                 </td>
                 <td className="px-6 py-4 text-sm text-stone-500">{s.tools_count}</td>
                 <td className="px-6 py-4">
