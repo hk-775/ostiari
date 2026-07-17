@@ -393,5 +393,40 @@ def compliance_report(framework: str, control_plane: str, period_days: int, as_j
         click.echo(f"      {req['detail']}")
 
 
+@main.command("metering")
+@click.option("--group-by", type=click.Choice(["agent", "gateway", "tool"]), default="agent")
+@click.option("--control-plane", default="http://localhost:8400", help="Control plane base URL")
+@click.option("--period", "period_days", default=30, type=int, help="Reporting window in days")
+@click.option("--json", "as_json", is_flag=True, help="Emit raw JSON")
+def metering_cmd(group_by: str, control_plane: str, period_days: int, as_json: bool) -> None:
+    """Show governed tool-call metering (usage-based billing lens)."""
+    try:
+        import httpx
+    except ImportError:
+        click.echo("Error: httpx is required for 'metering' (pip install httpx).", err=True)
+        raise SystemExit(1) from None
+
+    base = control_plane.rstrip("/")
+    with httpx.Client(timeout=10.0) as client:
+        r = client.get(f"{base}/api/metering/summary",
+                       params={"group_by": group_by, "period_days": period_days})
+        r.raise_for_status()
+        s = r.json()
+
+    if as_json:
+        click.echo(json.dumps(s, indent=2))
+        return
+
+    click.echo(click.style(f"Metering — by {s['group_by']} ({period_days}d)", bold=True))
+    click.echo(f"  {s['total_governed_calls']:,} governed calls · "
+               f"{s['distinct_subjects']} {s['group_by']}s · "
+               f"overall tier: " + click.style(s['overall_tier'].upper(), fg="cyan"))
+    click.echo("")
+    for row in s["breakdown"]:
+        nxt = row.get("next_tier")
+        tail = f"  ({nxt['calls_to_next']:,} → {nxt['tier']})" if nxt else ""
+        click.echo(f"  {row['key']:24s} {row['calls']:>8,} calls  [{row['tier']}]{tail}")
+
+
 if __name__ == "__main__":
     main()
