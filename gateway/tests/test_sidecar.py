@@ -242,3 +242,120 @@ class TestRuntimeConfigEndpoints:
         body = {"overrides": [{"agent": "crm", "model": "gpt-4o"}]}
         assert client.post("/config/routing-overrides", json=body).status_code == 200
         assert client.get("/config/routing-overrides").json()["overrides"] == body["overrides"]
+
+
+class TestShadowMode:
+    """Shadow mode: evaluate policy but never block or run real tools."""
+
+    def _shadow_client(self, httpserver):
+        # A tool whose backend, if hit, records the call — so we can prove it ISN'T hit.
+        httpserver.expect_request("/run", method="POST").respond_with_json({"ran": True})
+        config = SidecarConfig(
+            sidecar_id="shadow-sc",
+            mode="shadow",
+            tools=[ToolDefinition(name="send_email", endpoint=httpserver.url_for("/run"))],
+            policy=PolicyConfig(block=["dangerous_action"], allow=["send_email"]),
+        )
+        return TestClient(create_app(initial_config=config)), httpserver
+
+    def test_mode_endpoint_roundtrip(self, client):
+        assert client.get("/config/mode").json()["mode"] == "enforce"
+        assert client.post("/config/mode", json={"mode": "shadow"}).status_code == 200
+        assert client.get("/config/mode").json()["mode"] == "shadow"
+
+    def test_mode_endpoint_rejects_invalid(self, client):
+        assert client.post("/config/mode", json={"mode": "bogus"}).status_code == 400
+
+    def _blocking_client(self, mode):
+        config = SidecarConfig(
+            sidecar_id="sc",
+            mode=mode,
+            tools=[ToolDefinition(name="dangerous_action", endpoint="http://localhost:9999/x")],
+            policy=PolicyConfig(block=["dangerous_action"]),
+        )
+        return TestClient(create_app(initial_config=config))
+
+    def test_blocked_action_not_blocked_in_shadow(self):
+        client = self._blocking_client("shadow")
+        resp = client.post("/tool/dangerous_action", json={"target": "all"})
+        assert resp.status_code == 200  # NOT 403
+        body = resp.json()
+        assert body["shadow"] is True
+        assert body["would_block"] is True
+
+    def test_enforce_mode_still_blocks(self):
+        # Sanity: default enforce mode blocks the same action.
+        client = self._blocking_client("enforce")
+        resp = client.post("/tool/dangerous_action", json={"target": "all"})
+        assert resp.status_code == 403
+
+    def test_allowed_tool_not_really_executed_in_shadow(self, httpserver):
+        client, hs = self._shadow_client(httpserver)
+        resp = client.post("/tool/send_email", json={"to": "x@y.io"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["shadow"] is True
+        assert body["would_block"] is False
+        assert body["result"]["note"].startswith("shadowed")
+        # The real backend must NOT have been called.
+        assert len(hs.log) == 0
+
+    def test_agent_auth_block_shadowed(self, httpserver):
+        # Restrict agent auth so the call would be denied, then shadow it.
+        httpserver.expect_request("/run", method="POST").respond_with_json({"ran": True})
+        config = SidecarConfig(
+            sidecar_id="sc",
+            mode="shadow",
+            tools=[ToolDefinition(name="send_email", endpoint=httpserver.url_for("/run"))],
+            agent_auth={
+                "enabled": True,
+                "default_tools": [],
+                "agents": {"bot": {"allowed_tools": ["other_tool"]}},
+            },
+        )
+        client = TestClient(create_app(initial_config=config))
+        resp = client.post("/tool/send_email", json={}, headers={"X-Agent-Id": "bot"})
+        # Would be 403 in enforce mode; shadowed -> 200 with would_block.
+        assert resp.status_code == 200
+        assert resp.json()["would_block"] is True
+
+
+class TestShadowSchemaMock:
+    def test_schema_shaped_response(self, httpserver):
+        httpserver.expect_request("/run", method="POST").respond_with_json({"real": True})
+        config = SidecarConfig(
+            sidecar_id="sc", mode="shadow",
+            tools=[ToolDefinition(
+                name="lookup",
+                endpoint=httpserver.url_for("/run"),
+                schema={"type": "object", "properties": {
+                    "rows": {"type": "array", "items": {"type": "object", "properties": {
+                        "id": {"type": "integer"}, "name": {"type": "string"}}}},
+                    "count": {"type": "integer"},
+                }},
+            )],
+            policy=PolicyConfig(allow=["lookup"]),
+        )
+        client = TestClient(create_app(initial_config=config))
+        resp = client.post("/tool/lookup", json={"q": "x"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["shadow"] is True
+        syn = body["result"]["synthesized"]
+        # Shaped to the schema: rows is a list of {id,name}; count is a number.
+        assert "rows" in syn and isinstance(syn["rows"], list)
+        assert syn["rows"][0].keys() == {"id", "name"}
+        assert "count" in syn
+        # Real backend never hit.
+        assert len(httpserver.log) == 0
+
+    def test_no_schema_falls_back_to_marker(self, httpserver):
+        httpserver.expect_request("/run", method="POST").respond_with_json({"real": True})
+        config = SidecarConfig(
+            sidecar_id="sc", mode="shadow",
+            tools=[ToolDefinition(name="plain", endpoint=httpserver.url_for("/run"))],
+            policy=PolicyConfig(allow=["plain"]),
+        )
+        client = TestClient(create_app(initial_config=config))
+        body = client.post("/tool/plain", json={}).json()
+        assert body["result"]["note"].startswith("shadowed")

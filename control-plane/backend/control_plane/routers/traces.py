@@ -189,6 +189,48 @@ async def get_recent_traces(limit: int = 50) -> Any:
     return {"traces": traces, "total": len(traces)}
 
 
+@router.get("/api/traces/shadow-report")
+async def shadow_report() -> Any:
+    """Summarize shadow-mode activity: what enforce mode WOULD have blocked.
+
+    Aggregates the trace buffer's shadow events into a report suitable for the
+    'try before you enforce' workflow — total shadow calls, how many would have
+    been blocked, and the offending actions grouped by reason.
+    """
+    shadow_traces = [t for t in _recent_traces if t.get("shadow")]
+    would_block = [t for t in shadow_traces if t.get("would_block")]
+
+    by_action: dict[str, dict[str, Any]] = {}
+    for t in would_block:
+        action = t.get("action", "unknown")
+        entry = by_action.setdefault(action, {
+            "action": action, "count": 0, "max_score": 0, "reasons": set(),
+        })
+        entry["count"] += 1
+        entry["max_score"] = max(entry["max_score"], t.get("score") or 0)
+        if t.get("blocked_reason"):
+            entry["reasons"].add(t["blocked_reason"])
+
+    # Serialize reason sets to sorted lists
+    offenders = sorted(
+        (
+            {**e, "reasons": sorted(e["reasons"])}
+            for e in by_action.values()
+        ),
+        key=lambda e: e["count"],
+        reverse=True,
+    )
+
+    total_shadow = len(shadow_traces)
+    return {
+        "total_shadow_calls": total_shadow,
+        "would_block_count": len(would_block),
+        "would_allow_count": total_shadow - len(would_block),
+        "block_rate": round(len(would_block) / total_shadow, 4) if total_shadow else 0.0,
+        "offending_actions": offenders,
+    }
+
+
 @router.websocket("/ws/traces")
 async def websocket_traces(websocket: WebSocket) -> None:
     """WebSocket endpoint for live trace streaming.

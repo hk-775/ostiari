@@ -59,8 +59,14 @@ class TraceReporter:
         step: str = "",
         params: dict | None = None,
         model: str = "",
+        shadow: bool = False,
+        would_block: bool = False,
     ) -> None:
-        """Report a single tool call event to the control plane."""
+        """Report a single tool call event to the control plane.
+
+        shadow: the gateway was in shadow mode for this call (no real enforcement).
+        would_block: in shadow mode, this call WOULD have been blocked in enforce mode.
+        """
         if not self.enabled:
             return
 
@@ -83,6 +89,8 @@ class TraceReporter:
             "step": step,
             "params": params,
             "model": model,
+            "shadow": shadow,
+            "would_block": would_block,
             "timestamp": time.time(),
         }
 

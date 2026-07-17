@@ -47,3 +47,7 @@ class SidecarConfig(BaseModel):
     sidecar_id: str = ""
     control_plane_url: str = ""
     poll_interval_seconds: int = 60
+    # Enforcement mode: "enforce" applies policy decisions (block/deny);
+    # "shadow" evaluates everything but never blocks and never executes real
+    # tool side effects — it records what *would* have happened.
+    mode: str = "enforce"
