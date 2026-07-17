@@ -1,7 +1,27 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Trash2, Upload, Server } from "lucide-react";
+import { Plus, Trash2, Upload, Server, Check } from "lucide-react";
 import { api, Gateway } from "../lib/api";
+
+function GatewayHealthDot({ gateway }: { gateway: Gateway }) {
+  const getHealth = () => {
+    if (gateway.status === "healthy") {
+      return { color: "bg-emerald-500", label: "healthy" };
+    }
+    if (gateway.status === "unhealthy" || gateway.status === "unreachable") {
+      return { color: "bg-red-500", label: "unhealthy" };
+    }
+    // "registered" or never heartbeated
+    return { color: "bg-stone-400", label: "registered" };
+  };
+  const { color, label } = getHealth();
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className={`inline-block h-2 w-2 rounded-full ${color}`} />
+      <span className="text-sm text-stone-600">{label}</span>
+    </span>
+  );
+}
 
 export function Gateways() {
   const queryClient = useQueryClient();
@@ -23,7 +43,22 @@ export function Gateways() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["gateways"] }),
   });
 
-  const pushMutation = useMutation({ mutationFn: api.gateways.push });
+  const [pushStatus, setPushStatus] = useState<Record<string, string>>({});
+
+  const pushMutation = useMutation({
+    mutationFn: async (id: string) => {
+      setPushStatus((prev) => ({ ...prev, [id]: "pushing" }));
+      try {
+        const result = await api.gateways.push(id);
+        setPushStatus((prev) => ({ ...prev, [id]: "done" }));
+        setTimeout(() => setPushStatus((prev) => ({ ...prev, [id]: "" })), 2000);
+        return result;
+      } catch {
+        setPushStatus((prev) => ({ ...prev, [id]: "error" }));
+        setTimeout(() => setPushStatus((prev) => ({ ...prev, [id]: "" })), 2000);
+      }
+    },
+  });
   const pushAllMutation = useMutation({ mutationFn: api.gateways.pushAll });
 
   return (
@@ -73,20 +108,16 @@ export function Gateways() {
               <tr key={s.id} className="transition hover:bg-stone-50/50">
                 <td className="px-6 py-4">
                   <p className="text-sm font-medium text-stone-800">{s.name}</p>
-                  <p className="text-xs text-stone-400 font-mono">{s.id}</p>
                 </td>
                 <td className="px-6 py-4 text-sm text-stone-500 font-mono">{s.endpoint}</td>
                 <td className="px-6 py-4">
-                  <span className={`badge ${
-                    s.status === "healthy" ? "badge-allow" :
-                    s.status === "unreachable" ? "badge-block" : "badge-neutral"
-                  }`}>{s.status}</span>
+                  <GatewayHealthDot gateway={s} />
                 </td>
                 <td className="px-6 py-4 text-sm text-stone-500">{s.tools_count}</td>
                 <td className="px-6 py-4">
                   <div className="flex justify-end gap-1">
                     <button onClick={() => pushMutation.mutate(s.id)} title="Push config" className="rounded-lg p-2 text-stone-400 hover:bg-violet-50 hover:text-violet-600 transition">
-                      <Upload className="h-4 w-4" />
+                      {pushStatus[s.id] === "done" ? <Check className="h-4 w-4 text-emerald-600" /> : <Upload className="h-4 w-4" />}
                     </button>
                     <button onClick={() => deleteMutation.mutate(s.id)} title="Delete" className="rounded-lg p-2 text-stone-400 hover:bg-rose-50 hover:text-rose-600 transition">
                       <Trash2 className="h-4 w-4" />

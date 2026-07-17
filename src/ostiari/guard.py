@@ -16,7 +16,6 @@ from ostiari.checkpoint import CheckpointEngine
 from ostiari.exceptions import ActionBlockedError, OstiariError
 from ostiari.gateway import ActionGateway
 from ostiari.models import (
-    OstiariConfig,
     AnomalySignal,
     BreakerConfig,
     CheckpointID,
@@ -24,6 +23,7 @@ from ostiari.models import (
     EvalContext,
     GatewayDecision,
     MetricType,
+    OstiariConfig,
     RetentionPolicy,
     TraceEntry,
     ValidationResult,

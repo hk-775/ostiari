@@ -112,7 +112,7 @@ export function Costs() {
           <h3 className="mb-4 text-sm font-medium text-stone-700">Spend by Gateway</h3>
           {summary.by_gateway.length === 0 && <p className="text-sm text-stone-500">No data</p>}
           {summary.by_gateway.map(s => (
-            <BarRow key={s.gateway_id} label={s.gateway_id} value={s.cost} maxValue={maxGatewayCost} color="bg-cyan-500" />
+            <BarRow key={s.gateway_id} label={s.gateway_id.replace("-agent","").split("-").map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ").replace("Devops","DevOps").replace("Crm","CRM") + " Gateway"} value={s.cost} maxValue={maxGatewayCost} color="bg-cyan-500" />
           ))}
         </div>
 

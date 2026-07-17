@@ -1,0 +1,109 @@
+"""Gateway lifecycle management — registration + heartbeat loop with the Control Plane."""
+
+import asyncio
+import logging
+from typing import Any
+
+import httpx
+
+log = logging.getLogger("ostiari.lifecycle")
+
+
+class LifecycleManager:
+    """Manages gateway registration and heartbeat with the control plane."""
+
+    def __init__(self, gateway_id: str, control_plane_url: str) -> None:
+        self._gateway_id = gateway_id
+        self._cp_url = control_plane_url.rstrip("/")
+        self._heartbeat_task: asyncio.Task | None = None
+        self._client = httpx.AsyncClient(timeout=10.0)
+        self._config_callback: Any = None
+
+    @property
+    def gateway_id(self) -> str:
+        return self._gateway_id
+
+    def set_config_callback(self, callback: Any) -> None:
+        """Set a callback function(bundle) to apply config updates."""
+        self._config_callback = callback
+
+    async def register(self) -> dict[str, Any]:
+        """POST to /api/gateways/{id}/register. Returns config bundle."""
+        url = f"{self._cp_url}/api/gateways/{self._gateway_id}/register"
+        try:
+            resp = await self._client.post(url)
+            resp.raise_for_status()
+            data = resp.json()
+            log.info(f"Registered with control plane: {self._cp_url}")
+            # Apply config bundle if callback is set
+            if self._config_callback and "config" in data:
+                self.apply_config(data["config"])
+            return data
+        except httpx.HTTPStatusError as e:
+            log.error(f"Registration failed: HTTP {e.response.status_code}")
+            raise
+        except httpx.ConnectError as e:
+            log.error(f"Cannot reach control plane at {self._cp_url}: {e}")
+            raise
+
+    async def start_heartbeat(self, interval: int = 30) -> None:
+        """Start background heartbeat loop."""
+        if self._heartbeat_task and not self._heartbeat_task.done():
+            return
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(interval))
+        log.info(f"Heartbeat started (interval={interval}s)")
+
+    async def _heartbeat_loop(self, interval: int) -> None:
+        """Send heartbeat every `interval` seconds."""
+        url = f"{self._cp_url}/api/gateways/{self._gateway_id}/heartbeat"
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                resp = await self._client.post(url)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    # Apply config if the CP sent updates (reconnect or queued)
+                    if "config" in data and self._config_callback:
+                        self.apply_config(data["config"])
+                    if "config_updates" in data and self._config_callback:
+                        for update in data["config_updates"]:
+                            self.apply_config(update)
+                else:
+                    log.warning(f"Heartbeat got HTTP {resp.status_code}")
+            except (httpx.ConnectError, httpx.TimeoutException) as e:
+                log.warning(f"Heartbeat failed: {e}")
+            except Exception as e:
+                log.error(f"Heartbeat error: {e}")
+
+    async def pull_config(self) -> dict[str, Any]:
+        """GET /api/gateways/{id}/config-bundle — fetch full config."""
+        url = f"{self._cp_url}/api/gateways/{self._gateway_id}/config-bundle"
+        resp = await self._client.get(url)
+        resp.raise_for_status()
+        bundle = resp.json()
+        if self._config_callback:
+            self.apply_config(bundle)
+        return bundle
+
+    def apply_config(self, bundle: dict[str, Any]) -> None:
+        """Apply a config bundle to the gateway via the registered callback."""
+        if self._config_callback:
+            try:
+                self._config_callback(bundle)
+                log.info("Config bundle applied")
+            except Exception as e:
+                log.error(f"Failed to apply config bundle: {e}")
+        else:
+            log.warning("No config callback registered — config not applied")
+
+    async def stop(self) -> None:
+        """Cancel heartbeat task and close HTTP client."""
+        if self._heartbeat_task and not self._heartbeat_task.done():
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            self._heartbeat_task = None
+        await self._client.aclose()
+        log.info("Lifecycle manager stopped")

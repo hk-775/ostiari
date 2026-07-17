@@ -15,6 +15,7 @@ from control_plane.routers import agents, audit, costs, experiments, mcp_servers
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from control_plane.persistence import load_state, save_state
+    from control_plane.routers.gateways import start_health_check, stop_health_check
 
     import control_plane.auth.models  # noqa: F401 — register auth tables
 
@@ -45,7 +46,19 @@ async def lifespan(app: FastAPI):
         for p in state["providers"]:
             _providers[p["name"]] = _ProviderRecord(**p)
 
+    # Seed demo traces so the Live Traces view isn't empty (skip in clean-install mode)
+    import os
+    if os.environ.get("OSTIARI_NO_DEMO", "").lower() not in ("1", "true", "yes"):
+        from control_plane.routers.traces import seed_traces
+        seed_traces()
+
+    # Start background health-check loop for gateways
+    start_health_check()
+
     yield
+
+    # Stop health-check loop
+    stop_health_check()
 
     # Save in-memory state before shutdown
     from control_plane.routers.quotas import _quotas

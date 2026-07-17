@@ -44,6 +44,11 @@ class A2AManager:
             log.error("Failed to discover A2A agent '%s' at %s: %s", config.name, config.url, e)
             return {"agent": config.name, "status": "error", "error": str(e)}
 
+        # The discovery URL is the base; the card advertises the JSON-RPC endpoint
+        # (often <base>/a2a). Point the client at the card's URL when it differs.
+        if card.url and card.url.rstrip("/") != config.url.rstrip("/"):
+            config = config.model_copy(update={"url": card.url})
+
         client = A2AClient(config)
         self._clients[config.name] = client
         self._configs[config.name] = config

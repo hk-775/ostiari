@@ -86,6 +86,11 @@ export const api = {
       fetchAPI<Gateway>("/api/gateways", { method: "POST", body: JSON.stringify(data) }),
     delete: (id: string) => fetchAPI(`/api/gateways/${id}`, { method: "DELETE" }),
     push: (id: string) => fetchAPI(`/api/gateways/${id}/push`, { method: "POST" }),
+    pushConfig: (id: string, config: Record<string, unknown>) =>
+      fetchAPI<{ status: string; gateway_id: string; reason?: string }>(`/api/gateways/${id}/push-config`, {
+        method: "POST",
+        body: JSON.stringify(config),
+      }),
     pushAll: () => fetchAPI("/api/gateways/push-all", { method: "POST" }),
     health: (id: string) => fetchAPI(`/api/gateways/${id}/health`),
   },

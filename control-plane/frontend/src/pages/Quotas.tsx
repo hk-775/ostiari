@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ShieldCheck, Plus, Trash2, AlertTriangle, Upload } from "lucide-react";
+import { ShieldCheck, Plus, Trash2, AlertTriangle, Upload, Check, Clock, Pencil, X } from "lucide-react";
+import { api } from "../lib/api";
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
 
@@ -28,6 +29,9 @@ export function Quotas() {
   const { data: quotas = [] } = useQuery({ queryKey: ["quotas"], queryFn: fetchQuotas });
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ name: "", scope: "gateway", scope_id: "", rate_limit_rpm: "", budget_limit_usd: "", max_tokens_per_request: "", allowed_models: "" });
+  const [pushStatus, setPushStatus] = useState<Record<number, string>>({});
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editForm, setEditForm] = useState({ rate_limit_rpm: "", budget_limit_usd: "", max_tokens_per_request: "" });
 
   const createMutation = useMutation({
     mutationFn: async (data: typeof form) => {
@@ -51,8 +55,8 @@ export function Quotas() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-stone-900">Quotas</h1>
-          <p className="mt-1 text-sm text-stone-500">Rate limits, budget caps, and token limits per gateway</p>
+          <h1 className="text-2xl font-semibold tracking-tight text-stone-900">Gateway Quotas</h1>
+          <p className="mt-1 text-sm text-stone-500">Per-gateway rate limits, budget caps, and token limits</p>
         </div>
         <button onClick={() => setShowForm(true)} className="btn-amber">
           <Plus className="h-4 w-4" /> Add Quota
@@ -94,12 +98,48 @@ export function Quotas() {
                   </div>
                   <div>
                     <p className="text-sm font-medium text-stone-900">{q.name}</p>
-                    <p className="text-xs text-stone-500">{q.scope}: {q.scope_id}</p>
                   </div>
                 </div>
                 <div className="flex gap-1">
-                  <button onClick={async () => { await fetch(`${API_BASE}/api/quotas/${q.id}/push`, { method: "POST" }); }} title="Push to gateway" className="rounded-xl p-2 text-stone-400 hover:bg-amber-50 hover:text-amber-600 transition">
-                    <Upload className="h-4 w-4" />
+                  <button onClick={() => {
+                    if (editingId === q.id) { setEditingId(null); } else {
+                      setEditingId(q.id);
+                      setEditForm({ rate_limit_rpm: String(q.rate_limit_rpm || ""), budget_limit_usd: String(q.budget_limit_usd || ""), max_tokens_per_request: String(q.max_tokens_per_request || "") });
+                    }
+                  }} title="Edit" className="rounded-xl p-2 text-stone-400 hover:bg-indigo-50 hover:text-indigo-600 transition">
+                    <Pencil className="h-4 w-4" />
+                  </button>
+                  <button onClick={async () => {
+                    if (q.scope !== "gateway" || !q.scope_id) {
+                      setPushStatus(prev => ({ ...prev, [q.id]: "error" }));
+                      setTimeout(() => setPushStatus(prev => ({ ...prev, [q.id]: "" })), 2000);
+                      return;
+                    }
+                    setPushStatus(prev => ({ ...prev, [q.id]: "pushing" }));
+                    try {
+                      const quotaPayload = {
+                        rate_limit_rpm: q.rate_limit_rpm,
+                        budget_limit_usd: q.budget_limit_usd,
+                        max_tokens_per_request: q.max_tokens_per_request,
+                        allowed_models: q.allowed_models,
+                      };
+                      const res = await api.gateways.pushConfig(q.scope_id, { quota: quotaPayload });
+                      if (res.status === "applied") {
+                        setPushStatus(prev => ({ ...prev, [q.id]: "done" }));
+                      } else if (res.status === "queued") {
+                        setPushStatus(prev => ({ ...prev, [q.id]: "queued" }));
+                      } else {
+                        setPushStatus(prev => ({ ...prev, [q.id]: "error" }));
+                      }
+                      setTimeout(() => setPushStatus(prev => ({ ...prev, [q.id]: "" })), 3000);
+                    } catch {
+                      setPushStatus(prev => ({ ...prev, [q.id]: "error" }));
+                      setTimeout(() => setPushStatus(prev => ({ ...prev, [q.id]: "" })), 2000);
+                    }
+                  }} title="Push to gateway" className="rounded-xl p-2 text-stone-400 hover:bg-amber-50 hover:text-amber-600 transition">
+                    {pushStatus[q.id] === "done" ? <Check className="h-4 w-4 text-emerald-600" /> :
+                     pushStatus[q.id] === "queued" ? <Clock className="h-4 w-4 text-amber-500" /> :
+                     <Upload className="h-4 w-4" />}
                   </button>
                   <button onClick={() => deleteMutation.mutate(q.id)} title="Delete" className="rounded-xl p-2 text-stone-400 hover:bg-rose-50 hover:text-rose-600 transition">
                     <Trash2 className="h-4 w-4" />
@@ -135,6 +175,40 @@ export function Quotas() {
                 <div className="mt-3 flex items-center gap-2 text-amber-600">
                   <AlertTriangle className="h-4 w-4" />
                   <span className="text-xs">Approaching budget limit ({budgetPct.toFixed(0)}% used)</span>
+                </div>
+              )}
+              {editingId === q.id && (
+                <div className="mt-4 rounded-xl border border-indigo-100 bg-indigo-50/30 p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold text-indigo-700">Edit Quota</p>
+                    <button onClick={() => setEditingId(null)} className="text-stone-400 hover:text-stone-600"><X className="h-3.5 w-3.5" /></button>
+                  </div>
+                  <div className="grid grid-cols-3 gap-3">
+                    <div>
+                      <label className="text-[10px] font-semibold text-stone-400 uppercase">Rate Limit (RPM)</label>
+                      <input type="number" value={editForm.rate_limit_rpm} onChange={(e) => setEditForm({ ...editForm, rate_limit_rpm: e.target.value })} className="input mt-1 text-xs" placeholder="60" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-semibold text-stone-400 uppercase">Budget ($)</label>
+                      <input type="number" step="0.01" value={editForm.budget_limit_usd} onChange={(e) => setEditForm({ ...editForm, budget_limit_usd: e.target.value })} className="input mt-1 text-xs" placeholder="25.00" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-semibold text-stone-400 uppercase">Max Tokens</label>
+                      <input type="number" value={editForm.max_tokens_per_request} onChange={(e) => setEditForm({ ...editForm, max_tokens_per_request: e.target.value })} className="input mt-1 text-xs" placeholder="4096" />
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={async () => {
+                      const payload: any = { name: q.name };
+                      if (editForm.rate_limit_rpm) payload.rate_limit_rpm = parseInt(editForm.rate_limit_rpm);
+                      if (editForm.budget_limit_usd) payload.budget_limit_usd = parseFloat(editForm.budget_limit_usd);
+                      if (editForm.max_tokens_per_request) payload.max_tokens_per_request = parseInt(editForm.max_tokens_per_request);
+                      await fetch(`${API_BASE}/api/quotas/${q.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+                      queryClient.invalidateQueries({ queryKey: ["quotas"] });
+                      setEditingId(null);
+                    }} className="btn-primary text-xs">Save</button>
+                    <button onClick={() => setEditingId(null)} className="btn-secondary text-xs">Cancel</button>
+                  </div>
                 </div>
               )}
             </div>

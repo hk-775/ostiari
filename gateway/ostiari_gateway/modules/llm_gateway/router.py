@@ -11,7 +11,7 @@ import hashlib
 import logging
 from typing import Any
 
-from ostiari_gateway.modules.llm_gateway.models import ABExperiment, LLMConfig, RoutingRule
+from ostiari_gateway.modules.llm_gateway.models import LLMConfig, RoutingRule
 
 log = logging.getLogger("ostiari.sidecar.llm")
 

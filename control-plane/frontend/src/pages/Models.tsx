@@ -1,4 +1,5 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { useLocation } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Brain, Plus, Trash2, Pencil, X, Wrench, Eye, Server, Shield, Lock, ArrowUp, ArrowDown, Save, Clock } from "lucide-react";
 
@@ -240,12 +241,15 @@ function TaskClassificationRules({ models }: { models: ModelConfig[] }) {
 
 export function Models() {
   const queryClient = useQueryClient();
+  const location = useLocation();
   const { data: models = [], isLoading } = useQuery({ queryKey: ["model-config"], queryFn: fetchModels });
   const { data: agentAccessList = [] } = useQuery({ queryKey: ["agent-access"], queryFn: fetchAgentAccess });
   const { data: budgetResetConfig = { schedule: "manual" as const } } = useQuery({ queryKey: ["budget-reset"], queryFn: fetchBudgetReset });
   const [showForm, setShowForm] = useState(false);
   const [editingModel, setEditingModel] = useState<string | null>(null);
   const [form, setForm] = useState<ModelConfig>({ ...EMPTY_FORM });
+
+  useEffect(() => { setShowForm(false); setEditingModel(null); }, [location.key]);
 
   // Agent access state
   const [editingAgent, setEditingAgent] = useState<string | null>(null);
@@ -314,8 +318,8 @@ export function Models() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-stone-900">Models</h1>
-          <p className="mt-1 text-sm text-stone-500">Model registry — configure providers, pricing, and routing</p>
+          <h1 className="text-2xl font-bold tracking-tight text-stone-900">Agent Models</h1>
+          <p className="mt-1 text-sm text-stone-500">Per-agent model access, provider restrictions, budgets, and routing</p>
         </div>
         <button onClick={() => { setForm({ ...EMPTY_FORM }); setEditingModel(null); setShowForm(true); }} className="btn-indigo">
           <Plus className="h-4 w-4" /> Add Model
@@ -410,16 +414,21 @@ export function Models() {
           </thead>
           <tbody className="divide-y divide-stone-50">
             {models.map((m, idx) => (
-              <tr key={m.name} className={`transition hover:bg-indigo-50 ${idx % 2 === 1 ? "bg-stone-100" : "bg-white"}`}>
+              <tr key={m.name} className={`transition hover:bg-indigo-50 cursor-pointer ${idx % 2 === 1 ? "bg-stone-100" : "bg-white"}`} onClick={() => startEdit(m)}>
                 <td className="px-6 py-4">
                   <div className="flex items-center gap-2">
                     <div className={`flex h-8 w-8 items-center justify-center rounded-lg ${CATEGORY_COLORS[m.category] || "bg-stone-100 text-stone-600"}`}>
                       <Brain className="h-4 w-4" />
                     </div>
                     <div>
-                      <p className="text-sm font-medium text-stone-800">{m.name}</p>
+                      <button className="text-sm font-medium text-stone-800 hover:text-indigo-600 transition text-left" onClick={() => startEdit(m)}>
+                        {m.name}
+                      </button>
                       <p className="text-xs text-stone-400">{m.description}</p>
                     </div>
+                    <button className="rounded-lg p-1 text-stone-300 hover:text-indigo-600 hover:bg-indigo-50 transition" title="Edit model" onClick={() => startEdit(m)}>
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
                   </div>
                 </td>
                 <td className="px-6 py-4">
@@ -492,7 +501,7 @@ export function Models() {
       )}
 
       {/* Per-Agent Model Access */}
-      <div className="space-y-3">
+      <div id="per-agent-access" className="space-y-3 scroll-mt-16">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Shield className="h-5 w-5 text-violet-600" />
