@@ -1,8 +1,8 @@
 """Tests for MCP integration — embedded and remote modes."""
 
 import pytest
-from ostiari_sidecar.mcp.manager import MCPManager
-from ostiari_sidecar.mcp.models import MCPServerConfig
+from ostiari_gateway.mcp.manager import MCPManager
+from ostiari_gateway.mcp.models import MCPServerConfig
 from starlette.testclient import TestClient
 
 
@@ -64,7 +64,7 @@ class TestMCPManager:
     @pytest.mark.asyncio
     async def test_add_embedded_server(self, manager, monkeypatch):
         monkeypatch.setattr(
-            "ostiari_sidecar.mcp.manager.MCPManager._create_client",
+            "ostiari_gateway.mcp.manager.MCPManager._create_client",
             lambda self, config: FakeEmbeddedClient(config),
         )
 
@@ -79,7 +79,7 @@ class TestMCPManager:
     @pytest.mark.asyncio
     async def test_tool_filtering_allowed(self, manager, monkeypatch):
         monkeypatch.setattr(
-            "ostiari_sidecar.mcp.manager.MCPManager._create_client",
+            "ostiari_gateway.mcp.manager.MCPManager._create_client",
             lambda self, config: FakeEmbeddedClient(config),
         )
 
@@ -96,7 +96,7 @@ class TestMCPManager:
     @pytest.mark.asyncio
     async def test_tool_filtering_blocked(self, manager, monkeypatch):
         monkeypatch.setattr(
-            "ostiari_sidecar.mcp.manager.MCPManager._create_client",
+            "ostiari_gateway.mcp.manager.MCPManager._create_client",
             lambda self, config: FakeEmbeddedClient(config),
         )
 
@@ -112,7 +112,7 @@ class TestMCPManager:
     @pytest.mark.asyncio
     async def test_call_mcp_tool(self, manager, monkeypatch):
         monkeypatch.setattr(
-            "ostiari_sidecar.mcp.manager.MCPManager._create_client",
+            "ostiari_gateway.mcp.manager.MCPManager._create_client",
             lambda self, config: FakeEmbeddedClient(config),
         )
 
@@ -133,7 +133,7 @@ class TestMCPManager:
     @pytest.mark.asyncio
     async def test_remove_server(self, manager, monkeypatch):
         monkeypatch.setattr(
-            "ostiari_sidecar.mcp.manager.MCPManager._create_client",
+            "ostiari_gateway.mcp.manager.MCPManager._create_client",
             lambda self, config: FakeEmbeddedClient(config),
         )
 
@@ -147,7 +147,7 @@ class TestMCPManager:
     @pytest.mark.asyncio
     async def test_list_servers(self, manager, monkeypatch):
         monkeypatch.setattr(
-            "ostiari_sidecar.mcp.manager.MCPManager._create_client",
+            "ostiari_gateway.mcp.manager.MCPManager._create_client",
             lambda self, config: FakeEmbeddedClient(config),
         )
 
@@ -163,7 +163,7 @@ class TestMCPManager:
     @pytest.mark.asyncio
     async def test_custom_prefix(self, manager, monkeypatch):
         monkeypatch.setattr(
-            "ostiari_sidecar.mcp.manager.MCPManager._create_client",
+            "ostiari_gateway.mcp.manager.MCPManager._create_client",
             lambda self, config: FakeEmbeddedClient(config),
         )
 
@@ -178,10 +178,10 @@ class TestMCPServerEndpoints:
     @pytest.fixture
     def client(self, monkeypatch):
         monkeypatch.setattr(
-            "ostiari_sidecar.mcp.manager.MCPManager._create_client",
+            "ostiari_gateway.mcp.manager.MCPManager._create_client",
             lambda self, config: FakeEmbeddedClient(config),
         )
-        from ostiari_sidecar.server import create_app
+        from ostiari_gateway.server import create_app
         app = create_app()
         return TestClient(app)
 
