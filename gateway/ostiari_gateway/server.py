@@ -55,10 +55,51 @@ def _shadow_response(
     return body
 
 
-def _shadow_execute_response(action: str, endpoint: str = "") -> dict[str, Any]:
-    """Synthetic response for an ALLOWED call under shadow mode (tool not run)."""
+def _synthesize_from_schema(schema: dict | None) -> Any:
+    """Generate a plausible value from a JSON-Schema-style dict.
+
+    Best-effort: handles object/array/string/number/integer/boolean and enum.
+    Used so shadow responses look like the real tool's output shape instead of
+    a generic marker. Returns None when the schema is empty/unknown.
+    """
+    if not isinstance(schema, dict):
+        return None
+    if "enum" in schema and isinstance(schema["enum"], list) and schema["enum"]:
+        return schema["enum"][0]
+    if "default" in schema:
+        return schema["default"]
+
+    t = schema.get("type")
+    if t == "object" or "properties" in schema:
+        props = schema.get("properties", {})
+        return {k: _synthesize_from_schema(v) for k, v in props.items()}
+    if t == "array":
+        item = _synthesize_from_schema(schema.get("items", {}))
+        return [item] if item is not None else []
+    if t == "string":
+        return schema.get("example", "sample")
+    if t in ("number", "integer"):
+        return 0
+    if t == "boolean":
+        return True
+    return None
+
+
+def _shadow_execute_response(
+    action: str, endpoint: str = "", schema: dict | None = None
+) -> dict[str, Any]:
+    """Synthetic response for an ALLOWED call under shadow mode (tool not run).
+
+    If the tool declares an output schema, synthesize a response shaped to it;
+    otherwise return a generic shadow marker.
+    """
+    synthesized = _synthesize_from_schema(schema)
+    if synthesized is not None:
+        result: Any = {"shadow": True, "synthesized": synthesized}
+    else:
+        result = {"shadow": True, "note": "shadowed — tool not executed", "endpoint": endpoint}
     return {
-        "result": {"shadow": True, "note": "shadowed — tool not executed", "endpoint": endpoint},
+        "result": result,
         "action": action,
         "shadow": True,
         "would_block": False,
@@ -320,7 +361,9 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
                 session_id=session_id, plan=plan, step=step, params=params,
                 shadow=True, would_block=False,
             )
-            return _shadow_execute_response(action, endpoint)
+            return _shadow_execute_response(
+                action, endpoint, schema=tool.schema_ if tool else None
+            )
 
         # Execute: route to A2A agent, MCP client, or HTTP proxy
         if is_a2a_tool:

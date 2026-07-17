@@ -278,3 +278,72 @@ def report(period: int, fmt: str, output: str | None) -> None:
         click.echo(f"Report written to {output}")
     else:
         click.echo(data.decode("utf-8"))
+
+
+@main.group()
+def shadow() -> None:
+    """Shadow mode — run policies in observe-only mode and report would-blocks."""
+
+
+@shadow.command("run")
+@click.option("--gateway", "gateway_id", required=True, help="Gateway ID to run in shadow mode")
+@click.option("--control-plane", default="http://localhost:8400", help="Control plane base URL")
+@click.option("--duration", default=None, help="How long to stay in shadow mode, e.g. 30m, 14d (omit = set-and-report now)")
+@click.option("--restore/--no-restore", default=True, help="Restore enforce mode after the run (default: restore)")
+def shadow_run(gateway_id: str, control_plane: str, duration: str | None, restore: bool) -> None:
+    """Put a gateway in shadow mode, optionally wait, then print the shadow report.
+
+    "Try before you enforce": routes real traffic through policy evaluation
+    without blocking, then shows what enforce mode WOULD have blocked.
+    """
+    try:
+        import httpx
+    except ImportError:
+        click.echo("Error: httpx is required for 'shadow run' (pip install httpx).", err=True)
+        raise SystemExit(1) from None
+
+    base = control_plane.rstrip("/")
+    wait = _parse_duration(duration).total_seconds() if duration else 0
+
+    with httpx.Client(timeout=10.0) as client:
+        # 1. Switch to shadow mode
+        r = client.put(f"{base}/api/gateways/{gateway_id}/mode", json={"mode": "shadow"})
+        if r.status_code == 404:
+            click.echo(f"Error: gateway '{gateway_id}' not found.", err=True)
+            raise SystemExit(1)
+        r.raise_for_status()
+        click.echo(click.style(f"● Gateway '{gateway_id}' is now in SHADOW mode.", fg="yellow"))
+
+        # 2. Optionally wait while traffic flows
+        if wait:
+            click.echo(f"  Observing for {duration} (Ctrl-C to stop early)...")
+            try:
+                import time
+                time.sleep(wait)
+            except KeyboardInterrupt:
+                click.echo("  Interrupted — reporting now.")
+
+        # 3. Fetch and print the report
+        rep = client.get(f"{base}/api/traces/shadow-report").json()
+        click.echo("")
+        click.echo(click.style("Shadow Report", bold=True))
+        click.echo(f"  Shadow calls : {rep['total_shadow_calls']}")
+        click.echo(f"  Would block  : {click.style(str(rep['would_block_count']), fg='red')}")
+        click.echo(f"  Would allow  : {click.style(str(rep['would_allow_count']), fg='green')}")
+        click.echo(f"  Block rate   : {round(rep['block_rate'] * 100)}%")
+        if rep["offending_actions"]:
+            click.echo("  Actions that would be blocked:")
+            for a in rep["offending_actions"]:
+                reasons = ", ".join(a["reasons"]) or "—"
+                click.echo(f"    - {a['action']}  (x{a['count']}, max risk {a['max_score']}) — {reasons}")
+
+        # 4. Restore enforce mode
+        if restore:
+            client.put(f"{base}/api/gateways/{gateway_id}/mode", json={"mode": "enforce"})
+            click.echo(click.style(f"\n● Gateway '{gateway_id}' restored to ENFORCE mode.", fg="green"))
+        else:
+            click.echo(click.style(f"\n● Gateway '{gateway_id}' left in SHADOW mode.", fg="yellow"))
+
+
+if __name__ == "__main__":
+    main()

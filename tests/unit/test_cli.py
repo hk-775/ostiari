@@ -146,3 +146,57 @@ class TestReport:
                 result = runner.invoke(main, ["report", "--output", str(out)])
                 assert result.exit_code == 0
                 assert out.exists()
+
+
+class TestShadowRun:
+    def _mock_httpx(self, report):
+        """Build a MagicMock httpx.Client context manager."""
+        client = MagicMock()
+        put_resp = MagicMock(status_code=200)
+        put_resp.raise_for_status.return_value = None
+        client.put.return_value = put_resp
+        get_resp = MagicMock()
+        get_resp.json.return_value = report
+        client.get.return_value = get_resp
+        cm = MagicMock()
+        cm.__enter__.return_value = client
+        cm.__exit__.return_value = False
+        return cm, client
+
+    def test_shadow_run_reports_and_restores(self, runner):
+        report = {
+            "total_shadow_calls": 3, "would_block_count": 2, "would_allow_count": 1,
+            "block_rate": 0.67,
+            "offending_actions": [{"action": "send_email", "count": 2, "max_score": 90, "reasons": ["PII"]}],
+        }
+        cm, client = self._mock_httpx(report)
+        with patch("httpx.Client", return_value=cm):
+            result = runner.invoke(main, ["shadow", "run", "--gateway", "gw1"])
+        assert result.exit_code == 0, result.output
+        assert "SHADOW mode" in result.output
+        assert "Would block" in result.output and "2" in result.output
+        assert "send_email" in result.output
+        assert "restored to ENFORCE" in result.output
+        # set shadow, then restore enforce = two PUTs
+        assert client.put.call_count == 2
+
+    def test_shadow_run_no_restore(self, runner):
+        report = {"total_shadow_calls": 0, "would_block_count": 0, "would_allow_count": 0,
+                  "block_rate": 0.0, "offending_actions": []}
+        cm, client = self._mock_httpx(report)
+        with patch("httpx.Client", return_value=cm):
+            result = runner.invoke(main, ["shadow", "run", "--gateway", "gw1", "--no-restore"])
+        assert result.exit_code == 0
+        assert "left in SHADOW" in result.output
+        assert client.put.call_count == 1  # only the initial set-shadow
+
+    def test_shadow_run_gateway_not_found(self, runner):
+        client = MagicMock()
+        client.put.return_value = MagicMock(status_code=404)
+        cm = MagicMock()
+        cm.__enter__.return_value = client
+        cm.__exit__.return_value = False
+        with patch("httpx.Client", return_value=cm):
+            result = runner.invoke(main, ["shadow", "run", "--gateway", "ghost"])
+        assert result.exit_code == 1
+        assert "not found" in result.output
