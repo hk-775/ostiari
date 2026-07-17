@@ -30,7 +30,10 @@ interface ProviderCreate {
   enabled: boolean;
 }
 
-const PROVIDER_NAMES = ["anthropic", "openai", "bedrock", "bedrock-mantle", "azure", "vertex", "cohere"];
+const PROVIDER_NAMES = [
+  "bedrock", "bedrock-mantle", "anthropic", "openai", "google_ai",
+  "xai", "groq", "together", "fireworks", "ai21", "azure", "vertex", "cohere",
+];
 
 const PROVIDER_COLORS: Record<string, { bg: string; text: string; border: string; icon: string }> = {
   anthropic: { bg: "bg-amber-50", text: "text-amber-700", border: "border-amber-200", icon: "text-amber-600" },
