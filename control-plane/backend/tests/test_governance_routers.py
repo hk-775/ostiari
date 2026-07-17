@@ -147,3 +147,39 @@ class TestProxy:
         r = await client.get("/api/proxy/gateway/ghost/config/llm")
         # No such gateway registered — expect a clean error, never a 500 crash.
         assert r.status_code in (404, 502, 503), r.text
+
+
+class TestShadowReport:
+    async def test_empty_report(self, client):
+        r = await client.get("/api/traces/shadow-report")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total_shadow_calls"] == 0
+        assert body["would_block_count"] == 0
+        assert body["offending_actions"] == []
+
+    async def test_aggregates_would_block(self, client):
+        # Ingest a mix: 2 would-block on send_email, 1 would-block on delete_db,
+        # 1 allowed shadow, 1 non-shadow (ignored).
+        events = [
+            {"action": "send_email", "shadow": True, "would_block": True, "score": 80, "blocked_reason": "PII"},
+            {"action": "send_email", "shadow": True, "would_block": True, "score": 90, "blocked_reason": "PII"},
+            {"action": "delete_db", "shadow": True, "would_block": True, "score": 100, "blocked_reason": "destructive"},
+            {"action": "read_doc", "shadow": True, "would_block": False, "score": 5},
+            {"action": "normal", "shadow": False, "would_block": False, "score": 0},
+        ]
+        for e in events:
+            await client.post("/api/traces/ingest", json=e)
+
+        r = await client.get("/api/traces/shadow-report")
+        body = r.json()
+        assert body["total_shadow_calls"] == 4        # excludes the non-shadow event
+        assert body["would_block_count"] == 3
+        assert body["would_allow_count"] == 1
+        assert body["block_rate"] == 0.75
+        # offenders sorted by count desc: send_email (2) first
+        offenders = body["offending_actions"]
+        assert offenders[0]["action"] == "send_email"
+        assert offenders[0]["count"] == 2
+        assert offenders[0]["max_score"] == 90
+        assert offenders[0]["reasons"] == ["PII"]

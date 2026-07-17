@@ -10,6 +10,7 @@ import { McpServers } from "./pages/McpServers";
 import { AuditLog } from "./pages/AuditLog";
 import { Costs } from "./pages/Costs";
 import { LiveTraces } from "./pages/LiveTraces";
+import { ShadowReport } from "./pages/ShadowReport";
 import { Experiments } from "./pages/Experiments";
 import { Models } from "./pages/Models";
 import { Efficiency } from "./pages/Efficiency";
@@ -80,6 +81,7 @@ export default function App() {
               <Route path="/models" element={<Models />} />
               <Route path="/efficiency" element={<Efficiency />} />
               <Route path="/traces" element={<LiveTraces />} />
+              <Route path="/shadow-report" element={<ShadowReport />} />
               <Route path="/quotas" element={<Quotas />} />
               <Route path="/agent-quotas" element={<AgentQuotas />} />
               <Route path="/sandbox" element={<Sandbox />} />
