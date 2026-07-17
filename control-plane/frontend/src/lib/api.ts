@@ -37,6 +37,7 @@ export interface Gateway {
   status: string;
   last_heartbeat: string | null;
   tools_count: number;
+  mode: "enforce" | "shadow";
   created_at: string;
   updated_at: string;
 }
@@ -85,6 +86,8 @@ export const api = {
     create: (data: { id: string; name: string; endpoint: string; description?: string }) =>
       fetchAPI<Gateway>("/api/gateways", { method: "POST", body: JSON.stringify(data) }),
     delete: (id: string) => fetchAPI(`/api/gateways/${id}`, { method: "DELETE" }),
+    setMode: (id: string, mode: "enforce" | "shadow") =>
+      fetchAPI<Gateway>(`/api/gateways/${id}/mode`, { method: "PUT", body: JSON.stringify({ mode }) }),
     push: (id: string) => fetchAPI(`/api/gateways/${id}/push`, { method: "POST" }),
     pushConfig: (id: string, config: Record<string, unknown>) =>
       fetchAPI<{ status: string; gateway_id: string; reason?: string }>(`/api/gateways/${id}/push-config`, {
