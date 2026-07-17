@@ -5,19 +5,32 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from control_plane.database import engine
-from control_plane.models.database import Base
 from control_plane.auth.router import router as auth_router
 from control_plane.auth.sso_router import router as sso_router
-from control_plane.routers import agents, audit, costs, experiments, mcp_servers, model_config, policies, providers, proxy, quotas, gateways, tools, traces
+from control_plane.database import engine
+from control_plane.models.database import Base
+from control_plane.routers import (
+    agents,
+    audit,
+    costs,
+    experiments,
+    gateways,
+    mcp_servers,
+    model_config,
+    policies,
+    providers,
+    proxy,
+    quotas,
+    tools,
+    traces,
+)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import control_plane.auth.models  # noqa: F401 — register auth tables
     from control_plane.persistence import load_state, save_state
     from control_plane.routers.gateways import start_health_check, stop_health_check
-
-    import control_plane.auth.models  # noqa: F401 — register auth tables
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -25,24 +38,24 @@ async def lifespan(app: FastAPI):
     # Restore in-memory state from previous session
     state = load_state()
     if "quotas" in state:
-        from control_plane.routers.quotas import _quotas, _next_id, QuotaResponse
+        from control_plane.routers.quotas import QuotaResponse, _next_id, _quotas
         for q in state["quotas"]:
             _quotas[q["id"]] = QuotaResponse(**q)
         if state["quotas"]:
             _next_id[0] = max(q["id"] for q in state["quotas"]) + 1
 
     if "experiments" in state:
-        from control_plane.routers.experiments import _experiments, ExperimentResponse
+        from control_plane.routers.experiments import ExperimentResponse, _experiments
         for e in state["experiments"]:
             _experiments[e["name"]] = ExperimentResponse(**e)
 
     if "models" in state:
-        from control_plane.routers.model_config import _models, ModelConfig
+        from control_plane.routers.model_config import ModelConfig, _models
         for m in state["models"]:
             _models[m["name"]] = ModelConfig(**m)
 
     if "providers" in state:
-        from control_plane.routers.providers import _providers, _ProviderRecord
+        from control_plane.routers.providers import _ProviderRecord, _providers
         for p in state["providers"]:
             _providers[p["name"]] = _ProviderRecord(**p)
 
@@ -61,10 +74,10 @@ async def lifespan(app: FastAPI):
     stop_health_check()
 
     # Save in-memory state before shutdown
-    from control_plane.routers.quotas import _quotas
     from control_plane.routers.experiments import _experiments
     from control_plane.routers.model_config import _models
     from control_plane.routers.providers import _providers
+    from control_plane.routers.quotas import _quotas
 
     save_state({
         "quotas": [q.model_dump() for q in _quotas.values()],

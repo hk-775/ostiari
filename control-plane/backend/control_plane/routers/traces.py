@@ -1,6 +1,5 @@
 """Live trace viewer — receives traces from gateways and broadcasts via WebSocket."""
 
-import asyncio
 import logging
 import time
 from collections import deque

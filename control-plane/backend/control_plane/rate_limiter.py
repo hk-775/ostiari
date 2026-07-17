@@ -2,7 +2,6 @@
 
 import time
 from collections import defaultdict
-from typing import Optional
 
 import redis.asyncio as aioredis
 
@@ -38,7 +37,7 @@ class RateLimiter:
 
     async def check(self, key: str, limit_rpm: int) -> tuple[bool, int]:
         """Check if request is allowed. Returns (allowed, remaining)."""
-        r: Optional[aioredis.Redis] = await get_redis()
+        r: aioredis.Redis | None = await get_redis()
         if r is None:
             return _fallback.check(key, limit_rpm)
 

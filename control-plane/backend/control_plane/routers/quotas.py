@@ -70,7 +70,6 @@ async def delete_quota(quota_id: int):
 async def push_quota(quota_id: int):
     """Push this quota to its assigned gateway."""
     import httpx
-    from sqlalchemy import select
 
     quota = _quotas.get(quota_id)
     if not quota:
