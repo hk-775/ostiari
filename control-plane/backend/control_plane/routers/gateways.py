@@ -40,7 +40,12 @@ async def _health_check_loop() -> None:
                 now = datetime.now(timezone.utc)
                 for gw in gateways:
                     if gw.status == "healthy" and gw.last_heartbeat:
-                        delta = (now - gw.last_heartbeat).total_seconds()
+                        # SQLite returns naive datetimes even for timezone=True
+                        # columns; normalize to UTC before comparing with `now`.
+                        last_hb = gw.last_heartbeat
+                        if last_hb.tzinfo is None:
+                            last_hb = last_hb.replace(tzinfo=timezone.utc)
+                        delta = (now - last_hb).total_seconds()
                         if delta > HEARTBEAT_TIMEOUT_SECONDS:
                             gw.status = "unhealthy"
                             log.info(f"Gateway {gw.id} marked unhealthy (last heartbeat {delta:.0f}s ago)")
