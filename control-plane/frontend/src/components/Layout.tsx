@@ -62,7 +62,7 @@ const NAV_SECTIONS: {
     borderColor: "border-l-violet-400",
     adminOnly: true,
     items: [
-      { path: "/providers", label: "Providers", icon: Key, color: "text-violet-600", activeBg: "bg-violet-50" },
+      { path: "/providers", label: "LLM Providers", icon: Key, color: "text-violet-600", activeBg: "bg-violet-50" },
       { path: "/users", label: "Users", icon: Users, color: "text-violet-600", activeBg: "bg-violet-50" },
     ],
   },

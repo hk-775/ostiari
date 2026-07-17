@@ -58,10 +58,43 @@ async function fetchAgentAccess(): Promise<AgentAccess[]> {
   try {
     const res = await fetch(`${GATEWAY_BASE}/config/agent-auth`);
     if (!res.ok) throw new Error("Failed to fetch agent access");
-    return res.json();
+    const data = await res.json();
+    // The gateway returns { enabled, agents: [{agent_id, allowed_models, ...}] }.
+    // Map it to the page's AgentAccess shape. If disabled/empty, return [] so
+    // the UI falls back to its illustrative defaults.
+    if (!data?.enabled || !Array.isArray(data.agents)) return [];
+    return data.agents.map((a: Record<string, unknown>) => ({
+      agent: (a.agent_id as string) ?? "",
+      models: (a.allowed_models as string[]) ?? ["*"],
+      providers: (a.allowed_providers as string[]) ?? ["*"],
+      budget: (a.budget_usd as number) ?? 0,
+      spend: (a.spend_usd as number) ?? 0,
+      alert_threshold: 90,
+    }));
   } catch {
     return [];
   }
+}
+
+// Persist a per-agent access list to the gateway in its agent-auth schema
+// ({ enabled, agents: { name: { allowed_models, ... } } }). The page holds an
+// AgentAccess[] list; this maps it to what the gateway actually expects.
+async function saveAgentAccess(list: AgentAccess[]): Promise<void> {
+  const agents: Record<string, unknown> = {};
+  for (const a of list) {
+    agents[a.agent] = {
+      allowed_tools: ["*"],
+      allowed_models: a.models,
+      allowed_providers: a.providers,
+      budget_usd: a.budget,
+      description: a.note ?? "",
+    };
+  }
+  await fetch(`${GATEWAY_BASE}/config/agent-auth`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled: true, agents }),
+  });
 }
 
 async function fetchBudgetReset(): Promise<BudgetResetConfig> {
@@ -644,11 +677,7 @@ export function Models() {
                   const updatedList = editingAgent
                     ? agentAccessList.map(a => a.agent === editingAgent ? agentForm : a)
                     : [...agentAccessList, agentForm];
-                  await fetch(`${GATEWAY_BASE}/config/agent-auth`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(updatedList),
-                  });
+                  await saveAgentAccess(updatedList);
                   queryClient.invalidateQueries({ queryKey: ["agent-access"] });
                   setShowAgentForm(false);
                   setEditingAgent(null);
@@ -692,11 +721,7 @@ export function Models() {
                     <button
                       onClick={async () => {
                         const updatedList = agentAccessList.filter(a => a.agent !== agent.agent);
-                        await fetch(`${GATEWAY_BASE}/config/agent-auth`, {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify(updatedList),
-                        });
+                        await saveAgentAccess(updatedList);
                         queryClient.invalidateQueries({ queryKey: ["agent-access"] });
                       }}
                       title="Delete"
