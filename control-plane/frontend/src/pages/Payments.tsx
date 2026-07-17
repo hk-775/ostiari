@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Wallet as WalletIcon, Coins, Ban, Play, Pause, Upload } from "lucide-react";
+import { Wallet as WalletIcon, Coins, Ban, Play, Pause, Upload, Plus, Check } from "lucide-react";
 import { api } from "../lib/api";
 
 const fmt = (n: number) => `$${n.toFixed(4)}`;
@@ -27,6 +28,18 @@ export function Payments() {
     onSuccess: invalidate,
   });
   const push = useMutation({ mutationFn: () => api.payments.push(), onSuccess: invalidate });
+  const upsert = useMutation({
+    mutationFn: (data: { agent_id: string; balance_usdc: number }) => api.payments.upsert(data),
+    onSuccess: () => { invalidate(); setNewAgent(""); setNewBalance(1.0); },
+  });
+  const setLimit = useMutation({
+    mutationFn: ({ agent, field, value }: { agent: string; field: "daily_limit_usdc" | "per_call_limit_usdc"; value: number | null }) =>
+      api.payments.patchWallet(agent, { [field]: value }),
+    onSuccess: invalidate,
+  });
+
+  const [newAgent, setNewAgent] = useState("");
+  const [newBalance, setNewBalance] = useState(1.0);
 
   return (
     <div className="space-y-6">
@@ -96,8 +109,18 @@ export function Payments() {
                 <td className="px-6 py-4 text-sm font-medium text-stone-800">{w.agent_id}</td>
                 <td className="px-6 py-4 font-mono text-sm text-stone-800">{fmt(w.balance_usdc)}</td>
                 <td className="px-6 py-4 font-mono text-xs text-stone-500">{fmt(w.spent_today_usdc)}</td>
-                <td className="px-6 py-4 text-sm text-stone-500">{w.daily_limit_usdc != null ? fmt(w.daily_limit_usdc) : "—"}</td>
-                <td className="px-6 py-4 text-sm text-stone-500">{w.per_call_limit_usdc != null ? fmt(w.per_call_limit_usdc) : "—"}</td>
+                <td className="px-6 py-4 text-sm text-stone-500">
+                  <LimitInput
+                    value={w.daily_limit_usdc}
+                    onCommit={(v) => setLimit.mutate({ agent: w.agent_id, field: "daily_limit_usdc", value: v })}
+                  />
+                </td>
+                <td className="px-6 py-4 text-sm text-stone-500">
+                  <LimitInput
+                    value={w.per_call_limit_usdc}
+                    onCommit={(v) => setLimit.mutate({ agent: w.agent_id, field: "per_call_limit_usdc", value: v })}
+                  />
+                </td>
                 <td className="px-6 py-4">
                   <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
                     w.status === "active" ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"
@@ -119,14 +142,36 @@ export function Payments() {
                 </td>
               </tr>
             ))}
+            {/* Create wallet */}
+            <tr className="bg-stone-50/40">
+              <td className="px-6 py-3">
+                <input
+                  placeholder="new-agent-id" value={newAgent}
+                  onChange={(e) => setNewAgent(e.target.value)}
+                  className="w-40 rounded border border-stone-200 px-2 py-1 text-sm"
+                />
+              </td>
+              <td className="px-6 py-3" colSpan={5}>
+                <span className="text-stone-400">$</span>
+                <input
+                  type="number" min={0} step={0.01} value={newBalance}
+                  onChange={(e) => setNewBalance(Number(e.target.value))}
+                  className="ml-1 w-28 rounded border border-stone-200 px-2 py-1 text-sm"
+                  title="Initial balance (USDC)"
+                />
+              </td>
+              <td className="px-6 py-3 text-right">
+                <button
+                  onClick={() => newAgent.trim() && upsert.mutate({ agent_id: newAgent.trim(), balance_usdc: newBalance })}
+                  disabled={!newAgent.trim() || upsert.isPending}
+                  className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-40"
+                >
+                  <Plus className="h-3.5 w-3.5" /> New wallet
+                </button>
+              </td>
+            </tr>
           </tbody>
         </table>
-        {(wallets?.length ?? 0) === 0 && (
-          <div className="flex flex-col items-center gap-2 py-10 text-center">
-            <Coins className="h-7 w-7 text-stone-300" />
-            <p className="text-sm text-stone-500">No wallets provisioned yet.</p>
-          </div>
-        )}
       </div>
 
       {/* Ledger */}
@@ -167,6 +212,32 @@ export function Payments() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/** Inline-editable USD limit cell — commits on blur/Enter; blank clears the limit. */
+function LimitInput({ value, onCommit }: { value: number | null; onCommit: (v: number | null) => void }) {
+  const [text, setText] = useState(value != null ? String(value) : "");
+  const [dirty, setDirty] = useState(false);
+  const commit = () => {
+    if (!dirty) return;
+    const v = text.trim() === "" ? null : Number(text);
+    onCommit(Number.isNaN(v as number) ? null : v);
+    setDirty(false);
+  };
+  return (
+    <div className="flex items-center gap-1">
+      <span className="text-stone-300">$</span>
+      <input
+        type="number" min={0} step={0.01} placeholder="—"
+        value={text}
+        onChange={(e) => { setText(e.target.value); setDirty(true); }}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+        className="w-20 rounded border border-stone-200 px-1.5 py-0.5 text-sm"
+      />
+      {dirty && <Check className="h-3 w-3 text-emerald-500" />}
     </div>
   );
 }
