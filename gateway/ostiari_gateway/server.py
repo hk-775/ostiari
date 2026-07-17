@@ -25,6 +25,47 @@ from ostiari_gateway.telemetry import (
 log = logging.getLogger("ostiari.sidecar")
 
 
+def _shadow_response(
+    action: str,
+    would_block_type: str,
+    reason: str,
+    *,
+    score: int | None = None,
+    rule_id: str | None = None,
+) -> dict[str, Any]:
+    """Build the response for a call that was blocked-in-shadow.
+
+    Returns HTTP 200 with a synthetic (side-effect-free) result and shadow
+    metadata, so the caller behaves as if the tool ran while the gateway
+    records that enforce mode WOULD have blocked it.
+    """
+    body: dict[str, Any] = {
+        "result": {"shadow": True, "note": "shadowed — tool not executed"},
+        "action": action,
+        "shadow": True,
+        "would_block": True,
+        "would_block_type": would_block_type,
+        "reason": reason,
+        "duration_ms": 0,
+    }
+    if score is not None:
+        body["score"] = score
+    if rule_id is not None:
+        body["rule_id"] = rule_id
+    return body
+
+
+def _shadow_execute_response(action: str, endpoint: str = "") -> dict[str, Any]:
+    """Synthetic response for an ALLOWED call under shadow mode (tool not run)."""
+    return {
+        "result": {"shadow": True, "note": "shadowed — tool not executed", "endpoint": endpoint},
+        "action": action,
+        "shadow": True,
+        "would_block": False,
+        "duration_ms": 0,
+    }
+
+
 def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
     """Create the generic sidecar FastAPI app."""
     from ostiari_gateway.agent_auth import AgentAuthPolicy
@@ -139,13 +180,21 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
 
     @app.post("/tool/{action}")
     async def proxy_tool(action: str, request: Request) -> Any:
-        """Validate a tool call, then proxy to its remote endpoint."""
+        """Validate a tool call, then proxy to its remote endpoint.
+
+        In shadow mode, policy gates evaluate but never block, and tools are
+        not really executed (a synthetic response is returned). Every decision
+        is reported with shadow=True and would_block set when enforce mode
+        would have blocked the call.
+        """
         params: dict[str, Any] = await request.json()
         agent_id = request.headers.get("X-Agent-Id", "unknown")
         framework = request.headers.get("X-Framework", "unknown")
         session_id = request.headers.get("X-Session-Id", "")
         plan = request.headers.get("X-Plan", "")
         step = request.headers.get("X-Step", "")
+
+        shadow = manager.config.mode == "shadow"
 
         # Extract OTel context from incoming request (if present)
         incoming_headers = dict(request.headers)
@@ -180,28 +229,44 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
         # Agent authorization check (least privilege — before everything else)
         auth_allowed, auth_reason = agent_auth.check(agent_id, action)
         if not auth_allowed:
-            return JSONResponse(
-                status_code=403,
-                content={
-                    "blocked": True,
-                    "action": action,
-                    "reason": auth_reason,
-                    "limit_type": "agent_authorization",
-                },
+            if not shadow:
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "blocked": True,
+                        "action": action,
+                        "reason": auth_reason,
+                        "limit_type": "agent_authorization",
+                    },
+                )
+            await trace_reporter.report(
+                action=action, tier="block", score=0, duration_ms=0,
+                agent_id=agent_id, framework=framework, blocked_reason=auth_reason,
+                session_id=session_id, plan=plan, step=step, params=params,
+                shadow=True, would_block=True,
             )
+            return _shadow_response(action, "agent_authorization", auth_reason)
 
         # Quota check (before validation)
         quota_decision = quota_enforcer.check()
         if not quota_decision.allowed:
-            return JSONResponse(
-                status_code=429,
-                content={
-                    "blocked": True,
-                    "action": action,
-                    "reason": quota_decision.reason,
-                    "limit_type": quota_decision.limit_type,
-                },
+            if not shadow:
+                return JSONResponse(
+                    status_code=429,
+                    content={
+                        "blocked": True,
+                        "action": action,
+                        "reason": quota_decision.reason,
+                        "limit_type": quota_decision.limit_type,
+                    },
+                )
+            await trace_reporter.report(
+                action=action, tier="block", score=0, duration_ms=0,
+                agent_id=agent_id, framework=framework, blocked_reason=quota_decision.reason,
+                session_id=session_id, plan=plan, step=step, params=params,
+                shadow=True, would_block=True,
             )
+            return _shadow_response(action, quota_decision.limit_type, quota_decision.reason)
         quota_enforcer.record_request()
 
         # Validate with Ostiari Guard (with tracing)
@@ -221,17 +286,41 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
                 blocked_reason=e.reason,
                 endpoint=tool.endpoint if tool else "mcp://" if is_mcp_tool else "",
                 session_id=session_id, plan=plan, step=step, params=params,
+                shadow=shadow, would_block=shadow,
             )
-            return JSONResponse(
-                status_code=403,
-                content={
-                    "blocked": True,
-                    "action": action,
-                    "score": e.score,
-                    "reason": e.reason,
-                    "rule_id": e.rule_id,
-                },
+            if not shadow:
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "blocked": True,
+                        "action": action,
+                        "score": e.score,
+                        "reason": e.reason,
+                        "rule_id": e.rule_id,
+                    },
+                )
+            # Shadow mode: policy WOULD block, but we let it proceed to a mocked
+            # execution so the caller sees a realistic (side-effect-free) response.
+            return _shadow_response(action, "policy", e.reason, score=e.score, rule_id=e.rule_id)
+
+        # Shadow mode: the call is ALLOWED, but we never run the real tool
+        # (no real emails, DB writes, downstream agent calls). Return a
+        # synthetic response and record the allowed decision.
+        if shadow:
+            endpoint = (
+                tool.endpoint if tool
+                else f"a2a://{action[len('a2a.'):]}" if is_a2a_tool
+                else f"mcp://{action.split('.')[0]}" if is_mcp_tool
+                else ""
             )
+            await trace_reporter.report(
+                action=action, tier="allow", score=result.score, duration_ms=0,
+                agent_id=agent_id, framework=framework, is_mcp=is_mcp_tool,
+                endpoint=endpoint,
+                session_id=session_id, plan=plan, step=step, params=params,
+                shadow=True, would_block=False,
+            )
+            return _shadow_execute_response(action, endpoint)
 
         # Execute: route to A2A agent, MCP client, or HTTP proxy
         if is_a2a_tool:
@@ -389,6 +478,22 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
     async def get_config() -> Any:
         """Return current sidecar configuration."""
         return manager.config.model_dump(mode="json", by_alias=True)
+
+    @app.get("/config/mode")
+    async def get_mode() -> Any:
+        """Return the current enforcement mode (enforce | shadow)."""
+        return {"mode": manager.config.mode}
+
+    @app.post("/config/mode")
+    async def set_mode(request: Request) -> Any:
+        """Set the enforcement mode. In 'shadow' mode the gateway evaluates
+        policy but never blocks and never runs real tool side effects."""
+        body = await request.json()
+        mode = body.get("mode", "enforce")
+        if mode not in ("enforce", "shadow"):
+            return JSONResponse(status_code=400, content={"error": "mode must be 'enforce' or 'shadow'"})
+        manager.config.mode = mode
+        return {"status": "applied", "mode": mode}
 
     @app.post("/config/tools")
     async def apply_tools(request: Request) -> Any:
