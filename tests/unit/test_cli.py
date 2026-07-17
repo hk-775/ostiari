@@ -200,3 +200,55 @@ class TestShadowRun:
             result = runner.invoke(main, ["shadow", "run", "--gateway", "ghost"])
         assert result.exit_code == 1
         assert "not found" in result.output
+
+
+class TestComplianceReport:
+    def _mock(self, report):
+        client = MagicMock()
+        resp = MagicMock(status_code=200)
+        resp.raise_for_status.return_value = None
+        resp.json.return_value = report
+        client.get.return_value = resp
+        cm = MagicMock(); cm.__enter__.return_value = client; cm.__exit__.return_value = False
+        return cm, client
+
+    def test_report_summary_output(self, runner):
+        report = {
+            "framework": "eu-ai-act", "posture": "green", "score_pct": 100.0,
+            "period_days": 90,
+            "summary": {"met": 3, "partial": 0, "unmet": 0},
+            "evidence": {"audit_count": 5, "trace_count": 2, "blocked_count": 1,
+                         "intervene_count": 1, "policy_count": 3},
+            "requirements": [
+                {"id": "art-9", "title": "Article 9 — Risk management system",
+                 "status": "met", "detail": "ok", "evidence_refs": ["policies"]},
+            ],
+        }
+        cm, client = self._mock(report)
+        with patch("httpx.Client", return_value=cm):
+            result = runner.invoke(main, ["compliance", "report"])
+        assert result.exit_code == 0, result.output
+        assert "eu-ai-act" in result.output
+        assert "GREEN" in result.output
+        assert "Article 9" in result.output
+
+    def test_report_json_flag(self, runner):
+        report = {"framework": "eu-ai-act", "posture": "red", "score_pct": 0.0,
+                  "period_days": 90, "summary": {"met": 0, "partial": 0, "unmet": 3},
+                  "evidence": {"audit_count": 0, "trace_count": 0, "blocked_count": 0,
+                               "intervene_count": 0, "policy_count": 0},
+                  "requirements": []}
+        cm, client = self._mock(report)
+        with patch("httpx.Client", return_value=cm):
+            result = runner.invoke(main, ["compliance", "report", "--json"])
+        assert result.exit_code == 0
+        assert '"posture": "red"' in result.output
+
+    def test_report_unknown_framework(self, runner):
+        client = MagicMock()
+        client.get.return_value = MagicMock(status_code=400)
+        cm = MagicMock(); cm.__enter__.return_value = client; cm.__exit__.return_value = False
+        with patch("httpx.Client", return_value=cm):
+            result = runner.invoke(main, ["compliance", "report", "--framework", "bogus"])
+        assert result.exit_code == 1
+        assert "unknown framework" in result.output

@@ -345,5 +345,53 @@ def shadow_run(gateway_id: str, control_plane: str, duration: str | None, restor
             click.echo(click.style(f"\n● Gateway '{gateway_id}' left in SHADOW mode.", fg="yellow"))
 
 
+@main.group()
+def compliance() -> None:
+    """Compliance — generate auditor-ready reports from governance data."""
+
+
+@compliance.command("report")
+@click.option("--framework", default="eu-ai-act", help="Compliance framework (e.g. eu-ai-act)")
+@click.option("--control-plane", default="http://localhost:8400", help="Control plane base URL")
+@click.option("--period", "period_days", default=90, type=int, help="Reporting window in days")
+@click.option("--json", "as_json", is_flag=True, help="Emit raw JSON instead of a summary")
+def compliance_report(framework: str, control_plane: str, period_days: int, as_json: bool) -> None:
+    """Generate and print a compliance report."""
+    try:
+        import httpx
+    except ImportError:
+        click.echo("Error: httpx is required for 'compliance report' (pip install httpx).", err=True)
+        raise SystemExit(1) from None
+
+    base = control_plane.rstrip("/")
+    with httpx.Client(timeout=10.0) as client:
+        r = client.get(f"{base}/api/compliance/report",
+                       params={"framework": framework, "period_days": period_days})
+        if r.status_code == 400:
+            click.echo(f"Error: unknown framework '{framework}'.", err=True)
+            raise SystemExit(1)
+        r.raise_for_status()
+        rep = r.json()
+
+    if as_json:
+        click.echo(json.dumps(rep, indent=2))
+        return
+
+    posture_color = {"green": "green", "yellow": "yellow", "red": "red"}.get(rep["posture"], "white")
+    click.echo(click.style(f"Compliance Report — {rep['framework']} ({period_days}d)", bold=True))
+    click.echo("  Posture : " + click.style(rep["posture"].upper(), fg=posture_color)
+               + f"  ({rep['score_pct']}% requirements met)")
+    ev = rep["evidence"]
+    click.echo(f"  Evidence: {ev['policy_count']} policies · {ev['audit_count']} audit records · "
+               f"{ev['trace_count']} traces · {ev['blocked_count']} blocked · "
+               f"{ev['intervene_count']} human-oversight")
+    click.echo("")
+    marks = {"met": ("✓", "green"), "partial": ("~", "yellow"), "unmet": ("✗", "red")}
+    for req in rep["requirements"]:
+        mark, color = marks.get(req["status"], ("?", "white"))
+        click.echo("  " + click.style(mark, fg=color) + f" {req['title']}")
+        click.echo(f"      {req['detail']}")
+
+
 if __name__ == "__main__":
     main()

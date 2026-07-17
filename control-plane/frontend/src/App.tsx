@@ -12,6 +12,7 @@ import { Costs } from "./pages/Costs";
 import { LiveTraces } from "./pages/LiveTraces";
 import { ShadowReport } from "./pages/ShadowReport";
 import { ProtocolGovernance } from "./pages/ProtocolGovernance";
+import { Compliance } from "./pages/Compliance";
 import { Experiments } from "./pages/Experiments";
 import { Models } from "./pages/Models";
 import { Efficiency } from "./pages/Efficiency";
@@ -88,6 +89,7 @@ export default function App() {
               <Route path="/protocol-governance" element={<ProtocolGovernance />} />
               <Route path="/sandbox" element={<Sandbox />} />
               <Route path="/audit" element={<AuditLog />} />
+              <Route path="/compliance" element={<Compliance />} />
               <Route path="/providers" element={<RequireAdmin><Providers /></RequireAdmin>} />
               <Route path="/users" element={<RequireAdmin><Users /></RequireAdmin>} />
             </Route>
