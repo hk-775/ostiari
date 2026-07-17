@@ -1,10 +1,36 @@
 import { useEffect, useState } from "react";
-import { Network, Save, Check, ShieldAlert } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { Network, Save, Check, ShieldAlert, Ban } from "lucide-react";
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
 const GATEWAY_BASE = `${API_BASE}/api/proxy/gateway/crm-agent`;
 
 type EdgeState = "allow" | "deny" | "default";
+
+interface BlockedEdge {
+  caller: string;
+  callee: string;
+  count: number;
+  reasons: string[];
+  example_chain: string[];
+  shadow: boolean;
+}
+
+interface DelegationReport {
+  blocked_delegation_count: number;
+  distinct_edges: number;
+  edges: BlockedEdge[];
+}
+
+async function fetchDelegationReport(): Promise<DelegationReport> {
+  try {
+    const res = await fetch(`${API_BASE}/api/traces/delegation-report`);
+    if (!res.ok) throw new Error();
+    return await res.json();
+  } catch {
+    return { blocked_delegation_count: 0, distinct_edges: 0, edges: [] };
+  }
+}
 
 interface CrossAgentConfig {
   enabled: boolean;
@@ -45,6 +71,12 @@ export function ProtocolGovernance() {
   const [cfg, setCfg] = useState<CrossAgentConfig>(EMPTY);
   const [agents, setAgents] = useState<string[]>(DEMO_AGENTS);
   const [saved, setSaved] = useState(false);
+
+  const { data: report } = useQuery({
+    queryKey: ["delegation-report"],
+    queryFn: fetchDelegationReport,
+    refetchInterval: 5000,
+  });
 
   useEffect(() => {
     fetchConfig().then((c) => {
@@ -187,6 +219,52 @@ export function ProtocolGovernance() {
           <span><span className="rounded bg-stone-50 px-1.5 py-0.5 text-stone-400">·</span> default</span>
           <span className="ml-auto flex items-center gap-1"><ShieldAlert className="h-3.5 w-3.5" /> click a cell to cycle</span>
         </div>
+      </div>
+
+      {/* Blocked / would-block delegation feed */}
+      <div className="card overflow-hidden">
+        <div className="flex items-center justify-between border-b border-stone-100 px-6 py-4">
+          <h2 className="flex items-center gap-2 text-sm font-semibold text-stone-800">
+            <Ban className="h-4 w-4 text-rose-500" /> Blocked delegations
+          </h2>
+          <span className="text-xs text-stone-500">
+            {report?.blocked_delegation_count ?? 0} events · {report?.distinct_edges ?? 0} edges
+          </span>
+        </div>
+        <table className="w-full">
+          <thead>
+            <tr className="border-b border-stone-100 text-left text-xs font-semibold uppercase tracking-wider text-stone-500">
+              <th className="px-6 py-3.5">Delegation</th>
+              <th className="px-6 py-3.5">Count</th>
+              <th className="px-6 py-3.5">Chain</th>
+              <th className="px-6 py-3.5">Reason</th>
+              <th className="px-6 py-3.5">Mode</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-stone-50">
+            {(report?.edges ?? []).map((e) => (
+              <tr key={`${e.caller}->${e.callee}`} className="transition hover:bg-stone-50/50">
+                <td className="px-6 py-4 font-mono text-sm text-stone-800">
+                  {e.caller} <span className="text-rose-400">→</span> {e.callee}
+                </td>
+                <td className="px-6 py-4 text-sm text-stone-600">{e.count}</td>
+                <td className="px-6 py-4 font-mono text-xs text-stone-500">{e.example_chain.join(" › ") || "—"}</td>
+                <td className="px-6 py-4 text-sm text-stone-500">{e.reasons.join(", ") || "—"}</td>
+                <td className="px-6 py-4">
+                  <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                    e.shadow ? "bg-amber-50 text-amber-700" : "bg-rose-50 text-rose-700"
+                  }`}>{e.shadow ? "would block" : "blocked"}</span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {(report?.edges.length ?? 0) === 0 && (
+          <div className="flex flex-col items-center gap-2 py-10 text-center">
+            <Ban className="h-7 w-7 text-stone-300" />
+            <p className="text-sm text-stone-500">No blocked delegations yet.</p>
+          </div>
+        )}
       </div>
     </div>
   );
