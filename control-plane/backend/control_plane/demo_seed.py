@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from control_plane.models.database import McpServer, UsageRecord
+from control_plane.models.database import McpServer, PaymentRecord, UsageRecord, Wallet
 
 log = logging.getLogger("control_plane.demo_seed")
 
@@ -93,6 +93,7 @@ async def seed_demo_mcp(db: AsyncSession, gateway_id: str = "crm-agent") -> None
 async def seed_demo_db(db: AsyncSession) -> None:
     """Populate DB-backed demo data; idempotent (skips if already present)."""
     await seed_demo_mcp(db)
+    await seed_demo_payments(db)
 
     existing = (await db.execute(select(func.count()).select_from(UsageRecord))).scalar_one()
     if existing:
@@ -114,6 +115,77 @@ async def seed_demo_db(db: AsyncSession) -> None:
             n += 1
     await db.commit()
     log.info("Seeded %d usage records for metering demo", n)
+
+
+# Demo wallets: varied balances so the payments page tells a story — a nearly
+# drained agent (blocks), a couple capped, the rest flush.
+_WALLETS = [
+    {"agent_id": "research-agent", "balance_usdc": 4.80, "daily_limit_usdc": 5.0},
+    {"agent_id": "coder-agent", "balance_usdc": 9.20},
+    {"agent_id": "analytics-agent", "balance_usdc": 2.15, "per_call_limit_usdc": 0.05},
+    {"agent_id": "ops-agent", "balance_usdc": 6.00},
+    {"agent_id": "support-agent", "balance_usdc": 1.10},
+    {"agent_id": "db-agent", "balance_usdc": 0.80},
+    {"agent_id": "planner-agent", "balance_usdc": 3.40},
+    {"agent_id": "payments-agent", "balance_usdc": 0.002},  # nearly drained — blocks
+]
+_PAID_TOOLS = ["premium_search", "market_data.fetch", "enrichment.lookup", "geocode.resolve"]
+
+
+async def seed_demo_payments(db: AsyncSession) -> None:
+    """Seed x402 wallets + a ledger history (idempotent; skips if wallets exist)."""
+    existing = (await db.execute(select(func.count()).select_from(Wallet))).scalar_one()
+    if existing:
+        return
+
+    now = datetime.now(timezone.utc)
+    for w in _WALLETS:
+        db.add(Wallet(
+            agent_id=w["agent_id"], balance_usdc=w["balance_usdc"],
+            daily_limit_usdc=w.get("daily_limit_usdc"),
+            per_call_limit_usdc=w.get("per_call_limit_usdc"),
+            spent_today_usdc=round(w["balance_usdc"] * 0.0, 4),
+        ))
+
+    # Ledger history: mostly settled micropayments, a few blocked (drained agent).
+    rnd = random.Random(7)
+    n = 0
+    funded = [w["agent_id"] for w in _WALLETS if w["balance_usdc"] > 0.5]
+    for i in range(60):
+        agent = rnd.choice(funded)
+        amount = rnd.choice([0.005, 0.002, 0.01, 0.005])
+        db.add(PaymentRecord(
+            agent_id=agent, gateway_id="crm-agent", action=rnd.choice(_PAID_TOOLS),
+            amount_usdc=amount, settled=True, tx_hash=f"sim-seed-{i}",
+            mode="simulated", source="tool_402",
+            timestamp=now - timedelta(minutes=rnd.randint(0, 60 * 24 * 7)),
+        ))
+        n += 1
+    # A handful of blocked attempts from the drained agent.
+    for i in range(5):
+        db.add(PaymentRecord(
+            agent_id="payments-agent", gateway_id="crm-agent",
+            action="premium_search", amount_usdc=0.005, settled=False,
+            mode="simulated", source="tool_402",
+            timestamp=now - timedelta(minutes=rnd.randint(0, 60 * 24 * 3)),
+        ))
+        n += 1
+    await db.commit()
+    log.info("Seeded %d wallets and %d payment records", len(_WALLETS), n)
+
+
+def seed_demo_pricing() -> None:
+    """Set crm-agent's payment mode to passthrough (native x402) for the demo.
+
+    Pricing lives in the payments router's in-memory policy; set it only if
+    unset so a real configuration isn't overwritten.
+    """
+    from control_plane.routers.payments import _pricing
+
+    if "crm-agent" in _pricing:
+        return
+    _pricing["crm-agent"] = {"mode": "passthrough", "default": 0.0, "overrides": {}}
+    log.info("Seeded demo payment pricing (crm-agent: passthrough)")
 
 
 def seed_demo_experiments() -> None:
