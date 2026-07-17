@@ -12,6 +12,7 @@ from control_plane.models.database import Base
 from control_plane.routers import (
     agents,
     audit,
+    compliance,
     costs,
     experiments,
     gateways,
@@ -119,6 +120,7 @@ app.include_router(quotas.router)
 app.include_router(proxy.router)
 app.include_router(traces.router)
 app.include_router(audit.router)
+app.include_router(compliance.router)
 
 
 @app.get("/api/health")
