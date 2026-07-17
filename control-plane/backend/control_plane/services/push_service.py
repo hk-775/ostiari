@@ -136,8 +136,12 @@ class PushService:
             ],
         }
 
-        # Include any stored gateway-level config (modules, llm, etc.)
+        # Include any stored gateway-level config (modules, llm, mode, etc.)
         if gateway.config:
             config.update(gateway.config)
+
+        # Enforcement mode is always sent explicitly (defaults to enforce) so a
+        # gateway can never be left on a stale shadow setting after a push.
+        config["mode"] = (gateway.config or {}).get("mode", "enforce")
 
         return config

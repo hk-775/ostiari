@@ -27,6 +27,7 @@ class GatewayResponse(BaseModel):
     status: str
     last_heartbeat: datetime | None
     tools_count: int = 0
+    mode: str = "enforce"
     created_at: datetime
     updated_at: datetime
 
