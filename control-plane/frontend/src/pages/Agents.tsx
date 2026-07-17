@@ -32,6 +32,13 @@ const FRAMEWORK_COLORS: Record<string, { bg: string; text: string }> = {
   "gateway-invoke": { bg: "bg-violet-50", text: "text-violet-700" },
 };
 
+// Preset frameworks offered in the dropdown. Anything else is entered via
+// "Other…" as free text — the backend accepts any framework string.
+const PRESET_FRAMEWORKS = [
+  "openai", "anthropic", "strands", "bedrock",
+  "agentcore", "crewai", "langgraph", "gateway-invoke",
+];
+
 const ROUTING_STRATEGIES = [
   { value: "none", label: "No Override (use global)", description: "Uses the default routing from Models page" },
   { value: "smart-routing", label: "Smart Routing", description: "Classify prompt → pick best model" },
@@ -232,7 +239,11 @@ export function Agents() {
         <form onSubmit={(e) => { e.preventDefault(); createMutation.mutate(form); }} className="card p-6 space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <input placeholder="Agent name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="input" />
-            <select value={form.framework} onChange={(e) => setForm({ ...form, framework: e.target.value })} className="input">
+            <select
+              value={PRESET_FRAMEWORKS.includes(form.framework) ? form.framework : "__other__"}
+              onChange={(e) => setForm({ ...form, framework: e.target.value === "__other__" ? "" : e.target.value })}
+              className="input"
+            >
               <option value="openai">OpenAI</option>
               <option value="anthropic">Anthropic</option>
               <option value="strands">Strands</option>
@@ -241,7 +252,16 @@ export function Agents() {
               <option value="crewai">CrewAI</option>
               <option value="langgraph">LangGraph</option>
               <option value="gateway-invoke">Gateway Invoke</option>
+              <option value="__other__">Other…</option>
             </select>
+            {!PRESET_FRAMEWORKS.includes(form.framework) && (
+              <input
+                placeholder="Framework name"
+                value={form.framework}
+                onChange={(e) => setForm({ ...form, framework: e.target.value })}
+                className="input col-span-2"
+              />
+            )}
             <input placeholder="Gateway ID" value={form.gateway_id} onChange={(e) => setForm({ ...form, gateway_id: e.target.value })} className="input" />
             <input placeholder="Model" value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} className="input" />
             <input placeholder="Tools (comma-separated)" value={form.tools} onChange={(e) => setForm({ ...form, tools: e.target.value })} className="input col-span-2" />
