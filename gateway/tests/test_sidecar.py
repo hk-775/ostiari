@@ -3,8 +3,8 @@
 import json
 
 import pytest
-from ostiari_sidecar.models import PolicyConfig, SidecarConfig, ToolDefinition
-from ostiari_sidecar.server import create_app
+from ostiari_gateway.models import PolicyConfig, SidecarConfig, ToolDefinition
+from ostiari_gateway.server import create_app
 from starlette.testclient import TestClient
 
 
@@ -156,7 +156,7 @@ class TestToolProxy:
             SpanExporter,
             SpanExportResult,
         )
-        from ostiari_sidecar.server import create_app
+        from ostiari_gateway.server import create_app
         from werkzeug import Response as WerkzeugResponse
 
         # Simple in-memory exporter to capture spans
@@ -168,10 +168,14 @@ class TestToolProxy:
                 self.spans.extend(spans)
                 return SpanExportResult.SUCCESS
 
-        # Set up a real TracerProvider so inject() actually writes headers
+        # Set up a real TracerProvider so inject() actually writes headers.
+        # OpenTelemetry only honors the FIRST set_tracer_provider() per process,
+        # so if another test already set one, override=True is required to make
+        # this test's exporter actually receive spans (test-isolation safety).
         exporter = MemoryExporter()
         provider = TracerProvider()
         provider.add_span_processor(SimpleSpanProcessor(exporter))
+        otel_trace._TRACER_PROVIDER_SET_ONCE._done = False
         otel_trace.set_tracer_provider(provider)
 
         received_headers: dict[str, str] = {}

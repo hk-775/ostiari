@@ -3,9 +3,9 @@
 from unittest.mock import patch
 
 import pytest
-from ostiari_sidecar.models import ModulesConfig, PolicyConfig, SidecarConfig, ToolDefinition
-from ostiari_sidecar.modules.llm_gateway.models import LLMConfig, RoutingRule
-from ostiari_sidecar.modules.llm_gateway.router import ModelRouter
+from ostiari_gateway.models import ModulesConfig, PolicyConfig, SidecarConfig, ToolDefinition
+from ostiari_gateway.modules.llm_gateway.models import LLMConfig, RoutingRule
+from ostiari_gateway.modules.llm_gateway.router import ModelRouter
 from starlette.testclient import TestClient
 
 
@@ -63,7 +63,7 @@ class TestModelRouter:
 
 class TestModuleActivation:
     def test_module_not_active_by_default(self):
-        from ostiari_sidecar.server import create_app
+        from ostiari_gateway.server import create_app
 
         config = SidecarConfig(sidecar_id="test")
         app = create_app(initial_config=config)
@@ -74,7 +74,7 @@ class TestModuleActivation:
         assert resp.status_code == 404 or resp.status_code == 405
 
     def test_health_shows_modules(self):
-        from ostiari_sidecar.server import create_app
+        from ostiari_gateway.server import create_app
 
         config = SidecarConfig(sidecar_id="test")
         app = create_app(initial_config=config)
@@ -87,7 +87,7 @@ class TestModuleActivation:
         assert data["modules_active"] == []
 
     def test_modules_endpoint(self):
-        from ostiari_sidecar.server import create_app
+        from ostiari_gateway.server import create_app
 
         config = SidecarConfig(sidecar_id="test")
         app = create_app(initial_config=config)
@@ -100,7 +100,7 @@ class TestModuleActivation:
         assert any(m["name"] == "llm_gateway" for m in data["available"])
 
     def test_llm_gateway_activates_invoke_endpoint(self):
-        from ostiari_sidecar.server import create_app
+        from ostiari_gateway.server import create_app
 
         config = SidecarConfig(
             sidecar_id="test",
@@ -125,7 +125,7 @@ class TestLLMGatewayInvoke:
     def client_with_mock_llm(self, httpserver):
         """Client with LLM Gateway active and a mocked LLM provider."""
 
-        from ostiari_sidecar.server import create_app
+        from ostiari_gateway.server import create_app
 
         # Mock tool endpoint
         httpserver.expect_request("/send", method="POST").respond_with_json(
@@ -150,12 +150,12 @@ class TestLLMGatewayInvoke:
 
     def test_invoke_without_tools_returns_response(self, client_with_mock_llm):
         """Test that /invoke calls the LLM and returns a response."""
-        from ostiari_sidecar.modules.llm_gateway.providers import LLMResponse
+        from ostiari_gateway.modules.llm_gateway.providers import LLMResponse
 
         mock_response = LLMResponse(content="Hello! How can I help?", tokens_used=50, model="claude-sonnet-4-6")
 
         with patch(
-            "ostiari_sidecar.modules.llm_gateway.executor.AgenticExecutor._call_with_fallback",
+            "ostiari_gateway.modules.llm_gateway.executor.AgenticExecutor._call_with_fallback",
             return_value=mock_response,
         ):
             resp = client_with_mock_llm.post(
@@ -170,7 +170,7 @@ class TestLLMGatewayInvoke:
 
     def test_invoke_with_tool_call(self, client_with_mock_llm):
         """Test the full agentic loop: LLM → tool call → result → final response."""
-        from ostiari_sidecar.modules.llm_gateway.providers import LLMResponse, ToolCall
+        from ostiari_gateway.modules.llm_gateway.providers import LLMResponse, ToolCall
 
         call_count = [0]
 
@@ -191,7 +191,7 @@ class TestLLMGatewayInvoke:
                 )
 
         with patch(
-            "ostiari_sidecar.modules.llm_gateway.executor.AgenticExecutor._call_with_fallback",
+            "ostiari_gateway.modules.llm_gateway.executor.AgenticExecutor._call_with_fallback",
             side_effect=mock_call,
         ):
             resp = client_with_mock_llm.post(
@@ -208,7 +208,7 @@ class TestLLMGatewayInvoke:
 
     def test_invoke_with_blocked_tool(self, client_with_mock_llm):
         """Test that blocked tool calls are fed back to the LLM."""
-        from ostiari_sidecar.modules.llm_gateway.providers import LLMResponse, ToolCall
+        from ostiari_gateway.modules.llm_gateway.providers import LLMResponse, ToolCall
 
         call_count = [0]
 
@@ -229,7 +229,7 @@ class TestLLMGatewayInvoke:
                 )
 
         with patch(
-            "ostiari_sidecar.modules.llm_gateway.executor.AgenticExecutor._call_with_fallback",
+            "ostiari_gateway.modules.llm_gateway.executor.AgenticExecutor._call_with_fallback",
             side_effect=mock_call,
         ):
             # Register the tool so it exists
