@@ -146,7 +146,46 @@ export const api = {
       fetchAPI<CostModel>("/api/roi/cost-model", { method: "POST", body: JSON.stringify({ entries, fallback }) }),
     resetCostModel: () => fetchAPI<CostModel>("/api/roi/cost-model/reset", { method: "POST" }),
   },
+  tokenBroker: {
+    report: (periodDays = 30) =>
+      fetchAPI<BrokerReport>(`/api/token-broker/report?period_days=${periodDays}`),
+    config: () => fetchAPI<BrokerConfig>("/api/token-broker/config"),
+    setConfig: (bulk_discount: number, markup: number) =>
+      fetchAPI<BrokerConfig>("/api/token-broker/config", { method: "POST", body: JSON.stringify({ bulk_discount, markup }) }),
+    resetConfig: () => fetchAPI<BrokerConfig>("/api/token-broker/config/reset", { method: "POST" }),
+  },
 };
+
+export interface BrokerModelRow {
+  model: string;
+  calls: number;
+  tokens: number;
+  retail_usd: number;
+  our_cost_usd: number;
+  charged_usd: number;
+  customer_savings_usd: number;
+  margin_usd: number;
+}
+
+export interface BrokerReport {
+  period_days: number;
+  bulk_discount: number;
+  markup: number;
+  total_retail_usd: number;
+  total_our_cost_usd: number;
+  total_charged_usd: number;
+  total_tokens: number;
+  customer_savings_usd: number;
+  savings_pct: number;
+  margin_usd: number;
+  models: BrokerModelRow[];
+}
+
+export interface BrokerConfig {
+  bulk_discount: number;
+  markup: number;
+  customized: boolean;
+}
 
 export interface RoiActionSaving {
   action: string;

@@ -25,6 +25,7 @@ from control_plane.routers import (
     proxy,
     quotas,
     roi,
+    token_broker,
     tools,
     traces,
     trust,
@@ -68,6 +69,10 @@ async def lifespan(app: FastAPI):
         from control_plane.routers.roi import _cost_model
         _cost_model.update(state["roi_cost_model"])
 
+    if "token_broker_config" in state and state["token_broker_config"]:
+        from control_plane.routers.token_broker import _config as _tb_config
+        _tb_config.update(state["token_broker_config"])
+
     # Seed demo data so the dashboard isn't empty (skip in clean-install mode).
     # Traces + experiments are in-memory; metering usage records are DB-backed.
     # All seeders are idempotent (no-op when data already exists).
@@ -100,6 +105,7 @@ async def lifespan(app: FastAPI):
     from control_plane.routers.providers import _providers
     from control_plane.routers.quotas import _quotas
     from control_plane.routers.roi import _cost_model
+    from control_plane.routers.token_broker import _config as _tb_config
 
     save_state({
         "quotas": [q.model_dump() for q in _quotas.values()],
@@ -107,6 +113,7 @@ async def lifespan(app: FastAPI):
         "models": [m.model_dump() for m in _models.values()],
         "providers": [p.model_dump() for p in _providers.values()],
         "roi_cost_model": _cost_model,
+        "token_broker_config": _tb_config,
     })
 
     await engine.dispose()
@@ -147,6 +154,7 @@ app.include_router(metering.router)
 app.include_router(trust.router)
 app.include_router(payments.router)
 app.include_router(roi.router)
+app.include_router(token_broker.router)
 
 
 @app.get("/api/health")
