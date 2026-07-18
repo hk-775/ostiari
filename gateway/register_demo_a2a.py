@@ -1,12 +1,11 @@
-"""Connect the demo's real A2A agent to the running crm-agent gateway.
+"""Register the demo's real A2A agent via the control plane.
 
-A2A agents are gateway-scoped state (discovered agent cards + skill routing),
-connected via POST /config/a2a-agents. They aren't pushed by the control plane,
-so this script wires the live A2A demo agent (a2a_demo_server.py on :9200) into
-crm-agent and gives it a trust score so cross-agent delegation to it succeeds.
+Registers through the control plane (POST /api/a2a-agents/crm-agent), which both
+connects the agent on the live gateway AND persists it — so it's reconnected
+automatically on a gateway restart (no need to re-run this). Also gives it a
+trust score so cross-agent delegation to it clears the seeded min_trust.
 
-Idempotent: re-registering reconnects. Run after the gateway and the A2A demo
-server are up:
+Idempotent. Run after the control plane, gateway, and A2A demo server are up:
     python register_demo_a2a.py
 The Makefile runs this automatically as part of `make dev` / `make demo-full`.
 """
@@ -17,7 +16,9 @@ import time
 import urllib.error
 import urllib.request
 
+CONTROL_PLANE = "http://localhost:8400"
 GATEWAY = "http://localhost:8421"
+GATEWAY_ID = "crm-agent"
 A2A_AGENT_URL = "http://localhost:9200"  # base URL; discovery adds /.well-known/agent.json
 
 # Trust score for the demo A2A agent. The seeded cross-agent policy has
@@ -68,16 +69,20 @@ def _set_trust(agent_key: str) -> None:
 
 
 def main() -> int:
-    print("Connecting real A2A agent to crm-agent")
+    print("Registering real A2A agent via the control plane")
+    if not _wait_for(f"{CONTROL_PLANE}/api/health", "control plane"):
+        return 1
     if not _wait_for(f"{GATEWAY}/health", "crm-agent gateway"):
         return 1
     if not _wait_for(f"{A2A_AGENT_URL}/.well-known/agent.json", "A2A demo agent"):
         return 1
 
-    status, resp = _req("POST", f"{GATEWAY}/config/a2a-agents", {"url": A2A_AGENT_URL})
+    # Register through the CP → connects on the gateway AND persists the record.
+    status, resp = _req("POST", f"{CONTROL_PLANE}/api/a2a-agents/{GATEWAY_ID}",
+                        {"url": A2A_AGENT_URL})
     if status == 200 and resp:
         key = resp.get("agent_key", "")
-        print(f"  + {resp.get('name')}: connected as a2a.{key}, "
+        print(f"  + {resp.get('name')}: registered as a2a.{key} (persisted), "
               f"skills: {', '.join(resp.get('skills', []))}")
         _set_trust(key)
     else:

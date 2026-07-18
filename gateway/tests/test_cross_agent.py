@@ -176,3 +176,47 @@ class TestA2ADelegationGate:
         })
         assert r.status_code == 403
         assert "chain depth" in r.json()["reason"]
+
+
+# ─── A2A startup reconnect (survives gateway restart) ────────────────────────
+
+class TestA2AStartupReconnect:
+    """A2A agents in the control-plane registration bundle are reconnected on
+    gateway startup, so they survive a bare restart (no re-register script)."""
+
+    def test_reconnects_from_registration_bundle(self, monkeypatch):
+        from unittest.mock import AsyncMock
+        from ostiari_gateway.a2a.models import AgentCard, AgentSkill
+
+        # Discovery returns a fake card; add_agent uses it (patched at source).
+        card = AgentCard(
+            name="DevOps Assistant", url="http://localhost:9200/a2a", description="fake",
+            skills=[AgentSkill(id="deploy", name="Deploy")],
+        )
+        monkeypatch.setattr(
+            "ostiari_gateway.a2a.manager.fetch_agent_card", AsyncMock(return_value=card),
+        )
+        monkeypatch.setattr(
+            "ostiari_gateway.a2a.discovery.fetch_agent_card", AsyncMock(return_value=card),
+        )
+
+        # Fake lifecycle: register() returns a bundle carrying an a2a_agents entry.
+        from ostiari_gateway import server as server_mod
+
+        class _FakeLifecycle:
+            def __init__(self, *a, **k): pass
+            def set_config_callback(self, cb): pass
+            async def register(self):
+                return {"config": {"a2a_agents": [{"url": "http://localhost:9200", "name": ""}]}}
+            async def start_heartbeat(self, interval=30): pass
+            async def stop(self): pass
+
+        monkeypatch.setattr(server_mod, "SidecarConfig", SidecarConfig)
+        import ostiari_gateway.lifecycle as lc
+        monkeypatch.setattr(lc, "LifecycleManager", _FakeLifecycle)
+
+        config = SidecarConfig(sidecar_id="crm-agent", control_plane_url="http://cp")
+        app = create_app(initial_config=config)
+        with TestClient(app):  # runs lifespan → register → reconnect a2a
+            agents = app.state.a2a_manager.list_agents()
+            assert any(a["name"] == "devops_assistant" for a in agents)

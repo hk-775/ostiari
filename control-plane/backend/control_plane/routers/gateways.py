@@ -238,6 +238,12 @@ async def gateway_register(gateway_id: str, db: AsyncSession = Depends(get_db)):
     bundle.setdefault("quotas", gateway.config.get("quotas", {}))
     bundle.setdefault("agent_auth", gateway.config.get("agent_auth", {}))
 
+    # Include persisted A2A agents so the gateway reconnects them on startup.
+    from control_plane.routers.a2a_agents import build_a2a_config
+    a2a = await build_a2a_config(db, gateway_id)
+    if a2a:
+        bundle["a2a_agents"] = a2a
+
     # Drain any queued config
     queued = config_queue.pop(gateway_id, [])
     if queued:

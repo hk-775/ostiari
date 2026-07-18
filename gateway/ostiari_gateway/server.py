@@ -216,6 +216,28 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
             except Exception as e:  # noqa: BLE001 — one bad server shouldn't block the rest
                 log.warning("Failed to connect MCP server from config: %s", e)
 
+    async def _connect_a2a_agents(a2a_cfgs: list) -> None:
+        """(Re)connect A2A agents from config (each {url, name, auth_token}).
+
+        Discovers the agent card and registers its skills — the same work the
+        POST /config/a2a-agents endpoint does — so agents survive a restart.
+        """
+        from ostiari_gateway.a2a.discovery import fetch_agent_card
+        from ostiari_gateway.a2a.models import A2AAgentConfig
+        for cfg in a2a_cfgs or []:
+            try:
+                url = (cfg.get("url") or "").rstrip("/")
+                if not url:
+                    continue
+                card = await fetch_agent_card(url, auth_token=cfg.get("auth_token", ""))
+                agent_key = (cfg.get("name") or card.name).lower().replace(" ", "_")
+                if not a2a_manager.has_agent(agent_key):
+                    await a2a_manager.add_agent(A2AAgentConfig(
+                        name=agent_key, url=url, auth_token=cfg.get("auth_token", ""),
+                    ))
+            except Exception as e:  # noqa: BLE001 — one bad agent shouldn't block the rest
+                log.warning("Failed to connect A2A agent from config: %s", e)
+
     @asynccontextmanager
     async def lifespan(app: Any) -> Any:
         # Initialize MCP servers from a local config file, if any.
@@ -232,6 +254,8 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
                 bundle = (data or {}).get("config", {})
                 if bundle.get("mcp_servers"):
                     await _connect_mcp_servers(bundle["mcp_servers"])
+                if bundle.get("a2a_agents"):
+                    await _connect_a2a_agents(bundle["a2a_agents"])
                 await lifecycle.start_heartbeat(interval=30)
             except Exception as e:
                 log.warning(f"Control plane registration failed: {e} — running standalone")

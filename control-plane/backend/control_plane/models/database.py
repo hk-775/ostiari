@@ -110,6 +110,25 @@ class UsageRecord(Base):
     )
 
 
+class A2AAgentRecord(Base):
+    """A remote A2A agent registered on a gateway, persisted so it survives a
+    gateway restart. The control plane holds the record; the gateway (re)connects
+    to the agent's URL and discovers its skills on startup from this.
+    """
+
+    __tablename__ = "a2a_agents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(128))          # display name
+    agent_key: Mapped[str] = mapped_column(String(128))     # a2a.<agent_key>
+    url: Mapped[str] = mapped_column(String(512))
+    auth_token: Mapped[str] = mapped_column(String(512), default="")
+    gateway_id: Mapped[str] = mapped_column(String(64), ForeignKey("gateways.id"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
 class TokenPool(Base):
     """Purchased token inventory for the broker, per provider.
 
