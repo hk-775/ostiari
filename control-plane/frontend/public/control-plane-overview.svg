@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 500" font-family="system-ui, -apple-system, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 530" font-family="system-ui, -apple-system, sans-serif">
   <!-- Background -->
-  <rect width="900" height="500" fill="#fafafa" rx="12"/>
+  <rect width="900" height="530" fill="#fafafa" rx="12"/>
 
   <!-- Title -->
   <text x="450" y="32" text-anchor="middle" font-size="14" font-weight="700" fill="#1e1b4b" letter-spacing="0.5">HOW THE CONTROL PLANE WORKS</text>
@@ -29,7 +29,7 @@
 
   <!-- ===== CENTER: Control Plane ===== -->
   <g transform="translate(255, 55)">
-    <rect width="380" height="320" rx="14" fill="white" stroke="#7c3aed" stroke-width="2.5" filter="drop-shadow(0 4px 12px rgba(124,58,237,0.12))"/>
+    <rect width="380" height="380" rx="14" fill="white" stroke="#7c3aed" stroke-width="2.5" filter="drop-shadow(0 4px 12px rgba(124,58,237,0.12))"/>
     <rect width="380" height="32" rx="14" ry="0" fill="#7c3aed"/>
     <rect x="0" y="14" width="380" height="18" fill="#7c3aed"/>
     <text x="190" y="22" text-anchor="middle" font-size="11" font-weight="700" fill="white" letter-spacing="0.5">OSTIARI CONTROL PLANE</text>
@@ -74,15 +74,28 @@
     <text x="309" y="185" text-anchor="middle" font-size="8" font-weight="600" fill="#475569">🔐 Auth</text>
     <text x="309" y="198" text-anchor="middle" font-size="7" fill="#7c7c8a">SSO · RBAC · Users</text>
 
+    <!-- Row 4 (added: governance + monetization) -->
+    <rect x="15" y="225" width="108" height="50" rx="8" fill="#f5f3ff" stroke="#ddd6fe"/>
+    <text x="69" y="245" text-anchor="middle" font-size="8" font-weight="600" fill="#5b21b6">🌐 Protocol (A2A)</text>
+    <text x="69" y="258" text-anchor="middle" font-size="7" fill="#7c7c8a">Delegation · Trust</text>
+
+    <rect x="135" y="225" width="108" height="50" rx="8" fill="#ecfdf5" stroke="#bbf7d0"/>
+    <text x="189" y="245" text-anchor="middle" font-size="8" font-weight="600" fill="#166534">💳 Payments</text>
+    <text x="189" y="258" text-anchor="middle" font-size="7" fill="#7c7c8a">x402 · Wallets · Broker</text>
+
+    <rect x="255" y="225" width="108" height="50" rx="8" fill="#fff7ed" stroke="#fed7aa"/>
+    <text x="309" y="245" text-anchor="middle" font-size="8" font-weight="600" fill="#9a3412">📈 ROI · Compliance</text>
+    <text x="309" y="258" text-anchor="middle" font-size="7" fill="#7c7c8a">Savings · EU AI Act</text>
+
     <!-- Actions bar -->
-    <rect x="15" y="230" width="350" height="36" rx="8" fill="#faf5ff" stroke="#e9d5ff"/>
-    <text x="190" y="245" text-anchor="middle" font-size="8" font-weight="600" fill="#6b21a8">Push Config</text>
-    <text x="190" y="258" text-anchor="middle" font-size="7" fill="#9333ea">Hot-reload policies, quotas, tools, models → gateways (no restart)</text>
+    <rect x="15" y="290" width="350" height="36" rx="8" fill="#faf5ff" stroke="#e9d5ff"/>
+    <text x="190" y="305" text-anchor="middle" font-size="8" font-weight="600" fill="#6b21a8">Push Config</text>
+    <text x="190" y="318" text-anchor="middle" font-size="7" fill="#9333ea">Hot-reload policies, quotas, tools, MCP/A2A, prices → gateways (no restart)</text>
 
     <!-- Receive bar -->
-    <rect x="15" y="275" width="350" height="30" rx="8" fill="#f0fdf4" stroke="#bbf7d0"/>
-    <text x="190" y="289" text-anchor="middle" font-size="8" font-weight="600" fill="#166534">Receive Traces · Costs · Health</text>
-    <text x="190" y="299" text-anchor="middle" font-size="7" fill="#15803d">Real-time from all gateways (fire-and-forget)</text>
+    <rect x="15" y="335" width="350" height="30" rx="8" fill="#f0fdf4" stroke="#bbf7d0"/>
+    <text x="190" y="349" text-anchor="middle" font-size="8" font-weight="600" fill="#166534">Receive Traces · Costs · Health</text>
+    <text x="190" y="359" text-anchor="middle" font-size="7" fill="#15803d">Real-time from all gateways (fire-and-forget)</text>
   </g>
 
   <!-- ===== RIGHT: Gateway Fleet ===== -->
@@ -93,22 +106,22 @@
     <!-- Gateway 1 -->
     <rect x="15" y="38" width="150" height="65" rx="8" fill="#fffbeb" stroke="#fde68a"/>
     <text x="90" y="55" text-anchor="middle" font-size="8" font-weight="600" fill="#92400e">Gateway 1 (Team A)</text>
-    <text x="90" y="70" text-anchor="middle" font-size="7" fill="#78716c">Auth → Quota → Policy</text>
-    <text x="90" y="82" text-anchor="middle" font-size="7" fill="#78716c">→ Route → Execute</text>
+    <text x="90" y="70" text-anchor="middle" font-size="6.5" fill="#78716c">Delegate → Auth → Quota</text>
+    <text x="90" y="82" text-anchor="middle" font-size="6.5" fill="#78716c">→ Risk → Pay → Execute</text>
     <circle cx="145" cy="45" r="4" fill="#22c55e"/>
 
     <!-- Gateway 2 -->
     <rect x="15" y="112" width="150" height="65" rx="8" fill="#fffbeb" stroke="#fde68a"/>
     <text x="90" y="129" text-anchor="middle" font-size="8" font-weight="600" fill="#92400e">Gateway 2 (Team B)</text>
-    <text x="90" y="144" text-anchor="middle" font-size="7" fill="#78716c">Auth → Quota → Policy</text>
-    <text x="90" y="156" text-anchor="middle" font-size="7" fill="#78716c">→ Route → Execute</text>
+    <text x="90" y="144" text-anchor="middle" font-size="6.5" fill="#78716c">Delegate → Auth → Quota</text>
+    <text x="90" y="156" text-anchor="middle" font-size="6.5" fill="#78716c">→ Risk → Pay → Execute</text>
     <circle cx="145" cy="119" r="4" fill="#22c55e"/>
 
     <!-- Gateway 3 -->
     <rect x="15" y="186" width="150" height="65" rx="8" fill="#fffbeb" stroke="#fde68a"/>
     <text x="90" y="203" text-anchor="middle" font-size="8" font-weight="600" fill="#92400e">Gateway 3 (Team C)</text>
-    <text x="90" y="218" text-anchor="middle" font-size="7" fill="#78716c">Auth → Quota → Policy</text>
-    <text x="90" y="230" text-anchor="middle" font-size="7" fill="#78716c">→ Route → Execute</text>
+    <text x="90" y="218" text-anchor="middle" font-size="6.5" fill="#78716c">Delegate → Auth → Quota</text>
+    <text x="90" y="230" text-anchor="middle" font-size="6.5" fill="#78716c">→ Risk → Pay → Execute</text>
     <circle cx="145" cy="193" r="4" fill="#22c55e"/>
 
     <!-- Agents label -->
@@ -135,7 +148,7 @@
   <text x="660" y="310" font-size="6" fill="#10b981" text-anchor="middle">traces</text>
 
   <!-- ===== BOTTOM: External Systems ===== -->
-  <g transform="translate(255, 420)">
+  <g transform="translate(255, 455)">
     <rect width="380" height="55" rx="10" fill="white" stroke="#e2e8f0" stroke-width="1.5"/>
     <text x="190" y="18" text-anchor="middle" font-size="8" font-weight="700" fill="#64748b" letter-spacing="0.5">OBSERVABILITY (OTLP EXPORT)</text>
     <rect x="15" y="26" width="65" height="22" rx="6" fill="#f3e8ff" stroke="#d8b4fe"/>
@@ -151,7 +164,7 @@
   </g>
 
   <!-- Arrow: Control Plane → OTLP -->
-  <path d="M445 380 L445 418" stroke="#6b7280" stroke-width="1.5" fill="none" stroke-dasharray="3 2" marker-end="url(#arrow-gray)"/>
+  <path d="M445 440 L445 453" stroke="#6b7280" stroke-width="1.5" fill="none" stroke-dasharray="3 2" marker-end="url(#arrow-gray)"/>
 
   <!-- Markers -->
   <defs>
