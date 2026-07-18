@@ -38,7 +38,7 @@ export function Landing() {
     <div className="min-h-screen bg-gradient-to-br from-stone-50 via-white to-violet-50/30">
       {/* Hero */}
       <div className="max-w-5xl mx-auto px-8 pt-10 pb-5">
-        <img src="/logo.svg" alt="Ostiari" className="h-32" />
+        <img src="/logo.svg" alt="Ostiari" className="h-40" />
 
         <div className="flex items-center justify-between gap-8 mt-5">
           <p className="text-2xl font-semibold text-stone-900 leading-snug">AI agents are autonomous.<br /><span className="text-violet-700">Your risk shouldn't be.</span></p>
