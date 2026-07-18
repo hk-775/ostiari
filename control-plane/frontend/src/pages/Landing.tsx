@@ -19,11 +19,13 @@ const FEATURES = [
 ];
 
 const ARCHITECTURE_FLOW = [
-  { step: "1", label: "Agent sends intent", desc: "POST /tool/* or POST /invoke" },
-  { step: "2", label: "Orchestrator receives", desc: "Single entry/exit point" },
-  { step: "3", label: "Auth → Quota → Policy", desc: "Three gates must pass" },
-  { step: "4", label: "Route & Execute", desc: "HTTP, MCP, A2A, or LLM" },
-  { step: "5", label: "Report costs", desc: "Fire-and-forget to Control Plane" },
+  { step: "1", label: "Delegation", desc: "May this agent call that agent? (A2A)" },
+  { step: "2", label: "Auth", desc: "May this agent use this tool?" },
+  { step: "3", label: "Quota", desc: "Within rate & budget caps?" },
+  { step: "4", label: "Risk", desc: "Score 0-100 → allow / intervene / block" },
+  { step: "5", label: "Payment", desc: "Does it cost money? Can the wallet pay? (x402)" },
+  { step: "6", label: "Execute", desc: "HTTP, MCP, A2A, or LLM — then meter usage" },
+  { step: "7", label: "Trace", desc: "Record & report to the Control Plane" },
 ];
 
 export function Landing() {
@@ -53,7 +55,7 @@ export function Landing() {
         </div>
 
         <p className="mt-5 text-lg text-stone-600 max-w-2xl leading-relaxed">
-          The runtime safety layer for AI agents. Every tool call validated, every model access controlled, every dollar tracked — without changing agent code.
+          The runtime governance layer for AI agents. Every tool call validated, every agent-to-agent delegation governed, every dollar metered — without changing agent code.
         </p>
       </div>
 
@@ -66,7 +68,8 @@ export function Landing() {
 
       {/* How it works */}
       <div className="max-w-5xl mx-auto px-8 py-4 border-t border-stone-100/50">
-        <h2 className="text-lg font-bold text-stone-900 mb-6">How it works</h2>
+        <h2 className="text-lg font-bold text-stone-900 mb-1">The gate chain</h2>
+        <p className="text-xs text-stone-500 mb-6">Every tool call runs this pipeline. Each gate is configured from the Control Plane; shadow mode evaluates every gate but never blocks.</p>
         <div className="flex items-center gap-2 overflow-x-auto pb-4">
           {ARCHITECTURE_FLOW.map((item, i) => (
             <div key={item.step} className="flex items-center gap-2">
@@ -107,7 +110,7 @@ export function Landing() {
             <h3 className="text-sm font-bold text-emerald-800 mb-2">PATH 1: Direct Tool Call</h3>
             <code className="text-xs text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded">POST /tool/&#123;action&#125;</code>
             <p className="text-xs text-stone-600 mt-3 leading-relaxed">
-              Agent already knows which tool to call. Gateway validates (auth → quota → policy) and proxies. No LLM involved inside the gateway.
+              Agent already knows which tool to call. Gateway runs the gate chain (delegation → auth → quota → risk → payment) and proxies. No LLM involved inside the gateway.
             </p>
           </div>
           <div className="rounded-xl border border-pink-200 bg-pink-50/50 p-6">
@@ -151,11 +154,14 @@ export function Landing() {
             <div className="space-y-2">
               {[
                 { label: "Policies", desc: "Define and push allow/block/score rules" },
-                { label: "Quotas", desc: "Per-gateway and per-agent rate/budget limits" },
+                { label: "Quotas & budgets", desc: "Per-gateway and per-agent rate/spend limits, alerts" },
+                { label: "Protocol (A2A)", desc: "Agent-to-agent delegation edges, trust, chain depth" },
+                { label: "Payments (x402)", desc: "Per-agent USDC wallets, limits, pay-per-call" },
+                { label: "Token broker", desc: "Bulk token pools, margin, invoice reconciliation" },
                 { label: "Model access", desc: "Who uses which models and providers" },
-                { label: "Budgets", desc: "Per-agent spend tracking, alerts, auto-reset" },
-                { label: "Provider keys", desc: "Encrypted at rest, test connectivity" },
-                { label: "Traces & costs", desc: "Collect, aggregate, display in real-time" },
+                { label: "MCP & A2A registry", desc: "Connected servers/agents, restored on restart" },
+                { label: "Traces, metering & ROI", desc: "Collect, aggregate, price — in real time" },
+                { label: "Compliance & audit", desc: "EU AI Act evidence, admin audit trail" },
                 { label: "Health", desc: "Heartbeat-based monitoring of gateway fleet" },
               ].map(item => (
                 <div key={item.label} className="flex items-start gap-2">
