@@ -203,19 +203,35 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
 
         lifecycle.set_config_callback(_apply_bundle)
 
+    async def _connect_mcp_servers(mcp_cfgs: list) -> None:
+        """Connect a list of MCP server configs (dicts or models), tolerating errors."""
+        from ostiari_gateway.mcp.models import MCPServerConfig
+        for mcp_cfg in mcp_cfgs or []:
+            try:
+                cfg = MCPServerConfig(**mcp_cfg) if isinstance(mcp_cfg, dict) else mcp_cfg
+                if not mcp_manager.list_servers() or not any(
+                    s["name"] == cfg.name for s in mcp_manager.list_servers()
+                ):
+                    await mcp_manager.add_server(cfg)
+            except Exception as e:  # noqa: BLE001 — one bad server shouldn't block the rest
+                log.warning("Failed to connect MCP server from config: %s", e)
+
     @asynccontextmanager
     async def lifespan(app: Any) -> Any:
-        # Initialize MCP servers from config
+        # Initialize MCP servers from a local config file, if any.
         if initial_config and hasattr(initial_config, "mcp_servers"):
-            for mcp_cfg in initial_config.mcp_servers:
-                from ostiari_gateway.mcp.models import MCPServerConfig
-                server_config = MCPServerConfig(**mcp_cfg) if isinstance(mcp_cfg, dict) else mcp_cfg
-                await mcp_manager.add_server(server_config)
+            await _connect_mcp_servers(initial_config.mcp_servers)
 
-        # Register with control plane and start heartbeat
+        # Register with control plane and start heartbeat. The registration
+        # bundle carries the MCP servers the control plane has on record, so we
+        # (re)connect them here — this is what makes MCP survive a bare gateway
+        # restart without re-running a manual register script.
         if lifecycle:
             try:
-                await lifecycle.register()
+                data = await lifecycle.register()
+                bundle = (data or {}).get("config", {})
+                if bundle.get("mcp_servers"):
+                    await _connect_mcp_servers(bundle["mcp_servers"])
                 await lifecycle.start_heartbeat(interval=30)
             except Exception as e:
                 log.warning(f"Control plane registration failed: {e} — running standalone")
