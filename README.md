@@ -1,298 +1,238 @@
 # Ostiari
 
-Runtime safety and reliability layer for AI agents.
+**The runtime governance layer for AI agents.** Ostiari sits in front of every
+agent, intercepts each tool call, scores its risk, enforces your policies, and
+records everything — across any framework, from one central control plane.
 
-[![CI](https://github.com/hk-775/Ostiari/actions/workflows/ci.yml/badge.svg)](https://github.com/hk-775/Ostiari/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/hk-775/Ostiari/branch/main/graph/badge.svg)](https://codecov.io/gh/hk-775/Ostiari)
-[![PyPI](https://img.shields.io/pypi/v/ostiari)](https://pypi.org/project/ostiari/)
-[![Python 3.10+](https://img.shields.io/pypi/pyversions/ostiari)](https://pypi.org/project/ostiari/)
+[![CI](https://github.com/hk-775/ostiari/actions/workflows/ci.yml/badge.svg)](https://github.com/hk-775/ostiari/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
-Ostiari intercepts every tool call an AI agent makes, scores its risk, and enforces safety policies — regardless of which framework the agent runs on. It's the guardrail layer between your agents and the outside world.
+---
 
-## Features
+An AI agent that can send email can leak data; one that can run SQL can drop a
+table; one that can pay for APIs can run up a bill. That power is the point of
+agents — and the risk. **Ostiari is the guardrail between your agents and the
+outside world.** Every tool call runs through a chain of gates — authorization,
+quota, risk-scoring, payment — before it executes, and you configure and watch
+all of it from one dashboard.
 
-- **Policy engine** — YAML-based rules that allow, score, or block actions by pattern
-- **Risk scoring** — 0-100 risk scores with configurable thresholds (allow / intervene / block)
-- **Anomaly detection** — loop detection, drift detection, hallucination checks, contradiction detection
-- **Circuit breaker** — automatic trip when error/block rates exceed thresholds
-- **Multi-framework adapters** — OpenAI, Anthropic Claude, AWS Bedrock, Strands Agents (pluggable)
-- **Intervention gateway** — human-in-the-loop approval for medium-risk actions
-- **Checkpoint/rollback** — save and restore agent state
-- **Observability** — full trace storage, metrics, real-time WebSocket streaming
-- **Dashboard** — web UI for viewing traces, editing policies, and monitoring agents
-- **Terminal UI** — rich TUI for local development
-
-## Installation
-
-```bash
-pip install ostiari
+```
+   Agent ──▶ Gateway (enforces) ──▶ Tool / MCP server / another agent
+                  │
+                  └──▶ Control Plane (configure once, watch everything)
 ```
 
-With framework adapters:
+## See it in 90 seconds
 
 ```bash
-pip install ostiari[openai]      # OpenAI adapter
-pip install ostiari[claude]      # Anthropic Claude adapter
-pip install ostiari[bedrock]     # AWS Bedrock adapter
-pip install ostiari[strands]     # Strands Agents adapter
-pip install ostiari[dashboard]   # Web dashboard
-pip install ostiari[tui]         # Terminal UI
-pip install ostiari[all]         # Everything
+git clone https://github.com/hk-775/ostiari.git
+cd ostiari
+make install       # Python deps + gateway + frontend
+make demo-full     # control plane + 4 gateways + demo tools, all seeded
 ```
 
-## Quick Start
+Open **http://localhost:9000**, log in with `admin@ostiari.ai` / `admin`, and
+you'll land on a fully-populated dashboard: four agent gateways governing real
+tool calls, live traces streaming, blocked destructive actions, MCP servers,
+agent-to-agent delegation, payments, and ROI — no setup, no mock data.
+
+> Everything in the demo is **real**: the gateways actually proxy and govern
+> live tool calls (a `db_delete` really gets blocked with a 403), the MCP
+> servers really run (`npx` draw.io + filesystem), and one agent really
+> delegates to another. Only external money movement (on-chain x402, Stripe) is
+> simulated behind a clean seam.
+
+**New here?** Read [`docs/control-plane-guide.md`](docs/control-plane-guide.md)
+— a complete, novice-friendly tour of the control plane with architecture
+diagrams, best practices, and pitfalls.
+
+## The two halves
+
+| | What it is | Where |
+|---|---|---|
+| **Gateway** (sidecar) | A proxy that runs next to each agent and enforces the rules in the request path. Fast, local. | `gateway/` |
+| **Control Plane** | The central brain + dashboard: configure policies once and push them to every gateway; watch the whole fleet. | `control-plane/` |
+| **Guard** (library) | The embeddable risk engine — use it directly in Python without the gateway. | `src/ostiari/` |
+
+## The gate chain
+
+Every tool call runs through this pipeline. Each control-plane feature either
+*configures* one of these gates or *observes* what it did.
+
+```
+  tool call
+     │
+  1. DELEGATION  may this agent call that agent? (a2a)     → Protocol Governance
+  2. AUTH        may this agent use this tool?             → per-agent auth
+  3. QUOTA       hit its rate / budget cap?                → Quotas
+  4. RISK        score 0-100 → allow / intervene / block   → Policies
+  5. PAYMENT     does it cost money? can the wallet pay?   → Payments (x402)
+  6. EXECUTE     forward to the real tool; meter usage     → Metering / Token Broker
+  7. TRACE       record it → report to the control plane   → Live Traces / Audit / ROI
+```
+
+A gateway can run in **shadow** mode — every gate still evaluates and records
+what it *would* have done, but nothing is blocked and no side effect runs. Try
+before you enforce.
+
+## What the control plane gives you
+
+- **Observe** — live trace stream, shadow reports, costs, metering, audit log,
+  EU AI Act compliance reports, and an ROI "damage prevented" dashboard.
+- **Control** — YAML-style policies (allow / block / risk-adjust), per-agent
+  model access, per-gateway and per-agent quotas, and agent-to-agent (A2A)
+  delegation governance with trust scoring.
+- **Monetize** — x402 pay-per-tool-call with per-agent USDC wallets, and a token
+  broker (bulk-buy/resell margin + pool inventory + invoice reconciliation).
+- **Configure** — register gateways, agents, tools, and MCP servers.
+- **Test** — a sandbox to fire calls and watch decisions, A/B model experiments,
+  and an architecture view.
+
+## Use the Guard library directly (no gateway)
+
+If you just want the risk engine embedded in your own Python, that's the `Guard`
+class — no control plane required:
 
 ```python
 from ostiari import Guard
 from ostiari.models import OstiariConfig, ThresholdConfig
 from ostiari.storage import SQLiteBackend
 
-# Configure thresholds
-config = OstiariConfig(
-    thresholds=ThresholdConfig(allow_max=30, intervene_max=70),
-    fail_open=False,
+guard = Guard(
+    config=OstiariConfig(thresholds=ThresholdConfig(allow_max=30, intervene_max=70)),
+    storage=SQLiteBackend(path="traces.db"),
 )
-
-# Create guard with storage
-guard = Guard(config=config, storage=SQLiteBackend(path="traces.db"))
 guard.configure("policy.yaml")
 guard.start()
 
-# Validate an action
 result = guard.validate(action="email.send", params={"to": "user@example.com"})
-
 if result.tier == "allow":
-    # Proceed — low risk
     send_email(result.params)
 elif result.tier == "intervene":
-    # Medium risk — request human approval
-    if get_approval(result):
+    if get_approval(result):        # medium risk — ask a human
         send_email(result.params)
-else:
-    # result.tier == "block" won't reach here —
-    # guard.validate() raises ActionBlockedError for blocked actions
-    pass
+# tier == "block" raises ActionBlockedError from guard.validate()
 ```
 
-## Policy Configuration
-
-Define rules in YAML:
-
-```yaml
-version: "1"
-rules:
-  # Always allow read operations
-  - action: "file.read"
-    decision: allow
-
-  - action: "web.search"
-    decision: allow
-
-  # Block dangerous operations
-  - action: "*.delete"
-    decision: block
-    description: "All delete operations blocked"
-
-  - action: "code.execute"
-    decision: block
-    description: "Code execution blocked"
-
-  # Score-based evaluation for everything else
-  risk_adjust:
-    - action: "email.send"
-      adjust: +25
-    - action: "file.write"
-      adjust: +15
-    - action: "db.query"
-      adjust: +5
-```
-
-## Framework Integration
-
-### OpenAI
-
-```python
-from ostiari import Guard
-from ostiari.adapters.openai import OpenAIAdapter
-
-guard = Guard(adapter=OpenAIAdapter())
-guard.start()
-
-# Validate before executing tool calls
-result = guard.validate("web.search", {"query": "AI safety"})
-```
-
-### Anthropic Claude
-
-```python
-from ostiari.adapters.claude import ClaudeAdapter
-
-guard = Guard(adapter=ClaudeAdapter())
-```
-
-### AWS Bedrock
-
-```python
-from ostiari.adapters.bedrock import BedrockAdapter
-
-guard = Guard(adapter=BedrockAdapter())
-```
-
-### Strands Agents
-
-```python
-from ostiari.adapters.strands import StrandsAdapter
-
-guard = Guard(adapter=StrandsAdapter())
-```
-
-### Multiple Adapters
-
-```python
-guard = Guard(adapter=[OpenAIAdapter(), ClaudeAdapter(), BedrockAdapter()])
-```
-
-## Anomaly Detection
-
-Built-in detectors catch problematic agent behavior:
-
-```python
-from ostiari import Guard, AnomalyDetector
-
-detector = AnomalyDetector()
-guard = Guard(anomaly_detector=detector)
-```
-
-Detectors:
-- **Loop detection** — agent repeating the same action
-- **Drift detection** — agent deviating from expected behavior patterns
-- **Hallucination detection** — agent referencing non-existent resources
-- **Contradiction detection** — agent actions that contradict prior context
-
-## Circuit Breaker
-
-Automatically trips when failure rates exceed thresholds:
-
-```python
-from ostiari.models import BreakerConfig
-
-guard = Guard(
-    breaker_configs=[
-        BreakerConfig(
-            name="default",
-            failure_threshold=5,
-            recovery_timeout=60,
-            half_open_max_calls=3,
-        )
-    ]
-)
-```
-
-## Decorator API
-
-Protect functions directly:
+Or protect a function inline:
 
 ```python
 from ostiari import protect
 
 @protect(action="email.send")
-def send_email(to: str, subject: str, body: str):
-    ...
+def send_email(to: str, subject: str, body: str): ...
 ```
 
-## Observability
+### Policy (YAML)
 
-All evaluations are traced and stored:
+```yaml
+version: "1"
+rules:
+  - action: "file.read"     # always allow reads
+    decision: allow
+  - action: "*.delete"      # block deletes  (note: matches "x.delete", not "db_delete")
+    decision: block
+  risk_adjust:
+    - action: "email.send"
+      adjust: +25            # nudge toward "intervene"
+```
+
+> **Pattern gotcha:** globs are `fnmatch`. `*.delete` matches `github.delete` but
+> **not** `db_delete` (no dot). To block `db_delete`, use `*delete*` or the exact
+> name. See the [control plane guide](docs/control-plane-guide.md).
+
+### Framework adapters
+
+Ostiari normalizes tool calls from any framework into one shape:
 
 ```python
-from ostiari.storage import SQLiteBackend
-from ostiari.models import TraceFilters
+from ostiari.adapters.openai import OpenAIAdapter
+from ostiari.adapters.claude import ClaudeAdapter
+from ostiari.adapters.bedrock import BedrockAdapter
+from ostiari.adapters.strands import StrandsAdapter
 
-storage = SQLiteBackend(path="traces.db")
-
-# Query traces
-traces = storage.get_traces(TraceFilters(tier="block", limit=100))
-for t in traces:
-    print(f"{t.action} → {t.tier} (score={t.risk_score})")
+guard = Guard(adapter=[OpenAIAdapter(), ClaudeAdapter()])   # one or many
 ```
 
-## Dashboard
+Built-in **anomaly detectors** (loop, drift, hallucination, contradiction) and a
+**circuit breaker** feed the same risk score.
+
+## Install
 
 ```bash
-pip install ostiari[dashboard]
-ostiari dashboard --port 8420
+# Full platform (control plane + gateway + dashboard) — for the demo
+make install
+
+# Just the library
+pip install ostiari
+pip install ostiari[all]          # + all adapters, dashboard, TUI
 ```
 
-Web UI for:
-- Real-time trace viewer with filtering
-- Policy editor
-- Agent metrics and health
-- Intervention queue
+## Make targets
+
+| Target | What it does |
+|---|---|
+| `make demo-full` | Full demo — control plane, 4 gateways, A2A agent, seeded data (→ :9000) |
+| `make dev` | Control plane + frontend + primary gateway |
+| `make demo` | Frontend only, mock data |
+| `make clean-start` | Everything empty — no demo data |
+| `make test` | Run the test suites |
+| `make lint` | Ruff |
+
+> The Sandbox chat needs LLM credentials; point `make demo-full` at an env file
+> with `LLM_ENV=/path/to/.env`. Everything else runs without keys.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    guard.validate()                       │
-├─────────────────────────────────────────────────────────┤
-│  Adapter Pre-hooks → Policy Engine → Anomaly Detector   │
-│              → Gateway (score + tier) → Trace Storage    │
-├─────────────────────────────────────────────────────────┤
-│  Circuit Breaker │ Checkpoint Engine │ Redaction Filter  │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────── Control Plane (FastAPI + React) ────────────────────┐
+│  Observe · Control · Monetize · Configure · Test · Admin                     │
+│  configure once → push to gateways · collect traces ← from gateways         │
+└──────────────────────────────────────────────────────────────────────────────┘
+        ▲  push config          │ report traces          ▲
+        │                       ▼                         │
+   ┌────┴─────┐          ┌──────────────┐          ┌──────┴─────┐
+   │ Gateway  │  ...     │   Gateway    │   ...    │  Gateway   │   (one per agent)
+   │  gate    │          │  gate chain  │          │  gate      │
+   │  chain   │          │  + MCP + A2A │          │  chain     │
+   └────┬─────┘          └──────┬───────┘          └─────┬──────┘
+        ▼                       ▼                        ▼
+     Agent                    Agent                    Agent
 ```
-
-Pipeline for each `guard.validate()` call:
-1. **Adapter pre-hooks** — normalize action/params from framework-specific format
-2. **Policy engine** — evaluate rules, decide allow/block/score
-3. **Anomaly detection** — check for loops, drift, hallucination, contradictions
-4. **Gateway** — combine signals into final risk score and tier
-5. **Intervention** — if tier=intervene, request human approval (or use callback)
-6. **Trace storage** — record full evaluation result
-7. **Circuit breaker** — update failure counters
 
 ## Development
 
 ```bash
-git clone https://github.com/aws/ostiari.git
+git clone https://github.com/hk-775/ostiari.git
 cd ostiari
 pip install -e ".[dev]"
 
-# Run tests
-pytest tests/unit/ -v
-pytest tests/property/ --hypothesis-seed=0
-pytest tests/integration/
+pytest tests/                                   # root (Guard) suite
+cd control-plane/backend && PYTHONPATH=. pytest tests/    # control plane
+cd gateway && PYTHONPATH=. pytest tests/                  # gateway
 
-# Lint
-ruff check src/ tests/
-ruff format --check src/ tests/
-
-# Type check
+ruff check src/ gateway/
 mypy --strict src/
 ```
 
-## Project Structure
+## Project layout
 
 ```
-src/ostiari/
-├── __init__.py          # Public API exports
-├── guard.py             # Guard — central mediator
-├── gateway.py           # ActionGateway — scoring and tiering
-├── policy/              # Policy engine, parser, poller, rules
-├── anomaly/             # Loop, drift, hallucination, contradiction detectors
-├── adapters/            # OpenAI, Claude, Bedrock, Strands adapters
-├── storage/             # SQLite backend, migrations, redaction
-├── breaker.py           # Circuit breaker
-├── checkpoint.py        # Checkpoint/rollback engine
-├── tracer.py            # Execution tracer
-├── health.py            # Health checker
-├── report.py            # Report generator
-├── decorators.py        # @protect decorator
-├── cli.py               # CLI entry point
-├── dashboard/           # FastAPI web dashboard
-└── tui/                 # Textual terminal UI
+src/ostiari/          # the Guard library — risk engine, policy, adapters, storage
+gateway/              # the sidecar proxy — gate chain, MCP, A2A, payments
+control-plane/
+  backend/            # FastAPI control plane — routers, models, services
+  frontend/           # React dashboard (Vite + Tailwind + TanStack Query)
+docs/                 # architecture + the control plane guide
 ```
+
+## Documentation
+
+- [`docs/control-plane-guide.md`](docs/control-plane-guide.md) — complete
+  control-plane tour (novice-friendly, with diagrams, best practices, pitfalls)
+- [`docs/gateway-architecture.md`](docs/gateway-architecture.md) — gateway internals
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to contribute
 
 ## License
 
