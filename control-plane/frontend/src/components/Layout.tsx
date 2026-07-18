@@ -33,7 +33,6 @@ const NAV_SECTIONS: {
       { path: "/policies", label: "Policies (per tool)", icon: FileText, color: "text-rose-600", activeBg: "bg-rose-50" },
       { path: "/quotas", label: "Quotas (per gateway)", icon: ShieldCheck, color: "text-amber-600", activeBg: "bg-amber-50" },
       { path: "/agent-quotas", label: "Quotas (per agent)", icon: ShieldCheck, color: "text-violet-600", activeBg: "bg-violet-50" },
-      { path: "/protocol-governance", label: "Protocol (agent↔agent)", icon: Network, color: "text-violet-600", activeBg: "bg-violet-50" },
     ],
   },
   {
@@ -54,6 +53,7 @@ const NAV_SECTIONS: {
       { path: "/agents", label: "Agents", icon: Bot, color: "text-lime-600", activeBg: "bg-lime-50" },
       { path: "/tools", label: "Tools", icon: Wrench, color: "text-amber-600", activeBg: "bg-amber-50" },
       { path: "/mcp-servers", label: "MCP Servers", icon: Plug, color: "text-teal-600", activeBg: "bg-teal-50" },
+      { path: "/protocol-governance", label: "Protocol (A2A)", icon: Network, color: "text-violet-600", activeBg: "bg-violet-50" },
     ],
   },
   {
