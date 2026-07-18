@@ -10,6 +10,7 @@ from control_plane.auth.sso_router import router as sso_router
 from control_plane.database import engine
 from control_plane.models.database import Base
 from control_plane.routers import (
+    a2a_agents,
     agents,
     audit,
     broker_pilot,
@@ -157,6 +158,7 @@ app.include_router(payments.router)
 app.include_router(roi.router)
 app.include_router(token_broker.router)
 app.include_router(broker_pilot.router)
+app.include_router(a2a_agents.router)
 
 
 @app.get("/api/health")
