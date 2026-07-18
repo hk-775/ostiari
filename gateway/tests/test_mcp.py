@@ -213,6 +213,7 @@ class TestMCPServerEndpoints:
         assert data["result"]["content"] == "8"
         assert data["action"] == "calc.add"
 
+
     def test_tools_endpoint_shows_mcp_tools(self, client):
         client.post("/config/mcp-servers", json={"name": "svc", "mode": "embedded", "package": "x"})
         resp = client.get("/tools")
@@ -236,3 +237,51 @@ class TestMCPServerEndpoints:
         data = resp.json()
         assert data["mcp_tools"] == 3
         assert data["mcp_servers"] == 1
+
+
+class TestMCPStartupReconnect:
+    """MCP servers in the startup config are connected on lifespan startup, so
+    they survive a gateway restart without a manual re-register step."""
+
+    def test_mcp_servers_connected_on_startup(self, monkeypatch):
+        monkeypatch.setattr(
+            "ostiari_gateway.mcp.manager.MCPManager._create_client",
+            lambda self, config: FakeEmbeddedClient(config),
+        )
+        from ostiari_gateway.models import SidecarConfig
+        from ostiari_gateway.server import create_app
+
+        config = SidecarConfig(
+            sidecar_id="restart-test",
+            mcp_servers=[{"name": "calc", "mode": "embedded", "package": "x", "prefix": "calc"}],
+        )
+        app = create_app(initial_config=config)
+        # Entering the TestClient context runs the lifespan (startup).
+        with TestClient(app) as client:
+            servers = client.get("/config/mcp-servers").json()["servers"]
+            assert any(s["name"] == "calc" for s in servers)
+            # And its tools are callable immediately, no manual /config POST.
+            resp = client.post("/tool/calc.add", json={"a": 2, "b": 2})
+            assert resp.status_code == 200
+            assert resp.json()["result"]["content"] == "4"
+
+    def test_connect_is_idempotent(self, monkeypatch):
+        """Re-connecting the same server name doesn't duplicate it."""
+        monkeypatch.setattr(
+            "ostiari_gateway.mcp.manager.MCPManager._create_client",
+            lambda self, config: FakeEmbeddedClient(config),
+        )
+        from ostiari_gateway.models import SidecarConfig
+        from ostiari_gateway.server import create_app
+
+        config = SidecarConfig(
+            sidecar_id="dup-test",
+            mcp_servers=[{"name": "calc", "mode": "embedded", "package": "x"}],
+        )
+        app = create_app(initial_config=config)
+        with TestClient(app) as client:
+            # Startup connected it once; a second explicit add of the same name
+            # replaces rather than duplicates.
+            client.post("/config/mcp-servers", json={"name": "calc", "mode": "embedded", "package": "x"})
+            servers = client.get("/config/mcp-servers").json()["servers"]
+            assert len([s for s in servers if s["name"] == "calc"]) == 1
