@@ -129,8 +129,8 @@ export function Layout() {
       {/* Sidebar */}
       <aside className="fixed inset-y-0 left-0 z-30 flex w-60 flex-col border-r border-stone-200 bg-white">
         {/* Logo */}
-        <div className="flex h-16 items-center px-5 border-b border-stone-100">
-          <img src="/logo.svg" alt="Ostiari" className="h-8" />
+        <div className="flex h-20 items-center px-4 border-b border-stone-100">
+          <img src="/logo.svg" alt="Ostiari" className="w-full" />
         </div>
 
         {/* Nav */}

@@ -1,16 +1,21 @@
 import { Link } from "react-router-dom";
-import { Shield, ArrowRight, Brain, Wrench, Radio, DollarSign, Lock, Zap, Users2, Network } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { Shield, ArrowRight, Brain, Wrench, Radio, Lock, EyeOff, Network, Wallet, Coins, TrendingUp, Gauge, FileCheck } from "lucide-react";
+import { api } from "../lib/api";
 
 const FEATURES = [
   { icon: Shield, title: "Policy Engine", desc: "Per-tool allow/block/risk-score. Every call validated before execution.", color: "text-rose-600", bg: "bg-rose-50" },
-  { icon: Brain, title: "Model Access & Routing", desc: "Per-agent model restrictions, smart routing, ensemble, A/B testing.", color: "text-indigo-600", bg: "bg-indigo-50" },
-  { icon: DollarSign, title: "Cost Control", desc: "Per-agent budgets, dual quota (pre-LLM + per-tool), spend alerts at 80/90/100%.", color: "text-amber-600", bg: "bg-amber-50" },
-  { icon: Lock, title: "Per-Agent Auth", desc: "Least privilege: each agent only gets the tools, models, and providers it's granted.", color: "text-violet-600", bg: "bg-violet-50" },
+  { icon: EyeOff, title: "Shadow Mode", desc: "Try before you enforce — evaluate and report what would block, with zero side effects.", color: "text-amber-600", bg: "bg-amber-50" },
+  { icon: Network, title: "Protocol Governance", desc: "Govern agent-to-agent delegation: edges, trust scores, chain-depth limits.", color: "text-violet-600", bg: "bg-violet-50" },
   { icon: Wrench, title: "Universal Tool Proxy", desc: "HTTP tools, MCP servers, Agent-as-Tool, A2A — all through one gateway.", color: "text-emerald-600", bg: "bg-emerald-50" },
+  { icon: Wallet, title: "Payments (x402)", desc: "Pay-per-tool-call with per-agent USDC wallets, limits, and auto-pause.", color: "text-emerald-600", bg: "bg-emerald-50" },
+  { icon: Coins, title: "Token Broker", desc: "Bulk-buy/resell margin, per-provider token pools, invoice reconciliation.", color: "text-amber-600", bg: "bg-amber-50" },
+  { icon: TrendingUp, title: "ROI / Savings", desc: "Damage-prevented estimate from blocked actions, priced by your own assumptions.", color: "text-emerald-600", bg: "bg-emerald-50" },
+  { icon: Gauge, title: "Metering & Cost Control", desc: "Governed-call metering with tiers; per-agent budgets and spend alerts.", color: "text-orange-600", bg: "bg-orange-50" },
+  { icon: FileCheck, title: "Compliance Reports", desc: "Auto-generated EU AI Act evidence from your traces, audit logs, and policies.", color: "text-sky-600", bg: "bg-sky-50" },
+  { icon: Brain, title: "Model Access & Routing", desc: "Per-agent model restrictions, smart routing, A/B testing via AxonLLM.", color: "text-indigo-600", bg: "bg-indigo-50" },
+  { icon: Lock, title: "Per-Agent Auth", desc: "Least privilege: each agent only gets the tools, models, and providers it's granted.", color: "text-violet-600", bg: "bg-violet-50" },
   { icon: Radio, title: "Real-Time Observability", desc: "Live traces, cost dashboards, audit logs. See every call as it happens.", color: "text-cyan-600", bg: "bg-cyan-50" },
-  { icon: Zap, title: "AxonLLM Engine", desc: "Embedded LLM routing: smart model selection, fallback chains, PII redaction.", color: "text-pink-600", bg: "bg-pink-50" },
-  { icon: Users2, title: "A2A Protocol", desc: "Agent-to-Agent communication. Discover, send tasks, multi-turn collaboration.", color: "text-sky-600", bg: "bg-sky-50" },
-  { icon: Network, title: "Multi-Gateway Fleet", desc: "Central Control Plane manages N gateways. Push config, collect traces.", color: "text-orange-600", bg: "bg-orange-50" },
 ];
 
 const ARCHITECTURE_FLOW = [
@@ -22,11 +27,18 @@ const ARCHITECTURE_FLOW = [
 ];
 
 export function Landing() {
+  const { data: gateways } = useQuery({
+    queryKey: ["landing-gateways"],
+    queryFn: api.gateways.list,
+    refetchInterval: 5000,
+    retry: false,
+  });
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-stone-50 via-white to-violet-50/30">
       {/* Hero */}
       <div className="max-w-5xl mx-auto px-8 pt-10 pb-5">
-        <img src="/logo.svg" alt="Ostiari" className="h-20" />
+        <img src="/logo.svg" alt="Ostiari" className="w-full" />
 
         <div className="flex items-center justify-between gap-8 mt-5">
           <p className="text-2xl font-semibold text-stone-900 leading-snug">AI agents are autonomous.<br /><span className="text-violet-700">Your risk shouldn't be.</span></p>
@@ -224,19 +236,34 @@ Gateway 3 restarts:
   → Starts heartbeating → green dot again`}</pre>
         </div>
 
-        {/* Fleet status */}
+        {/* Fleet status — live from the control plane */}
         <div className="rounded-xl border border-emerald-200 bg-emerald-50/30 p-5 mt-4">
-          <p className="text-xs font-bold text-emerald-800 uppercase tracking-wide mb-3">Fleet status (live)</p>
-          <div className="grid grid-cols-3 gap-x-4 gap-y-1 text-[10px]">
-            <span className="font-semibold text-stone-600">Service</span>
-            <span className="font-semibold text-stone-600">Port</span>
-            <span className="font-semibold text-stone-600">Status</span>
-            <span className="text-stone-700">Control Plane</span><span className="text-stone-500">8400</span><span className="text-emerald-600">✅ Running</span>
-            <span className="text-stone-700">CRM Gateway</span><span className="text-stone-500">8421</span><span className="text-emerald-600">✅ Registered, heartbeating, 3 tools</span>
-            <span className="text-stone-700">Ops Gateway</span><span className="text-stone-500">8422</span><span className="text-emerald-600">✅ Registered, heartbeating, 2 tools</span>
-            <span className="text-stone-700">DevOps Gateway</span><span className="text-stone-500">8423</span><span className="text-emerald-600">✅ Registered, heartbeating, 4 tools + policy</span>
-            <span className="text-stone-700">Analytics Gateway</span><span className="text-stone-500">8424</span><span className="text-emerald-600">✅ Registered, heartbeating, 1 tool</span>
-          </div>
+          <p className="text-xs font-bold text-emerald-800 uppercase tracking-wide mb-3">
+            Fleet status {gateways ? `(live · ${gateways.length} gateway${gateways.length === 1 ? "" : "s"})` : "(connecting…)"}
+          </p>
+          {gateways && gateways.length > 0 ? (
+            <div className="grid grid-cols-3 gap-x-4 gap-y-1 text-[10px]">
+              <span className="font-semibold text-stone-600">Gateway</span>
+              <span className="font-semibold text-stone-600">Tools</span>
+              <span className="font-semibold text-stone-600">Status</span>
+              {gateways.map((g) => {
+                const healthy = g.status === "healthy" || g.status === "registered";
+                return (
+                  <div key={g.id} className="contents">
+                    <span className="text-stone-700">{g.id}</span>
+                    <span className="text-stone-500">{g.tools_count}</span>
+                    <span className={healthy ? "text-emerald-600" : "text-rose-500"}>
+                      {healthy ? "🟢" : "🔴"} {g.status}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="text-[10px] text-stone-500">
+              No gateways registered yet — start the fleet with <code className="rounded bg-stone-100 px-1">make demo-full</code>.
+            </p>
+          )}
         </div>
       </div>
 
