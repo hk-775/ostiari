@@ -39,6 +39,17 @@ const TIER_BADGES: Record<string, string> = {
 type SortKey = "agent_id" | "gateway_id" | "action" | "timestamp" | "tier" | "score" | "duration_ms";
 type SortDir = "asc" | "desc";
 
+// Normalize a raw trace so rendering never hits undefined numerics. Seeded
+// delegation events and some blocked calls omit duration_ms / score.
+function normalizeTrace(t: any): TraceEvent {
+  return {
+    ...t,
+    gateway_id: t.gateway_id || t.sidecar_id || "",
+    duration_ms: typeof t.duration_ms === "number" ? t.duration_ms : 0,
+    score: typeof t.score === "number" ? t.score : 0,
+  };
+}
+
 export function LiveTraces() {
   const [traces, setTraces] = useState<TraceEvent[]>([]);
   const [connected, setConnected] = useState(false);
@@ -55,8 +66,7 @@ export function LiveTraces() {
       .then(r => r.json())
       .then(data => {
         if (data.traces && data.traces.length > 0) {
-          const mapped = data.traces.map((t: any) => ({ ...t, gateway_id: t.gateway_id || t.sidecar_id || "" }));
-          setTraces(mapped.slice(-100));
+          setTraces(data.traces.map(normalizeTrace).slice(-100));
         }
       })
       .catch(() => {});
@@ -72,8 +82,7 @@ export function LiveTraces() {
 
     ws.onmessage = (event) => {
       if (paused) return;
-      const raw = JSON.parse(event.data);
-      const trace: TraceEvent = { ...raw, gateway_id: raw.gateway_id || raw.sidecar_id || "" };
+      const trace = normalizeTrace(JSON.parse(event.data));
       setTraces((prev) => [...prev.slice(-199), trace]);
     };
 
@@ -355,7 +364,7 @@ export function LiveTraces() {
                     {trace.is_mcp && <span className="mr-1.5 text-violet-600">[MCP]</span>}
                     {trace.action}
                   </span>
-                  <span className="w-20 text-right text-xs text-stone-500">{trace.duration_ms.toFixed(1)}ms</span>
+                  <span className="w-20 text-right text-xs text-stone-500">{(trace.duration_ms ?? 0).toFixed(1)}ms</span>
                   <span className="w-20 text-right text-xs text-stone-400 tabular-nums">
                     {typeof trace.timestamp === "number" ? new Date(trace.timestamp * 1000).toLocaleTimeString() : new Date(trace.timestamp).toLocaleTimeString()}
                   </span>
