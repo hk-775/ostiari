@@ -146,6 +146,14 @@ export const api = {
       fetchAPI<CostModel>("/api/roi/cost-model", { method: "POST", body: JSON.stringify({ entries, fallback }) }),
     resetCostModel: () => fetchAPI<CostModel>("/api/roi/cost-model/reset", { method: "POST" }),
   },
+  approvals: {
+    list: () => fetchAPI<ApprovalItem[]>("/api/approvals"),
+    all: () => fetchAPI<ApprovalItem[]>("/api/approvals/all"),
+    decide: (id: string, decision: "approve" | "deny", decided_by = "operator") =>
+      fetchAPI<ApprovalItem>(`/api/approvals/${id}/decision`, {
+        method: "POST", body: JSON.stringify({ decision, decided_by }),
+      }),
+  },
   discovery: {
     agents: () => fetchAPI<DiscoveryReport>("/api/discovery/agents"),
     onboard: (agent_id: string, gateway_id: string, framework = "other") =>
@@ -190,6 +198,20 @@ export interface Reconciliation {
   drift_usd: number;
   drift_pct: number;
   consumed_tokens: number;
+}
+
+export interface ApprovalItem {
+  id: string;
+  agent_id: string;
+  gateway_id: string;
+  action: string;
+  params: Record<string, unknown>;
+  score: number;
+  reason: string;
+  status: "pending" | "approved" | "denied" | "expired";
+  decided_by: string;
+  decided_at: string;
+  created_at: string;
 }
 
 export interface DiscoveredAgent {

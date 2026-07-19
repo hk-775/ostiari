@@ -1,5 +1,5 @@
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { Shield, Server, Wrench, FileText, Activity, Plug, History, DollarSign, Radio, FlaskConical, Brain, ShieldCheck, Beaker, Bot, Network, Users, Key, LogOut, EyeOff, FileCheck, Gauge, Wallet, TrendingUp, Coins, Radar } from "lucide-react";
+import { Shield, Server, Wrench, FileText, Activity, Plug, History, DollarSign, Radio, FlaskConical, Brain, ShieldCheck, Beaker, Bot, Network, Users, Key, LogOut, EyeOff, FileCheck, Gauge, Wallet, TrendingUp, Coins, Radar, UserCheck } from "lucide-react";
 import { useAuthStore } from "../stores/authStore";
 
 const NAV_SECTIONS: {
@@ -17,6 +17,7 @@ const NAV_SECTIONS: {
       { path: "/dashboard", label: "Dashboard", icon: Activity, color: "text-emerald-600", activeBg: "bg-emerald-50" },
       { path: "/traces", label: "Live Traces", icon: Radio, color: "text-emerald-600", activeBg: "bg-emerald-50" },
       { path: "/shadow-report", label: "Shadow Report", icon: EyeOff, color: "text-amber-600", activeBg: "bg-amber-50" },
+      { path: "/approvals", label: "Approvals", icon: UserCheck, color: "text-amber-600", activeBg: "bg-amber-50" },
       { path: "/costs", label: "Costs", icon: DollarSign, color: "text-orange-600", activeBg: "bg-orange-50" },
       { path: "/metering", label: "Metering", icon: Gauge, color: "text-emerald-600", activeBg: "bg-emerald-50" },
       { path: "/audit", label: "Audit Log", icon: History, color: "text-stone-600", activeBg: "bg-stone-100" },
