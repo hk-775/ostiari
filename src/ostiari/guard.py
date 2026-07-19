@@ -46,6 +46,7 @@ class Guard:
         retention_policy: RetentionPolicy | None = None,
         adapter: Any = None,
         policy_source: str | None = None,
+        parameter_risk: bool = True,
     ) -> None:
         self._config = config or OstiariConfig()
         self._fail_open = self._config.fail_open
@@ -57,6 +58,13 @@ class Guard:
             fail_open=self._fail_open,
             intervention_timeout=30.0,
         )
+
+        # Parameter-aware risk: score by what the call actually does (blast
+        # radius, target sensitivity, destructiveness), not just the action
+        # name. On by default; pass parameter_risk=False to disable.
+        if parameter_risk:
+            from ostiari.signals import ParameterRiskSignal
+            self._gateway.add_signal_provider(ParameterRiskSignal())
 
         self._storage = storage
         self._tracer = ExecutionTracer(storage=self._storage)
