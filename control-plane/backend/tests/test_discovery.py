@@ -78,9 +78,11 @@ class TestReconcile:
 # ─── Router (integration) ────────────────────────────────────────────────────
 
 @pytest.fixture
-def seeded_traces(app_and_db):
+def seeded_traces(app_and_db, monkeypatch):
     """Put a known + an unknown agent into the trace buffer; isolate the
-    in-memory agents registry so onboard-mutations don't leak across tests."""
+    in-memory agents registry so onboard-mutations don't leak across tests.
+    Enable the mock cloud collector (off by default) for the multi-source tests."""
+    monkeypatch.setenv("OSTIARI_DISCOVERY_MOCK", "1")
     from control_plane.routers import agents as agents_mod
     from control_plane.routers.traces import _recent_traces
     saved = dict(agents_mod._agents)   # snapshot (conftest may have cleared it)

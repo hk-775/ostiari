@@ -92,13 +92,16 @@ class CloudSignalCollector:
     real boto3 collectors (CloudTrail/Secrets/Billing/Resource), each emitting
     the same Sighting shape into the same engine — no reconciliation changes.
 
-    Disabled if OSTIARI_DISCOVERY_MOCK is set to a falsy value.
+    OFF by default — emits nothing unless OSTIARI_DISCOVERY_MOCK is explicitly
+    truthy (the demo sets it). This prevents fabricated "shadow agents" from
+    appearing in a real deployment; production shows only real collectors until
+    the boto3 cloud collectors are wired in.
     """
 
     source = "cloud-signals(mock)"
 
     def collect(self) -> list[Sighting]:
-        if os.environ.get("OSTIARI_DISCOVERY_MOCK", "1").lower() in ("0", "false", "no"):
+        if os.environ.get("OSTIARI_DISCOVERY_MOCK", "").lower() not in ("1", "true", "yes"):
             return []
         return [
             Sighting(

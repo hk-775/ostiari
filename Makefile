@@ -30,7 +30,7 @@ demo: ## Demo mode — frontend only with mock data (http://localhost:9000)
 	cd control-plane/frontend && npm run dev
 
 dev: ## Start backend + frontend + primary gateway (seeded demo data)
-	cd control-plane/backend && python main.py &
+	cd control-plane/backend && OSTIARI_DISCOVERY_MOCK=1 python main.py &
 	cd gateway && python demo_tools_server.py &
 	sleep 3 && cd gateway && $(LOAD_LLM_ENV) python -m ostiari_gateway.main --port 8421 --sidecar-id crm-agent --control-plane http://localhost:8400 --config llm-gateway-config.yaml &
 	sleep 6 && cd gateway && python register_demo_tools.py && python register_demo_mcp.py &
@@ -45,7 +45,7 @@ dev: ## Start backend + frontend + primary gateway (seeded demo data)
 # register_demo_tools.py points its tools at demo_tools_server.py (canned
 # web_search/db_query/github.* responses) so chat tool calls return real data.
 demo-full: ## Full demo — all gateways, A2A agent, control plane (seeded demo data)
-	cd control-plane/backend && python main.py &
+	cd control-plane/backend && OSTIARI_DISCOVERY_MOCK=1 python main.py &
 	cd gateway && python demo_tools_server.py &
 	sleep 3 && cd gateway && $(LOAD_LLM_ENV) python -m ostiari_gateway.main --port 8421 --sidecar-id crm-agent --control-plane http://localhost:8400 --config llm-gateway-config.yaml &
 	sleep 3 && cd gateway && python -m ostiari_gateway.main --port 8422 --sidecar-id ops-agent --control-plane http://localhost:8400 &
