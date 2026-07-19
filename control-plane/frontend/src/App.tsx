@@ -16,6 +16,7 @@ import { Compliance } from "./pages/Compliance";
 import { Metering } from "./pages/Metering";
 import { Payments } from "./pages/Payments";
 import { Roi } from "./pages/Roi";
+import { Discovery } from "./pages/Discovery";
 import { TokenBroker } from "./pages/TokenBroker";
 import { Experiments } from "./pages/Experiments";
 import { Models } from "./pages/Models";
@@ -97,6 +98,7 @@ export default function App() {
               <Route path="/metering" element={<Metering />} />
               <Route path="/payments" element={<Payments />} />
               <Route path="/roi" element={<Roi />} />
+              <Route path="/discovery" element={<Discovery />} />
               <Route path="/token-broker" element={<TokenBroker />} />
               <Route path="/providers" element={<RequireAdmin><Providers /></RequireAdmin>} />
               <Route path="/users" element={<RequireAdmin><Users /></RequireAdmin>} />
