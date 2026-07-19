@@ -146,6 +146,11 @@ export const api = {
       fetchAPI<CostModel>("/api/roi/cost-model", { method: "POST", body: JSON.stringify({ entries, fallback }) }),
     resetCostModel: () => fetchAPI<CostModel>("/api/roi/cost-model/reset", { method: "POST" }),
   },
+  discovery: {
+    agents: () => fetchAPI<DiscoveryReport>("/api/discovery/agents"),
+    onboard: (agent_id: string, gateway_id: string, framework = "other") =>
+      fetchAPI(`/api/discovery/onboard`, { method: "POST", body: JSON.stringify({ agent_id, gateway_id, framework }) }),
+  },
   tokenBroker: {
     report: (periodDays = 30) =>
       fetchAPI<BrokerReport>(`/api/token-broker/report?period_days=${periodDays}`),
@@ -185,6 +190,22 @@ export interface Reconciliation {
   drift_usd: number;
   drift_pct: number;
   consumed_tokens: number;
+}
+
+export interface DiscoveredAgent {
+  agent_id: string;
+  status: "discovered" | "governed" | "governed_unseen";
+  registered: boolean;
+  sources: string[];
+  gateways: string[];
+  call_count: number;
+  confidence: number;
+  evidence: string[];
+}
+
+export interface DiscoveryReport {
+  summary: { total: number; shadow: number; governed: number; stale: number; sources: string[] };
+  agents: DiscoveredAgent[];
 }
 
 export interface BrokerModelRow {
