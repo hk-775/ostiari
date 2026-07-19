@@ -220,3 +220,59 @@ class TestA2AStartupReconnect:
         with TestClient(app):  # runs lifespan → register → reconnect a2a
             agents = app.state.a2a_manager.list_agents()
             assert any(a["name"] == "devops_assistant" for a in agents)
+
+
+# ─── Dynamic (behavior-adjusted) trust ───────────────────────────────────────
+
+class TestDynamicTrust:
+    def _policy(self):
+        p = CrossAgentPolicy()
+        p.configure({
+            "enabled": True, "default_allow": True, "min_trust": 60,
+            "trust_scores": {"payments": 90, "flaky": 65},
+        })
+        return p
+
+    def test_good_behavior_stays_at_configured(self):
+        p = self._policy()
+        for _ in range(10):
+            p.record_outcome("payments", risky=False)
+        assert p.effective_trust("payments") == 90        # ceiling, unchanged
+        assert p.check("research", "payments")[0] is True
+
+    def test_configured_is_a_ceiling_not_raised_by_good_behavior(self):
+        p = self._policy()
+        for _ in range(10):
+            p.record_outcome("flaky", risky=False)
+        assert p.effective_trust("flaky") == 65           # never exceeds configured
+
+    def test_risky_behavior_lowers_effective_trust(self):
+        p = self._policy()
+        for _ in range(10):
+            p.record_outcome("payments", risky=True)      # 100% risky → -50
+        assert p.effective_trust("payments") == 40        # 90 - 50
+        assert p.effective_trust("payments") < 90
+
+    def test_degrading_callee_loses_delegation(self):
+        p = self._policy()
+        # payments starts trusted (90 ≥ 60) → allowed
+        assert p.check("research", "payments")[0] is True
+        # it misbehaves repeatedly → effective trust drops below min_trust
+        for _ in range(10):
+            p.record_outcome("payments", risky=True)
+        allowed, reason = p.check("research", "payments")
+        assert allowed is False
+        assert "lowered by recent risky behavior" in reason
+
+    def test_partial_risk_partial_penalty(self):
+        p = self._policy()
+        for i in range(10):
+            p.record_outcome("payments", risky=(i < 4))   # 40% risky → -20
+        assert p.effective_trust("payments") == 70        # 90 - 20
+
+    def test_dynamic_off_uses_configured(self):
+        p = CrossAgentPolicy(dynamic_trust=False)
+        p.configure({"enabled": True, "min_trust": 60, "trust_scores": {"x": 90}})
+        for _ in range(10):
+            p.record_outcome("x", risky=True)
+        assert p.effective_trust("x") == 90               # dynamic disabled

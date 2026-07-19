@@ -457,8 +457,14 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
                 context={"agent_id": agent_id, "framework": framework},
             )
             record_validate_result(validate_span, result.tier, result.score, blocked=False)
+            # Dynamic trust: feed the outcome to cross-agent behavior tracking
+            # (intervene/block = risky). Degrading behavior lowers the agent's
+            # effective trust for future delegation decisions.
+            _raw = getattr(result, "original_tier", result.tier)
+            cross_agent.record_outcome(agent_id, risky=_raw in ("intervene", "block"))
         except ActionBlockedError as e:
             record_validate_result(validate_span, "block", e.score, blocked=True)
+            cross_agent.record_outcome(agent_id, risky=True)
             await trace_reporter.report(
                 action=action, tier="block", score=e.score, duration_ms=0,
                 agent_id=agent_id, framework=framework, is_mcp=is_mcp_tool,
