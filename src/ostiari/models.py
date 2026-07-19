@@ -189,6 +189,7 @@ class TraceEntry(BaseModel, frozen=True):
     trace_id: str = Field(min_length=1)
     correlation_id: str | None = None
     timestamp: datetime
+    agent_id: str = ""              # calling agent — lets anomaly history be per-agent
     action: str = Field(min_length=1)
     params: dict[str, Any] = Field(default_factory=dict)
     result: Any | None = None
