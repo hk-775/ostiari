@@ -252,6 +252,7 @@ class Guard:
 
         result = ValidationResult(
             tier=final_tier,
+            original_tier=gateway_decision.tier,
             score=gateway_decision.score,
             signals=gateway_decision.signals,
             trace_id=str(uuid.uuid4()),
