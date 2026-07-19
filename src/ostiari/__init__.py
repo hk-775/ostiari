@@ -9,6 +9,7 @@ from ostiari.breaker import CircuitBreaker
 from ostiari.checkpoint import CheckpointEngine
 from ostiari.config import ConfigLoader
 from ostiari.decorators import protect
+from ostiari.explain import DecisionExplanation, Factor, explain
 from ostiari.exceptions import (
     ActionBlockedError,
     AdapterNotInstalledError,
@@ -63,6 +64,9 @@ __all__ = [
     "Guard",
     "PolicyEngine",
     "protect",
+    "explain",
+    "DecisionExplanation",
+    "Factor",
     "SignalProvider",
     "SQLiteBackend",
     "StorageBackend",
