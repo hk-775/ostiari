@@ -25,7 +25,7 @@ _DEFAULT_TRUST = 50
 class CrossAgentPolicy:
     """Governs agent-to-agent delegation: edges, trust scores, and chain depth."""
 
-    def __init__(self) -> None:
+    def __init__(self, dynamic_trust: bool = True, behavior_window: int = 20) -> None:
         self._enabled: bool = False
         # caller -> set of callees it may delegate to ("*" = any)
         self._allow: dict[str, set[str]] = {}
@@ -35,6 +35,13 @@ class CrossAgentPolicy:
         self._min_trust: int = 0
         self._max_chain_depth: int | None = None
         self._default_allow: bool = True
+        # Dynamic trust: recent per-agent outcomes drive a live penalty so a
+        # degrading agent loses trust in real time. Configured trust is the
+        # ceiling; behavior can only *lower* it, never raise it above what was
+        # granted. Window of recent bools (True = risky/blocked outcome).
+        self._dynamic_trust = dynamic_trust
+        self._behavior_window = behavior_window
+        self._behavior: dict[str, list[bool]] = {}
 
     def configure(self, config: dict[str, Any]) -> None:
         """Configure from a control-plane push.
@@ -74,6 +81,37 @@ class CrossAgentPolicy:
         """Return an agent's configured trust score (default 50)."""
         return self._trust_scores.get(agent_id, _DEFAULT_TRUST)
 
+    def record_outcome(self, agent_id: str, *, risky: bool) -> None:
+        """Record a recent behavioral outcome for an agent (True = risky/blocked).
+
+        Feeds the dynamic-trust penalty so repeated risky behavior lowers the
+        agent's effective trust in real time.
+        """
+        if not agent_id:
+            return
+        w = self._behavior.setdefault(agent_id, [])
+        w.append(risky)
+        if len(w) > self._behavior_window:
+            del w[: len(w) - self._behavior_window]
+
+    def effective_trust(self, agent_id: str) -> int:
+        """Configured trust, lowered by recent risky behavior.
+
+        Configured score is the ceiling; a high recent risk-rate subtracts up to
+        _DEFAULT_TRUST points. Behavior can only *reduce* trust, never raise it
+        above what was granted — so a well-behaved agent sits at its configured
+        score, a misbehaving one sinks below min_trust and loses delegation.
+        """
+        configured = self.trust_score(agent_id)
+        if not self._dynamic_trust:
+            return configured
+        window = self._behavior.get(agent_id)
+        if not window:
+            return configured
+        risk_rate = sum(1 for r in window if r) / len(window)
+        penalty = int(round(risk_rate * _DEFAULT_TRUST))   # up to -50 at 100% risky
+        return max(0, configured - penalty)
+
     def _edge_allowed(self, caller: str, callee: str) -> bool:
         """Apply deny-wins edge rules; fall back to default_allow."""
         deny = self._deny.get(caller, set())
@@ -109,9 +147,17 @@ class CrossAgentPolicy:
         if not self._edge_allowed(caller, callee):
             return False, f"Delegation '{caller}' -> '{callee}' not permitted by policy"
 
-        # Trust threshold on the callee.
-        score = self.trust_score(callee)
+        # Trust threshold on the callee — using EFFECTIVE (behavior-adjusted)
+        # trust so a degrading callee is blocked live, even if its configured
+        # score is fine.
+        configured = self.trust_score(callee)
+        score = self.effective_trust(callee)
         if score < self._min_trust:
+            if score < configured:
+                return False, (
+                    f"Callee '{callee}' effective trust {score} (configured {configured}, "
+                    f"lowered by recent risky behavior) below minimum {self._min_trust}"
+                )
             return False, (
                 f"Callee '{callee}' trust score {score} below minimum {self._min_trust}"
             )
@@ -126,6 +172,11 @@ class CrossAgentPolicy:
             "min_trust": self._min_trust,
             "max_chain_depth": self._max_chain_depth,
             "trust_scores": dict(self._trust_scores),
+            # Behavior-adjusted trust for agents we've observed — shows where
+            # dynamic trust has diverged from the configured score.
+            "effective_trust": {
+                a: self.effective_trust(a) for a in self._behavior
+            },
             "edges": {
                 caller: {
                     "allow": sorted(self._allow.get(caller, set())),
