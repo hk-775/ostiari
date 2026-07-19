@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from opentelemetry import trace
 
 from ostiari.exceptions import ActionBlockedError
+from ostiari.explain import explain as _explain
 from ostiari_gateway.config_manager import ConfigManager
 from ostiari_gateway.models import PolicyConfig, SidecarConfig, ToolDefinition
 from ostiari_gateway.telemetry import (
@@ -540,10 +541,13 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
                 })
             else:
                 # No decision yet — create/await one.
+                explanation = _explain(result)
                 appr = await _create_approval(cp_url, {
                     "agent_id": agent_id, "gateway_id": trace_reporter._sidecar_id or "",
                     "action": action, "params": params, "score": result.score,
-                    "reason": f"intervene tier (score {result.score}) — human approval required",
+                    "reason": explanation.summary or (
+                        f"intervene tier (score {result.score}) — human approval required"
+                    ),
                 })
                 await trace_reporter.report(
                     action=action, tier="intervene", score=result.score, duration_ms=0,
@@ -557,6 +561,7 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
                     "approval_id": (appr or {}).get("id", ""),
                     "reason": "This action requires human approval. Re-submit with "
                               "X-Approval-Id once approved.",
+                    "decision": explanation.to_dict(),
                 })
 
         # Payment gate (metered mode): price the call and settle from the agent
@@ -752,6 +757,7 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
             "result": proxy_result.get("result"),
             "action": action,
             "duration_ms": proxy_result.get("duration_ms"),
+            "decision": _explain(result).to_dict(),
         }
 
     @app.post("/validate")
