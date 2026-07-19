@@ -101,3 +101,36 @@ class TestHitlEnabled:
         c = TestClient(create_app(initial_config=config))
         r = c.post("/tool/db_query", json={"sql": "SELECT 1"}, headers={"X-Agent-Id": "a"})
         assert r.status_code == 200
+
+
+class TestDecisionExplanation:
+    """Every tool response carries a 'decision' explanation (why it scored)."""
+
+    def test_allowed_response_has_decision(self, httpserver, monkeypatch):
+        monkeypatch.delenv("OSTIARI_HITL", raising=False)
+        httpserver.expect_request("/q", method="POST").respond_with_json({"ok": True})
+        config = SidecarConfig(
+            sidecar_id="crm-agent", control_plane_url="http://cp.local",
+            tools=[ToolDefinition(name="db_query", endpoint=httpserver.url_for("/q"))],
+            policy=PolicyConfig(allow=["db_query"]),
+        )
+        c = TestClient(create_app(initial_config=config))
+        r = c.post("/tool/db_query", json={"sql": "SELECT 1"}, headers={"X-Agent-Id": "a"})
+        assert r.status_code == 200
+        d = r.json().get("decision")
+        assert d and "tier" in d and "score" in d and "summary" in d and "factors" in d
+
+    def test_risky_response_explains_the_factor(self, httpserver, monkeypatch):
+        monkeypatch.delenv("OSTIARI_HITL", raising=False)
+        httpserver.expect_request("/q", method="POST").respond_with_json({"ok": True})
+        config = SidecarConfig(
+            sidecar_id="crm-agent", control_plane_url="http://cp.local",
+            tools=[ToolDefinition(name="db_delete", endpoint=httpserver.url_for("/q"))],
+            policy=PolicyConfig(allow=["db_delete"]),
+        )
+        c = TestClient(create_app(initial_config=config))
+        # unbounded delete → parameter-risk factor should appear in the decision
+        r = c.post("/tool/db_delete", json={"sql": "DELETE FROM t WHERE 1=1"},
+                   headers={"X-Agent-Id": "a"})
+        d = r.json().get("decision", {})
+        assert any(f["source"] == "parameter-risk" for f in d.get("factors", []))
