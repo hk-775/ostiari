@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from ostiari_gateway.modules.llm_gateway.executor import AgenticExecutor
+from ostiari_gateway.modules.llm_gateway.messages_proxy import MessagesProxy
 from ostiari_gateway.modules.llm_gateway.models import InvokeRequest, LLMConfig
 
 log = logging.getLogger("ostiari.sidecar.llm")
@@ -18,6 +19,7 @@ class LLMGatewayModule:
     def __init__(self) -> None:
         self._executor: AgenticExecutor | None = None
         self._config: LLMConfig = LLMConfig()
+        self._messages_proxy: MessagesProxy | None = None
 
     @property
     def name(self) -> str:
@@ -37,6 +39,29 @@ class LLMGatewayModule:
         llm_config = context.get("llm_config", LLMConfig())
         self._config = llm_config
         self._executor = AgenticExecutor(config=llm_config, manager=manager, mcp_manager=mcp_manager, trace_reporter=trace_reporter, quota_enforcer=quota_enforcer, agent_auth=agent_auth)
+
+        # Claude Code shim: intercept the Anthropic /v1/messages API, govern +
+        # route across providers, and stream back. Reuses the executor's router,
+        # provider, and security so config hot-reloads apply to both paths.
+        self._messages_proxy = MessagesProxy(
+            config=llm_config,
+            provider=self._executor._provider,
+            router=self._executor._router,
+            security=self._executor._security,
+            quota_enforcer=quota_enforcer,
+            trace_reporter=trace_reporter,
+            agent_auth=agent_auth,
+        )
+
+        @app.post("/v1/messages")
+        async def messages(request: Request) -> Any:
+            """Anthropic Messages API shim — intercept, govern, route, stream."""
+            if self._messages_proxy is None:
+                return JSONResponse(status_code=503,
+                                    content={"type": "error",
+                                             "error": {"type": "api_error",
+                                                       "message": "LLM Gateway not initialized"}})
+            return await self._messages_proxy.handle(request)
 
         @app.post("/invoke")
         async def invoke(request: Request) -> Any:
@@ -109,9 +134,17 @@ class LLMGatewayModule:
             self._config = LLMConfig(**body)
             if self._executor:
                 self._executor.update_config(self._config)
+            if self._messages_proxy:
+                # Keep the shim on the same live config/router/provider/security.
+                self._messages_proxy._config = self._config
+                self._messages_proxy._router = self._executor._router
+                self._messages_proxy._provider = self._executor._provider
+                self._messages_proxy._security = self._executor._security
             return {"status": "applied", "default_model": self._config.default_model}
 
-        log.info("LLM Gateway module registered: POST /invoke, GET /models, POST /config/llm")
+        log.info("LLM Gateway module registered: POST /v1/messages, POST /invoke, "
+                 "GET /models, POST /config/llm")
 
     def shutdown(self) -> None:
         self._executor = None
+        self._messages_proxy = None
