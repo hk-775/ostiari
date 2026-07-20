@@ -12,10 +12,12 @@ from control_plane.models.database import Base
 from control_plane.routers import (
     a2a_agents,
     agents,
+    approvals,
     audit,
     broker_pilot,
     compliance,
     costs,
+    discovery,
     experiments,
     gateways,
     mcp_servers,
@@ -144,6 +146,8 @@ app.include_router(tools.router)
 app.include_router(policies.router)
 app.include_router(mcp_servers.router)
 app.include_router(costs.router)
+app.include_router(discovery.router)
+app.include_router(approvals.router)
 app.include_router(experiments.router)
 app.include_router(model_config.router)
 app.include_router(providers.router)

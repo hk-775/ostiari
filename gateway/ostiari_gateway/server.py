@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from opentelemetry import trace
 
 from ostiari.exceptions import ActionBlockedError
+from ostiari.explain import explain as _explain
 from ostiari_gateway.config_manager import ConfigManager
 from ostiari_gateway.models import PolicyConfig, SidecarConfig, ToolDefinition
 from ostiari_gateway.telemetry import (
@@ -23,6 +24,11 @@ from ostiari_gateway.telemetry import (
 )
 
 log = logging.getLogger("ostiari.sidecar")
+
+
+import os as _os
+
+import httpx as _httpx
 
 
 def _authenticate_agent(request: Request, agent_id: str) -> JSONResponse | None:
@@ -57,6 +63,39 @@ def _authenticate_agent(request: Request, agent_id: str) -> JSONResponse | None:
             "error": "identity mismatch",
             "detail": f"token identity '{token_agent}' does not match X-Agent-Id '{agent_id}'",
         })
+    return None
+
+
+def _hitl_enabled() -> bool:
+    """Human-in-the-loop enforcement for the intervene tier (off by default)."""
+    return _os.environ.get("OSTIARI_HITL", "off").lower() in ("1", "true", "yes", "on")
+
+
+async def _check_approval(control_plane_url: str, approval_id: str) -> str | None:
+    """Return an approval's status from the control plane (or None if unreachable)."""
+    if not (control_plane_url and approval_id):
+        return None
+    try:
+        async with _httpx.AsyncClient(timeout=5.0) as c:
+            r = await c.get(f"{control_plane_url.rstrip('/')}/api/approvals/{approval_id}")
+            if r.status_code == 200:
+                return r.json().get("status")
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+async def _create_approval(control_plane_url: str, payload: dict) -> dict | None:
+    """Create a pending approval in the control plane; return it (or None)."""
+    if not control_plane_url:
+        return None
+    try:
+        async with _httpx.AsyncClient(timeout=5.0) as c:
+            r = await c.post(f"{control_plane_url.rstrip('/')}/api/approvals", json=payload)
+            if r.status_code == 200:
+                return r.json()
+    except Exception:  # noqa: BLE001
+        pass
     return None
 
 
@@ -460,8 +499,14 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
                 context={"agent_id": agent_id, "framework": framework},
             )
             record_validate_result(validate_span, result.tier, result.score, blocked=False)
+            # Dynamic trust: feed the outcome to cross-agent behavior tracking
+            # (intervene/block = risky). Degrading behavior lowers the agent's
+            # effective trust for future delegation decisions.
+            _raw = getattr(result, "original_tier", result.tier)
+            cross_agent.record_outcome(agent_id, risky=_raw in ("intervene", "block"))
         except ActionBlockedError as e:
             record_validate_result(validate_span, "block", e.score, blocked=True)
+            cross_agent.record_outcome(agent_id, risky=True)
             await trace_reporter.report(
                 action=action, tier="block", score=e.score, duration_ms=0,
                 agent_id=agent_id, framework=framework, is_mcp=is_mcp_tool,
@@ -505,6 +550,60 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
             return _shadow_execute_response(
                 action, endpoint, schema=tool.schema_ if tool else None
             )
+
+        # Human-in-the-loop: the intervene tier means "ask a human before doing
+        # this." When HITL is enabled and this call scored intervene, we do NOT
+        # execute. If the caller carries an approved X-Approval-Id we proceed;
+        # otherwise we create a pending approval and return 202 (the agent
+        # re-submits with the id once a human approves in the dashboard).
+        # Use the gateway's RAW tier: the Guard may collapse an intervene to
+        # allow/block internally (fail_open / callback), but original_tier still
+        # reports it so the sidecar's HITL gate can act on it.
+        raw_tier = getattr(result, "original_tier", result.tier)
+        if _hitl_enabled() and raw_tier == "intervene":
+            # trace_reporter holds the live CP URL (set at startup); manager.config
+            # only carries it when a config file was loaded, so prefer the reporter.
+            cp_url = trace_reporter._url or (manager.config.control_plane_url if manager.config else "")
+            approval_id = request.headers.get("X-Approval-Id", "")
+            status_ = await _check_approval(cp_url, approval_id) if approval_id else None
+            if status_ == "approved":
+                pass  # human said yes — fall through to execute
+            elif status_ == "denied":
+                await trace_reporter.report(
+                    action=action, tier="block", score=result.score, duration_ms=0,
+                    agent_id=agent_id, framework=framework, is_mcp=is_mcp_tool,
+                    blocked_reason="human denied the intervention",
+                    session_id=session_id, plan=plan, step=step, params=params,
+                    limit_type="intervention",
+                )
+                return JSONResponse(status_code=403, content={
+                    "blocked": True, "action": action, "reason": "human denied approval",
+                    "limit_type": "intervention", "approval_id": approval_id,
+                })
+            else:
+                # No decision yet — create/await one.
+                explanation = _explain(result)
+                appr = await _create_approval(cp_url, {
+                    "agent_id": agent_id, "gateway_id": trace_reporter._sidecar_id or "",
+                    "action": action, "params": params, "score": result.score,
+                    "reason": explanation.summary or (
+                        f"intervene tier (score {result.score}) — human approval required"
+                    ),
+                })
+                await trace_reporter.report(
+                    action=action, tier="intervene", score=result.score, duration_ms=0,
+                    agent_id=agent_id, framework=framework, is_mcp=is_mcp_tool,
+                    blocked_reason="awaiting human approval",
+                    session_id=session_id, plan=plan, step=step, params=params,
+                    limit_type="intervention",
+                )
+                return JSONResponse(status_code=202, content={
+                    "pending_approval": True, "action": action, "score": result.score,
+                    "approval_id": (appr or {}).get("id", ""),
+                    "reason": "This action requires human approval. Re-submit with "
+                              "X-Approval-Id once approved.",
+                    "decision": explanation.to_dict(),
+                })
 
         # Payment gate (metered mode): price the call and settle from the agent
         # wallet BEFORE execution. In off/passthrough mode this is a no-op here
@@ -699,6 +798,7 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
             "result": proxy_result.get("result"),
             "action": action,
             "duration_ms": proxy_result.get("duration_ms"),
+            "decision": _explain(result).to_dict(),
         }
 
     @app.post("/validate")

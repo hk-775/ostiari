@@ -46,6 +46,7 @@ class Guard:
         retention_policy: RetentionPolicy | None = None,
         adapter: Any = None,
         policy_source: str | None = None,
+        parameter_risk: bool = True,
     ) -> None:
         self._config = config or OstiariConfig()
         self._fail_open = self._config.fail_open
@@ -57,6 +58,13 @@ class Guard:
             fail_open=self._fail_open,
             intervention_timeout=30.0,
         )
+
+        # Parameter-aware risk: score by what the call actually does (blast
+        # radius, target sensitivity, destructiveness), not just the action
+        # name. On by default; pass parameter_risk=False to disable.
+        if parameter_risk:
+            from ostiari.signals import ParameterRiskSignal
+            self._gateway.add_signal_provider(ParameterRiskSignal())
 
         self._storage = storage
         self._tracer = ExecutionTracer(storage=self._storage)
@@ -149,6 +157,7 @@ class Guard:
                 signals=[],
                 anomalies=[],
                 rule_triggered=rule_id,
+                agent_id=str(eval_context.metadata.get("agent_id", "")),
             )
             self._record_breaker_metrics(duration_ms, context, is_block=True)
             raise ActionBlockedError(
@@ -211,6 +220,7 @@ class Guard:
             signals=gateway_decision.signals,
             anomalies=anomaly_signals,
             rule_triggered=gateway_decision.rule_triggered,
+            agent_id=str(eval_context.metadata.get("agent_id", "")),
         )
 
         if final_tier == "block":
@@ -244,6 +254,7 @@ class Guard:
 
         result = ValidationResult(
             tier=final_tier,
+            original_tier=gateway_decision.tier,
             score=gateway_decision.score,
             signals=gateway_decision.signals,
             trace_id=str(uuid.uuid4()),
@@ -403,7 +414,17 @@ class Guard:
             return None
 
     def _build_eval_context(self, context: dict[str, Any]) -> EvalContext:
-        history = self._tracer.recent_history(20)
+        # Pull a wider window, then scope to the calling agent so anomaly
+        # detection (loops, drift) sees THIS agent's behavior — not a stream
+        # diluted by every other agent sharing the gateway. Falls back to the
+        # unfiltered window when no agent_id is provided.
+        history = self._tracer.recent_history(200)
+        agent_id = str(context.get("agent_id", "")) if context else ""
+        if agent_id:
+            scoped = [h for h in history if getattr(h, "agent_id", "") == agent_id]
+            history = scoped[-20:]
+        else:
+            history = history[-20:]
         return EvalContext(
             history=history,
             current_time=datetime.now(timezone.utc),
@@ -452,6 +473,7 @@ class Guard:
         signals: list[Any],
         anomalies: list[Any],
         rule_triggered: str | None = None,
+        agent_id: str = "",
     ) -> None:
         try:
             metadata: dict[str, Any] = {}
@@ -467,6 +489,7 @@ class Guard:
                 trace_id=str(uuid.uuid4()),
                 correlation_id=self._tracer.correlation_id,
                 timestamp=datetime.now(timezone.utc),
+                agent_id=agent_id,
                 action=action,
                 params=self._redaction.redact(params),
                 risk_score=score,

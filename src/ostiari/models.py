@@ -61,6 +61,11 @@ class GatewayDecision(BaseModel, frozen=True):
 
 class ValidationResult(BaseModel, frozen=True):
     tier: Literal["allow", "intervene", "block"]
+    # The gateway's raw tier before any in-process intervention handling. When
+    # the Guard resolves an intervene internally (via a callback), `tier`
+    # collapses to allow/block but `original_tier` preserves "intervene" so an
+    # external caller (e.g. the sidecar's human-in-the-loop gate) can see it.
+    original_tier: Literal["allow", "intervene", "block"] = "allow"
     score: int = Field(ge=0, le=100)
     signals: list[RiskSignal] = Field(default_factory=list)
     trace_id: str = Field(min_length=1)
@@ -184,6 +189,7 @@ class TraceEntry(BaseModel, frozen=True):
     trace_id: str = Field(min_length=1)
     correlation_id: str | None = None
     timestamp: datetime
+    agent_id: str = ""              # calling agent — lets anomaly history be per-agent
     action: str = Field(min_length=1)
     params: dict[str, Any] = Field(default_factory=dict)
     result: Any | None = None
