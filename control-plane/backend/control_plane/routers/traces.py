@@ -1,15 +1,45 @@
 """Live trace viewer — receives traces from gateways and broadcasts via WebSocket."""
 
+import hmac
 import logging
+import os
 import time
 from collections import deque
 from typing import Any
 
-from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 
 log = logging.getLogger("control_plane.traces")
 
 router = APIRouter(tags=["traces"])
+
+# Shared secret that gateways/sidecars must present to push traces. Mirrors the
+# OSTIARI_JWT_SECRET pattern in auth/service.py. Machine callers aren't users, so
+# trace ingest uses a shared key (X-Ingest-Key header) rather than a user JWT.
+#
+# Fail-open when unset: the demo and local dev run without it, matching the
+# control plane's dev-friendly defaults. Set OSTIARI_INGEST_KEY in any shared or
+# production deployment to require authenticated ingest.
+_INGEST_KEY_ENV = "OSTIARI_INGEST_KEY"
+
+
+def _require_ingest_auth(request: Request) -> None:
+    """Enforce the ingest shared secret when OSTIARI_INGEST_KEY is configured.
+
+    No-op (with a one-time warning elsewhere) when the key is unset, so existing
+    demo/dev setups keep working. When set, a request must present a matching
+    ``X-Ingest-Key`` header or it is rejected with 401.
+    """
+    expected = os.environ.get(_INGEST_KEY_ENV, "").strip()
+    if not expected:
+        return  # fail-open in dev; see module docstring
+    presented = request.headers.get("X-Ingest-Key", "")
+    # Constant-time compare to avoid leaking the key via timing.
+    if not presented or not hmac.compare_digest(presented, expected):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing X-Ingest-Key",
+        )
 
 # In-memory buffer of recent traces (for new WebSocket clients to catch up)
 _recent_traces: deque[dict[str, Any]] = deque(maxlen=200)
@@ -170,7 +200,7 @@ def seed_traces() -> None:
     ]
     safe_tools = ["web_search", "db_query", "file_read", "github.search_code", "calendar.create"]
     risky_tools = ["db_delete", "file_write", "github.create_pr", "send_email", "slack.post"]
-    for i in range(90):
+    for _i in range(90):
         agent, fw = _rnd.choice(agents_fw)
         risky = _rnd.random() < 0.4
         tool = _rnd.choice(risky_tools if risky else safe_tools)
@@ -220,6 +250,7 @@ def seed_traces() -> None:
 @router.post("/api/traces/ingest")
 async def ingest_trace(request: Request) -> Any:
     """Receive a trace event from a gateway and broadcast to WebSocket clients."""
+    _require_ingest_auth(request)
     event = await request.json()
     _recent_traces.append(event)
 

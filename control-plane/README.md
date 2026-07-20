@@ -204,7 +204,7 @@ curl http://localhost:8400/api/health
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/traces/ingest` | POST | Receive a trace event from a sidecar |
+| `/api/traces/ingest` | POST | Receive a trace event from a sidecar. Requires the `X-Ingest-Key` header when `OSTIARI_INGEST_KEY` is set (fail-open in dev when unset). |
 | `/api/traces/recent` | GET | Get recent traces (`?limit=50`) |
 | `/ws/traces` | WebSocket | Live stream of trace events (for the UI) |
 
