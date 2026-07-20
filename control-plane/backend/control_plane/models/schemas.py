@@ -53,6 +53,8 @@ class ToolResponse(BaseModel):
     description: str
     timeout_seconds: float
     schema_json: dict | None
+    path_params: list[str] | None = None
+    query_params: list[str] | None = None
     gateway_id: str
     created_at: datetime
 

@@ -103,6 +103,31 @@ export const api = {
     create: (gatewayId: string, data: Partial<Tool>) =>
       fetchAPI<Tool>(`/api/tools/${gatewayId}`, { method: "POST", body: JSON.stringify(data) }),
     delete: (id: number) => fetchAPI(`/api/tools/${id}`, { method: "DELETE" }),
+    importOpenapi: (
+      gatewayId: string,
+      data: {
+        source?: string;
+        server_url?: string | null;
+        name_prefix?: string;
+        replace?: boolean;
+        preview?: boolean;
+      },
+    ) =>
+      fetchAPI<{
+        status: string;
+        count: number;
+        tools: {
+          name: string;
+          method: string;
+          endpoint: string;
+          description: string;
+          path_params: string[];
+          query_params: string[];
+        }[];
+      }>(`/api/tools/${gatewayId}/import-openapi`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
   },
   policies: {
     list: () => fetchAPI<Policy[]>("/api/policies"),

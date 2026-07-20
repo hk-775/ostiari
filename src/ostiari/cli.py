@@ -117,6 +117,68 @@ def validate(action: str, params: str | None) -> None:
     raise SystemExit(0 if result.tier != "block" else 1)
 
 
+@main.command("import-openapi")
+@click.argument("spec")
+@click.option("--gateway", default="http://localhost:8421", help="Ostiari gateway base URL")
+@click.option("--server-url", default=None, help="Override the API base URL from the spec")
+@click.option("--name-prefix", default="", help="Prefix for generated tool names (e.g. 'crm.')")
+@click.option("--replace", is_flag=True, help="Replace all existing tools instead of merging")
+@click.option("--preview", is_flag=True, help="Show the tools that would be generated, don't register")
+def import_openapi(
+    spec: str, gateway: str, server_url: str | None, name_prefix: str,
+    replace: bool, preview: bool,
+) -> None:
+    """Generate governed tools from an OpenAPI SPEC (URL, file, or JSON/YAML).
+
+    Each REST operation becomes an Ostiari tool that inherits the full gate
+    chain. SPEC may be an http(s) URL, a local file path, or literal JSON/YAML.
+    """
+    import os
+
+    import httpx
+
+    # A URL is forwarded as-is (the gateway fetches it); a readable file is
+    # inlined; anything else is treated as a literal spec string.
+    payload: dict[str, Any] = {
+        "server_url": server_url, "name_prefix": name_prefix,
+        "replace": replace, "preview": preview,
+    }
+    if re.match(r"^https?://", spec.strip()):
+        payload["source"] = spec.strip()
+    elif os.path.isfile(spec):
+        payload["source"] = open(spec, encoding="utf-8").read()
+    else:
+        payload["source"] = spec
+
+    try:
+        resp = httpx.post(f"{gateway.rstrip('/')}/config/tools/import-openapi",
+                          json=payload, timeout=30.0)
+    except Exception as e:  # noqa: BLE001
+        click.echo(f"Error: could not reach gateway {gateway}: {e}", err=True)
+        raise SystemExit(2) from None
+
+    if resp.status_code != 200:
+        click.echo(f"Error: {resp.status_code} {resp.text[:300]}", err=True)
+        raise SystemExit(1)
+
+    data = resp.json()
+    tools = data.get("tools", [])
+    if _is_tty():
+        verb = "Would generate" if preview else "Imported"
+        click.echo(click.style(f"{verb} {data.get('count', len(tools))} tool(s)", fg="green"))
+        for t in tools:
+            loc = []
+            if t.get("path_params"):
+                loc.append(f"path={t['path_params']}")
+            if t.get("query_params"):
+                loc.append(f"query={t['query_params']}")
+            suffix = ("  " + " ".join(loc)) if loc else ""
+            click.echo(f"  {t['method']:6} {t['name']:24} → {t['endpoint']}{suffix}")
+    else:
+        click.echo(json.dumps(data))
+    raise SystemExit(0)
+
+
 @main.command()
 @click.option("--limit", type=int, default=20, help="Number of traces to show")
 @click.option("--action", "action_filter", type=str, default=None, help="Filter by action pattern")
