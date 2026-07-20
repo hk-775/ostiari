@@ -84,12 +84,24 @@ async def me(
     current_user: AuthUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get current authenticated user info."""
-    result = await db.execute(select(User).where(User.id == current_user.id))
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    return UserResponse(id=user.id, email=user.email, name=user.name, role=user.role)
+    """Get current authenticated user info.
+
+    Local users are looked up in the DB. Externally-authenticated (OIDC)
+    principals aren't DB rows, so return the identity straight from the
+    validated token instead of 404ing.
+    """
+    if current_user.id:
+        result = await db.execute(select(User).where(User.id == current_user.id))
+        user = result.scalar_one_or_none()
+        if user:
+            return UserResponse(id=user.id, email=user.email, name=user.name, role=user.role)
+
+    # External / OIDC principal — echo the token-derived identity.
+    if current_user.subject:
+        return UserResponse(id=0, email=current_user.email,
+                            name=current_user.email, role=current_user.role)
+
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
 
 @router.get("/users", response_model=list[UserResponse])

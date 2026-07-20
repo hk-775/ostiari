@@ -31,6 +31,41 @@ import os as _os
 import httpx as _httpx
 
 
+def _authenticate_agent(request: Request, agent_id: str) -> JSONResponse | None:
+    """Enforce the agent's JWT when gateway auth is required.
+
+    When OSTIARI_GATEWAY_AUTH=required, the caller must present a valid OIDC
+    Bearer token whose asserted agent identity matches the X-Agent-Id header.
+    Returns a 401/403 JSONResponse to short-circuit on failure, or None to
+    proceed. No-op (returns None) when gateway auth is off — preserving the
+    current header-trust behavior for the demo.
+    """
+    from ostiari_gateway import oidc
+
+    validator = oidc.get_validator()
+    if validator is None:
+        return None  # auth off or unconfigured — trust the header as before
+
+    header = request.headers.get("Authorization", "")
+    if not header.startswith("Bearer "):
+        return JSONResponse(status_code=401, content={
+            "error": "authentication required", "detail": "missing Bearer token",
+        })
+    try:
+        claims = validator.validate(header.removeprefix("Bearer "))
+    except oidc.OIDCError as exc:
+        return JSONResponse(status_code=401, content={
+            "error": "invalid token", "detail": str(exc),
+        })
+    token_agent = oidc.agent_id_from_claims(claims)
+    if token_agent != agent_id:
+        return JSONResponse(status_code=403, content={
+            "error": "identity mismatch",
+            "detail": f"token identity '{token_agent}' does not match X-Agent-Id '{agent_id}'",
+        })
+    return None
+
+
 def _hitl_enabled() -> bool:
     """Human-in-the-loop enforcement for the intervene tier (off by default)."""
     return _os.environ.get("OSTIARI_HITL", "off").lower() in ("1", "true", "yes", "on")
@@ -338,6 +373,12 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
         session_id = request.headers.get("X-Session-Id", "")
         plan = request.headers.get("X-Plan", "")
         step = request.headers.get("X-Step", "")
+
+        # Authenticate the agent (no-op unless OSTIARI_GATEWAY_AUTH=required):
+        # requires a valid OIDC token whose identity matches X-Agent-Id.
+        auth_err = _authenticate_agent(request, agent_id)
+        if auth_err is not None:
+            return auth_err
 
         # Delegation provenance: the chain of agents that led to this call.
         # An inbound X-Delegation-Chain means this request itself arrived via a
@@ -768,6 +809,10 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
         params = body.get("params", {})
         agent_id = request.headers.get("X-Agent-Id", "unknown")
         framework = request.headers.get("X-Framework", "unknown")
+
+        auth_err = _authenticate_agent(request, agent_id)
+        if auth_err is not None:
+            return auth_err
 
         if not action:
             return JSONResponse(status_code=400, content={"error": "action is required"})
