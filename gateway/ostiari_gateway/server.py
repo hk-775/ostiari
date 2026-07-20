@@ -881,6 +881,66 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
         result = manager.apply_tools(tools)
         return {"status": "applied", **result}
 
+    @app.post("/config/tools/import-openapi")
+    async def import_openapi_tools(request: Request) -> Any:
+        """Generate tools from an OpenAPI spec and register them.
+
+        Body: {"source": <url|json|yaml> or "spec": <dict>, "server_url"?,
+               "name_prefix"?, "replace"?: bool, "preview"?: bool}
+        With preview=true, tools are generated and returned but NOT registered.
+        With replace=true, the imported set replaces all existing tools;
+        otherwise they are merged in (add_tool per tool).
+
+        Defined before /config/tools/{name} so the literal path wins over the
+        parameterized one.
+        """
+        from ostiari_gateway.openapi_import import OpenAPIError, generate_tools
+
+        body = await request.json()
+        source = body.get("spec") if body.get("spec") is not None else body.get("source")
+        if source is None:
+            return JSONResponse(status_code=400,
+                                content={"error": "provide 'source' (url/json/yaml) or 'spec' (object)"})
+
+        # Fetch a URL source; otherwise parse inline.
+        if isinstance(source, str) and source.strip().lower().startswith(("http://", "https://")):
+            try:
+                import httpx as _hx
+                async with _hx.AsyncClient(timeout=15.0, follow_redirects=True) as c:
+                    r = await c.get(source.strip())
+                    r.raise_for_status()
+                    source = r.text
+            except Exception as e:  # noqa: BLE001
+                return JSONResponse(status_code=502,
+                                    content={"error": f"could not fetch spec: {e}"})
+
+        try:
+            generated = generate_tools(
+                source,
+                server_url=body.get("server_url"),
+                name_prefix=body.get("name_prefix", ""),
+            )
+        except OpenAPIError as e:
+            return JSONResponse(status_code=400, content={"error": str(e)})
+
+        summary = [
+            {"name": g.tool.name, "method": g.method, "path": g.path,
+             "endpoint": g.tool.endpoint, "summary": g.summary,
+             "path_params": g.tool.path_params, "query_params": g.tool.query_params}
+            for g in generated
+        ]
+
+        if body.get("preview"):
+            return {"status": "preview", "count": len(summary), "tools": summary}
+
+        tools = [g.tool for g in generated]
+        if body.get("replace"):
+            manager.apply_tools(tools)
+        else:
+            for t in tools:
+                manager.add_tool(t)
+        return {"status": "imported", "count": len(tools), "tools": summary}
+
     @app.post("/config/tools/{name}")
     async def add_tool(name: str, request: Request) -> Any:
         """Add or update a single tool."""

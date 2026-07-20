@@ -13,6 +13,11 @@ class ToolDefinition(BaseModel):
     timeout_seconds: float = 30.0
     headers: dict[str, str] = Field(default_factory=dict)
     schema_: dict | None = Field(default=None, alias="schema")
+    # REST param placement (populated by the OpenAPI importer). When both are
+    # empty (the default), every param is sent as a JSON body — preserving the
+    # original behavior for hand-registered tools.
+    path_params: list[str] = Field(default_factory=list)
+    query_params: list[str] = Field(default_factory=list)
 
     model_config = {"populate_by_name": True}
 

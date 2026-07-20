@@ -115,6 +115,8 @@ class PushService:
                     "description": t.description,
                     "timeout_seconds": t.timeout_seconds,
                     "schema": t.schema_json,
+                    "path_params": t.path_params or [],
+                    "query_params": t.query_params or [],
                 }
                 for t in tools
             ],
