@@ -67,7 +67,9 @@ async def import_openapi(gateway_id: str, body: OpenAPIImport, db: AsyncSession 
     With preview=true, the generated tools are returned without persisting.
     With replace=true, the gateway's existing tools are deleted first.
     """
-    from ostiari_gateway.openapi_import import OpenAPIError, import_openapi as _gen
+    # Uses the shared root-package parser — the control plane must not depend on
+    # the gateway package (they are separately deployed services).
+    from ostiari.openapi_import import OpenAPIError, fetch_spec_text, is_url, parse_spec
 
     gateway = await db.get(Gateway, gateway_id)
     if not gateway:
@@ -77,18 +79,24 @@ async def import_openapi(gateway_id: str, body: OpenAPIImport, db: AsyncSession 
     if source is None:
         raise HTTPException(status_code=400, detail="provide 'source' (url/json/yaml) or 'spec' (object)")
 
+    if isinstance(source, str) and is_url(source):
+        try:
+            source = fetch_spec_text(source)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"could not fetch spec: {e}") from e
+
     try:
-        tool_defs = _gen(source, server_url=body.server_url, name_prefix=body.name_prefix)
+        specs = parse_spec(source, server_url=body.server_url, name_prefix=body.name_prefix)
     except OpenAPIError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:  # noqa: BLE001 — fetch/parse errors surface as 400
+    except Exception as e:  # noqa: BLE001 — parse errors surface as 400
         raise HTTPException(status_code=400, detail=f"could not import spec: {e}") from e
 
     preview = [
-        {"name": t.name, "method": t.method, "endpoint": t.endpoint,
-         "description": t.description, "path_params": t.path_params,
-         "query_params": t.query_params}
-        for t in tool_defs
+        {"name": s["name"], "method": s["method"], "endpoint": s["endpoint"],
+         "description": s["description"], "path_params": s["path_params"],
+         "query_params": s["query_params"]}
+        for s in specs
     ]
     if body.preview:
         return {"status": "preview", "count": len(preview), "tools": preview}
@@ -98,22 +106,22 @@ async def import_openapi(gateway_id: str, body: OpenAPIImport, db: AsyncSession 
         for t in existing.scalars().all():
             await db.delete(t)
 
-    for td in tool_defs:
+    for s in specs:
         # Upsert by (gateway_id, name) so re-importing updates rather than duplicates.
         found = await db.execute(
-            select(Tool).where(Tool.gateway_id == gateway_id, Tool.name == td.name)
+            select(Tool).where(Tool.gateway_id == gateway_id, Tool.name == s["name"])
         )
         row = found.scalar_one_or_none()
         if row is None:
-            row = Tool(name=td.name, gateway_id=gateway_id)
+            row = Tool(name=s["name"], gateway_id=gateway_id)
             db.add(row)
-        row.endpoint = td.endpoint
-        row.method = td.method
-        row.description = td.description
-        row.timeout_seconds = td.timeout_seconds
-        row.schema_json = td.schema_
-        row.path_params = td.path_params
-        row.query_params = td.query_params
+        row.endpoint = s["endpoint"]
+        row.method = s["method"]
+        row.description = s["description"]
+        row.timeout_seconds = s["timeout_seconds"]
+        row.schema_json = s["schema"]
+        row.path_params = s["path_params"]
+        row.query_params = s["query_params"]
 
     await db.commit()
     return {"status": "imported", "gateway_id": gateway_id, "count": len(preview), "tools": preview}

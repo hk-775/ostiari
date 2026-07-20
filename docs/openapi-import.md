@@ -89,4 +89,7 @@ MCP SDK dependency.
 - The control-plane `tools` table gained nullable `path_params` / `query_params`
   columns; the schema is created via `create_all` (no migrations), so a
   pre-existing database file needs those columns added or a fresh DB.
+- The spec parser lives in the shared root `ostiari` package
+  (`ostiari.openapi_import`) so both the gateway and the control plane can use
+  it without either service depending on the other.
 - The generator inspects only JSON media types for request bodies.
