@@ -47,6 +47,33 @@ class ToolProxy:
     def clear(self) -> None:
         self._tools.clear()
 
+    @staticmethod
+    def _place_params(
+        tool: ToolDefinition, params: dict[str, Any]
+    ) -> tuple[str, dict[str, Any], dict[str, Any] | None]:
+        """Distribute a flat params dict into (url, query, body).
+
+        Path params are substituted into the ``{var}`` placeholders in the
+        endpoint template; query params go to the query string; everything else
+        is the JSON body. When the tool declares neither path nor query params
+        (hand-registered tools), all params become the body — unchanged behavior.
+        """
+        if not tool.path_params and not tool.query_params:
+            return tool.endpoint, {}, params
+
+        params = dict(params or {})
+        url = tool.endpoint
+        for name in tool.path_params:
+            if name in params:
+                # URL-encode the path segment value.
+                from urllib.parse import quote
+
+                url = url.replace("{" + name + "}", quote(str(params.pop(name)), safe=""))
+
+        query = {name: params.pop(name) for name in tool.query_params if name in params}
+        body = params if params else None
+        return url, query, body
+
     async def execute(
         self, name: str, params: dict[str, Any], propagate_headers: dict[str, str] | None = None
     ) -> dict[str, Any]:
@@ -70,13 +97,20 @@ class ToolProxy:
         if propagate_headers:
             headers.update(propagate_headers)
 
+        # Split the flat params dict across URL path, query string, and body
+        # according to the tool's REST param placement. Tools with no
+        # path/query params (the default) send everything as a JSON body,
+        # exactly as before.
+        url, query, body = self._place_params(tool, params)
+
         start = time.monotonic()
 
         try:
             response = await self._client.request(
                 method=tool.method,
-                url=tool.endpoint,
-                json=params,
+                url=url,
+                params=query or None,
+                json=body,
                 headers=headers,
                 timeout=tool.timeout_seconds,
             )

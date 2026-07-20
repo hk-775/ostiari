@@ -41,6 +41,10 @@ class Tool(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     timeout_seconds: Mapped[float] = mapped_column(Float, default=30.0)
     schema_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # REST param placement for tools imported from OpenAPI (nullable = older rows
+    # / hand-registered tools send everything as a JSON body).
+    path_params: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    query_params: Mapped[list | None] = mapped_column(JSON, nullable=True)
     gateway_id: Mapped[str] = mapped_column(String(64), ForeignKey("gateways.id"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
