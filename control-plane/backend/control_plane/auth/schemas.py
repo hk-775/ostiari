@@ -31,7 +31,16 @@ class UserCreate(BaseModel):
 
 
 class AuthUser(BaseModel):
-    """Lightweight user object for request context."""
+    """Lightweight user/principal object for request context.
+
+    `id` is an int for local DB users; for external OIDC principals (whose
+    subject is a UUID/string) it falls back to 0 and the real identifier is in
+    `subject`. `kind` distinguishes an interactive user from a machine (service
+    or agent) principal authenticated via client-credentials.
+    """
     id: int
     email: str
     role: str
+    subject: str = ""            # raw IdP 'sub' / client_id (esp. for OIDC principals)
+    kind: str = "user"           # user | service | agent
+    tenant_id: str = "default"   # single-tenant today; multi-tenant-ready seam

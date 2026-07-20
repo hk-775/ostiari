@@ -16,6 +16,8 @@ dependencies = [
     "click>=8.0",
     "opentelemetry-api>=1.20",
     "opentelemetry-sdk>=1.20",
+    # OIDC/JWKS validation for gateway auth (RS256 needs the cryptography backend).
+    "python-jose[cryptography]>=3.3",
 ]
 
 [project.scripts]
