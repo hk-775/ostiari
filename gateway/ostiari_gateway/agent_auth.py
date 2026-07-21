@@ -241,6 +241,31 @@ class AgentAuthPolicy:
             return False, f"Agent '{agent_id}' budget exhausted (${grants.spend_usd:.4f} / ${grants.budget_usd:.2f})"
         return True, ""
 
+    def authorize_llm(
+        self, agent_id: str, model: str, provider: str
+    ) -> tuple[bool, str]:
+        """Combined pre-call authorization for an LLM request.
+
+        Runs model, provider, and budget checks in order. Returns the first
+        failure, or (True, "") if all pass. No-op when auth is disabled.
+        This is the single seam both LLM paths (/v1/messages shim and /invoke)
+        call so per-agent model/provider/budget grants are actually enforced.
+        """
+        if not self._enabled:
+            return True, ""
+        ok, reason = self.check_budget(agent_id)
+        if not ok:
+            return False, reason
+        if model:
+            ok, reason = self.check_model(agent_id, model)
+            if not ok:
+                return False, reason
+        if provider:
+            ok, reason = self.check_provider(agent_id, provider)
+            if not ok:
+                return False, reason
+        return True, ""
+
     def record_agent_spend(self, agent_id: str, cost_usd: float) -> None:
         """Record spend against an agent's budget."""
         grants = self._grants.get(agent_id)
