@@ -121,6 +121,12 @@ class TestModuleActivation:
 
 
 class TestLLMGatewayInvoke:
+    @pytest.fixture(autouse=True)
+    def _disable_axon(self, monkeypatch):
+        # These tests mock the direct provider path to exercise the agentic loop
+        # deterministically; disable the AxonLLM router so that path runs.
+        monkeypatch.setenv("OSTIARI_DISABLE_AXON_ROUTER", "1")
+
     @pytest.fixture
     def client_with_mock_llm(self, httpserver):
         """Client with LLM Gateway active and a mocked LLM provider."""

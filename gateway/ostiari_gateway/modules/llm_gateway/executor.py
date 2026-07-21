@@ -24,6 +24,19 @@ from ostiari_gateway.modules.llm_gateway.security import SecurityLayer
 log = logging.getLogger("ostiari.sidecar.llm")
 
 
+def _parse_args(args: Any) -> dict[str, Any]:
+    """Tool-call arguments may arrive as a JSON string or a dict."""
+    if isinstance(args, dict):
+        return args
+    if isinstance(args, str):
+        import json as _json
+        try:
+            return _json.loads(args or "{}")
+        except Exception:
+            return {}
+    return {}
+
+
 class AgenticExecutor:
     """Executes the full agentic loop: LLM → tool calls → validation → execution.
 
@@ -42,6 +55,10 @@ class AgenticExecutor:
         self._agent_auth = agent_auth
         self._router = ModelRouter(config)
         self._provider = LLMProvider(config.credentials)
+        # AxonLLM as the embedded LLM router (health-aware fallback, smart, ensemble,
+        # multi-provider) — used when available; otherwise the direct provider path.
+        from ostiari_gateway.modules.llm_gateway.axon_router import AxonRouter
+        self._axon = AxonRouter()
         self._security = SecurityLayer(config.security if hasattr(config, "security") else None)
         self._intent_cache = IntentCache(ttl_seconds=300.0, max_entries=200)
         self._cost_reporter = CostReporter(
@@ -122,9 +139,11 @@ class AgenticExecutor:
                 model_used = cached_plan.model_used
                 cache_hit = False  # only use cache for first round
             else:
-                # CACHE MISS or subsequent rounds: call LLM
-                llm_response = self._call_with_fallback(
-                    model, fallback_chain, messages, tool_specs, effective_max_tokens
+                # CACHE MISS or subsequent rounds: call LLM (AxonLLM router if
+                # available, else direct provider fallback).
+                llm_response = await self._call_llm(
+                    model, fallback_chain, messages, tool_specs, effective_max_tokens,
+                    context=request.context,
                 )
                 total_tokens += llm_response.tokens_used
                 model_used = llm_response.model
@@ -286,6 +305,53 @@ class AgenticExecutor:
             total_tokens=total_tokens,
             rounds=self._config.max_tool_rounds,
         )
+
+    async def _call_llm(
+        self,
+        primary: str,
+        fallback_chain: list[str],
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        max_tokens: int | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> LLMResponse:
+        """Route the call through AxonLLM if available, else the direct provider path.
+
+        AxonLLM owns model/provider selection, health-aware fallback, smart
+        routing and ensemble. Ensemble/smart are opt-in via context flags:
+        ``context["ensemble"]`` (True or preset name) / ``context["smart_routing"]``.
+        """
+        context = context or {}
+        effective_max_tokens = max_tokens or self._config.max_tokens
+        if self._axon.available:
+            try:
+                res = await self._axon.route(
+                    messages=messages,
+                    model=primary,
+                    max_tokens=effective_max_tokens,
+                    temperature=self._config.temperature,
+                    tools=tools,
+                    smart=bool(context.get("smart_routing")),
+                    ensemble=context.get("ensemble", False),
+                    agent_id=str(context.get("agent_id", "")),
+                    session_id=str(context.get("session_id", "")),
+                )
+                tcs = [
+                    ToolCall(id=tc.get("id", f"call-{i}"),
+                             name=(tc.get("function", {}) or {}).get("name", tc.get("name", "")),
+                             arguments=_parse_args((tc.get("function", {}) or {}).get("arguments", tc.get("arguments", {}))))
+                    for i, tc in enumerate(res.tool_calls)
+                ]
+                return LLMResponse(
+                    content=res.content or None,
+                    tool_calls=tcs,
+                    tokens_used=res.input_tokens + res.output_tokens,
+                    model=res.model or primary,
+                )
+            except Exception as e:  # noqa: BLE001 — fall back to direct provider path
+                log.warning("AxonLLM route failed (%s) — using direct provider fallback", e)
+
+        return self._call_with_fallback(primary, fallback_chain, messages, tools, max_tokens)
 
     def _call_with_fallback(
         self,

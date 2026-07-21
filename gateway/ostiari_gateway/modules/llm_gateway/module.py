@@ -51,6 +51,7 @@ class LLMGatewayModule:
             quota_enforcer=quota_enforcer,
             trace_reporter=trace_reporter,
             agent_auth=agent_auth,
+            axon=self._executor._axon,
         )
 
         @app.post("/v1/messages")
@@ -134,6 +135,7 @@ class LLMGatewayModule:
                 self._messages_proxy._router = self._executor._router
                 self._messages_proxy._provider = self._executor._provider
                 self._messages_proxy._security = self._executor._security
+                self._messages_proxy._axon = self._executor._axon
 
         @app.post("/config/llm")
         async def update_llm_config(request: Request) -> Any:
