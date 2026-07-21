@@ -46,6 +46,35 @@ def _require_ingest_auth(request: Request) -> None:
 _recent_traces: deque[dict[str, Any]] = deque(maxlen=200)
 _ws_clients: set[WebSocket] = set()
 
+# session_id -> parent_trace_id. The first trace seen for a session becomes the
+# parent span; every later trace in that session references it as parent, so a
+# prompt's many sub-calls nest under one span. Bounded to avoid unbounded growth.
+_session_parents: dict[str, str] = {}
+_SESSION_PARENTS_MAX = 2000
+
+
+def _assign_parent(event: dict[str, Any]) -> None:
+    """Stamp parent_trace_id on an event based on its session.
+
+    First trace in a session is the parent (parent_trace_id == its own trace_id);
+    subsequent traces in the same session point at that parent. Traces with no
+    session are left as standalone roots (parent_trace_id == trace_id).
+    """
+    tid = event.get("trace_id", "")
+    sid = event.get("session_id") or ""
+    if not sid:
+        event["parent_trace_id"] = tid          # standalone root
+        return
+    parent = _session_parents.get(sid)
+    if parent is None:
+        # first call in this session → it is the parent
+        if len(_session_parents) >= _SESSION_PARENTS_MAX:
+            _session_parents.clear()            # simple bound; drops old sessions
+        _session_parents[sid] = tid
+        parent = tid
+    event["parent_trace_id"] = parent
+    event["is_span_root"] = (parent == tid)
+
 
 def _trace(
     *,
@@ -264,6 +293,9 @@ async def ingest_trace(request: Request) -> Any:
     if not event.get("trace_id"):
         event["trace_id"] = uuid.uuid4().hex
 
+    # Assign the session parent span (parent_trace_id) so a prompt's sub-calls nest.
+    _assign_parent(event)
+
     # Dedup: if we've already seen this trace_id, replace it in place (retry /
     # update) rather than appending a second copy.
     tid = event["trace_id"]
@@ -293,6 +325,47 @@ async def get_recent_traces(limit: int = 50) -> Any:
     """Get recent traces (for initial page load before WebSocket connects)."""
     traces = list(_recent_traces)[-limit:]
     return {"traces": traces, "total": len(traces)}
+
+
+@router.get("/api/traces/spans")
+async def get_spans(limit: int = 200) -> Any:
+    """Return traces grouped into parent spans (one prompt = one span tree).
+
+    Groups by parent_trace_id: each span carries the child traces plus a rollup
+    (call count, total tokens, total duration, worst tier). Standalone traces
+    (no session) appear as single-child spans. This is what powers a nested
+    span view — a prompt's many sub-calls under one parent.
+    """
+    traces = list(_recent_traces)[-limit:]
+    spans: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    tier_rank = {"allow": 0, "intervene": 1, "error": 2, "block": 3}
+
+    for t in traces:
+        parent = t.get("parent_trace_id") or t.get("trace_id")
+        if parent not in spans:
+            spans[parent] = {
+                "span_id": parent, "session_id": t.get("session_id", ""),
+                "agent_id": t.get("agent_id", ""), "children": [],
+                "call_count": 0, "total_input_tokens": 0, "total_output_tokens": 0,
+                "total_duration_ms": 0.0, "worst_tier": "allow", "start_ts": None, "end_ts": None,
+            }
+            order.append(parent)
+        s = spans[parent]
+        s["children"].append(t)
+        s["call_count"] += 1
+        p = t.get("params") or {}
+        s["total_input_tokens"] += int(p.get("input_tokens", 0) or 0)
+        s["total_output_tokens"] += int(p.get("output_tokens", 0) or 0)
+        s["total_duration_ms"] += float(t.get("duration_ms", 0) or 0)
+        if tier_rank.get(t.get("tier", "allow"), 0) > tier_rank.get(s["worst_tier"], 0):
+            s["worst_tier"] = t.get("tier", "allow")
+        ts = t.get("timestamp")
+        if ts is not None:
+            s["start_ts"] = ts if s["start_ts"] is None else min(s["start_ts"], ts)
+            s["end_ts"] = ts if s["end_ts"] is None else max(s["end_ts"], ts)
+
+    return {"spans": [spans[p] for p in order], "total": len(order)}
 
 
 @router.get("/api/traces/shadow-report")

@@ -107,7 +107,11 @@ class MessagesProxy:
 
         agent_id = request.headers.get("X-Agent-Id", "unknown")
         framework = request.headers.get("X-Framework", "claude-code")
-        session_id = request.headers.get("X-Session-Id", "")
+        # Claude Code correlates a whole prompt's calls with x-claude-code-session-id;
+        # fall back to it when the generic X-Session-Id isn't set. This is what lets
+        # a prompt's many sub-calls group under one parent span.
+        session_id = (request.headers.get("X-Session-Id")
+                      or request.headers.get("x-claude-code-session-id", ""))
         requested_model = body.get("model", "")
         streaming = bool(body.get("stream", False))
 
@@ -155,8 +159,8 @@ class MessagesProxy:
         # and does health-aware fallback. We run it in single-response mode
         # (ensemble stays on /invoke) and translate the result back to Anthropic.
         if self._axon is not None and self._axon.available:
-            return await self._forward_axon(body, requested_model, agent_id, session_id,
-                                            framework, streaming)
+            return await self._forward_axon(request, body, requested_model, agent_id,
+                                            session_id, framework, streaming)
 
         # ── Fallback: no AxonLLM — Ostiari's own ModelRouter + direct call ─
         model = self._route(agent_id, requested_model, flat, session_id)
@@ -308,7 +312,7 @@ class MessagesProxy:
 
     # ── AxonLLM target: single routing authority ─────────────────────────
     async def _forward_axon(
-        self, body: dict[str, Any], requested_model: str, agent_id: str,
+        self, request: Request, body: dict[str, Any], requested_model: str, agent_id: str,
         session_id: str, framework: str, streaming: bool,
     ) -> Any:
         """Route via AxonLLM (selection + access + cost + fallback), translate to Anthropic.
@@ -323,9 +327,15 @@ class MessagesProxy:
         # client's model through if AxonLLM knows it; otherwise smart-route so
         # AxonLLM picks a model it can actually serve.
         axon_model = requested_model if self._axon_knows(requested_model) else ""
+        # Claude Code sends message content as a LIST of blocks (text/tool_use/
+        # tool_result), not a plain string, and system as blocks too. AxonLLM
+        # expects OpenAI-shaped string content — translate first (this also folds
+        # the system prompt in and maps tool round-trips), else it crashes with
+        # "'list' object has no attribute 'lower'".
+        oai_messages = T.anthropic_to_openai_messages(body.get("system"), body.get("messages", []))
         try:
             res = await self._axon.route(
-                messages=body.get("messages", []),
+                messages=oai_messages,
                 model=axon_model,
                 max_tokens=int(body.get("max_tokens", getattr(self._config, "max_tokens", 4096))),
                 temperature=float(body.get("temperature", getattr(self._config, "temperature", 0.7))),
@@ -334,14 +344,20 @@ class MessagesProxy:
                 ensemble=False,              # never on the interactive shim path
                 agent_id=agent_id,
                 session_id=session_id,
-                system=body.get("system"),
+                system=None,                 # already folded into oai_messages
             )
         except Exception as e:  # noqa: BLE001 — fall back to the direct path
             log.warning("AxonLLM shim route failed (%s) — using direct path", e)
-            model = self._route(agent_id, requested_model, [], session_id)
+            # Use the client's own requested model (a valid Anthropic ID from
+            # Claude Code) rather than an Axon-registry/Bedrock name that the
+            # direct provider path can't honor. Dispatch by provider so an
+            # Anthropic model goes to the Anthropic endpoint (not the OpenAI SDK).
+            model = requested_model or getattr(self._config, "default_model", "") or "claude-sonnet-4-6"
             provider = _provider_of(model)
             meta = {"agent_id": agent_id, "framework": framework, "session_id": session_id,
-                    "model": model, "routed": model != requested_model}
+                    "model": model, "routed": False}
+            if provider == "anthropic":
+                return await self._forward_anthropic(request, body, model, streaming, meta)
             return await self._forward_translated(body, model, provider, streaming, meta)
 
         # Build an Anthropic Messages object from AxonLLM's OpenAI-shaped result.
