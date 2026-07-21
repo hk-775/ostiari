@@ -21,12 +21,28 @@ the middle as embedded code, not a service.
 
 ## Where it's wired
 
-The **`/invoke`** own-the-loop path (`AgenticExecutor`). Each model call goes
-through `AxonRouter` when available; otherwise the direct provider path runs
-(graceful fallback). The interactive Claude Code **`/v1/messages` shim** keeps
-its direct/translation path — ensemble in particular does not fit there (that
-path must return exactly one Anthropic response per call to drive Claude Code's
-tool loop).
+**Both** the `/invoke` own-the-loop path *and* the Claude Code `/v1/messages`
+shim — AxonLLM is the single routing authority across the gateway. Each model
+call goes through `AxonRouter` when available; otherwise the direct provider
+path runs (graceful fallback).
+
+- **`/invoke`** — full delegate, all modes (fallback / smart / ensemble).
+- **`/v1/messages` shim** — routes through AxonLLM in **single-response mode
+  (ensemble disabled)**, since Claude Code needs exactly one Anthropic response
+  per call to drive its tool loop. AxonLLM's OpenAI-shaped result is translated
+  back to Anthropic Messages format (and re-emitted as Anthropic SSE when
+  streaming). This means the shim's streaming is buffered-then-chunked rather
+  than token-by-token — the tradeoff for a single routing authority that also
+  gives the shim AxonLLM's cost tracking, model access control, and
+  health-aware fallback.
+
+### Model names on the shim
+
+AxonLLM selects from its own registry (e.g. `claude-sonnet`), which does not use
+Anthropic's dated IDs (`claude-sonnet-4-6`). When Claude Code sends a concrete
+model the shim checks AxonLLM's registry: if known, it's honored; if not, the
+shim **smart-routes** so AxonLLM picks a model it can actually serve. The
+client's requested model is advisory once AxonLLM is the authority.
 
 ## Routing modes (opt-in via `/invoke` context)
 

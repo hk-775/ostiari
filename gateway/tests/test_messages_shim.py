@@ -16,9 +16,19 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
+import pytest
 from ostiari_gateway.models import ModulesConfig, SidecarConfig
 from ostiari_gateway.modules.llm_gateway import translate as T
 from starlette.testclient import TestClient
+
+
+@pytest.fixture(autouse=True)
+def _disable_axon(monkeypatch):
+    # This file tests the shim's direct/cross-provider fallback path. AxonLLM,
+    # when installed, is the routing authority and would intercept — disable it
+    # so the fallback path under test actually runs. The Axon path has its own
+    # test module (test_shim_axon.py).
+    monkeypatch.setenv("OSTIARI_DISABLE_AXON_ROUTER", "1")
 
 
 def _app(llm: dict | None = None) -> TestClient:
