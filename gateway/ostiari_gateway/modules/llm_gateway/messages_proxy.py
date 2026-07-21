@@ -77,6 +77,7 @@ class MessagesProxy:
         quota_enforcer: Any = None,
         trace_reporter: Any = None,
         agent_auth: Any = None,
+        axon: Any = None,
     ) -> None:
         self._config = config
         self._provider = provider          # llm_gateway LLMProvider (holds creds + SDK calls)
@@ -85,6 +86,7 @@ class MessagesProxy:
         self._quota = quota_enforcer
         self._trace = trace_reporter
         self._agent_auth = agent_auth
+        self._axon = axon                  # AxonLLM router (single routing authority)
 
     # ── credentials / endpoints ──────────────────────────────────────────
     def _anthropic_key(self) -> str:
@@ -133,28 +135,35 @@ class MessagesProxy:
             except Exception as e:  # noqa: BLE001 — detection must never break the call
                 log.debug("Injection detection failed: %s", e)
 
-        # ── Route: pick the model from request content (any provider) ────
-        model = self._route(agent_id, requested_model, flat, session_id)
-        routed = model != requested_model
-        provider = _provider_of(model)
-
-        # ── Gate 3: quota / budget ───────────────────────────────────────
+        # ── Ostiari-side quota gate (pre-call budget guard) ──────────────
+        # AxonLLM does its own cost tracking + model access control; this is
+        # Ostiari's own budget ceiling on top.
         if self._quota is not None:
             try:
-                est = self._quota.estimate_cost(model)
-                decision = self._quota.check(model=model, estimated_cost=est)
+                est = self._quota.estimate_cost(requested_model)
+                decision = self._quota.check(model=requested_model, estimated_cost=est)
                 if not decision.allowed:
-                    await self._report(agent_id, framework, session_id, model,
+                    await self._report(agent_id, framework, session_id, requested_model,
                                         tier="block", reason=decision.reason, limit_type="quota")
                     return _err(429, "rate_limit_error", f"Request blocked by quota: {decision.reason}")
                 self._quota.record_request()
             except Exception as e:  # noqa: BLE001
                 log.debug("Quota check failed: %s", e)
 
+        # ── Dispatch: AxonLLM is the routing authority when available ────
+        # It selects the model + provider, enforces model access, tracks cost,
+        # and does health-aware fallback. We run it in single-response mode
+        # (ensemble stays on /invoke) and translate the result back to Anthropic.
+        if self._axon is not None and self._axon.available:
+            return await self._forward_axon(body, requested_model, agent_id, session_id,
+                                            framework, streaming)
+
+        # ── Fallback: no AxonLLM — Ostiari's own ModelRouter + direct call ─
+        model = self._route(agent_id, requested_model, flat, session_id)
+        routed = model != requested_model
+        provider = _provider_of(model)
         meta = {"agent_id": agent_id, "framework": framework, "session_id": session_id,
                 "model": model, "routed": routed}
-
-        # ── Dispatch ─────────────────────────────────────────────────────
         if provider == "anthropic":
             return await self._forward_anthropic(request, body, model, streaming, meta)
         return await self._forward_translated(body, model, provider, streaming, meta)
@@ -286,6 +295,72 @@ class MessagesProxy:
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
+    def _axon_knows(self, model: str) -> bool:
+        """Whether AxonLLM's registry recognizes a model name."""
+        if not model:
+            return False
+        try:
+            agent = getattr(self._axon, "_agent", None)
+            reg = getattr(getattr(agent, "router", None), "model_registry", None)
+            return bool(reg and model in reg.models)
+        except Exception:  # noqa: BLE001
+            return False
+
+    # ── AxonLLM target: single routing authority ─────────────────────────
+    async def _forward_axon(
+        self, body: dict[str, Any], requested_model: str, agent_id: str,
+        session_id: str, framework: str, streaming: bool,
+    ) -> Any:
+        """Route via AxonLLM (selection + access + cost + fallback), translate to Anthropic.
+
+        Single-response mode: ensemble is NOT enabled here — Claude Code needs
+        exactly one Anthropic response per call. Empty requested_model lets
+        AxonLLM smart-route; a concrete model asks AxonLLM to honor it with
+        health-aware fallback.
+        """
+        # AxonLLM selects from its OWN model registry (e.g. "claude-sonnet"), which
+        # does not use Anthropic's dated IDs ("claude-sonnet-4-6"). Only pass the
+        # client's model through if AxonLLM knows it; otherwise smart-route so
+        # AxonLLM picks a model it can actually serve.
+        axon_model = requested_model if self._axon_knows(requested_model) else ""
+        try:
+            res = await self._axon.route(
+                messages=body.get("messages", []),
+                model=axon_model,
+                max_tokens=int(body.get("max_tokens", getattr(self._config, "max_tokens", 4096))),
+                temperature=float(body.get("temperature", getattr(self._config, "temperature", 0.7))),
+                tools=T.anthropic_tools_to_openai(body.get("tools"))[0],
+                smart=not axon_model,        # unknown/absent model → smart auto-select
+                ensemble=False,              # never on the interactive shim path
+                agent_id=agent_id,
+                session_id=session_id,
+                system=body.get("system"),
+            )
+        except Exception as e:  # noqa: BLE001 — fall back to the direct path
+            log.warning("AxonLLM shim route failed (%s) — using direct path", e)
+            model = self._route(agent_id, requested_model, [], session_id)
+            provider = _provider_of(model)
+            meta = {"agent_id": agent_id, "framework": framework, "session_id": session_id,
+                    "model": model, "routed": model != requested_model}
+            return await self._forward_translated(body, model, provider, streaming, meta)
+
+        # Build an Anthropic Messages object from AxonLLM's OpenAI-shaped result.
+        anthropic_msg = _axon_result_to_anthropic(res, body.get("tools"))
+        routed = (res.model or "") != requested_model
+        await self._report(agent_id, framework, session_id, res.model or requested_model,
+                           tier="allow",
+                           usage={"input_tokens": res.input_tokens, "output_tokens": res.output_tokens},
+                           routed=routed)
+
+        if not streaming:
+            return JSONResponse(status_code=200, content=anthropic_msg)
+
+        def gen() -> Any:
+            for evt in T.anthropic_message_to_sse(anthropic_msg):
+                yield evt
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
     async def _call_translated_provider(
         self, body: dict[str, Any], model: str, provider: str
     ) -> dict[str, Any]:
@@ -392,6 +467,49 @@ class MessagesProxy:
                 )
             except Exception as e:  # noqa: BLE001
                 log.debug("Trace report failed: %s", e)
+
+
+def _axon_result_to_anthropic(res: Any, req_tools: list[dict[str, Any]] | None) -> dict[str, Any]:
+    """Build an Anthropic Messages dict from an AxonResult (OpenAI-shaped).
+
+    Restores dotted tool names (AxonLLM/OpenAI sanitize '.' → '_') from the
+    original request's tool list so Claude Code sees the names it sent.
+    """
+    name_map: dict[str, str] = {}
+    for t in (req_tools or []):
+        original = t.get("name", "")
+        name_map[original.replace(".", "_")] = original
+
+    content: list[dict[str, Any]] = []
+    if res.content:
+        content.append({"type": "text", "text": res.content})
+    for tc in (res.tool_calls or []):
+        fn = tc.get("function", {}) or {}
+        raw_name = fn.get("name", tc.get("name", ""))
+        args = fn.get("arguments", tc.get("arguments", {}))
+        if isinstance(args, str):
+            try:
+                args = json.loads(args or "{}")
+            except Exception:
+                args = {}
+        content.append({
+            "type": "tool_use",
+            "id": tc.get("id", "toolu_axon"),
+            "name": name_map.get(raw_name, raw_name),
+            "input": args or {},
+        })
+
+    stop_reason = "tool_use" if any(b["type"] == "tool_use" for b in content) else "end_turn"
+    return {
+        "id": "msg_axon",
+        "type": "message",
+        "role": "assistant",
+        "model": res.model or "",
+        "content": content,
+        "stop_reason": stop_reason,
+        "stop_sequence": None,
+        "usage": {"input_tokens": res.input_tokens, "output_tokens": res.output_tokens},
+    }
 
 
 def _scrape_usage(buf: bytes) -> dict[str, int]:
