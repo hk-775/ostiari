@@ -4,6 +4,7 @@ import { Radio, Pause, Play, Trash2, ChevronDown, ChevronRight } from "lucide-re
 const WS_URL = (import.meta.env.VITE_API_URL || "http://localhost:8400").replace("http", "ws");
 
 interface TraceEvent {
+  trace_id: string;
   gateway_id: string;
   action: string;
   tier: string;
@@ -44,6 +45,9 @@ type SortDir = "asc" | "desc";
 function normalizeTrace(t: any): TraceEvent {
   return {
     ...t,
+    // Stable id from the gateway; synthesize a fallback for legacy events so the
+    // UI can always dedup and key on it.
+    trace_id: t.trace_id || `${t.timestamp}-${t.agent_id || ""}-${t.action || ""}`,
     gateway_id: t.gateway_id || t.sidecar_id || "",
     duration_ms: typeof t.duration_ms === "number" ? t.duration_ms : 0,
     score: typeof t.score === "number" ? t.score : 0,
@@ -83,7 +87,18 @@ export function LiveTraces() {
     ws.onmessage = (event) => {
       if (paused) return;
       const trace = normalizeTrace(JSON.parse(event.data));
-      setTraces((prev) => [...prev.slice(-199), trace]);
+      setTraces((prev) => {
+        // Dedup by trace_id: the initial fetch and the WebSocket can deliver the
+        // same event, and a gateway retry re-sends it. Replace in place if seen,
+        // otherwise append. (Fixes the duplicate rows in Live Traces.)
+        const idx = prev.findIndex((t) => t.trace_id === trace.trace_id);
+        if (idx !== -1) {
+          const next = prev.slice();
+          next[idx] = trace;
+          return next;
+        }
+        return [...prev.slice(-199), trace];
+      });
     };
 
     return () => ws.close();

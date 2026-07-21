@@ -7,6 +7,7 @@ and restores on gateway startup.
 import asyncio
 import logging
 import time
+import uuid
 from typing import Any
 
 import httpx
@@ -76,6 +77,10 @@ class TraceReporter:
             self._client = httpx.AsyncClient(timeout=3.0)
 
         event = {
+            # Stable, unique identifier for this trace — the durable handle that
+            # dedup, deep-links, and cross-references (decision/HITL/payment/audit)
+            # hang off. Stamped at the gateway so it's end-to-end consistent.
+            "trace_id": uuid.uuid4().hex,
             "sidecar_id": self._sidecar_id,
             "action": action,
             "tier": tier,
