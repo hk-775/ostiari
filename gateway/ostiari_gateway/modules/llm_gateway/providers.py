@@ -76,10 +76,10 @@ class LLMProvider:
             return
 
         try:
-            from gateway.config import DEFAULT_CONFIG
-            from gateway.cost_tracker import CostTracker
-            from gateway.health_tracker import ProviderHealthTracker
-            from gateway.router import Router
+            from src.gateway.config import DEFAULT_CONFIG
+            from src.gateway.cost_tracker import CostTracker
+            from src.gateway.health_tracker import ProviderHealthTracker
+            from src.gateway.router import Router
 
             self._health_tracker = ProviderHealthTracker()
             self._cost_tracker = CostTracker(
@@ -128,7 +128,7 @@ class LLMProvider:
     def _make_provider_fn(self, configs: dict[str, dict[str, Any]]) -> Any:
         """Create a provider function for the Router."""
         try:
-            from gateway.multi_provider_factory import MultiProviderFactory
+            from src.gateway.multi_provider_factory import MultiProviderFactory
 
             factory = MultiProviderFactory(configs)
             return factory.get_provider_fn()
@@ -165,7 +165,7 @@ class LLMProvider:
     ) -> LLMResponse:
         """Route through AxonLLM's engine."""
         try:
-            from gateway.models import ChatCompletionRequest
+            from src.gateway.models import ChatCompletionRequest
 
             request = ChatCompletionRequest(
                 model=model,
