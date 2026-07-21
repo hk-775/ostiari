@@ -4,6 +4,7 @@ import hmac
 import logging
 import os
 import time
+import uuid
 from collections import deque
 from typing import Any
 
@@ -68,6 +69,7 @@ def _trace(
 ) -> dict[str, Any]:
     """Build one trace event dict in the shape the gateway emits."""
     return {
+        "trace_id": uuid.uuid4().hex,
         "sidecar_id": gateway_id,
         "gateway_id": gateway_id,
         "action": action,
@@ -235,6 +237,7 @@ def seed_traces() -> None:
     for caller, callee, reason, shadow, count in delegations:
         for _ in range(count):
             _recent_traces.append({
+                "trace_id": uuid.uuid4().hex,
                 "sidecar_id": "crm-agent", "gateway_id": "crm-agent",
                 "action": f"a2a.{callee}", "tier": "block", "score": 0,
                 "agent_id": caller, "framework": "gateway-invoke", "is_mcp": False,
@@ -249,12 +252,31 @@ def seed_traces() -> None:
 
 @router.post("/api/traces/ingest")
 async def ingest_trace(request: Request) -> Any:
-    """Receive a trace event from a gateway and broadcast to WebSocket clients."""
+    """Receive a trace event from a gateway and broadcast to WebSocket clients.
+
+    Idempotent on ``trace_id``: a re-POSTed trace (gateway retry) updates the
+    existing entry instead of creating a duplicate. Legacy events without a
+    trace_id get one synthesized so downstream consumers always have a stable
+    handle.
+    """
     _require_ingest_auth(request)
     event = await request.json()
-    _recent_traces.append(event)
+    if not event.get("trace_id"):
+        event["trace_id"] = uuid.uuid4().hex
 
-    # Broadcast to all connected WebSocket clients
+    # Dedup: if we've already seen this trace_id, replace it in place (retry /
+    # update) rather than appending a second copy.
+    tid = event["trace_id"]
+    duplicate = False
+    for i, existing in enumerate(_recent_traces):
+        if existing.get("trace_id") == tid:
+            _recent_traces[i] = event
+            duplicate = True
+            break
+    if not duplicate:
+        _recent_traces.append(event)
+
+    # Broadcast to all connected WebSocket clients (clients dedup on trace_id).
     disconnected = set()
     for ws in _ws_clients:
         try:
@@ -263,7 +285,7 @@ async def ingest_trace(request: Request) -> Any:
             disconnected.add(ws)
 
     _ws_clients.difference_update(disconnected)
-    return {"status": "ok", "clients": len(_ws_clients)}
+    return {"status": "ok", "trace_id": tid, "duplicate": duplicate, "clients": len(_ws_clients)}
 
 
 @router.get("/api/traces/recent")
