@@ -11,6 +11,7 @@ from control_plane.database import engine
 from control_plane.models.database import Base
 from control_plane.routers import (
     a2a_agents,
+    agent_routing,
     agents,
     approvals,
     audit,
@@ -142,6 +143,7 @@ app.include_router(auth_router)
 app.include_router(sso_router)
 app.include_router(gateways.router)
 app.include_router(agents.router)
+app.include_router(agent_routing.router)
 app.include_router(tools.router)
 app.include_router(policies.router)
 app.include_router(mcp_servers.router)

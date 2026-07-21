@@ -20,6 +20,25 @@ class ABExperiment(BaseModel):
     traffic_pct_b: int = 10  # percentage of traffic to model B (0-100)
 
 
+class AgentRoutingPolicy(BaseModel):
+    """Per-agent model-selection policy — rotate an agent across several LLMs.
+
+    This is *model selection* (which LLM), distinct from AxonLLM's per-model
+    backend load-balancing (which replica/region of a chosen model). It answers
+    "for this agent, which model does this request use?" by cycling a list.
+
+    - strategy "round_robin": pick the next model in ``models`` each time.
+    - scope "request": advance on every call (true round-robin).
+    - scope "session": all calls in one X-Session-Id use the same model; rotate
+      between sessions (avoids switching models mid-conversation, which is
+      jarring for an interactive coding agent).
+    """
+
+    strategy: str = "round_robin"      # round_robin (only strategy for now)
+    models: list[str] = Field(default_factory=list)
+    scope: str = "request"             # request | session
+
+
 class LLMCredentials(BaseModel):
     """Credentials for all supported LLM providers."""
 
@@ -54,6 +73,9 @@ class LLMConfig(BaseModel):
     max_tool_rounds: int = 10
     security: dict | None = None
     ab_experiments: list[ABExperiment] = Field(default_factory=list)
+    # Per-agent model-rotation policies, keyed by agent_id. A "*" key applies to
+    # any agent without a specific entry.
+    agent_routing: dict[str, AgentRoutingPolicy] = Field(default_factory=dict)
 
 
 class InvokeRequest(BaseModel):

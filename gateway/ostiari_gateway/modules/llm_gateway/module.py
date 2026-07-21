@@ -127,6 +127,14 @@ class LLMGatewayModule:
                 self._executor._intent_cache.clear()
             return {"status": "cleared"}
 
+        def _resync_proxy() -> None:
+            if self._messages_proxy and self._executor:
+                # Keep the shim on the same live config/router/provider/security.
+                self._messages_proxy._config = self._config
+                self._messages_proxy._router = self._executor._router
+                self._messages_proxy._provider = self._executor._provider
+                self._messages_proxy._security = self._executor._security
+
         @app.post("/config/llm")
         async def update_llm_config(request: Request) -> Any:
             """Hot-reload LLM configuration."""
@@ -134,16 +142,38 @@ class LLMGatewayModule:
             self._config = LLMConfig(**body)
             if self._executor:
                 self._executor.update_config(self._config)
-            if self._messages_proxy:
-                # Keep the shim on the same live config/router/provider/security.
-                self._messages_proxy._config = self._config
-                self._messages_proxy._router = self._executor._router
-                self._messages_proxy._provider = self._executor._provider
-                self._messages_proxy._security = self._executor._security
+            _resync_proxy()
             return {"status": "applied", "default_model": self._config.default_model}
 
+        @app.post("/config/agent-routing")
+        async def update_agent_routing(request: Request) -> Any:
+            """Merge per-agent model-rotation policies WITHOUT touching credentials.
+
+            Body: {"agent_routing": {"claude-code": {"strategy": "round_robin",
+                   "models": [...], "scope": "request"}}}. This is a partial update
+            so the control plane can set routing without needing (or overwriting)
+            the gateway's provider credentials loaded at startup.
+            """
+            body = await request.json()
+            routing = body.get("agent_routing", body)
+            # Rebuild config preserving everything else; only replace agent_routing.
+            data = self._config.model_dump()
+            data["agent_routing"] = routing
+            self._config = LLMConfig(**data)
+            if self._executor:
+                self._executor.update_config(self._config)
+            _resync_proxy()
+            return {"status": "applied",
+                    "agent_routing": {k: v.model_dump() for k, v in self._config.agent_routing.items()}}
+
+        @app.get("/config/agent-routing")
+        async def get_agent_routing() -> Any:
+            """Return the current per-agent routing policies."""
+            return {"agent_routing": {k: v.model_dump()
+                                      for k, v in self._config.agent_routing.items()}}
+
         log.info("LLM Gateway module registered: POST /v1/messages, POST /invoke, "
-                 "GET /models, POST /config/llm")
+                 "GET /models, POST /config/llm, POST /config/agent-routing")
 
     def shutdown(self) -> None:
         self._executor = None
