@@ -38,14 +38,21 @@ class ModelRouter:
         self._init_smart_routing()
 
     def _init_smart_routing(self) -> None:
-        """Try to initialize AxonLLM's smart routing."""
+        """Initialize AxonLLM's smart routing (task classification).
+
+        AxonLLM is embedded as the ``src.gateway`` package. If it isn't
+        importable, smart routing degrades to explicit rules + default model —
+        logged explicitly (a silent no-op previously hid a broken embed).
+        """
         try:
-            from gateway.task_classifier import TaskClassifier
+            from src.gateway.task_classifier import TaskClassifier
 
             self._task_classifier = TaskClassifier()
-            log.info("AxonLLM TaskClassifier available for smart routing")
-        except ImportError:
+            log.info("AxonLLM TaskClassifier embedded — smart routing active")
+        except ImportError as e:
             self._task_classifier = None
+            log.warning("AxonLLM not importable (%s) — smart routing disabled, "
+                        "falling back to rules/default", e)
 
     def select_model(self, context: dict[str, Any]) -> str:
         """Select a model based on routing rules and context.

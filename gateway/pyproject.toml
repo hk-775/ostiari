@@ -20,5 +20,16 @@ dependencies = [
     "python-jose[cryptography]>=3.3",
 ]
 
+# AxonLLM provides the embedded routing engine (smart task-classification
+# routing, ensemble, multi-provider). It is imported as the ``src.gateway.*``
+# package and installed separately (editable, not on PyPI):
+#     uv pip install -e ../AxonLLM tiktoken
+# When absent, the gateway degrades gracefully: smart routing is disabled and
+# routing falls back to explicit rules + default model (logged at startup).
+[project.optional-dependencies]
+routing = [
+    "tiktoken>=0.7",   # required by AxonLLM smart_routing token estimation
+]
+
 [project.scripts]
 ostiari-gateway = "ostiari_gateway.main:cli"
