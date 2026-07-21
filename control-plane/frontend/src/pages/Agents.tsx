@@ -200,6 +200,94 @@ function RoutingOverrideSection({ agents }: { agents: AgentConfig[] }) {
   );
 }
 
+// Live LLM round-robin — unlike the aspirational overrides above, this panel
+// hits /api/agent-routing which is enforced at the gateway (verified end-to-end).
+function LLMRoundRobinSection({ agents }: { agents: AgentConfig[] }) {
+  const [agentId, setAgentId] = useState("");
+  const [gatewayId, setGatewayId] = useState("");
+  const [scope, setScope] = useState<"request" | "session">("session");
+  const [models, setModels] = useState<string[]>([]);
+  const [status, setStatus] = useState("");
+
+  const agent = agentId || agents[0]?.name || "";
+  const gw = gatewayId || agents.find(a => a.name === agent)?.gateway_id || agents[0]?.gateway_id || "";
+
+  const save = async () => {
+    setStatus("");
+    if (models.length < 1) { setStatus("Add at least one model."); return; }
+    try {
+      const r = await fetch(`${API_BASE}/api/agent-routing`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agent_id: agent, gateway_id: gw, strategy: "round_robin", models, scope }),
+      });
+      const d = await r.json();
+      if (!r.ok) { setStatus(`Error: ${d.detail || r.status}`); return; }
+      setStatus(d.pushed ? "Saved & pushed to gateway ✓" : `Saved (push failed: ${d.push_error})`);
+    } catch (e) {
+      setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  return (
+    <div className="card p-4 space-y-3">
+      <div className="flex items-center gap-2">
+        <Route className="h-5 w-5 text-emerald-600" />
+        <h2 className="text-lg font-semibold text-stone-900">LLM Round-Robin (live)</h2>
+      </div>
+      <p className="text-xs text-stone-500">
+        Rotate one agent's calls across several LLMs. This is model <em>selection</em> (which LLM),
+        enforced at the gateway — distinct from per-model backend load-balancing. Session scope keeps
+        one model per conversation; request scope rotates every call.
+      </p>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <div>
+          <label className="text-[10px] font-semibold text-stone-400 uppercase">Agent</label>
+          <select value={agent} onChange={(e) => { setAgentId(e.target.value); setGatewayId(""); }}
+                  className="mt-0.5 w-full rounded-lg border border-stone-200 bg-white px-2 py-1.5 text-xs">
+            {agents.map(a => <option key={a.name} value={a.name}>{a.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-[10px] font-semibold text-stone-400 uppercase">Gateway</label>
+          <input value={gw} onChange={(e) => setGatewayId(e.target.value)}
+                 className="mt-0.5 w-full rounded-lg border border-stone-200 px-2 py-1.5 text-xs font-mono" />
+        </div>
+        <div>
+          <label className="text-[10px] font-semibold text-stone-400 uppercase">Scope</label>
+          <select value={scope} onChange={(e) => setScope(e.target.value as "request" | "session")}
+                  className="mt-0.5 w-full rounded-lg border border-stone-200 bg-white px-2 py-1.5 text-xs">
+            <option value="session">Per session (sticky per conversation)</option>
+            <option value="request">Per request (rotate every call)</option>
+          </select>
+        </div>
+      </div>
+      <div>
+        <label className="text-[10px] font-semibold text-stone-400 uppercase">Models (rotation order)</label>
+        <div className="flex flex-wrap gap-1 mt-1">
+          {models.map((m, i) => (
+            <span key={m} className="inline-flex items-center gap-0.5 rounded-full bg-emerald-50 text-emerald-700 px-2 py-0.5 text-[10px] font-medium">
+              {i + 1}. {m}
+              <button onClick={() => setModels(models.filter((_, j) => j !== i))} className="ml-0.5 hover:text-rose-600">×</button>
+            </span>
+          ))}
+        </div>
+        <input placeholder="Add model (e.g. claude-sonnet-4-6, gpt-4o) — Enter"
+               className="mt-1 w-full rounded-lg border border-stone-200 px-2 py-1 text-[10px]"
+               onKeyDown={(e) => {
+                 if (e.key === "Enter") {
+                   const val = (e.target as HTMLInputElement).value.trim();
+                   if (val) { setModels([...models, val]); (e.target as HTMLInputElement).value = ""; }
+                 }
+               }} />
+      </div>
+      <div className="flex items-center gap-2">
+        <button onClick={save} className="btn-primary text-xs"><Save className="h-3.5 w-3.5" /> Save & Push</button>
+        {status && <span className="text-xs text-stone-600">{status}</span>}
+      </div>
+    </div>
+  );
+}
+
 export function Agents() {
   const queryClient = useQueryClient();
   const { data: agents = [], isLoading } = useQuery({ queryKey: ["agents"], queryFn: fetchAgents });
@@ -347,6 +435,11 @@ export function Agents() {
           </div>
         )}
       </div>
+
+      {/* LLM Round-Robin (live, enforced) */}
+      {agents.length > 0 && (
+        <LLMRoundRobinSection agents={agents} />
+      )}
 
       {/* Per-Agent Routing Override */}
       {agents.length > 0 && (

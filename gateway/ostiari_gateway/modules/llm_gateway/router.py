@@ -28,6 +28,9 @@ class ModelRouter:
         self._config = config
         self._smart_router: Any = None
         self._task_classifier: Any = None
+        # Round-robin state: per-agent request counter, and per-session sticky pick.
+        self._rr_counter: dict[str, int] = {}
+        self._session_pick: dict[str, str] = {}
         self._init_smart_routing()
 
     def update_config(self, config: LLMConfig) -> None:
@@ -48,12 +51,19 @@ class ModelRouter:
         """Select a model based on routing rules and context.
 
         Priority:
-        1. A/B experiments (percentage-based split)
-        2. Explicit control plane rules (condition matching)
-        3. AxonLLM smart routing (task classification) if available
-        4. Default model
+        1. Per-agent routing policy (round-robin across LLMs)
+        2. A/B experiments (percentage-based split)
+        3. Explicit control plane rules (condition matching)
+        4. AxonLLM smart routing (task classification) if available
+        5. Default model
         """
-        # Check A/B experiments first
+        # Per-agent model-rotation policy takes precedence: an operator opting an
+        # agent into round-robin means "spread this agent across these LLMs".
+        rr = self._check_agent_routing(context)
+        if rr is not None:
+            return rr
+
+        # Check A/B experiments
         ab_result = self._check_ab_experiments(context)
         if ab_result is not None:
             return ab_result
@@ -77,6 +87,53 @@ class ModelRouter:
                         return model
 
         return self._config.default_model
+
+    def _check_agent_routing(self, context: dict[str, Any]) -> str | None:
+        """Apply a per-agent round-robin model policy, if one is configured.
+
+        Looks up the agent's policy (falling back to a "*" wildcard policy).
+        Returns the chosen model, or None if no policy applies.
+        """
+        policies = getattr(self._config, "agent_routing", None)
+        if not policies:
+            return None
+
+        agent_id = str(context.get("agent_id", "") or "")
+        policy = policies.get(agent_id) or policies.get("*")
+        if policy is None:
+            return None
+
+        models = list(getattr(policy, "models", []) or [])
+        if not models:
+            return None
+        if getattr(policy, "strategy", "round_robin") != "round_robin":
+            return None
+
+        if len(models) == 1:
+            return models[0]
+
+        scope = getattr(policy, "scope", "request")
+        if scope == "session":
+            # Sticky per session: same X-Session-Id keeps one model; a new
+            # session advances the rotation. Falls back to request scope when no
+            # session id is present.
+            session_id = str(context.get("session_id", "") or "")
+            if session_id:
+                key = f"{agent_id}:{session_id}"
+                if key not in self._session_pick:
+                    idx = self._rr_counter.get(agent_id, 0) % len(models)
+                    self._rr_counter[agent_id] = idx + 1
+                    self._session_pick[key] = models[idx]
+                    log.debug("Round-robin (session) agent=%s session=%s → %s",
+                              agent_id, session_id, self._session_pick[key])
+                return self._session_pick[key]
+
+        # Request scope (default): advance on every call.
+        idx = self._rr_counter.get(agent_id, 0) % len(models)
+        self._rr_counter[agent_id] = idx + 1
+        chosen = models[idx]
+        log.debug("Round-robin (request) agent=%s → %s", agent_id, chosen)
+        return chosen
 
     def _check_ab_experiments(self, context: dict[str, Any]) -> str | None:
         """Check if any A/B experiment should route this request.
