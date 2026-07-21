@@ -93,6 +93,33 @@ class TestShimThroughAxon:
         assert "event: message_stop" in body
 
 
+class TestClaudeCodeShape:
+    def test_block_list_content_routes_through_axon(self):
+        """Claude Code sends content as a list of blocks + system as blocks.
+        The shim must normalize these before AxonLLM (no 'list'.lower crash)."""
+        captured = {}
+
+        async def _route(self_inner, **kwargs):
+            captured.update(kwargs)
+            return AxonResult(content="ok", model="m", provider="p",
+                              input_tokens=1, output_tokens=1)
+        c = _app()
+        with patch("ostiari_gateway.modules.llm_gateway.axon_router.AxonRouter.available", True), \
+             patch("ostiari_gateway.modules.llm_gateway.axon_router.AxonRouter.route", new=_route):
+            r = c.post("/v1/messages",
+                       headers={"x-claude-code-session-id": "cc-sess-1"},
+                       json={"model": "claude-sonnet-4-6", "max_tokens": 8,
+                             "system": [{"type": "text", "text": "be brief"}],
+                             "messages": [{"role": "user",
+                                           "content": [{"type": "text", "text": "hi"}]}]})
+        assert r.status_code == 200
+        # messages passed to Axon must be OpenAI-shaped string content, not blocks
+        msgs = captured.get("messages", [])
+        assert all(isinstance(m.get("content"), str) for m in msgs if m.get("content") is not None)
+        # session id captured from the Claude Code header
+        assert captured.get("session_id") == "cc-sess-1"
+
+
 class TestFallbackWhenAxonAbsent:
     def test_shim_uses_direct_path_when_axon_unavailable(self, monkeypatch):
         # With Axon disabled, the shim should hit the direct path (500 for no cred)

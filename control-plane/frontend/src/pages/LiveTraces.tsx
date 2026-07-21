@@ -5,6 +5,8 @@ const WS_URL = (import.meta.env.VITE_API_URL || "http://localhost:8400").replace
 
 interface TraceEvent {
   trace_id: string;
+  parent_trace_id?: string;
+  is_span_root?: boolean;
   gateway_id: string;
   action: string;
   tier: string;
