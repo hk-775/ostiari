@@ -26,7 +26,7 @@ class SecurityLayer:
         """Initialize AxonLLM security components if available."""
         if self._pii_enabled:
             try:
-                from gateway.security.pii_redactor import PIIRedactor
+                from src.gateway.security.pii_redactor import PIIRedactor
 
                 self._pii_redactor = PIIRedactor()
                 log.info("PII redaction enabled (powered by AxonLLM)")
@@ -35,7 +35,7 @@ class SecurityLayer:
 
         if self._injection_enabled:
             try:
-                from gateway.security.injection_detector import PromptInjectionDetector
+                from src.gateway.security.injection_detector import PromptInjectionDetector
 
                 self._injection_detector = PromptInjectionDetector()
                 log.info("Prompt injection detection enabled (powered by AxonLLM)")
@@ -85,7 +85,7 @@ class SecurityLayer:
         redaction_map: dict[str, str] = {}
 
         try:
-            from gateway.security.pii_redactor import RedactionMapping
+            from src.gateway.security.pii_redactor import RedactionMapping
 
             mapping = RedactionMapping()
             processed = []
