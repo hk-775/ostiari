@@ -134,7 +134,7 @@ class MessagesProxy:
                 log.debug("Injection detection failed: %s", e)
 
         # ── Route: pick the model from request content (any provider) ────
-        model = self._route(agent_id, requested_model, flat)
+        model = self._route(agent_id, requested_model, flat, session_id)
         routed = model != requested_model
         provider = _provider_of(model)
 
@@ -160,11 +160,13 @@ class MessagesProxy:
         return await self._forward_translated(body, model, provider, streaming, meta)
 
     # ── routing ──────────────────────────────────────────────────────────
-    def _route(self, agent_id: str, requested_model: str, flat: list[dict[str, str]]) -> str:
+    def _route(self, agent_id: str, requested_model: str, flat: list[dict[str, str]],
+               session_id: str = "") -> str:
         if self._router is None:
             return requested_model
         try:
-            selected = self._router.select_model({"agent_id": agent_id, "messages": flat})
+            selected = self._router.select_model(
+                {"agent_id": agent_id, "messages": flat, "session_id": session_id})
         except Exception as e:  # noqa: BLE001 — routing must never break the call
             log.debug("Routing failed, using requested model: %s", e)
             return requested_model
