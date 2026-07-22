@@ -1,14 +1,23 @@
-"""Security layer — PII redaction and prompt injection detection via AxonLLM.
+"""Security layer — prompt-injection detection and PII redaction.
 
-Wraps AxonLLM's security modules to provide:
+Wraps AxonLLM's security engine (``src.gateway.security.*``) to provide:
+- Prompt-injection detection and blocking
 - PII redaction before prompts reach the LLM (reversible)
-- Prompt injection detection and blocking
+
+FAIL-CLOSED: for a governance gateway, "requested but the detector isn't
+available" and "the detector raised" must **block**, not silently allow. This
+module previously swallowed ImportError and returned allow/unredacted on any
+error — see the technical assessment (B3). It now surfaces those as a block.
 """
 
 import logging
 from typing import Any
 
 log = logging.getLogger("ostiari.sidecar.llm.security")
+
+
+class SecurityUnavailableError(RuntimeError):
+    """A security control was enabled but its engine could not be initialized."""
 
 
 class SecurityLayer:
@@ -20,55 +29,101 @@ class SecurityLayer:
         self._injection_detector: Any = None
         self._pii_enabled = self._config.get("pii_redaction", False)
         self._injection_enabled = self._config.get("injection_detection", False)
+        # Records why a control is unavailable so process_messages can fail closed.
+        self._pii_unavailable: str = ""
+        self._injection_unavailable: str = ""
         self._init_security()
 
     def _init_security(self) -> None:
-        """Initialize AxonLLM security components if available."""
+        """Initialize AxonLLM security components for the enabled controls.
+
+        If a control is enabled but its engine can't load, we DON'T disable it
+        silently — we remember it's unavailable and fail closed at call time.
+        """
+        threshold = float(self._config.get("injection_threshold", 0.7))
+
         if self._pii_enabled:
             try:
                 from src.gateway.security.pii_redactor import PIIRedactor
 
                 self._pii_redactor = PIIRedactor()
-                log.info("PII redaction enabled (powered by AxonLLM)")
-            except ImportError:
-                log.warning("PII redaction requested but gateway.security not available")
+                log.info("PII redaction enabled")
+            except Exception as e:  # noqa: BLE001
+                self._pii_unavailable = f"PII redactor unavailable: {e}"
+                log.error("PII redaction ENABLED but engine unavailable — will fail closed: %s", e)
 
         if self._injection_enabled:
             try:
                 from src.gateway.security.injection_detector import PromptInjectionDetector
 
-                self._injection_detector = PromptInjectionDetector()
-                log.info("Prompt injection detection enabled (powered by AxonLLM)")
-            except ImportError:
-                log.warning("Injection detection requested but gateway.security not available")
+                self._injection_detector = PromptInjectionDetector(block_threshold=threshold)
+                log.info("Prompt-injection detection enabled (threshold=%.2f)", threshold)
+            except Exception as e:  # noqa: BLE001
+                self._injection_unavailable = f"injection detector unavailable: {e}"
+                log.error("Injection detection ENABLED but engine unavailable — will fail closed: %s", e)
 
     def process_messages(
         self, messages: list[dict[str, Any]]
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """Process messages through security pipeline.
+        """Run the security pipeline over messages.
 
-        Returns:
-            Tuple of (processed_messages, security_metadata).
-            security_metadata includes redaction mappings and injection scores.
+        Returns (processed_messages, metadata). metadata always carries
+        ``blocked`` (bool) and ``block_reason`` (str); when blocked the caller
+        MUST reject the request. Injection detection blocks; PII redaction
+        rewrites content (and returns a ``redaction_map`` for response
+        re-injection). Both fail closed: if an enabled control is unavailable or
+        errors, the request is blocked.
         """
         metadata: dict[str, Any] = {
             "pii_redacted": False,
             "injection_detected": False,
+            "blocked": False,
+            "block_reason": "",
         }
 
-        # PII Redaction
-        if self._pii_redactor is not None:
-            messages, redaction_map = self._redact_pii(messages)
-            if redaction_map:
-                metadata["pii_redacted"] = True
-                metadata["redaction_map"] = redaction_map
-
-        # Injection Detection
-        if self._injection_detector is not None:
-            is_injection, score = self._detect_injection(messages)
-            metadata["injection_score"] = score
-            if is_injection:
+        # ── Injection detection (fail-closed) ────────────────────────────
+        if self._injection_enabled:
+            if self._injection_detector is None:
+                metadata["blocked"] = True
+                metadata["block_reason"] = self._injection_unavailable or "injection detector unavailable"
                 metadata["injection_detected"] = True
+                return messages, metadata
+            try:
+                result = self._injection_detector.analyze_messages(list(messages))
+                score = float(getattr(result, "score", 0.0) or 0.0)
+                metadata["injection_score"] = score
+                if getattr(result, "should_block", False):
+                    metadata["injection_detected"] = True
+                    metadata["blocked"] = True
+                    patterns = getattr(result, "detected_patterns", []) or []
+                    metadata["block_reason"] = (
+                        f"prompt injection detected (score {score:.2f}"
+                        + (f", patterns: {', '.join(patterns)}" if patterns else "") + ")"
+                    )
+                    return messages, metadata
+            except Exception as e:  # noqa: BLE001 — fail CLOSED
+                log.error("Injection detection errored — failing closed: %s", e)
+                metadata["blocked"] = True
+                metadata["injection_detected"] = True
+                metadata["block_reason"] = f"injection detection error: {e}"
+                return messages, metadata
+
+        # ── PII redaction (fail-closed on error when enabled) ────────────
+        if self._pii_enabled:
+            if self._pii_redactor is None:
+                metadata["blocked"] = True
+                metadata["block_reason"] = self._pii_unavailable or "PII redactor unavailable"
+                return messages, metadata
+            try:
+                messages, redaction_map = self._redact_pii(messages)
+                if redaction_map:
+                    metadata["pii_redacted"] = True
+                    metadata["redaction_map"] = redaction_map
+            except Exception as e:  # noqa: BLE001 — fail CLOSED (don't leak PII)
+                log.error("PII redaction errored — failing closed: %s", e)
+                metadata["blocked"] = True
+                metadata["block_reason"] = f"PII redaction error: {e}"
+                return messages, metadata
 
         return messages, metadata
 
@@ -78,41 +133,23 @@ class SecurityLayer:
             text = text.replace(token, original)
         return text
 
+    def _policy(self) -> Any:
+        """Build a ResolvedPolicy enabling redaction for all known PII types."""
+        from src.gateway.models import ResolvedPolicy
+        from src.gateway.security.pii_redactor import PII_PATTERNS
+
+        types = self._config.get("pii_redact_types") or list(PII_PATTERNS.keys())
+        return ResolvedPolicy(pii_redaction_enabled=True, pii_redact_types=types)
+
     def _redact_pii(
         self, messages: list[dict[str, Any]]
     ) -> tuple[list[dict[str, Any]], dict[str, str]]:
-        """Redact PII from message content using AxonLLM's PIIRedactor."""
-        redaction_map: dict[str, str] = {}
+        """Redact PII from message content using AxonLLM's PIIRedactor.
 
-        try:
-            from src.gateway.security.pii_redactor import RedactionMapping
-
-            mapping = RedactionMapping()
-            processed = []
-            for msg in messages:
-                content = msg.get("content", "")
-                if content and isinstance(content, str):
-                    redacted = self._pii_redactor.redact(content, mapping)
-                    processed.append({**msg, "content": redacted})
-                else:
-                    processed.append(msg)
-
-            redaction_map = dict(mapping._forward) if mapping._forward else {}
-            return processed, redaction_map
-        except Exception as e:
-            log.warning("PII redaction failed: %s", e)
-            return messages, {}
-
-    def _detect_injection(self, messages: list[dict[str, Any]]) -> tuple[bool, float]:
-        """Check messages for prompt injection attempts."""
-        try:
-            combined_text = " ".join(
-                msg.get("content", "") for msg in messages
-                if isinstance(msg.get("content"), str)
-            )
-            result = self._injection_detector.detect(combined_text)
-            threshold = self._config.get("injection_threshold", 0.7)
-            return result.score >= threshold, result.score
-        except Exception as e:
-            log.warning("Injection detection failed: %s", e)
-            return False, 0.0
+        Uses the real ``redact_messages(messages, policy)`` API. Any failure
+        propagates so process_messages can fail closed (no silent PII leak).
+        """
+        policy = self._policy()
+        processed, mapping = self._pii_redactor.redact_messages(list(messages), policy)
+        redaction_map = dict(getattr(mapping, "_forward", {}) or {})
+        return processed, redaction_map
