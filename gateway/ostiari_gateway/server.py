@@ -52,6 +52,20 @@ def _redact_credentials(cfg: dict[str, Any]) -> None:
                     creds[k] = "***REDACTED***"
 
 
+def _fail_closed_on_cp_loss() -> bool:
+    """Whether a control-plane-unreachable gateway should fail closed.
+
+    Opt-in: OSTIARI_FAIL_CLOSED_ON_CP_LOSS=true, or implied by
+    OSTIARI_ENV=production. Default off preserves the demo/standalone flow.
+    """
+    v = _os.environ.get("OSTIARI_FAIL_CLOSED_ON_CP_LOSS", "").strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    return _os.environ.get("OSTIARI_ENV", "").strip().lower() in ("production", "prod")
+
+
 def _config_admin_key() -> str:
     """Shared admin secret required to mutate/read gateway /config/* when set.
 
@@ -388,7 +402,19 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
                     await _connect_a2a_agents(bundle["a2a_agents"])
                 await lifecycle.start_heartbeat(interval=30)
             except Exception as e:
-                log.warning(f"Control plane registration failed: {e} — running standalone")
+                # If the control plane is unreachable, the gateway never received
+                # its pushed gates (quota, agent-auth, cross-agent) — which all
+                # default to allow-all. In production that silently disables
+                # governance, so fail CLOSED: enable least-privilege agent auth
+                # so unconfigured agents are denied rather than waved through.
+                if _fail_closed_on_cp_loss():
+                    agent_auth.configure({"enabled": True, "default_grants": [],
+                                          "default_models": [], "default_providers": []})
+                    log.error(
+                        "Control plane registration failed: %s — FAILING CLOSED "
+                        "(agent auth deny-by-default until CP reachable)", e)
+                else:
+                    log.warning(f"Control plane registration failed: {e} — running standalone (fail-open)")
 
         yield
 
