@@ -1004,11 +1004,16 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
             return JSONResponse(status_code=400,
                                 content={"error": "provide 'source' (url/json/yaml) or 'spec' (object)"})
 
-        # Fetch a URL source; otherwise parse inline.
+        # Fetch a URL source; otherwise parse inline. SSRF-guarded + redirects off.
         if isinstance(source, str) and source.strip().lower().startswith(("http://", "https://")):
+            from ostiari.net_guard import SSRFError, validate_public_url
+            try:
+                validate_public_url(source)
+            except SSRFError as e:
+                return JSONResponse(status_code=400, content={"error": f"blocked URL: {e}"})
             try:
                 import httpx as _hx
-                async with _hx.AsyncClient(timeout=15.0, follow_redirects=True) as c:
+                async with _hx.AsyncClient(timeout=15.0, follow_redirects=False) as c:
                     r = await c.get(source.strip())
                     r.raise_for_status()
                     source = r.text
