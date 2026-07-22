@@ -135,18 +135,20 @@ class MessagesProxy:
                                     tier="block", reason=reason, limit_type="agent_authorization")
                 return _err(403, "permission_error", reason)
 
-        # ── Gate 2: prompt-injection detection (detection-only) ──────────
+        # ── Gate 2: security (injection detection + PII) — FAIL-CLOSED ───
+        # Runs over the flattened text view. If an enabled control is
+        # unavailable, errors, or fires, the request is blocked (never silently
+        # allowed / forwarded unredacted). Full block-content PII rewriting on
+        # the shim is a follow-up; here we block on PII presence when redaction
+        # is enabled rather than leak it downstream.
         if self._security is not None:
-            try:
-                _, meta = self._security.process_messages(list(flat))
-                if meta.get("injection_detected"):
-                    await self._report(agent_id, framework, session_id, requested_model,
-                                        tier="block", reason="prompt injection detected",
-                                        limit_type="prompt_injection")
-                    return _err(403, "permission_error",
-                                "Request blocked by Ostiari: potential prompt injection detected.")
-            except Exception as e:  # noqa: BLE001 — detection must never break the call
-                log.debug("Injection detection failed: %s", e)
+            _, meta = self._security.process_messages(list(flat))
+            if meta.get("blocked") or meta.get("pii_redacted"):
+                reason = meta.get("block_reason") or "PII detected in prompt"
+                limit_type = "prompt_injection" if meta.get("injection_detected") else "pii"
+                await self._report(agent_id, framework, session_id, requested_model,
+                                    tier="block", reason=reason, limit_type=limit_type)
+                return _err(403, "permission_error", f"Request blocked by Ostiari: {reason}")
 
         # ── Ostiari-side quota gate (pre-call budget guard) ──────────────
         # AxonLLM does its own cost tracking + model access control; this is

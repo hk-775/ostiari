@@ -114,11 +114,14 @@ class AgenticExecutor:
         # Build tool specs from registered tools
         tool_specs = self._build_tool_specs(request.tools)
 
-        # Security: PII redaction + injection detection
+        # Security: injection detection + PII redaction (FAIL-CLOSED — an enabled
+        # control that is unavailable, errors, or fires blocks the request).
+        # On /invoke the (string-content) messages ARE redacted in place and the
+        # redacted set is what we send downstream.
         messages, security_meta = self._security.process_messages(list(request.messages))
-        if security_meta.get("injection_detected"):
+        if security_meta.get("blocked"):
             return InvokeResponse(
-                response="Request blocked: potential prompt injection detected.",
+                response=f"Request blocked: {security_meta.get('block_reason') or 'security policy'}",
                 model_used=model,
                 total_tokens=0,
                 rounds=0,
