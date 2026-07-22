@@ -70,6 +70,8 @@ class IntentCache:
 
     def __init__(self, ttl_seconds: float = 300.0, max_entries: int = 100) -> None:
         self._cache: dict[str, CachedPlan] = {}
+        # (agent_id, session_id) -> set of cache keys, so invalidate_session works.
+        self._session_keys: dict[tuple[str, str], set[str]] = {}
         self._ttl_seconds = ttl_seconds
         self._max_entries = max_entries
         self._hits = 0
@@ -131,20 +133,27 @@ class IntentCache:
             ttl_seconds=self._ttl_seconds,
             is_template=is_template,
         )
+        self._session_keys.setdefault((agent_id, session_id), set()).add(key)
         log.debug(
             "Intent cached: agent=%s session=%s, tools=%d, model=%s, template=%s",
             agent_id, session_id, len(tool_calls), model_used, is_template,
         )
 
-    def invalidate_session(self, session_id: str) -> int:
-        """Remove all cached plans for a session."""
-        _keys = [
-            k for k, v in self._cache.items()
-            # Can't reverse the hash, so we remove all (simple approach)
-            # In production, maintain a session → keys index
+    def invalidate_session(self, session_id: str, agent_id: str | None = None) -> int:
+        """Remove all cached plans for a session (optionally scoped to an agent).
+
+        Uses the session→keys index so it actually invalidates (previously it
+        only pruned expired entries and left the session's plans in place).
+        """
+        removed = 0
+        targets = [
+            sk for sk in list(self._session_keys)
+            if sk[1] == session_id and (agent_id is None or sk[0] == agent_id)
         ]
-        # For now, just clear expired entries
-        removed = self._prune_expired()
+        for sk in targets:
+            for key in self._session_keys.pop(sk, set()):
+                if self._cache.pop(key, None) is not None:
+                    removed += 1
         return removed
 
     def get_stats(self) -> dict[str, Any]:
@@ -163,6 +172,14 @@ class IntentCache:
     def clear(self) -> None:
         """Clear all cached entries."""
         self._cache.clear()
+        self._session_keys.clear()
+
+    def _forget_key(self, key: str) -> None:
+        """Drop a key from the session index (called when a cache entry is removed)."""
+        for sk, keys in list(self._session_keys.items()):
+            keys.discard(key)
+            if not keys:
+                self._session_keys.pop(sk, None)
 
     def _evict_oldest(self) -> None:
         """Remove the oldest entry."""
@@ -170,10 +187,12 @@ class IntentCache:
             return
         oldest_key = min(self._cache, key=lambda k: self._cache[k].created_at)
         del self._cache[oldest_key]
+        self._forget_key(oldest_key)
 
     def _prune_expired(self) -> int:
         """Remove all expired entries."""
         expired = [k for k, v in self._cache.items() if v.is_expired]
         for k in expired:
             del self._cache[k]
+            self._forget_key(k)
         return len(expired)

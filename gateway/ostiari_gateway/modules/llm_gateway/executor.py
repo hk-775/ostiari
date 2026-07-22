@@ -42,6 +42,31 @@ def _provider_of(model: str) -> str:
     return "anthropic"
 
 
+def _reinsert_placeholders(
+    tool_calls: list[dict[str, Any]], variables: dict[str, str]
+) -> list[dict[str, Any]]:
+    """Replace concrete variable values in tool-call args with {var} placeholders.
+
+    The inverse of CachedPlan.resolve_with_variables: turns a resolved plan back
+    into a template so it can be re-resolved with different values on a cache hit.
+    Longer values first so a value that is a substring of another doesn't
+    partially clobber it.
+    """
+    import json as _json
+
+    items = sorted(
+        ((k, v) for k, v in variables.items() if v),
+        key=lambda kv: len(kv[1]), reverse=True,
+    )
+    out = []
+    for tc in tool_calls:
+        args_str = _json.dumps(tc.get("arguments", {}))
+        for var_name, var_value in items:
+            args_str = args_str.replace(var_value, f"{{{var_name}}}")
+        out.append({**tc, "arguments": _json.loads(args_str)})
+    return out
+
+
 def _parse_args(args: Any) -> dict[str, Any]:
     """Tool-call arguments may arrive as a JSON string or a dict."""
     if isinstance(args, dict):
@@ -184,14 +209,17 @@ class AgenticExecutor:
 
                 # Cache the tool plan for this intent (if LLM returned tool calls)
                 if round_num == 0 and llm_response.has_tool_calls and agent_id and session_id:
-                    # In template mode: cache the plan with variable placeholders intact
-                    # The LLM's response arguments will contain the actual values,
-                    # but for template caching we store the plan keyed by template
+                    plan = [tc.to_dict() for tc in llm_response.tool_calls]
+                    if use_template and request.intent_variables:
+                        # B5 fix: the LLM resolved the template with THIS call's
+                        # variable values. Reverse-map those concrete values back
+                        # to {placeholder} tokens before caching, so a later call
+                        # with different intent_variables substitutes correctly
+                        # (instead of reusing the first call's concrete args).
+                        plan = _reinsert_placeholders(plan, request.intent_variables)
                     self._intent_cache.put(
                         agent_id, session_id, cache_key_intent,
-                        [tc.to_dict() for tc in llm_response.tool_calls],
-                        model_used,
-                        is_template=use_template,
+                        plan, model_used, is_template=use_template,
                     )
 
                 # Report usage to control plane (fire-and-forget)
