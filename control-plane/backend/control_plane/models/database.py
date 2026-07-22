@@ -233,3 +233,8 @@ class AuditLog(Base):
     timestamp: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
+    # Tamper-evidence: each row hashes its own canonical content together with
+    # the previous row's entry_hash, forming a chain. Altering or removing any
+    # row breaks every subsequent hash. Nullable for pre-existing rows.
+    prev_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    entry_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
