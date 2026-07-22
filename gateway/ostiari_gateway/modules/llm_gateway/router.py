@@ -143,17 +143,23 @@ class ModelRouter:
         return chosen
 
     def _check_ab_experiments(self, context: dict[str, Any]) -> str | None:
-        """Check if any A/B experiment should route this request.
+        """Return the A/B-assigned model for the first *in-scope* experiment.
 
-        Uses consistent hashing on agent_id so the same agent always gets
-        the same model (no flip-flopping between requests).
+        Consistent hashing on agent_id keeps an agent on the same bucket across
+        requests. An experiment scoped to specific ``agents`` only applies to
+        those; out-of-scope requests fall through to the next experiment (and
+        ultimately to rules/smart/default) instead of being hijacked. Returns
+        None when no experiment applies.
         """
+        agent_id = context.get("agent_id", "unknown")
         for exp in self._config.ab_experiments:
             if not exp.enabled:
                 continue
+            # Scope: if the experiment lists agents, only those participate.
+            if exp.agents and agent_id not in exp.agents:
+                continue
 
             # Consistent hash: same agent_id always gets same bucket
-            agent_id = context.get("agent_id", "unknown")
             hash_input = f"{exp.name}:{agent_id}"
             hash_val = int(hashlib.md5(hash_input.encode()).hexdigest(), 16) % 100
 
@@ -163,10 +169,9 @@ class ModelRouter:
                 context["_ab_experiment"] = exp.name
                 context["_ab_variant"] = "B"
                 return exp.model_b
-            else:
-                context["_ab_experiment"] = exp.name
-                context["_ab_variant"] = "A"
-                return exp.model_a
+            context["_ab_experiment"] = exp.name
+            context["_ab_variant"] = "A"
+            return exp.model_a
 
         return None
 
