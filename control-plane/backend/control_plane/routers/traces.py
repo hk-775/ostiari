@@ -33,7 +33,15 @@ def _require_ingest_auth(request: Request) -> None:
     """
     expected = os.environ.get(_INGEST_KEY_ENV, "").strip()
     if not expected:
-        return  # fail-open in dev; see module docstring
+        # Dev/demo: open. In production, refuse anonymous ingest (forged traces
+        # poison compliance + billing) — require OSTIARI_INGEST_KEY to be set.
+        from control_plane.env import is_production
+        if is_production():
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Trace ingest requires OSTIARI_INGEST_KEY in production",
+            )
+        return
     presented = request.headers.get("X-Ingest-Key", "")
     # Constant-time compare to avoid leaking the key via timing.
     if not presented or not hmac.compare_digest(presented, expected):

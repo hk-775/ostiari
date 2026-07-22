@@ -6,7 +6,30 @@ from datetime import datetime, timedelta, timezone
 import bcrypt
 from jose import JWTError, jwt
 
-JWT_SECRET = os.environ.get("OSTIARI_JWT_SECRET", "ostiari-dev-secret-change-in-prod")
+from control_plane.env import DEFAULT_DEV_JWT_SECRET, is_production
+
+
+def _resolve_jwt_secret() -> str:
+    """Return the JWT signing secret, refusing insecure config in production.
+
+    In production (OSTIARI_ENV=production) a strong OSTIARI_JWT_SECRET is
+    mandatory — starting with the well-known dev default would let anyone forge
+    admin tokens. In dev/demo the default is allowed for convenience.
+    """
+    secret = os.environ.get("OSTIARI_JWT_SECRET", "").strip()
+    if is_production():
+        if not secret or secret == DEFAULT_DEV_JWT_SECRET:
+            raise RuntimeError(
+                "OSTIARI_JWT_SECRET must be set to a strong secret in production "
+                "(OSTIARI_ENV=production) — the dev default is refused."
+            )
+        if len(secret) < 32:
+            raise RuntimeError("OSTIARI_JWT_SECRET too short (need >= 32 chars) in production.")
+        return secret
+    return secret or DEFAULT_DEV_JWT_SECRET
+
+
+JWT_SECRET = _resolve_jwt_secret()
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_HOURS = 24
 

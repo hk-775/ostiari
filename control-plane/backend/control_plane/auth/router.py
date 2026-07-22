@@ -1,11 +1,17 @@
 """Auth API endpoints."""
 
+import logging
+import os
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.auth.dependencies import get_current_user, require_role
 from control_plane.auth.models import User
+from control_plane.env import is_production
+
+log = logging.getLogger("control_plane.auth")
 from control_plane.auth.schemas import (
     AuthUser,
     LoginRequest,
@@ -28,15 +34,29 @@ async def _seed_admin(db: AsyncSession) -> None:
         return
     result = await db.execute(select(User).limit(1))
     if result.scalar_one_or_none() is None:
+        # In production the initial admin password must be supplied explicitly —
+        # never silently seed the well-known admin/admin credential. In dev/demo
+        # we keep 'admin' for convenience.
+        admin_email = os.environ.get("OSTIARI_ADMIN_EMAIL", "admin@ostiari.ai")
+        admin_password = os.environ.get("OSTIARI_ADMIN_PASSWORD", "").strip()
+        if is_production():
+            if not admin_password:
+                raise RuntimeError(
+                    "OSTIARI_ADMIN_PASSWORD must be set in production "
+                    "(OSTIARI_ENV=production) — refusing to seed the default admin/admin."
+                )
+        else:
+            admin_password = admin_password or "admin"
         admin = User(
-            email="admin@ostiari.ai",
+            email=admin_email,
             name="Admin",
-            hashed_password=hash_password("admin"),
+            hashed_password=hash_password(admin_password),
             role="admin",
             is_active=True,
         )
         db.add(admin)
         await db.flush()
+        log.info("Seeded initial admin user %s", admin_email)
     _seeded = True
 
 
