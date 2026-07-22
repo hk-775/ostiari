@@ -31,6 +31,10 @@ dev = [
     "aiosqlite>=0.19",
     "ruff>=0.4",
 ]
+# OTLP export of governance traces (opt-in via OTEL_EXPORTER_OTLP_ENDPOINT).
+otlp = [
+    "opentelemetry-exporter-otlp-proto-http>=1.20",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

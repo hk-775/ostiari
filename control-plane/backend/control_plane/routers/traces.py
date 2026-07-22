@@ -316,6 +316,15 @@ async def ingest_trace(request: Request) -> Any:
     if not duplicate:
         _recent_traces.append(event)
 
+    # Export the governance span over OTLP (no-op unless OTEL endpoint configured).
+    # New events only — a duplicate (retry) is the same span.
+    if not duplicate:
+        try:
+            from control_plane.services.otlp_exporter import exporter as _otlp
+            _otlp.export_event(event)
+        except Exception:  # noqa: BLE001 — export must never break ingest
+            pass
+
     # Broadcast to all connected WebSocket clients (clients dedup on trace_id).
     disconnected = set()
     for ws in _ws_clients:

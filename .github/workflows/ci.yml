@@ -72,6 +72,7 @@ jobs:
           pip install -e "$GITHUB_WORKSPACE"
           pip install -e ".[dev]"
           pip install aiosqlite greenlet pytest pytest-asyncio anyio httpx
+          pip install opentelemetry-exporter-otlp-proto-http
 
       - name: Test (control-plane suite)
         working-directory: control-plane/backend
