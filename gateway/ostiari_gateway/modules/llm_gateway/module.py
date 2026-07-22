@@ -20,6 +20,7 @@ class LLMGatewayModule:
         self._executor: AgenticExecutor | None = None
         self._config: LLMConfig = LLMConfig()
         self._messages_proxy: MessagesProxy | None = None
+        self._chat_proxy: Any = None
 
     @property
     def name(self) -> str:
@@ -54,6 +55,18 @@ class LLMGatewayModule:
             axon=self._executor._axon,
         )
 
+        # Codex CLI / OpenAI-SDK shim: /v1/chat/completions in the OpenAI wire
+        # format. Same governance + AxonLLM routing as the messages shim.
+        from ostiari_gateway.modules.llm_gateway.chat_proxy import ChatProxy
+        self._chat_proxy = ChatProxy(
+            config=llm_config,
+            axon=self._executor._axon,
+            security=self._executor._security,
+            quota_enforcer=quota_enforcer,
+            trace_reporter=trace_reporter,
+            agent_auth=agent_auth,
+        )
+
         @app.post("/v1/messages")
         async def messages(request: Request) -> Any:
             """Anthropic Messages API shim — intercept, govern, route, stream."""
@@ -63,6 +76,15 @@ class LLMGatewayModule:
                                              "error": {"type": "api_error",
                                                        "message": "LLM Gateway not initialized"}})
             return await self._messages_proxy.handle(request)
+
+        @app.post("/v1/chat/completions")
+        async def chat_completions(request: Request) -> Any:
+            """OpenAI Chat Completions shim — Codex CLI target; govern + route."""
+            if self._chat_proxy is None:
+                return JSONResponse(status_code=503,
+                                    content={"error": {"type": "api_error",
+                                                       "message": "LLM Gateway not initialized"}})
+            return await self._chat_proxy.handle(request)
 
         @app.post("/invoke")
         async def invoke(request: Request) -> Any:
@@ -136,6 +158,10 @@ class LLMGatewayModule:
                 self._messages_proxy._provider = self._executor._provider
                 self._messages_proxy._security = self._executor._security
                 self._messages_proxy._axon = self._executor._axon
+            if self._chat_proxy and self._executor:
+                self._chat_proxy._config = self._config
+                self._chat_proxy._security = self._executor._security
+                self._chat_proxy._axon = self._executor._axon
 
         @app.post("/config/llm")
         async def update_llm_config(request: Request) -> Any:
@@ -180,3 +206,4 @@ class LLMGatewayModule:
     def shutdown(self) -> None:
         self._executor = None
         self._messages_proxy = None
+        self._chat_proxy = None
