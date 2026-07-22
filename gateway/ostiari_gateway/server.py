@@ -31,6 +31,62 @@ import os as _os
 import httpx as _httpx
 
 
+_NON_SECRET_CRED_FIELDS = {
+    "azure_endpoint", "azure_api_version", "bedrock_region",
+    "vertex_project", "vertex_location",
+}
+
+
+def _redact_credentials(cfg: dict[str, Any]) -> None:
+    """Redact provider API keys from a config dict in place (for GET /config).
+
+    Only secret-bearing fields are redacted; non-sensitive config (region,
+    endpoint, api-version, project) is preserved so the response stays useful.
+    """
+    llm = cfg.get("llm")
+    if isinstance(llm, dict):
+        creds = llm.get("credentials")
+        if isinstance(creds, dict):
+            for k, v in list(creds.items()):
+                if v and k not in _NON_SECRET_CRED_FIELDS:
+                    creds[k] = "***REDACTED***"
+
+
+def _config_admin_key() -> str:
+    """Shared admin secret required to mutate/read gateway /config/* when set.
+
+    When OSTIARI_CONFIG_ADMIN_KEY is set, /config* calls must present it via the
+    X-Config-Admin-Key header (or Bearer). Unset (default) = demo/dev, open —
+    matching the existing agent-auth "off by default" posture. This closes the
+    assessment finding that anyone reaching the sidecar port could flip mode,
+    rewrite tools/policy, or read config.
+    """
+    return _os.environ.get("OSTIARI_CONFIG_ADMIN_KEY", "")
+
+
+def _authorize_config(request: Request) -> JSONResponse | None:
+    """Gate a /config* request. Returns a 401 response to short-circuit, or None.
+
+    No-op when OSTIARI_CONFIG_ADMIN_KEY is unset (dev/demo). When set, requires a
+    matching X-Config-Admin-Key header or Authorization: Bearer <key>.
+    """
+    expected = _config_admin_key()
+    if not expected:
+        return None
+    presented = request.headers.get("X-Config-Admin-Key", "")
+    if not presented:
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            presented = auth.removeprefix("Bearer ")
+    # constant-time compare
+    import hmac as _hmac
+    if presented and _hmac.compare_digest(presented, expected):
+        return None
+    return JSONResponse(status_code=401, content={
+        "error": "config administration requires a valid admin key",
+    })
+
+
 def _authenticate_agent(request: Request, agent_id: str) -> JSONResponse | None:
     """Enforce the agent's JWT when gateway auth is required.
 
@@ -346,6 +402,20 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
         await manager.shutdown()
 
     app = FastAPI(title="Ostiari Sidecar", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def _guard_config(request: Request, call_next: Any) -> Any:
+        """Require the config-admin key for /config* mutations/reads when set.
+
+        GET /config/mode and GET /tools stay readable; everything under /config
+        (including GET /config which can expose config shape) is gated when
+        OSTIARI_CONFIG_ADMIN_KEY is configured. No-op otherwise (dev/demo).
+        """
+        if request.url.path.startswith("/config"):
+            denied = _authorize_config(request)
+            if denied is not None:
+                return denied
+        return await call_next(request)
 
     # Activate modules based on config
     if initial_config and initial_config.modules.llm_gateway:
@@ -854,8 +924,14 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
 
     @app.get("/config")
     async def get_config() -> Any:
-        """Return current sidecar configuration."""
-        return manager.config.model_dump(mode="json", by_alias=True)
+        """Return current sidecar configuration with credentials redacted.
+
+        The raw config carries resolved provider API keys under llm.credentials;
+        never return them in cleartext (assessment finding #2).
+        """
+        cfg = manager.config.model_dump(mode="json", by_alias=True)
+        _redact_credentials(cfg)
+        return cfg
 
     @app.get("/config/mode")
     async def get_mode() -> Any:
