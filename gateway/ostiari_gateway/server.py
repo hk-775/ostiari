@@ -429,6 +429,12 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
 
     app = FastAPI(title="Ostiari Sidecar", lifespan=lifespan)
 
+    # DoS guards: reject oversized bodies, and per-caller rate limiting
+    # (off unless OSTIARI_GATEWAY_RATE_LIMIT_RPM is set).
+    from ostiari.http_limits import BodySizeLimitMiddleware, RateLimitMiddleware
+    app.add_middleware(RateLimitMiddleware)
+    app.add_middleware(BodySizeLimitMiddleware)
+
     @app.middleware("http")
     async def _guard_config(request: Request, call_next: Any) -> Any:
         """Require the config-admin key for /config* mutations/reads when set.
