@@ -40,10 +40,16 @@ class LLMResponse:
         tool_calls: list[ToolCall] | None = None,
         tokens_used: int = 0,
         model: str = "",
+        input_tokens: int = 0,
+        output_tokens: int = 0,
     ) -> None:
         self.content = content
         self.tool_calls = tool_calls or []
-        self.tokens_used = tokens_used
+        # Real input/output split when the provider reports it; else fall back to
+        # a half/half estimate of tokens_used so callers always have both.
+        self.input_tokens = input_tokens or (tokens_used - tokens_used // 2)
+        self.output_tokens = output_tokens or (tokens_used // 2)
+        self.tokens_used = tokens_used or (self.input_tokens + self.output_tokens)
         self.model = model
 
     @property
@@ -340,8 +346,10 @@ class LLMProvider:
                 original_name = name_map.get(block.name, block.name)
                 tool_calls.append(ToolCall(id=block.id, name=original_name, arguments=block.input))
 
-        tokens = (response.usage.input_tokens or 0) + (response.usage.output_tokens or 0)
-        return LLMResponse(content=content or None, tool_calls=tool_calls, tokens_used=tokens, model=model)
+        in_tok = response.usage.input_tokens or 0
+        out_tok = response.usage.output_tokens or 0
+        return LLMResponse(content=content or None, tool_calls=tool_calls, model=model,
+                           input_tokens=in_tok, output_tokens=out_tok)
 
     def _call_openai(self, model, messages, tools, max_tokens, temperature) -> LLMResponse:
         try:
@@ -384,8 +392,10 @@ class LLMProvider:
                     arguments=json.loads(tc.function.arguments),
                 ))
 
-        tokens = response.usage.total_tokens if response.usage else 0
-        return LLMResponse(content=msg.content, tool_calls=tool_calls, tokens_used=tokens, model=model)
+        in_tok = getattr(response.usage, "prompt_tokens", 0) or 0 if response.usage else 0
+        out_tok = getattr(response.usage, "completion_tokens", 0) or 0 if response.usage else 0
+        return LLMResponse(content=msg.content, tool_calls=tool_calls, model=model,
+                           input_tokens=in_tok, output_tokens=out_tok)
 
     def _call_bedrock(self, model, messages, tools, max_tokens, temperature) -> LLMResponse:
         try:
@@ -426,8 +436,9 @@ class LLMProvider:
                 tool_calls.append(ToolCall(id=tu["toolUseId"], name=tu["name"], arguments=tu["input"]))
 
         usage = response.get("usage", {})
-        tokens = usage.get("inputTokens", 0) + usage.get("outputTokens", 0)
-        return LLMResponse(content=content or None, tool_calls=tool_calls, tokens_used=tokens, model=model)
+        return LLMResponse(content=content or None, tool_calls=tool_calls, model=model,
+                           input_tokens=usage.get("inputTokens", 0),
+                           output_tokens=usage.get("outputTokens", 0))
 
     def _call_azure(self, model, messages, tools, max_tokens, temperature) -> LLMResponse:
         """Call Azure OpenAI — same format as OpenAI but different endpoint."""
@@ -461,8 +472,10 @@ class LLMProvider:
                     arguments=json.loads(tc.function.arguments),
                 ))
 
-        tokens = response.usage.total_tokens if response.usage else 0
-        return LLMResponse(content=msg.content, tool_calls=tool_calls, tokens_used=tokens, model=model)
+        in_tok = getattr(response.usage, "prompt_tokens", 0) or 0 if response.usage else 0
+        out_tok = getattr(response.usage, "completion_tokens", 0) or 0 if response.usage else 0
+        return LLMResponse(content=msg.content, tool_calls=tool_calls, model=model,
+                           input_tokens=in_tok, output_tokens=out_tok)
 
     def _call_cohere(self, model, messages, tools, max_tokens, temperature) -> LLMResponse:
         """Call Cohere's Command model."""
@@ -497,8 +510,10 @@ class LLMProvider:
                     arguments=json.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else tc.function.arguments,
                 ))
 
-        tokens = (response.usage.input_tokens or 0) + (response.usage.output_tokens or 0) if response.usage else 0
-        return LLMResponse(content=content, tool_calls=tool_calls, tokens_used=tokens, model=model)
+        in_tok = (response.usage.input_tokens or 0) if response.usage else 0
+        out_tok = (response.usage.output_tokens or 0) if response.usage else 0
+        return LLMResponse(content=content, tool_calls=tool_calls, model=model,
+                           input_tokens=in_tok, output_tokens=out_tok)
 
     def _call_vertex(self, model, messages, tools, max_tokens, temperature) -> LLMResponse:
         """Call Google Vertex AI (Gemini models)."""
