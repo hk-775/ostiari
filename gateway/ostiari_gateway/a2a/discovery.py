@@ -30,11 +30,16 @@ async def fetch_agent_card(
     else:
         discovery_url = base
 
+    # SSRF guard: the agent URL is request-supplied (and A2A cards can even
+    # redeclare their own url), so validate before fetching and disable redirects.
+    from ostiari.net_guard import validate_public_url
+    validate_public_url(discovery_url)
+
     headers: dict[str, str] = {}
     if auth_token:
         headers["Authorization"] = f"Bearer {auth_token}"
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
         response = await client.get(discovery_url, headers=headers)
         response.raise_for_status()
 
