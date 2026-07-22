@@ -131,18 +131,35 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+from ostiari.http_limits import BodySizeLimitMiddleware
+
 from control_plane.auth.middleware import AuthMiddleware
 
 # Coarse API authentication gate (no-op unless OSTIARI_REQUIRE_AUTH is set).
 # Added before CORS so it runs after CORS in the response path.
 app.add_middleware(AuthMiddleware)
 
+# Reject oversized request bodies (DoS guard) before they are buffered.
+app.add_middleware(BodySizeLimitMiddleware)
+
+def _cors_config() -> dict:
+    """CORS settings. Wildcard-with-credentials is unsafe, so if specific origins
+    are set via OSTIARI_CORS_ORIGINS (comma-separated) we use them WITH
+    credentials; otherwise we allow all origins but WITHOUT credentials (the
+    browser-safe combination). Production should set explicit origins."""
+    import os
+    raw = os.environ.get("OSTIARI_CORS_ORIGINS", "").strip()
+    if raw:
+        origins = [o.strip() for o in raw.split(",") if o.strip()]
+        return {"allow_origins": origins, "allow_credentials": True}
+    return {"allow_origins": ["*"], "allow_credentials": False}
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    **_cors_config(),
 )
 
 app.include_router(auth_router)
