@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
@@ -9,6 +10,27 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 CheckpointID = str
+
+
+def _default_fail_open() -> bool:
+    """Default fail-open posture, overridable by environment.
+
+    Historically the guard fails OPEN (an evaluator crash -> allow) so a library
+    bug never hard-blocks the host app. For a security gateway that's the wrong
+    default in production, so we let deployments flip it to fail-CLOSED without
+    changing any caller:
+      - OSTIARI_FAIL_OPEN=false (or 0/no/off) -> fail closed
+      - OSTIARI_ENV=production                -> fail closed (unless FAIL_OPEN set true)
+      - otherwise                             -> fail open (backward compatible)
+    """
+    explicit = os.environ.get("OSTIARI_FAIL_OPEN", "").strip().lower()
+    if explicit in ("false", "0", "no", "off"):
+        return False
+    if explicit in ("true", "1", "yes", "on"):
+        return True
+    if os.environ.get("OSTIARI_ENV", "").strip().lower() in ("production", "prod"):
+        return False
+    return True
 
 
 class MetricType(str, Enum):
@@ -322,6 +344,6 @@ class OstiariConfig(BaseModel):
     adaptive_enabled: bool = False
     adaptive_sensitivity: float = Field(default=2.0, gt=0)
     adaptive_min_samples: int = Field(default=10, ge=1)
-    fail_open: bool = True
+    fail_open: bool = Field(default_factory=_default_fail_open)
     log_level: str = "INFO"
     redact_patterns: list[str] = Field(default_factory=list)
