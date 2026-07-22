@@ -11,13 +11,20 @@ class RoutingRule(BaseModel):
 
 
 class ABExperiment(BaseModel):
-    """A/B test configuration — split traffic between models."""
+    """A/B test configuration — split traffic between models.
+
+    An experiment splits its *in-scope* traffic between model_a (control) and
+    model_b (treatment) by traffic_pct_b. ``agents`` optionally scopes the
+    experiment to specific agent_ids; empty = applies to all agents. Requests
+    not in scope fall through to the next experiment, then to rules/smart/default.
+    """
 
     name: str
     enabled: bool = True
     model_a: str
     model_b: str
-    traffic_pct_b: int = 10  # percentage of traffic to model B (0-100)
+    traffic_pct_b: int = 10  # percentage of in-scope traffic to model B (0-100)
+    agents: list[str] = Field(default_factory=list)  # empty = all agents
 
 
 class AgentRoutingPolicy(BaseModel):

@@ -175,15 +175,21 @@ class LLMProvider:
                 tools=self._convert_tools_to_openai_format(tools) if tools else None,
             )
 
-            # AxonLLM's router is async — run in event loop
+            # AxonLLM's router is async. _call_via_axon is sync and may be called
+            # from within a running event loop (the /invoke path), where we can't
+            # await. Run the coroutine to completion in a worker thread and BLOCK
+            # on its result — previously this used loop.run_in_executor and never
+            # awaited the returned Future, so `response` was the Future itself and
+            # the result was silently dropped (empty response). See B4.
             try:
-                loop = asyncio.get_running_loop()
+                asyncio.get_running_loop()
                 import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as pool:
-                    response = loop.run_in_executor(
-                        pool, lambda: asyncio.run(self._router.route(request))
-                    )
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    response = pool.submit(
+                        lambda: asyncio.run(self._router.route(request))
+                    ).result()
             except RuntimeError:
+                # No running loop — safe to run directly.
                 response = asyncio.run(self._router.route(request))
 
             return self._convert_axon_response(response, model)
