@@ -118,13 +118,22 @@ class MessagesProxy:
         # Flatten content once for detection + routing (never mutates the body).
         flat = self._flatten(body.get("system"), body.get("messages", []))
 
-        # ── Gate 1: agent authorization ──────────────────────────────────
+        # ── Gate 1: agent authorization (endpoint + model/provider/budget) ──
         if self._agent_auth:
             allowed, reason = self._agent_auth.check(agent_id, "/v1/messages")
             if not allowed:
                 await self._report(agent_id, framework, session_id, requested_model,
                                     tier="block", reason=reason, limit_type="agent_authorization")
                 return _err(403, "permission_error", reason or "Agent not authorized")
+            # Enforce per-agent model/provider grants + budget on the requested
+            # model (the agent explicitly asked for it). Without this, an agent
+            # restricted to one model/provider or a $ cap could use any.
+            allowed, reason = self._agent_auth.authorize_llm(
+                agent_id, requested_model, _provider_of(requested_model))
+            if not allowed:
+                await self._report(agent_id, framework, session_id, requested_model,
+                                    tier="block", reason=reason, limit_type="agent_authorization")
+                return _err(403, "permission_error", reason)
 
         # ── Gate 2: prompt-injection detection (detection-only) ──────────
         if self._security is not None:
@@ -467,11 +476,21 @@ class MessagesProxy:
         in_tok = int((usage or {}).get("input_tokens", 0) or 0)
         out_tok = int((usage or {}).get("output_tokens", 0) or 0)
 
-        if self._quota is not None and tier == "allow" and (in_tok or out_tok):
-            try:
-                self._quota.record_spend(self._quota.calculate_cost(model, in_tok, out_tok))
-            except Exception as e:  # noqa: BLE001
-                log.debug("Spend accounting failed: %s", e)
+        if tier == "allow" and (in_tok or out_tok):
+            cost = 0.0
+            if self._quota is not None:
+                try:
+                    cost = self._quota.calculate_cost(model, in_tok, out_tok)
+                    self._quota.record_spend(cost)
+                except Exception as e:  # noqa: BLE001
+                    log.debug("Spend accounting failed: %s", e)
+            # Record spend against the agent's own budget so per-agent budget
+            # caps (authorize_llm -> check_budget) actually decrement.
+            if self._agent_auth is not None and cost:
+                try:
+                    self._agent_auth.record_agent_spend(agent_id, cost)
+                except Exception as e:  # noqa: BLE001
+                    log.debug("Agent spend accounting failed: %s", e)
 
         if self._trace is not None:
             try:

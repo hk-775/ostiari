@@ -24,6 +24,24 @@ from ostiari_gateway.modules.llm_gateway.security import SecurityLayer
 log = logging.getLogger("ostiari.sidecar.llm")
 
 
+def _provider_of(model: str) -> str:
+    """Classify a model name into a provider family (for per-agent grants)."""
+    m = (model or "").lower()
+    if m.startswith("bedrock/") or ".anthropic." in m and "amazon" in m:
+        return "bedrock"
+    if m.startswith("azure/"):
+        return "azure"
+    if m.startswith("vertex/") or "gemini" in m:
+        return "vertex"
+    if "gpt" in m or m.startswith("openai/") or "o1" in m or "o3" in m:
+        return "openai"
+    if "command" in m or "cohere" in m:
+        return "cohere"
+    if "claude" in m or m.startswith("anthropic"):
+        return "anthropic"
+    return "anthropic"
+
+
 def _parse_args(args: Any) -> dict[str, Any]:
     """Tool-call arguments may arrive as a JSON string or a dict."""
     if isinstance(args, dict):
@@ -80,6 +98,19 @@ class AgenticExecutor:
         model = request.model_override or self._router.select_model(router_context)
         fallback_chain = self._router.get_fallback_chain(model)
 
+        # Per-agent model/provider/budget authorization on the selected model.
+        # Without this, an agent restricted to certain models/providers or a $ cap
+        # could use any via /invoke.
+        agent_id = request.context.get("agent_id", "")
+        if self._agent_auth is not None:
+            allowed, reason = self._agent_auth.authorize_llm(
+                agent_id, model, _provider_of(model))
+            if not allowed:
+                return InvokeResponse(
+                    response=f"Request blocked: {reason}",
+                    model_used=model, total_tokens=0, rounds=0,
+                )
+
         # Build tool specs from registered tools
         tool_specs = self._build_tool_specs(request.tools)
 
@@ -116,7 +147,7 @@ class AgenticExecutor:
 
         # Intent Cache: check if we've seen this intent before in this agent's session
         # Template mode: if intent_template provided, use it as cache key (excludes variables)
-        agent_id = request.context.get("agent_id", "")
+        # (agent_id resolved above at model-authorization time)
         session_id = request.context.get("session_id", "")
         use_template = bool(request.intent_template)
         cache_key_intent = request.intent_template if use_template else (request.messages[-1].get("content", "") if request.messages else "")
@@ -169,6 +200,17 @@ class AgenticExecutor:
                     agent_id=request.context.get("agent_id", "unknown"),
                     action="invoke",
                 )
+
+                # Decrement the agent's own budget so per-agent budget caps
+                # (authorize_llm -> check_budget) actually enforce over a session.
+                if self._agent_auth is not None and agent_id and self._quota_enforcer:
+                    try:
+                        half = llm_response.tokens_used // 2
+                        cost = self._quota_enforcer.calculate_cost(model_used, half, half)
+                        if cost:
+                            self._agent_auth.record_agent_spend(agent_id, cost)
+                    except Exception as e:  # noqa: BLE001
+                        log.debug("Agent spend accounting failed: %s", e)
 
             if not llm_response.has_tool_calls:
                 await self._cost_reporter.flush()
