@@ -131,6 +131,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+from control_plane.auth.middleware import AuthMiddleware
+
+# Coarse API authentication gate (no-op unless OSTIARI_REQUIRE_AUTH is set).
+# Added before CORS so it runs after CORS in the response path.
+app.add_middleware(AuthMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
