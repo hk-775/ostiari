@@ -222,11 +222,15 @@ class AgenticExecutor:
                         plan, model_used, is_template=use_template,
                     )
 
-                # Report usage to control plane (fire-and-forget)
+                # Report usage to control plane (fire-and-forget). Use the REAL
+                # input/output split from the provider — output is priced 3-5x
+                # input, so a 50/50 estimate drifts budgets in both directions.
+                in_tok = llm_response.input_tokens
+                out_tok = llm_response.output_tokens
                 await self._cost_reporter.report(
                     model=llm_response.model,
-                    input_tokens=llm_response.tokens_used // 2,
-                    output_tokens=llm_response.tokens_used // 2,
+                    input_tokens=in_tok,
+                    output_tokens=out_tok,
                     total_tokens=llm_response.tokens_used,
                     agent_id=request.context.get("agent_id", "unknown"),
                     action="invoke",
@@ -236,8 +240,7 @@ class AgenticExecutor:
                 # (authorize_llm -> check_budget) actually enforce over a session.
                 if self._agent_auth is not None and agent_id and self._quota_enforcer:
                     try:
-                        half = llm_response.tokens_used // 2
-                        cost = self._quota_enforcer.calculate_cost(model_used, half, half)
+                        cost = self._quota_enforcer.calculate_cost(model_used, in_tok, out_tok)
                         if cost:
                             self._agent_auth.record_agent_spend(agent_id, cost)
                     except Exception as e:  # noqa: BLE001
@@ -418,8 +421,9 @@ class AgenticExecutor:
                 return LLMResponse(
                     content=res.content or None,
                     tool_calls=tcs,
-                    tokens_used=res.input_tokens + res.output_tokens,
                     model=res.model or primary,
+                    input_tokens=res.input_tokens,
+                    output_tokens=res.output_tokens,
                 )
             except Exception as e:  # noqa: BLE001 — fall back to direct provider path
                 log.warning("AxonLLM route failed (%s) — using direct provider fallback", e)
