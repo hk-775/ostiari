@@ -233,12 +233,22 @@ def parse_spec(
     return tools
 
 
-def fetch_spec_text(url: str, *, timeout: float = 15.0) -> str:
-    """Fetch an OpenAPI spec from a URL (returns the raw text)."""
+def fetch_spec_text(url: str, *, timeout: float = 15.0, max_bytes: int = 5_000_000) -> str:
+    """Fetch an OpenAPI spec from a request-supplied URL (returns the raw text).
+
+    SSRF-guarded: the URL is validated (metadata/link-local always blocked;
+    private hosts blocked in production) and redirects are DISABLED so a public
+    URL can't bounce to an internal target. Size-capped to avoid abuse.
+    """
     import httpx
 
-    resp = httpx.get(url.strip(), timeout=timeout, follow_redirects=True)
+    from ostiari.net_guard import validate_public_url
+
+    validate_public_url(url)
+    resp = httpx.get(url.strip(), timeout=timeout, follow_redirects=False)
     resp.raise_for_status()
+    if len(resp.content) > max_bytes:
+        raise ValueError(f"spec exceeds {max_bytes} bytes")
     return resp.text
 
 
