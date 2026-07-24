@@ -68,3 +68,6 @@ site/infra/.venv/
 
 # Microsoft Office lock/temp files
 ~$*
+
+# Internal strategy / competitive / assessment docs — never commit
+docs/internal/
