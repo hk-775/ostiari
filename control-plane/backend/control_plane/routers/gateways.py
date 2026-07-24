@@ -221,14 +221,38 @@ async def check_health(gateway_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/{gateway_id}/register")
-async def gateway_register(gateway_id: str, db: AsyncSession = Depends(get_db)):
-    """Gateway calls this on startup. Marks healthy, returns full config bundle."""
+async def gateway_register(
+    gateway_id: str, request: Request, db: AsyncSession = Depends(get_db)
+):
+    """Gateway calls this on startup. Marks healthy, returns full config bundle.
+
+    Self-registration: a gateway that boots before it has been provisioned in the
+    control plane is auto-created here (rather than 404'd). This removes the
+    provisioning-order dependency — a fresh gateway becomes governed the moment it
+    starts, and the demo stack / restarts don't require a separate create step.
+    """
     gateway = await db.get(Gateway, gateway_id)
+    created = False
     if not gateway:
-        raise HTTPException(status_code=404, detail="Gateway not found")
+        # Auto-provision on first contact. Endpoint is best-effort from the
+        # caller's host; it can be corrected later via PATCH /{id}.
+        client_host = request.client.host if request.client else ""
+        gateway = Gateway(
+            id=gateway_id,
+            name=gateway_id,
+            endpoint=f"http://{client_host}" if client_host else "",
+            description="Auto-registered on gateway startup",
+        )
+        db.add(gateway)
+        created = True
 
     gateway.status = "healthy"
     gateway.last_heartbeat = datetime.now(timezone.utc)
+    if created:
+        await audit.log(
+            db, _get_actor(request), "auto-register", "gateway", gateway_id,
+            {"endpoint": gateway.endpoint},
+        )
     await db.commit()
 
     # Build and return the full config bundle
