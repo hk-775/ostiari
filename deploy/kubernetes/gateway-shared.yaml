@@ -7,6 +7,9 @@ data:
   OSTIARI_GATEWAY_ID: "gateway-shared"
   OSTIARI_CONTROL_PLANE_URL: "http://ostiari-control-plane:8400"
   OSTIARI_PORT: "8421"
+  # Config push targets the Service DNS (reaches one replica); all replicas also
+  # pull config on each heartbeat, so the fleet self-syncs.
+  OSTIARI_ADVERTISE_HOST: "ostiari-gateway"
 ---
 apiVersion: apps/v1
 kind: Deployment

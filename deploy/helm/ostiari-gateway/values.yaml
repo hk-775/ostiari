@@ -13,6 +13,10 @@ gateway:
   id: "gateway-1"
   port: 8421
   controlPlaneUrl: "http://ostiari-control-plane:8400"
+  # Host the control plane uses to push config back to this gateway. Defaults
+  # to the chart's Service DNS name (reachable in-cluster); override for
+  # cross-namespace or external control planes.
+  advertiseHost: ""
 
 redis:
   enabled: true

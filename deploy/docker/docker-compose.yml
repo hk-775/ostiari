@@ -1,25 +1,27 @@
-version: "3.9"
-
+# Full local Ostiari stack: control-plane backend + frontend, one gateway, Redis.
+# Build contexts are the REPO ROOT (../..) because the gateway image installs the
+# local `ostiari` core package, which lives at the repo root.
+#
+#   cd deploy/docker && docker compose up --build
 services:
   gateway:
     image: ostiari-gateway:latest
     build:
-      context: ../../gateway
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.gateway
     ports:
       - "8421:8421"
     environment:
       OSTIARI_GATEWAY_ID: "gateway-1"
       OSTIARI_CONTROL_PLANE_URL: "http://control-plane-backend:8400"
       OSTIARI_PORT: "8421"
-      REDIS_ENDPOINT: "redis"
-      REDIS_PORT: "6379"
+      # The control plane pushes config back to this URL; must be reachable on
+      # the compose network (the service name), not localhost.
+      OSTIARI_ADVERTISE_HOST: "gateway"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
     depends_on:
       control-plane-backend:
-        condition: service_healthy
-      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8421/health"]
@@ -32,15 +34,18 @@ services:
   control-plane-backend:
     image: ostiari-control-plane:latest
     build:
-      context: ../../control-plane
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.control-plane
     ports:
       - "8400:8400"
     environment:
-      OSTIARI_DB_PATH: "/data/ostiari.db"
+      # SQLite on a persisted volume by default. For production point this at
+      # Postgres: postgresql+asyncpg://user:pass@host:5432/ostiari
+      DATABASE_URL: "sqlite+aiosqlite:////data/control_plane.db"
     volumes:
       - control-plane-data:/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8400/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8400/api/health"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -48,18 +53,21 @@ services:
     restart: unless-stopped
 
   control-plane-frontend:
-    image: ostiari-control-plane:latest
+    image: ostiari-frontend:latest
     build:
-      context: ../../dashboard-ui
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.frontend
+      args:
+        # Baked into the bundle; called from the browser, so it points at the
+        # backend's published host port (localhost:8400), not the service name.
+        VITE_API_URL: "http://localhost:8400"
     ports:
       - "9000:9000"
-    environment:
-      OSTIARI_API_URL: "http://control-plane-backend:8400"
     depends_on:
       control-plane-backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9000/ || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3

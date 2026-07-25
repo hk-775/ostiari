@@ -1,0 +1,32 @@
+# Ostiari control-plane backend image.
+#
+#   docker build -f deploy/docker/Dockerfile.control-plane -t ostiari-control-plane:latest .
+FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# The control plane imports the core `ostiari` package (e.g.
+# ostiari.http_limits) but does not declare it as a dependency, so install it
+# from source first.
+COPY pyproject.toml README.md ./core/
+COPY src/ ./core/src/
+RUN pip install --no-cache-dir ./core
+
+COPY control-plane/backend/pyproject.toml ./
+COPY control-plane/backend/control_plane/ control_plane/
+COPY control-plane/backend/main.py ./
+# Install the package plus aiosqlite so the default SQLite backend works out of
+# the box (aiosqlite lives in the dev extra; production Postgres pulls asyncpg,
+# which is already a core dependency).
+RUN pip install --no-cache-dir . "aiosqlite>=0.19"
+
+# Persist SQLite here when no external DATABASE_URL (Postgres) is configured.
+ENV DATABASE_URL="sqlite+aiosqlite:////data/control_plane.db"
+RUN mkdir -p /data
+
+EXPOSE 8400
+
+CMD ["python", "main.py"]
