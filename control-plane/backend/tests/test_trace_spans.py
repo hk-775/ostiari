@@ -60,3 +60,46 @@ class TestParentSpan:
         assert span_c["total_duration_ms"] == 30.0
         assert span_c["worst_tier"] == "block"          # escalates to worst child
         assert len(span_c["children"]) == 3
+
+
+class TestSessionParentsEviction:
+    """The session→parent map is LRU-bounded. Regression for the old bug where
+    hitting the cap did a full .clear(), fragmenting a still-active session."""
+
+    def _assign(self, tid, sid):
+        from control_plane.routers import traces
+        ev = _ev(tid, sid)
+        traces._assign_parent(ev)
+        return ev
+
+    def test_active_session_survives_cap_via_lru(self, monkeypatch):
+        from control_plane.routers import traces
+        traces._session_parents.clear()   # unit test — no app fixture reset
+        monkeypatch.setattr(traces, "_SESSION_PARENTS_MAX", 3)
+
+        # Open the session we care about, then keep it "active" by touching it
+        # while other sessions arrive and push past the cap.
+        assert self._assign("hot-1", "hot")["parent_trace_id"] == "hot-1"
+        for i in range(10):
+            self._assign(f"o{i}", f"other-{i}")   # each new session may evict
+            self._assign("hot-2", "hot")          # touch: keep 'hot' most-recent
+
+        # 'hot' must still map to its original parent, not fragment into a new root.
+        final = self._assign("hot-3", "hot")
+        assert final["parent_trace_id"] == "hot-1"
+        assert final["is_span_root"] is False
+
+    def test_only_lru_entry_is_evicted_not_all(self, monkeypatch):
+        from control_plane.routers import traces
+        traces._session_parents.clear()   # unit test — no app fixture reset
+        monkeypatch.setattr(traces, "_SESSION_PARENTS_MAX", 2)
+
+        self._assign("a1", "A")
+        self._assign("b1", "B")
+        # C arrives at cap → evicts the LRU (A), but B must remain.
+        self._assign("c1", "C")
+        assert len(traces._session_parents) == 2
+        # B still known (not cleared) → its next call references b1.
+        assert self._assign("b2", "B")["parent_trace_id"] == "b1"
+        # A was evicted → its next call starts a fresh parent.
+        assert self._assign("a2", "A")["parent_trace_id"] == "a2"
