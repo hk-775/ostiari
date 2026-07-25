@@ -133,3 +133,55 @@ class TestAuditIsolation:
         # The tamper-evident chain spans all orgs and stays valid.
         v = (await client.get("/api/audit/verify", headers=ORG_A)).json()
         assert v["valid"] is True
+
+
+class TestMcpServersIsolation:
+    async def _make_gateway(self, client, headers, gid):
+        await client.post("/api/gateways", headers=headers,
+                          json={"id": gid, "name": gid, "endpoint": "http://x:8421", "description": ""})
+
+    async def test_mcp_servers_scoped(self, client):
+        await self._make_gateway(client, ORG_A, "mcp-gw-a")
+        r = await client.post("/api/mcp-servers/mcp-gw-a", headers=ORG_A,
+                              json={"name": "fs", "mode": "remote", "url": "http://m:3000"})
+        assert r.status_code in (200, 201)
+        # Org B can't see org A's MCP servers.
+        b_list = (await client.get("/api/mcp-servers", headers=ORG_B)).json()
+        assert all(m["gateway_id"] != "mcp-gw-a" for m in b_list)
+        # Org A does.
+        a_list = (await client.get("/api/mcp-servers", headers=ORG_A)).json()
+        assert any(m["gateway_id"] == "mcp-gw-a" for m in a_list)
+
+    async def test_cannot_add_mcp_to_other_orgs_gateway(self, client):
+        await self._make_gateway(client, ORG_A, "mcp-gw-a2")
+        r = await client.post("/api/mcp-servers/mcp-gw-a2", headers=ORG_B,
+                              json={"name": "evil", "mode": "remote", "url": "http://m:3000"})
+        assert r.status_code == 404
+
+
+class TestPaymentLedgerIsolation:
+    """The payment ledger/summary previously aggregated across ALL orgs."""
+
+    async def test_ledger_and_summary_scoped(self, client):
+        # Ingest a settled charge tagged (via gateway) to each org.
+        await client.post("/api/gateways", headers=ORG_A,
+                          json={"id": "pay-gw-a", "name": "A", "endpoint": "http://a:8421", "description": ""})
+        await client.post("/api/gateways", headers=ORG_B,
+                          json={"id": "pay-gw-b", "name": "B", "endpoint": "http://b:8421", "description": ""})
+        await client.post("/api/payments/ingest", json={
+            "agent_id": "x", "gateway_id": "pay-gw-a", "action": "premium",
+            "amount_usdc": 0.10, "settled": True, "mode": "simulated", "source": "tool_402",
+        })
+        await client.post("/api/payments/ingest", json={
+            "agent_id": "y", "gateway_id": "pay-gw-b", "action": "premium",
+            "amount_usdc": 0.99, "settled": True, "mode": "simulated", "source": "tool_402",
+        })
+        a_ledger = (await client.get("/api/payments/ledger", headers=ORG_A)).json()
+        b_ledger = (await client.get("/api/payments/ledger", headers=ORG_B)).json()
+        assert {r["gateway_id"] for r in a_ledger} == {"pay-gw-a"}
+        assert {r["gateway_id"] for r in b_ledger} == {"pay-gw-b"}
+        # Summaries don't leak each other's totals.
+        a_sum = (await client.get("/api/payments/summary", headers=ORG_A)).json()
+        b_sum = (await client.get("/api/payments/summary", headers=ORG_B)).json()
+        assert a_sum["total_settled_usdc"] == pytest.approx(0.10)
+        assert b_sum["total_settled_usdc"] == pytest.approx(0.99)

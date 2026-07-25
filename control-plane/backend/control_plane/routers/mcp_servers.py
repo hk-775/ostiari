@@ -4,16 +4,18 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
 from control_plane.models.database import Gateway, McpServer
+from control_plane.models.scoping import get_scoped, scoped, stamp
 from control_plane.models.schemas import McpServerCreate, McpServerResponse
 
 router = APIRouter(prefix="/api/mcp-servers", tags=["mcp-servers"])
 
 
 @router.get("", response_model=list[McpServerResponse])
-async def list_mcp_servers(gateway_id: str | None = None, db: AsyncSession = Depends(get_db)):
-    query = select(McpServer)
+async def list_mcp_servers(gateway_id: str | None = None, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+    query = scoped(select(McpServer), McpServer, org)
     if gateway_id:
         query = query.where(McpServer.gateway_id == gateway_id)
     result = await db.execute(query)
@@ -21,8 +23,8 @@ async def list_mcp_servers(gateway_id: str | None = None, db: AsyncSession = Dep
 
 
 @router.post("/{gateway_id}", response_model=McpServerResponse)
-async def add_mcp_server(gateway_id: str, body: McpServerCreate, db: AsyncSession = Depends(get_db)):
-    gateway = await db.get(Gateway, gateway_id)
+async def add_mcp_server(gateway_id: str, body: McpServerCreate, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+    gateway = await get_scoped(db, Gateway, gateway_id, org)
     if not gateway:
         raise HTTPException(status_code=404, detail="Gateway not found")
 
@@ -49,6 +51,7 @@ async def add_mcp_server(gateway_id: str, body: McpServerCreate, db: AsyncSessio
         prefix=body.prefix or body.name,
         gateway_id=gateway_id,
     )
+    stamp(mcp, gateway.org_id)
     db.add(mcp)
     await db.commit()
     await db.refresh(mcp)
@@ -56,16 +59,16 @@ async def add_mcp_server(gateway_id: str, body: McpServerCreate, db: AsyncSessio
 
 
 @router.get("/{mcp_id}", response_model=McpServerResponse)
-async def get_mcp_server(mcp_id: int, db: AsyncSession = Depends(get_db)):
-    mcp = await db.get(McpServer, mcp_id)
+async def get_mcp_server(mcp_id: int, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+    mcp = await get_scoped(db, McpServer, mcp_id, org)
     if not mcp:
         raise HTTPException(status_code=404, detail="MCP server not found")
     return mcp
 
 
 @router.delete("/{mcp_id}")
-async def delete_mcp_server(mcp_id: int, db: AsyncSession = Depends(get_db)):
-    mcp = await db.get(McpServer, mcp_id)
+async def delete_mcp_server(mcp_id: int, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+    mcp = await get_scoped(db, McpServer, mcp_id, org)
     if not mcp:
         raise HTTPException(status_code=404, detail="MCP server not found")
     await db.delete(mcp)
@@ -74,11 +77,11 @@ async def delete_mcp_server(mcp_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/{mcp_id}/discover")
-async def discover_tools(mcp_id: int, db: AsyncSession = Depends(get_db)):
+async def discover_tools(mcp_id: int, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
     """Ask the gateway to discover/refresh tools from this MCP server."""
     import httpx
 
-    mcp = await db.get(McpServer, mcp_id)
+    mcp = await get_scoped(db, McpServer, mcp_id, org)
     if not mcp:
         raise HTTPException(status_code=404, detail="MCP server not found")
 
@@ -97,11 +100,11 @@ async def discover_tools(mcp_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{mcp_id}/tools")
-async def get_discovered_tools(mcp_id: int, db: AsyncSession = Depends(get_db)):
+async def get_discovered_tools(mcp_id: int, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
     """Get the list of tools currently discovered from this MCP server on the gateway."""
     import httpx
 
-    mcp = await db.get(McpServer, mcp_id)
+    mcp = await get_scoped(db, McpServer, mcp_id, org)
     if not mcp:
         raise HTTPException(status_code=404, detail="MCP server not found")
 
