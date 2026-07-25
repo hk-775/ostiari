@@ -29,14 +29,18 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "ostiari-gateway.fullname" . }}-config
-          {{- if .Values.redis.enabled }}
           env:
+            # URL the control plane pushes config back to. Defaults to the
+            # gateway Service DNS so it is reachable in-cluster.
+            - name: OSTIARI_ADVERTISE_HOST
+              value: {{ .Values.gateway.advertiseHost | default (include "ostiari-gateway.fullname" .) | quote }}
+            {{- if .Values.redis.enabled }}
             - name: REDIS_ENDPOINT
               value: {{ .Values.redis.endpoint | quote }}
             - name: REDIS_PORT
               value: {{ .Values.redis.port | quote }}
-          {{- end }}
-          {{- if .Values.secrets.existingSecret }}
+            {{- end }}
+            {{- if .Values.secrets.existingSecret }}
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -49,7 +53,7 @@ spec:
                   name: {{ .Values.secrets.existingSecret }}
                   key: openai-api-key
                   optional: true
-          {{- end }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /health

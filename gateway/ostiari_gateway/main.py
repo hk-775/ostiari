@@ -9,10 +9,16 @@ import yaml
 
 @click.command()
 @click.option("--host", default="0.0.0.0", help="Bind host")
-@click.option("--port", default=8421, type=int, help="Bind port")
+@click.option("--port", default=8421, type=int, envvar="OSTIARI_PORT", help="Bind port")
 @click.option("--config", "config_path", default=None, type=click.Path(), help="Initial config YAML")
-@click.option("--control-plane", default=None, help="Control plane URL to poll for config")
-@click.option("--sidecar-id", default="sidecar-1", help="Unique sidecar identifier")
+@click.option(
+    "--control-plane", default=None, envvar="OSTIARI_CONTROL_PLANE_URL",
+    help="Control plane URL to poll for config",
+)
+@click.option(
+    "--sidecar-id", default="sidecar-1", envvar="OSTIARI_GATEWAY_ID",
+    help="Unique sidecar identifier",
+)
 @click.option("--log-level", default="info", type=click.Choice(["debug", "info", "warning", "error"]))
 def cli(
     host: str,

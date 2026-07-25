@@ -28,6 +28,7 @@
         { "name": "OSTIARI_GATEWAY_ID", "value": "gateway-1" },
         { "name": "OSTIARI_CONTROL_PLANE_URL", "value": "http://control-plane.internal:8400" },
         { "name": "OSTIARI_PORT", "value": "8421" },
+        { "name": "OSTIARI_ADVERTISE_HOST", "value": "gateway.internal" },
         { "name": "REDIS_PORT", "value": "6379" }
       ],
       "secrets": [
