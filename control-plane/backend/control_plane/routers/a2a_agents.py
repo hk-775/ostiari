@@ -15,8 +15,10 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
 from control_plane.models.database import A2AAgentRecord, Gateway
+from control_plane.models.scoping import get_scoped, scoped, stamp
 
 router = APIRouter(prefix="/api/a2a-agents", tags=["a2a-agents"])
 
@@ -28,8 +30,8 @@ class A2AAgentCreate(BaseModel):
 
 
 @router.get("")
-async def list_a2a_agents(gateway_id: str | None = None, db: AsyncSession = Depends(get_db)):
-    query = select(A2AAgentRecord)
+async def list_a2a_agents(gateway_id: str | None = None, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+    query = scoped(select(A2AAgentRecord), A2AAgentRecord, org)
     if gateway_id:
         query = query.where(A2AAgentRecord.gateway_id == gateway_id)
     rows = (await db.execute(query)).scalars().all()
@@ -37,14 +39,14 @@ async def list_a2a_agents(gateway_id: str | None = None, db: AsyncSession = Depe
 
 
 @router.post("/{gateway_id}")
-async def register_a2a_agent(gateway_id: str, body: A2AAgentCreate, db: AsyncSession = Depends(get_db)):
+async def register_a2a_agent(gateway_id: str, body: A2AAgentCreate, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
     """Connect an A2A agent on the live gateway, then persist the record.
 
     We connect first (which discovers the agent card and gives us the stable
     agent_key), and only persist if the gateway accepted it — so we never store
     an agent that can't actually be reached.
     """
-    gateway = await db.get(Gateway, gateway_id)
+    gateway = await get_scoped(db, Gateway, gateway_id, org)
     if gateway is None:
         raise HTTPException(status_code=404, detail="Gateway not found")
 
@@ -63,14 +65,19 @@ async def register_a2a_agent(gateway_id: str, body: A2AAgentCreate, db: AsyncSes
 
     # Upsert by (gateway_id, agent_key).
     existing = (await db.execute(
-        select(A2AAgentRecord).where(
-            A2AAgentRecord.gateway_id == gateway_id,
-            A2AAgentRecord.agent_key == agent_key,
+        scoped(
+            select(A2AAgentRecord).where(
+                A2AAgentRecord.gateway_id == gateway_id,
+                A2AAgentRecord.agent_key == agent_key,
+            ),
+            A2AAgentRecord,
+            org,
         )
     )).scalar_one_or_none()
     if existing is None:
         rec = A2AAgentRecord(name=name, agent_key=agent_key, url=body.url,
                              auth_token=body.auth_token, gateway_id=gateway_id)
+        stamp(rec, gateway.org_id)
         db.add(rec)
     else:
         existing.url = body.url
@@ -83,8 +90,8 @@ async def register_a2a_agent(gateway_id: str, body: A2AAgentCreate, db: AsyncSes
 
 
 @router.delete("/{agent_id}")
-async def delete_a2a_agent(agent_id: int, db: AsyncSession = Depends(get_db)):
-    rec = await db.get(A2AAgentRecord, agent_id)
+async def delete_a2a_agent(agent_id: int, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+    rec = await get_scoped(db, A2AAgentRecord, agent_id, org)
     if rec is None:
         raise HTTPException(status_code=404, detail="A2A agent not found")
     # Best-effort disconnect on the live gateway.
@@ -99,11 +106,16 @@ async def delete_a2a_agent(agent_id: int, db: AsyncSession = Depends(get_db)):
     return {"deleted": agent_id, "agent_key": rec.agent_key}
 
 
-async def build_a2a_config(db: AsyncSession, gateway_id: str) -> list[dict]:
-    """A2A agent connection configs for a gateway, for the registration bundle."""
-    rows = (await db.execute(
-        select(A2AAgentRecord).where(A2AAgentRecord.gateway_id == gateway_id)
-    )).scalars().all()
+async def build_a2a_config(db: AsyncSession, gateway_id: str, org: str | None = None) -> list[dict]:
+    """A2A agent connection configs for a gateway, for the registration bundle.
+
+    Called from the unauthenticated gateway lifecycle (no user token), so `org`
+    is optional; when provided it additionally scopes the query by tenant.
+    """
+    query = select(A2AAgentRecord).where(A2AAgentRecord.gateway_id == gateway_id)
+    if org is not None:
+        query = scoped(query, A2AAgentRecord, org)
+    rows = (await db.execute(query)).scalars().all()
     return [{"url": r.url, "name": r.name, "auth_token": r.auth_token} for r in rows]
 
 
