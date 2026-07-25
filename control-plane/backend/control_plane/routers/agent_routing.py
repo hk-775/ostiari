@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
 from control_plane.models.database import Gateway
 
@@ -26,23 +27,24 @@ class RoutingPolicy(BaseModel):
     scope: str = "request"                 # request | session
 
 
-# In-memory store keyed by (gateway_id, agent_id). Mirrors the other config
-# routers (experiments, model_config) which are also in-memory registries.
-_policies: dict[tuple[str, str], RoutingPolicy] = {}
+# In-memory store keyed by (org, gateway_id, agent_id), scoped per org (tenant).
+# Mirrors the other config routers (experiments, model_config) which are also
+# in-memory registries.
+_policies: dict[tuple[str, str, str], RoutingPolicy] = {}
 
 
-def _by_gateway(gateway_id: str) -> dict[str, dict]:
-    """Build the gateway-shaped agent_routing dict for one gateway."""
+def _by_gateway(org: str, gateway_id: str) -> dict[str, dict]:
+    """Build the gateway-shaped agent_routing dict for one org's gateway."""
     return {
         p.agent_id: {"strategy": p.strategy, "models": p.models, "scope": p.scope}
-        for (gid, _), p in _policies.items()
-        if gid == gateway_id
+        for (o, gid, aid), p in _policies.items()
+        if o == org and gid == gateway_id
     }
 
 
-async def _push(gateway: Gateway) -> tuple[bool, str]:
+async def _push(org: str, gateway: Gateway) -> tuple[bool, str]:
     """Push this gateway's full agent_routing map to it."""
-    payload = {"agent_routing": _by_gateway(gateway.id)}
+    payload = {"agent_routing": _by_gateway(org, gateway.id)}
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(f"{gateway.endpoint}/config/agent-routing", json=payload)
@@ -54,17 +56,21 @@ async def _push(gateway: Gateway) -> tuple[bool, str]:
 
 
 @router.get("")
-async def list_policies() -> list[RoutingPolicy]:
-    return list(_policies.values())
+async def list_policies(org: str = Depends(get_current_org)) -> list[RoutingPolicy]:
+    return [p for (o, _, _), p in _policies.items() if o == org]
 
 
 @router.get("/{gateway_id}")
-async def list_for_gateway(gateway_id: str) -> list[RoutingPolicy]:
-    return [p for (gid, _), p in _policies.items() if gid == gateway_id]
+async def list_for_gateway(gateway_id: str, org: str = Depends(get_current_org)) -> list[RoutingPolicy]:
+    return [p for (o, gid, aid), p in _policies.items() if o == org and gid == gateway_id]
 
 
 @router.post("")
-async def set_policy(body: RoutingPolicy, db: AsyncSession = Depends(get_db)) -> dict:
+async def set_policy(
+    body: RoutingPolicy,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+) -> dict:
     """Create/update a per-agent routing policy and push it to the gateway."""
     gateway = await db.get(Gateway, body.gateway_id)
     if not gateway:
@@ -72,16 +78,21 @@ async def set_policy(body: RoutingPolicy, db: AsyncSession = Depends(get_db)) ->
     if body.strategy == "round_robin" and len(body.models) < 1:
         raise HTTPException(status_code=400, detail="round_robin needs at least one model")
 
-    _policies[(body.gateway_id, body.agent_id)] = body
-    pushed, err = await _push(gateway)
+    _policies[(org, body.gateway_id, body.agent_id)] = body
+    pushed, err = await _push(org, gateway)
     return {"status": "saved", "pushed": pushed, "push_error": err or None, "policy": body.model_dump()}
 
 
 @router.delete("/{gateway_id}/{agent_id}")
-async def delete_policy(gateway_id: str, agent_id: str, db: AsyncSession = Depends(get_db)) -> dict:
-    if (gateway_id, agent_id) not in _policies:
+async def delete_policy(
+    gateway_id: str,
+    agent_id: str,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+) -> dict:
+    if (org, gateway_id, agent_id) not in _policies:
         raise HTTPException(status_code=404, detail="Policy not found")
-    del _policies[(gateway_id, agent_id)]
+    del _policies[(org, gateway_id, agent_id)]
     gateway = await db.get(Gateway, gateway_id)
-    pushed, err = (await _push(gateway)) if gateway else (False, "gateway not found")
+    pushed, err = (await _push(org, gateway)) if gateway else (False, "gateway not found")
     return {"status": "deleted", "pushed": pushed, "push_error": err or None}

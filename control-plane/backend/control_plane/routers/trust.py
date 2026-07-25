@@ -8,6 +8,8 @@ cross-agent policy. Nothing is enforced automatically.
 
 from __future__ import annotations
 
+from collections import defaultdict
+
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,7 +26,7 @@ router = APIRouter(prefix="/api/trust", tags=["trust"])
 # Whether derived-trust enforcement has been turned on, per gateway. Tracked in
 # the control plane (enforcement is a CP concern) rather than round-tripped
 # through the gateway config. Defaults off — shadow-only.
-_enforced: dict[str, bool] = {}
+_enforced: dict[str, dict[str, bool]] = defaultdict(dict)
 
 
 async def _get_cross_agent(gateway) -> dict:
@@ -47,7 +49,7 @@ async def scores(gateway_id: str = "crm-agent", db: AsyncSession = Depends(get_d
     if gateway is not None:
         policy = await _get_cross_agent(gateway)
         configured = policy.get("trust_scores", {}) or {}
-    enforced = _enforced.get(gateway_id, False)
+    enforced = _enforced[org].get(gateway_id, False)
 
     rows = trust.score_agents(recent_traces_for(org), configured=configured)
     would_change = [r for r in rows if r["delta"] is not None and abs(r["delta"]) >= 10]
@@ -87,16 +89,16 @@ async def apply(gateway_id: str = "crm-agent", db: AsyncSession = Depends(get_db
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"Failed to push to gateway: {exc}") from None
 
-    _enforced[gateway_id] = True
+    _enforced[org][gateway_id] = True
     return {"gateway_id": gateway_id, "applied": derived, "count": len(derived)}
 
 
 @router.post("/disable")
-async def disable(gateway_id: str = "crm-agent"):
+async def disable(gateway_id: str = "crm-agent", org: str = Depends(get_current_org)):
     """Turn off derived-trust enforcement (back to shadow-only).
 
     Leaves already-pushed scores in place but marks the fleet as no longer
     auto-enforcing; re-apply a manual policy to fully revert values.
     """
-    _enforced[gateway_id] = False
+    _enforced[org][gateway_id] = False
     return {"gateway_id": gateway_id, "enforced": False}

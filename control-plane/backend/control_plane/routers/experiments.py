@@ -1,5 +1,6 @@
 """A/B experiment management API."""
 
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -7,6 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
 from control_plane.models.database import UsageRecord
 
@@ -37,38 +39,39 @@ class ExperimentResults(BaseModel):
     model_b: dict
 
 
-# In-memory store (production would use DB)
-_experiments: dict[str, ExperimentResponse] = {}
+# In-memory store (production would use DB), scoped per org (tenant):
+# org -> name -> experiment. Single-org dev/demo uses only the "default" org.
+_experiments: dict[str, dict[str, ExperimentResponse]] = defaultdict(dict)
 
 
 @router.get("")
-async def list_experiments() -> list[ExperimentResponse]:
-    return list(_experiments.values())
+async def list_experiments(org: str = Depends(get_current_org)) -> list[ExperimentResponse]:
+    return list(_experiments[org].values())
 
 
 @router.post("", response_model=ExperimentResponse)
-async def create_experiment(body: ExperimentCreate):
-    if body.name in _experiments:
+async def create_experiment(body: ExperimentCreate, org: str = Depends(get_current_org)):
+    if body.name in _experiments[org]:
         raise HTTPException(status_code=409, detail=f"Experiment '{body.name}' already exists")
     exp = ExperimentResponse(
         name=body.name, model_a=body.model_a, model_b=body.model_b,
         traffic_pct_b=body.traffic_pct_b, gateway_id=body.gateway_id,
     )
-    _experiments[body.name] = exp
+    _experiments[org][body.name] = exp
     return exp
 
 
 @router.delete("/{name}")
-async def delete_experiment(name: str):
-    if name not in _experiments:
+async def delete_experiment(name: str, org: str = Depends(get_current_org)):
+    if name not in _experiments[org]:
         raise HTTPException(status_code=404, detail="Experiment not found")
-    del _experiments[name]
+    del _experiments[org][name]
     return {"deleted": name}
 
 
 @router.patch("/{name}/toggle")
-async def toggle_experiment(name: str):
-    exp = _experiments.get(name)
+async def toggle_experiment(name: str, org: str = Depends(get_current_org)):
+    exp = _experiments[org].get(name)
     if not exp:
         raise HTTPException(status_code=404, detail="Experiment not found")
     exp.enabled = not exp.enabled
@@ -80,9 +83,10 @@ async def get_experiment_results(
     name: str,
     period_days: int = Query(default=7, le=30),
     db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
 ):
     """Compare performance between model A and model B for this experiment."""
-    exp = _experiments.get(name)
+    exp = _experiments[org].get(name)
     if not exp:
         raise HTTPException(status_code=404, detail="Experiment not found")
 
