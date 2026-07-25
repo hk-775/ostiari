@@ -66,6 +66,56 @@ def _fail_closed_on_cp_loss() -> bool:
     return _os.environ.get("OSTIARI_ENV", "").strip().lower() in ("production", "prod")
 
 
+def _is_production() -> bool:
+    return _os.environ.get("OSTIARI_ENV", "").strip().lower() in ("production", "prod")
+
+
+def _check_production_posture() -> None:
+    """Warn (or refuse) when a production gateway is left fail-open.
+
+    Every gateway control is off-by-default for the demo/standalone flow. In
+    production that means anyone reaching the port can flip enforcement mode,
+    rewrite tools/policy, or impersonate any agent via the X-Agent-Id header.
+    We surface that loudly at startup, and hard-refuse when the operator opts
+    into strict mode (OSTIARI_STRICT=1) — mirroring the control plane's
+    production JWT-secret guard.
+    """
+    if not _is_production():
+        return
+
+    open_controls: list[str] = []
+    if not _os.environ.get("OSTIARI_CONFIG_ADMIN_KEY", "").strip():
+        open_controls.append(
+            "OSTIARI_CONFIG_ADMIN_KEY unset — /config/* (mode, tools, policy, "
+            "quota, payments) is unauthenticated"
+        )
+    if _os.environ.get("OSTIARI_GATEWAY_AUTH", "off").strip().lower() not in (
+        "required", "1", "true", "yes", "on"
+    ):
+        open_controls.append(
+            "OSTIARI_GATEWAY_AUTH not required — the X-Agent-Id header is trusted "
+            "with no token, so any caller can impersonate any agent"
+        )
+
+    if not open_controls:
+        return
+
+    strict = _os.environ.get("OSTIARI_STRICT", "").strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+    banner = "; ".join(open_controls)
+    if strict:
+        raise RuntimeError(
+            f"OSTIARI_ENV=production with OSTIARI_STRICT set, but fail-open "
+            f"controls remain: {banner}. Set the listed variables or unset "
+            f"OSTIARI_STRICT to start anyway."
+        )
+    log.warning(
+        "PRODUCTION SECURITY WARNING — fail-open controls detected: %s. "
+        "Set OSTIARI_STRICT=1 to make this fatal.", banner,
+    )
+
+
 def _config_admin_key() -> str:
     """Shared admin secret required to mutate/read gateway /config/* when set.
 
@@ -253,6 +303,8 @@ def _shadow_execute_response(
 
 def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
     """Create the generic sidecar FastAPI app."""
+    _check_production_posture()
+
     from ostiari_gateway.agent_auth import AgentAuthPolicy
     from ostiari_gateway.mcp import MCPManager
     from ostiari_gateway.modules import ModuleRegistry

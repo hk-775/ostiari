@@ -153,14 +153,17 @@ class MessagesProxy:
         # ── Ostiari-side quota gate (pre-call budget guard) ──────────────
         # AxonLLM does its own cost tracking + model access control; this is
         # Ostiari's own budget ceiling on top.
+        reservation_id: int | None = None
         if self._quota is not None:
             try:
                 est = self._quota.estimate_cost(requested_model)
-                decision = self._quota.check(model=requested_model, estimated_cost=est)
+                decision = self._quota.check(model=requested_model, estimated_cost=est,
+                                             reserve=True)
                 if not decision.allowed:
                     await self._report(agent_id, framework, session_id, requested_model,
                                         tier="block", reason=decision.reason, limit_type="quota")
                     return _err(429, "rate_limit_error", f"Request blocked by quota: {decision.reason}")
+                reservation_id = decision.reservation_id
                 self._quota.record_request()
             except Exception as e:  # noqa: BLE001
                 log.debug("Quota check failed: %s", e)
@@ -171,14 +174,14 @@ class MessagesProxy:
         # (ensemble stays on /invoke) and translate the result back to Anthropic.
         if self._axon is not None and self._axon.available:
             return await self._forward_axon(request, body, requested_model, agent_id,
-                                            session_id, framework, streaming)
+                                            session_id, framework, streaming, reservation_id)
 
         # ── Fallback: no AxonLLM — Ostiari's own ModelRouter + direct call ─
         model = self._route(agent_id, requested_model, flat, session_id)
         routed = model != requested_model
         provider = _provider_of(model)
         meta = {"agent_id": agent_id, "framework": framework, "session_id": session_id,
-                "model": model, "routed": routed}
+                "model": model, "routed": routed, "reservation_id": reservation_id}
         if provider == "anthropic":
             return await self._forward_anthropic(request, body, model, streaming, meta)
         return await self._forward_translated(body, model, provider, streaming, meta)
@@ -239,7 +242,8 @@ class MessagesProxy:
                                 tier="allow" if resp.status_code == 200 else "block",
                                 usage=payload.get("usage", {}) if isinstance(payload, dict) else {},
                                 routed=meta["routed"],
-                                reason=None if resp.status_code == 200 else "upstream error")
+                                reason=None if resp.status_code == 200 else "upstream error",
+                                reservation_id=meta.get("reservation_id"))
             return JSONResponse(status_code=resp.status_code, content=payload)
 
         # streaming: relay raw SSE bytes untouched, scrape usage from the tail
@@ -259,7 +263,8 @@ class MessagesProxy:
             except Exception:
                 content = {"type": "error", "error": {"type": "api_error", "message": "upstream error"}}
             await self._report(meta["agent_id"], meta["framework"], meta["session_id"], model,
-                                tier="block", reason="upstream error", routed=meta["routed"])
+                                tier="block", reason="upstream error", routed=meta["routed"],
+                                reservation_id=meta.get("reservation_id"))
             return JSONResponse(status_code=resp.status_code, content=content)
 
         proxy = self
@@ -277,7 +282,8 @@ class MessagesProxy:
                 await cm.__aexit__(None, None, None)
                 await client.aclose()
                 await proxy._report(meta["agent_id"], meta["framework"], meta["session_id"], model,
-                                    tier="allow", usage=_scrape_usage(scan), routed=meta["routed"])
+                                    tier="allow", usage=_scrape_usage(scan), routed=meta["routed"],
+                                    reservation_id=meta.get("reservation_id"))
 
         return StreamingResponse(relay(), media_type="text/event-stream")
 
@@ -294,12 +300,14 @@ class MessagesProxy:
         except Exception as e:  # noqa: BLE001
             log.warning("Cross-provider call to %s (%s) failed: %s", model, provider, e)
             await self._report(meta["agent_id"], meta["framework"], meta["session_id"], model,
-                                tier="block", reason=f"provider error: {e}", routed=meta["routed"])
+                                tier="block", reason=f"provider error: {e}", routed=meta["routed"],
+                                reservation_id=meta.get("reservation_id"))
             return _err(502, "api_error", f"Upstream provider call failed: {e}")
 
         usage = anthropic_msg.get("usage", {})
         await self._report(meta["agent_id"], meta["framework"], meta["session_id"], model,
-                           tier="allow", usage=usage, routed=meta["routed"])
+                           tier="allow", usage=usage, routed=meta["routed"],
+                           reservation_id=meta.get("reservation_id"))
 
         if not streaming:
             return JSONResponse(status_code=200, content=anthropic_msg)
@@ -324,7 +332,7 @@ class MessagesProxy:
     # ── AxonLLM target: single routing authority ─────────────────────────
     async def _forward_axon(
         self, request: Request, body: dict[str, Any], requested_model: str, agent_id: str,
-        session_id: str, framework: str, streaming: bool,
+        session_id: str, framework: str, streaming: bool, reservation_id: int | None = None,
     ) -> Any:
         """Route via AxonLLM (selection + access + cost + fallback), translate to Anthropic.
 
@@ -366,7 +374,7 @@ class MessagesProxy:
             model = requested_model or getattr(self._config, "default_model", "") or "claude-sonnet-4-6"
             provider = _provider_of(model)
             meta = {"agent_id": agent_id, "framework": framework, "session_id": session_id,
-                    "model": model, "routed": False}
+                    "model": model, "routed": False, "reservation_id": reservation_id}
             if provider == "anthropic":
                 return await self._forward_anthropic(request, body, model, streaming, meta)
             return await self._forward_translated(body, model, provider, streaming, meta)
@@ -377,7 +385,7 @@ class MessagesProxy:
         await self._report(agent_id, framework, session_id, res.model or requested_model,
                            tier="allow",
                            usage={"input_tokens": res.input_tokens, "output_tokens": res.output_tokens},
-                           routed=routed)
+                           routed=routed, reservation_id=reservation_id)
 
         if not streaming:
             return JSONResponse(status_code=200, content=anthropic_msg)
@@ -473,7 +481,7 @@ class MessagesProxy:
     async def _report(
         self, agent_id: str, framework: str, session_id: str, model: str,
         *, tier: str, usage: dict[str, Any] | None = None, reason: str | None = None,
-        routed: bool = False, limit_type: str = "",
+        routed: bool = False, limit_type: str = "", reservation_id: int | None = None,
     ) -> None:
         in_tok = int((usage or {}).get("input_tokens", 0) or 0)
         out_tok = int((usage or {}).get("output_tokens", 0) or 0)
@@ -483,9 +491,11 @@ class MessagesProxy:
             if self._quota is not None:
                 try:
                     cost = self._quota.calculate_cost(model, in_tok, out_tok)
-                    self._quota.record_spend(cost)
+                    self._quota.record_spend(cost, reservation_id=reservation_id)
                 except Exception as e:  # noqa: BLE001
                     log.debug("Spend accounting failed: %s", e)
+        elif self._quota is not None and reservation_id is not None:
+            self._quota.release_reservation(reservation_id)
             # Record spend against the agent's own budget so per-agent budget
             # caps (authorize_llm -> check_budget) actually decrement.
             if self._agent_auth is not None and cost:

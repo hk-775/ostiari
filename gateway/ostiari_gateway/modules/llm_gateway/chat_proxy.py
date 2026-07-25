@@ -103,14 +103,20 @@ class ChatProxy:
                 return _err(403, f"Request blocked by Ostiari: {reason}", "permission_error")
 
         # ── Gate 3: Ostiari quota ceiling ───────────────────────────────────
+        # reserve=True books the estimated cost as an in-flight reservation so
+        # concurrent calls can't all pass on the same stale spend total. The
+        # reservation is released/settled in _report (or self-expires on TTL).
+        reservation_id: int | None = None
         if self._quota is not None:
             try:
                 est = self._quota.estimate_cost(requested_model)
-                decision = self._quota.check(model=requested_model, estimated_cost=est)
+                decision = self._quota.check(model=requested_model, estimated_cost=est,
+                                             reserve=True)
                 if not decision.allowed:
                     await self._report(agent_id, framework, session_id, requested_model,
                                         tier="block", reason=decision.reason, limit_type="quota")
                     return _err(429, f"Request blocked by quota: {decision.reason}", "rate_limit_error")
+                reservation_id = decision.reservation_id
                 self._quota.record_request()
             except Exception as e:  # noqa: BLE001
                 log.debug("Quota check failed: %s", e)
@@ -134,6 +140,8 @@ class ChatProxy:
             )
         except Exception as e:  # noqa: BLE001
             log.warning("Codex shim route failed: %s", e)
+            if self._quota is not None:
+                self._quota.release_reservation(reservation_id)
             await self._report(agent_id, framework, session_id, requested_model,
                                 tier="block", reason=f"router error: {e}", limit_type="router")
             return _err(502, f"Upstream routing failed: {e}", "api_error")
@@ -141,7 +149,8 @@ class ChatProxy:
         await self._report(agent_id, framework, session_id, res.model or requested_model,
                            tier="allow",
                            usage={"input_tokens": res.input_tokens, "output_tokens": res.output_tokens},
-                           routed=(res.model or "") != requested_model)
+                           routed=(res.model or "") != requested_model,
+                           reservation_id=reservation_id)
 
         completion = _openai_completion(res)
         if not streaming:
@@ -166,17 +175,21 @@ class ChatProxy:
     async def _report(self, agent_id: str, framework: str, session_id: str, model: str,
                       *, tier: str, usage: dict[str, Any] | None = None,
                       reason: str | None = None, routed: bool = False,
-                      limit_type: str = "") -> None:
+                      limit_type: str = "", reservation_id: int | None = None) -> None:
         in_tok = int((usage or {}).get("input_tokens", 0) or 0)
         out_tok = int((usage or {}).get("output_tokens", 0) or 0)
         if self._quota is not None and tier == "allow" and (in_tok or out_tok):
             try:
                 cost = self._quota.calculate_cost(model, in_tok, out_tok)
-                self._quota.record_spend(cost)
+                self._quota.record_spend(cost, reservation_id=reservation_id)
                 if self._agent_auth is not None and cost:
                     self._agent_auth.record_agent_spend(agent_id, cost)
             except Exception as e:  # noqa: BLE001
                 log.debug("Spend accounting failed: %s", e)
+        elif self._quota is not None and reservation_id is not None:
+            # Not recording spend on this path — release the reservation so it
+            # doesn't linger until TTL.
+            self._quota.release_reservation(reservation_id)
         if self._trace is not None:
             try:
                 await self._trace.report(
