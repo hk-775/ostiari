@@ -61,6 +61,9 @@ class QuotaDecision:
         self.allowed = allowed
         self.reason = reason
         self.limit_type = limit_type
+        # Set when check(reserve=True) booked an in-flight budget reservation;
+        # pass it back to record_spend() to release it.
+        self.reservation_id: int | None = None
 
 
 class QuotaEnforcer:
@@ -80,6 +83,18 @@ class QuotaEnforcer:
         self._window_seconds: float = 60.0
         self._alerted_thresholds: set[float] = set()
         self._alert_callbacks: list[Callable[[str, float, float], None]] = []
+        # In-flight budget reservations: reservation_id -> (amount, monotonic_ts).
+        # A reservation is booked at check(reserve=True) time and released at
+        # record_spend(). Counting live reservations in the budget projection
+        # closes the TOCTOU window where many concurrent LLM calls each read the
+        # same stale _total_spend (before any awaited upstream call settles) and
+        # all pass the budget gate, overshooting budget_limit_usd. Reservations
+        # self-expire after a TTL so a request that errors before record_spend
+        # can't leak one (the projection just stays briefly conservative — the
+        # safe direction for a hard budget).
+        self._reservations: dict[int, tuple[float, float]] = {}
+        self._reservation_seq: int = 0
+        self._reservation_ttl: float = 120.0
 
     def configure(self, config: dict[str, Any]) -> None:
         """Update quota config (pushed from control plane)."""
@@ -106,12 +121,25 @@ class QuotaEnforcer:
         """
         self._alert_callbacks.append(callback)
 
-    def check(self, model: str | None = None, estimated_cost: float | None = None) -> QuotaDecision:
+    def check(
+        self,
+        model: str | None = None,
+        estimated_cost: float | None = None,
+        reserve: bool = False,
+    ) -> QuotaDecision:
         """Check if the current request is allowed under quota limits.
 
         Args:
             model: Model being requested (for allowlist check)
             estimated_cost: Estimated cost of this request (for budget projection)
+            reserve: When True and the check passes on budget, atomically book a
+                budget reservation for ``estimated_cost`` (returned as
+                ``decision.reservation_id``). The caller MUST later call
+                ``record_spend(actual, reservation_id=...)`` to release it. This
+                makes concurrent LLM calls see each other's in-flight spend and
+                prevents overshooting a hard budget across the awaited upstream
+                call. No await occurs between the projection and the booking, so
+                the reserve is atomic under asyncio.
         """
         if self._config is None:
             return QuotaDecision(allowed=True)
@@ -126,9 +154,11 @@ class QuotaEnforcer:
                     limit_type="rate_limit",
                 )
 
-        # Budget check with projection
+        # Budget check with projection — includes in-flight reservations so
+        # concurrent requests can't all pass on the same stale _total_spend.
         if self._config.budget_limit_usd is not None:
-            projected = self._total_spend + (estimated_cost or 0)
+            est = estimated_cost or 0
+            projected = self._total_spend + self._reserved_total() + est
             if projected >= self._config.budget_limit_usd:
                 return QuotaDecision(
                     allowed=False,
@@ -145,7 +175,24 @@ class QuotaEnforcer:
                     limit_type="model_restriction",
                 )
 
-        return QuotaDecision(allowed=True)
+        decision = QuotaDecision(allowed=True)
+        # Book the reservation in the same synchronous block that just passed the
+        # projection — no await between, so it's atomic w.r.t. other coroutines.
+        if reserve and self._config.budget_limit_usd is not None and (estimated_cost or 0) > 0:
+            self._reservation_seq += 1
+            rid = self._reservation_seq
+            self._reservations[rid] = (estimated_cost or 0, time.monotonic())
+            decision.reservation_id = rid
+        return decision
+
+    def _reserved_total(self) -> float:
+        """Sum of live (non-expired) budget reservations; prunes expired ones."""
+        now = time.monotonic()
+        expired = [rid for rid, (_, ts) in self._reservations.items()
+                   if now - ts > self._reservation_ttl]
+        for rid in expired:
+            del self._reservations[rid]
+        return sum(amount for amount, _ in self._reservations.values())
 
     def cap_max_tokens(self, requested: int) -> int:
         """Return effective max_tokens — capped by quota if configured."""
@@ -174,10 +221,23 @@ class QuotaEnforcer:
         """Record that a request was made (for rate limiting)."""
         self._request_times.append(time.monotonic())
 
-    def record_spend(self, cost_usd: float) -> None:
-        """Record spend and fire alerts if thresholds crossed."""
+    def record_spend(self, cost_usd: float, reservation_id: int | None = None) -> None:
+        """Record actual spend and fire alerts if thresholds crossed.
+
+        If a reservation_id from check(reserve=True) is supplied, release that
+        reservation — its estimated amount stops counting toward the projection
+        now that the real cost is booked here.
+        """
+        if reservation_id is not None:
+            self._reservations.pop(reservation_id, None)
         self._total_spend += cost_usd
         self._check_alert_thresholds()
+
+    def release_reservation(self, reservation_id: int | None) -> None:
+        """Release a budget reservation without recording spend (request failed
+        before it incurred cost). Safe to call with None or an unknown id."""
+        if reservation_id is not None:
+            self._reservations.pop(reservation_id, None)
 
     def get_status(self) -> dict[str, Any]:
         """Get current quota status for reporting."""
