@@ -5,8 +5,10 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
 from control_plane.models.database import Gateway, Tool
+from control_plane.models.scoping import get_scoped, scoped, stamp
 from control_plane.models.schemas import ToolCreate, ToolResponse
 
 router = APIRouter(prefix="/api/tools", tags=["tools"])
@@ -24,8 +26,8 @@ class OpenAPIImport(BaseModel):
 
 
 @router.get("", response_model=list[ToolResponse])
-async def list_tools(gateway_id: str | None = None, db: AsyncSession = Depends(get_db)):
-    query = select(Tool)
+async def list_tools(gateway_id: str | None = None, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+    query = scoped(select(Tool), Tool, org)
     if gateway_id:
         query = query.where(Tool.gateway_id == gateway_id)
     result = await db.execute(query)
@@ -33,8 +35,8 @@ async def list_tools(gateway_id: str | None = None, db: AsyncSession = Depends(g
 
 
 @router.post("/{gateway_id}", response_model=ToolResponse)
-async def add_tool(gateway_id: str, body: ToolCreate, db: AsyncSession = Depends(get_db)):
-    gateway = await db.get(Gateway, gateway_id)
+async def add_tool(gateway_id: str, body: ToolCreate, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+    gateway = await get_scoped(db, Gateway, gateway_id, org)
     if not gateway:
         raise HTTPException(status_code=404, detail="Gateway not found")
 
@@ -43,6 +45,7 @@ async def add_tool(gateway_id: str, body: ToolCreate, db: AsyncSession = Depends
         description=body.description, timeout_seconds=body.timeout_seconds,
         schema_json=body.schema_json, gateway_id=gateway_id,
     )
+    stamp(tool, org)
     db.add(tool)
     await db.commit()
     await db.refresh(tool)
@@ -50,8 +53,8 @@ async def add_tool(gateway_id: str, body: ToolCreate, db: AsyncSession = Depends
 
 
 @router.delete("/{tool_id}")
-async def delete_tool(tool_id: int, db: AsyncSession = Depends(get_db)):
-    tool = await db.get(Tool, tool_id)
+async def delete_tool(tool_id: int, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+    tool = await get_scoped(db, Tool, tool_id, org)
     if not tool:
         raise HTTPException(status_code=404, detail="Tool not found")
     await db.delete(tool)
@@ -60,7 +63,7 @@ async def delete_tool(tool_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/{gateway_id}/import-openapi")
-async def import_openapi(gateway_id: str, body: OpenAPIImport, db: AsyncSession = Depends(get_db)):
+async def import_openapi(gateway_id: str, body: OpenAPIImport, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
     """Generate tools from an OpenAPI spec and persist them to a gateway.
 
     Parsing is done by the shared gateway importer (single source of truth).
@@ -71,7 +74,7 @@ async def import_openapi(gateway_id: str, body: OpenAPIImport, db: AsyncSession 
     # the gateway package (they are separately deployed services).
     from ostiari.openapi_import import OpenAPIError, fetch_spec_text, is_url, parse_spec
 
-    gateway = await db.get(Gateway, gateway_id)
+    gateway = await get_scoped(db, Gateway, gateway_id, org)
     if not gateway:
         raise HTTPException(status_code=404, detail="Gateway not found")
 
@@ -102,18 +105,19 @@ async def import_openapi(gateway_id: str, body: OpenAPIImport, db: AsyncSession 
         return {"status": "preview", "count": len(preview), "tools": preview}
 
     if body.replace:
-        existing = await db.execute(select(Tool).where(Tool.gateway_id == gateway_id))
+        existing = await db.execute(scoped(select(Tool).where(Tool.gateway_id == gateway_id), Tool, org))
         for t in existing.scalars().all():
             await db.delete(t)
 
     for s in specs:
         # Upsert by (gateway_id, name) so re-importing updates rather than duplicates.
         found = await db.execute(
-            select(Tool).where(Tool.gateway_id == gateway_id, Tool.name == s["name"])
+            scoped(select(Tool).where(Tool.gateway_id == gateway_id, Tool.name == s["name"]), Tool, org)
         )
         row = found.scalar_one_or_none()
         if row is None:
             row = Tool(name=s["name"], gateway_id=gateway_id)
+            stamp(row, org)
             db.add(row)
         row.endpoint = s["endpoint"]
         row.method = s["method"]

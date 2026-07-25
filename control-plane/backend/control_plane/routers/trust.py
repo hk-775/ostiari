@@ -13,9 +13,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane import trust
+from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
 from control_plane.models.database import Gateway
-from control_plane.routers.traces import _recent_traces
+from control_plane.models.scoping import get_scoped
+from control_plane.routers.traces import recent_traces_for
 
 router = APIRouter(prefix="/api/trust", tags=["trust"])
 
@@ -38,16 +40,16 @@ async def _get_cross_agent(gateway) -> dict:
 
 
 @router.get("/scores")
-async def scores(gateway_id: str = "crm-agent", db: AsyncSession = Depends(get_db)):
+async def scores(gateway_id: str = "crm-agent", db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
     """Derived-vs-configured trust per agent (shadow view — computes only)."""
-    gateway = await db.get(Gateway, gateway_id)
+    gateway = await get_scoped(db, Gateway, gateway_id, org)
     configured: dict[str, int] = {}
     if gateway is not None:
         policy = await _get_cross_agent(gateway)
         configured = policy.get("trust_scores", {}) or {}
     enforced = _enforced.get(gateway_id, False)
 
-    rows = trust.score_agents(list(_recent_traces), configured=configured)
+    rows = trust.score_agents(recent_traces_for(org), configured=configured)
     would_change = [r for r in rows if r["delta"] is not None and abs(r["delta"]) >= 10]
     return {
         "gateway_id": gateway_id,
@@ -59,18 +61,18 @@ async def scores(gateway_id: str = "crm-agent", db: AsyncSession = Depends(get_d
 
 
 @router.post("/apply")
-async def apply(gateway_id: str = "crm-agent", db: AsyncSession = Depends(get_db)):
+async def apply(gateway_id: str = "crm-agent", db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
     """Opt-in: push derived scores into the gateway's cross-agent trust_scores.
 
     Merges derived scores over the existing policy (preserving edges/min_trust)
     and marks enforcement on. Manual config can still be re-applied to override.
     """
-    gateway = await db.get(Gateway, gateway_id)
+    gateway = await get_scoped(db, Gateway, gateway_id, org)
     if gateway is None:
         raise HTTPException(status_code=404, detail="Gateway not found")
 
     policy = await _get_cross_agent(gateway)
-    rows = trust.score_agents(list(_recent_traces), configured=policy.get("trust_scores", {}))
+    rows = trust.score_agents(recent_traces_for(org), configured=policy.get("trust_scores", {}))
     derived = {r["agent_id"]: r["derived_score"] for r in rows if r["agent_id"] != "unknown"}
 
     if not derived:

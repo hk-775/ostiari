@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from control_plane.auth.dependencies import get_current_user, require_role
 from control_plane.auth.models import User
 from control_plane.env import is_production
+from control_plane.models.database import DEFAULT_ORG, Organization
 
 log = logging.getLogger("control_plane.auth")
 from control_plane.auth.schemas import (
@@ -32,6 +33,10 @@ async def _seed_admin(db: AsyncSession) -> None:
     global _seeded
     if _seeded:
         return
+    # Ensure the default organization exists (FK target for users/resources).
+    if await db.get(Organization, DEFAULT_ORG) is None:
+        db.add(Organization(id=DEFAULT_ORG, name="Default Organization"))
+        await db.flush()
     result = await db.execute(select(User).limit(1))
     if result.scalar_one_or_none() is None:
         # In production the initial admin password must be supplied explicitly —
@@ -53,6 +58,7 @@ async def _seed_admin(db: AsyncSession) -> None:
             hashed_password=hash_password(admin_password),
             role="admin",
             is_active=True,
+            org_id=DEFAULT_ORG,
         )
         db.add(admin)
         await db.flush()
@@ -70,7 +76,7 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")
-    token = create_access_token(user.id, user.email, user.role)
+    token = create_access_token(user.id, user.email, user.role, org=user.org_id or DEFAULT_ORG)
     return LoginResponse(
         access_token=token,
         user=UserResponse(id=user.id, email=user.email, name=user.name, role=user.role),
@@ -93,6 +99,8 @@ async def register(
         hashed_password=hash_password(body.password),
         role=body.role,
         is_active=True,
+        # New users join the creating admin's org.
+        org_id=getattr(user, "tenant_id", None) or DEFAULT_ORG,
     )
     db.add(new_user)
     await db.flush()

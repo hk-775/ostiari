@@ -53,7 +53,26 @@ async def get_current_user(request: Request) -> AuthUser:
         role=payload["role"],
         subject=str(payload["sub"]),
         kind="user",
+        tenant_id=payload.get("org", "default"),
     )
+
+
+async def get_current_org(request: Request) -> str:
+    """Resolve the caller's org (tenant) for per-org data scoping.
+
+    Falls back to "default" when there's no bearer token — preserving the
+    single-org demo/dev experience where routes are unauthenticated. When
+    OSTIARI_REQUIRE_AUTH is on, AuthMiddleware has already 401'd tokenless
+    requests before they reach a route, so this fallback is demo-only.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return "default"
+    try:
+        user = await get_current_user(request)
+    except HTTPException:
+        return "default"
+    return user.tenant_id or "default"
 
 
 def require_role(*roles: str) -> Callable:

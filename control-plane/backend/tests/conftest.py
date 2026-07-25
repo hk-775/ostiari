@@ -48,6 +48,7 @@ def _reset_in_memory_state() -> None:
         (providers, "_providers"),
         (traces, "_recent_traces"),
         (traces, "_session_parents"),
+        (traces, "_ws_clients"),
     ):
         obj = getattr(mod, attr, None)
         if obj is not None and hasattr(obj, "clear"):

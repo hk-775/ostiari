@@ -12,6 +12,9 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("organizations.id"), nullable=True, default="default", index=True
+    )
     email: Mapped[str] = mapped_column(String(256), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(128))
     hashed_password: Mapped[str] = mapped_column(String(256))

@@ -10,8 +10,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from control_plane.auth.dependencies import get_current_org
 from control_plane.database import async_session, get_db
 from control_plane.models.database import Gateway, Tool
+from control_plane.models.scoping import get_scoped, scoped, stamp
 from control_plane.models.schemas import GatewayCreate, GatewayResponse, GatewayUpdate
 from control_plane.services.audit_service import audit
 from control_plane.services.push_service import PushService
@@ -85,67 +87,68 @@ def _to_response(gateway: Gateway, tools_count: int = 0) -> GatewayResponse:
 
 
 @router.get("", response_model=list[GatewayResponse])
-async def list_gateways(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Gateway))
+async def list_gateways(db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+    result = await db.execute(scoped(select(Gateway), Gateway, org))
     gateways = result.scalars().all()
     responses = []
     for s in gateways:
-        tools_result = await db.execute(select(Tool).where(Tool.gateway_id == s.id))
+        tools_result = await db.execute(scoped(select(Tool).where(Tool.gateway_id == s.id), Tool, org))
         tools_count = len(tools_result.scalars().all())
         responses.append(_to_response(s, tools_count))
     return responses
 
 
 @router.post("", response_model=GatewayResponse)
-async def register_gateway(body: GatewayCreate, request: Request, db: AsyncSession = Depends(get_db)):
+async def register_gateway(body: GatewayCreate, request: Request, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
     existing = await db.get(Gateway, body.id)
     if existing:
         raise HTTPException(status_code=409, detail=f"Gateway {body.id} already exists")
     gateway = Gateway(id=body.id, name=body.name, endpoint=body.endpoint, description=body.description)
+    stamp(gateway, org)
     db.add(gateway)
-    await audit.log(db, _get_actor(request), "create", "gateway", body.id, {"name": body.name, "endpoint": body.endpoint})
+    await audit.log(db, _get_actor(request), "create", "gateway", body.id, {"name": body.name, "endpoint": body.endpoint}, org=org)
     await db.commit()
     await db.refresh(gateway)
     return _to_response(gateway, 0)
 
 
 @router.get("/{gateway_id}", response_model=GatewayResponse)
-async def get_gateway(gateway_id: str, db: AsyncSession = Depends(get_db)):
-    gateway = await db.get(Gateway, gateway_id)
+async def get_gateway(gateway_id: str, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+    gateway = await get_scoped(db, Gateway, gateway_id, org)
     if not gateway:
         raise HTTPException(status_code=404, detail="Gateway not found")
-    tools_result = await db.execute(select(Tool).where(Tool.gateway_id == gateway_id))
+    tools_result = await db.execute(scoped(select(Tool).where(Tool.gateway_id == gateway_id), Tool, org))
     tools_count = len(tools_result.scalars().all())
     return _to_response(gateway, tools_count)
 
 
 @router.patch("/{gateway_id}", response_model=GatewayResponse)
-async def update_gateway(gateway_id: str, body: GatewayUpdate, request: Request, db: AsyncSession = Depends(get_db)):
-    gateway = await db.get(Gateway, gateway_id)
+async def update_gateway(gateway_id: str, body: GatewayUpdate, request: Request, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+    gateway = await get_scoped(db, Gateway, gateway_id, org)
     if not gateway:
         raise HTTPException(status_code=404, detail="Gateway not found")
     changes = body.model_dump(exclude_unset=True)
     for field, value in changes.items():
         setattr(gateway, field, value)
-    await audit.log(db, _get_actor(request), "update", "gateway", gateway_id, changes)
+    await audit.log(db, _get_actor(request), "update", "gateway", gateway_id, changes, org=org)
     await db.commit()
     await db.refresh(gateway)
-    return await get_gateway(gateway_id, db)
+    return await get_gateway(gateway_id, db, org)
 
 
 @router.delete("/{gateway_id}")
-async def delete_gateway(gateway_id: str, request: Request, db: AsyncSession = Depends(get_db)):
-    gateway = await db.get(Gateway, gateway_id)
+async def delete_gateway(gateway_id: str, request: Request, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+    gateway = await get_scoped(db, Gateway, gateway_id, org)
     if not gateway:
         raise HTTPException(status_code=404, detail="Gateway not found")
-    await audit.log(db, _get_actor(request), "delete", "gateway", gateway_id, {"name": gateway.name})
+    await audit.log(db, _get_actor(request), "delete", "gateway", gateway_id, {"name": gateway.name}, org=org)
     await db.delete(gateway)
     await db.commit()
     return {"deleted": gateway_id}
 
 
 @router.put("/{gateway_id}/mode", response_model=GatewayResponse)
-async def set_mode(gateway_id: str, body: dict, request: Request, db: AsyncSession = Depends(get_db)):
+async def set_mode(gateway_id: str, body: dict, request: Request, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
     """Set a gateway's enforcement mode (enforce | shadow) and push it live.
 
     The mode is persisted in the gateway's config so it survives restarts and
@@ -156,14 +159,14 @@ async def set_mode(gateway_id: str, body: dict, request: Request, db: AsyncSessi
     if mode not in ("enforce", "shadow"):
         raise HTTPException(status_code=400, detail="mode must be 'enforce' or 'shadow'")
 
-    gateway = await db.get(Gateway, gateway_id)
+    gateway = await get_scoped(db, Gateway, gateway_id, org)
     if not gateway:
         raise HTTPException(status_code=404, detail="Gateway not found")
 
     # Persist mode in the gateway config (JSON column reassigned so SQLAlchemy
     # detects the change).
     gateway.config = {**(gateway.config or {}), "mode": mode}
-    await audit.log(db, _get_actor(request), "set_mode", "gateway", gateway_id, {"mode": mode})
+    await audit.log(db, _get_actor(request), "set_mode", "gateway", gateway_id, {"mode": mode}, org=org)
     await db.commit()
     await db.refresh(gateway)
 
@@ -177,10 +180,12 @@ async def set_mode(gateway_id: str, body: dict, request: Request, db: AsyncSessi
 
 
 @router.post("/{gateway_id}/push")
-async def push_config(gateway_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+async def push_config(gateway_id: str, request: Request, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
     """Push current config to a specific gateway."""
+    if await get_scoped(db, Gateway, gateway_id, org) is None:
+        raise HTTPException(status_code=404, detail="Gateway not found")
     result = await push_service.push_to_gateway(db, gateway_id)
-    await audit.log(db, _get_actor(request), "push", "gateway", gateway_id, {"status": result.status})
+    await audit.log(db, _get_actor(request), "push", "gateway", gateway_id, {"status": result.status}, org=org)
     await db.commit()
     if result.status == "error":
         raise HTTPException(status_code=502, detail=result.message)
@@ -188,18 +193,18 @@ async def push_config(gateway_id: str, request: Request, db: AsyncSession = Depe
 
 
 @router.post("/push-all")
-async def push_all(request: Request, db: AsyncSession = Depends(get_db)):
-    """Push config to all registered gateways."""
-    result = await push_service.push_to_all(db)
-    await audit.log(db, _get_actor(request), "push_all", "gateway", "*", {"succeeded": result.succeeded, "failed": result.failed})
+async def push_all(request: Request, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+    """Push config to all registered gateways in the caller's org."""
+    result = await push_service.push_to_all(db, org=org)
+    await audit.log(db, _get_actor(request), "push_all", "gateway", "*", {"succeeded": result.succeeded, "failed": result.failed}, org=org)
     await db.commit()
     return result
 
 
 @router.get("/{gateway_id}/health")
-async def check_health(gateway_id: str, db: AsyncSession = Depends(get_db)):
+async def check_health(gateway_id: str, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
     """Check health of a gateway by calling its /health endpoint."""
-    gateway = await db.get(Gateway, gateway_id)
+    gateway = await get_scoped(db, Gateway, gateway_id, org)
     if not gateway:
         raise HTTPException(status_code=404, detail="Gateway not found")
 
@@ -236,10 +241,14 @@ async def gateway_register(
     # request.client) drops it, breaking config pushes (config goes to
     # http://host/config with no port → connection refused).
     callback_url = ""
+    reg_org = "default"
     try:
         body = await request.json()
         if isinstance(body, dict):
             callback_url = (body.get("callback_url") or "").strip()
+            # A gateway declares its org at registration (no user token on this
+            # path). Absent that, it lands in the default org.
+            reg_org = (body.get("org_id") or "default").strip() or "default"
     except Exception:
         pass
 
@@ -258,6 +267,7 @@ async def gateway_register(
             name=gateway_id,
             endpoint=callback_url or _fallback_endpoint(),
             description="Auto-registered on gateway startup",
+            org_id=reg_org,
         )
         db.add(gateway)
         created = True
@@ -271,7 +281,7 @@ async def gateway_register(
     if created:
         await audit.log(
             db, _get_actor(request), "auto-register", "gateway", gateway_id,
-            {"endpoint": gateway.endpoint},
+            {"endpoint": gateway.endpoint}, org=gateway.org_id or "default",
         )
     await db.commit()
 

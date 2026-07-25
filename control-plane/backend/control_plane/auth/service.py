@@ -44,12 +44,17 @@ def verify_password(password: str, hashed: str) -> bool:
     return bcrypt.checkpw(password.encode(), hashed.encode())
 
 
-def create_access_token(user_id: int, email: str, role: str) -> str:
-    """Create a JWT access token with 24h expiry."""
+def create_access_token(user_id: int, email: str, role: str, org: str = "default") -> str:
+    """Create a JWT access token with 24h expiry.
+
+    `org` is the tenant the principal belongs to; it's read back by
+    get_current_user and drives per-org data scoping.
+    """
     payload = {
         "sub": str(user_id),
         "email": email,
         "role": role,
+        "org": org,
         "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRY_HOURS),
         "iat": datetime.now(timezone.utc),
     }
