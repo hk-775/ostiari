@@ -131,6 +131,18 @@ For ECS, store secrets in AWS Secrets Manager and reference them in the task def
 ## Production Notes
 
 - **Database**: The control plane uses SQLite for dev. For production, configure PostgreSQL via RDS.
-- **Redis**: Enable Redis for distributed rate limiting and session state across multiple gateway instances.
 - **TLS**: Terminate TLS at the load balancer or ingress controller, not at the gateway.
-- **Scaling**: The gateway is stateless (with Redis). Scale horizontally without concern.
+- **Scaling & per-replica limits**: Each gateway holds its enforcement state
+  **in-process** — the rate limiter, quota/budget counters, and payment wallets
+  are per-instance. Config (tools/policy/quotas) is pushed/pulled fleet-wide, but
+  the *running counters* are not shared. Consequently, quantitative limits are
+  enforced **per replica, not fleet-wide**: with N gateway instances an effective
+  `budget_limit_usd`/`rate_limit_rpm` becomes N× the configured value, and a
+  wallet balance is tracked independently per instance. Plan capacity per replica
+  accordingly, and pin agents to a stable instance (or run a single instance)
+  where an exact global cap matters.
+- **Redis**: The `REDIS_ENDPOINT`/`REDIS_PORT` env vars are surfaced by the
+  deploy manifests for a future shared-state backend, but the gateway does **not**
+  yet use Redis — enforcement state is in-process regardless of whether Redis is
+  reachable. Sharing rate-limit/quota/wallet state across replicas via Redis is
+  tracked as follow-up work.
