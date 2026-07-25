@@ -95,6 +95,22 @@ class QuotaEnforcer:
         self._reservations: dict[int, tuple[float, float]] = {}
         self._reservation_seq: int = 0
         self._reservation_ttl: float = 120.0
+        # Optional Redis-backed shared store. When attached, budget spend is
+        # tracked fleet-wide (atomic reserve/adjust) instead of per-process, so a
+        # scaled fleet enforces one budget rather than N×. Rate limiting is
+        # handled by the middleware's own shared path; here it only affects
+        # budget. None = per-process (unchanged behavior).
+        self._store: Any = None
+        # Reservation ids that were reserved in the SHARED store (vs local-only),
+        # so record_spend/release reconcile the right place.
+        self._shared_reservations: set[int] = set()
+        # Stable per-process budget key; the control plane can override via a
+        # config field so multiple gateways share (or partition) one budget.
+        self._budget_key: str = "gateway"
+
+    def attach_shared_store(self, store: Any) -> None:
+        """Attach (or clear) the Redis-backed shared store. Safe to call with None."""
+        self._store = store
 
     def configure(self, config: dict[str, Any]) -> None:
         """Update quota config (pushed from control plane)."""
@@ -105,6 +121,9 @@ class QuotaEnforcer:
             allowed_models=config.get("allowed_models"),
             pricing=config.get("pricing"),
         )
+        # Optional shared-budget key: gateways sharing this key share one
+        # fleet-wide budget in Redis. Defaults to "gateway".
+        self._budget_key = str(config.get("budget_key") or self._budget_key)
         log.info(
             "Quota configured: rpm=%s, budget=$%s, max_tokens=%s, models=%s, pricing_models=%d",
             self._config.rate_limit_rpm,
@@ -154,17 +173,41 @@ class QuotaEnforcer:
                     limit_type="rate_limit",
                 )
 
-        # Budget check with projection — includes in-flight reservations so
-        # concurrent requests can't all pass on the same stale _total_spend.
-        if self._config.budget_limit_usd is not None:
-            est = estimated_cost or 0
-            projected = self._total_spend + self._reserved_total() + est
-            if projected >= self._config.budget_limit_usd:
-                return QuotaDecision(
-                    allowed=False,
-                    reason=f"Budget would be exceeded: ${projected:.4f} projected / ${self._config.budget_limit_usd:.2f} limit",
-                    limit_type="budget",
-                )
+        # Budget check with projection.
+        #  - Shared store attached: budget lives in Redis (fleet-wide). A
+        #    reserving check does an ATOMIC reserve there (check+add in one Lua
+        #    op); a non-reserving check reads the shared spend and projects.
+        #  - No store: in-process projection incl. local in-flight reservations
+        #    (closes the single-process TOCTOU; unchanged behavior).
+        est = estimated_cost or 0
+        limit = self._config.budget_limit_usd
+        _shared_reserved = False
+        if limit is not None:
+            if self._store is not None:
+                if reserve and est > 0:
+                    if not self._store.budget_reserve(self._budget_key, est, limit):
+                        return QuotaDecision(
+                            allowed=False,
+                            reason=f"Budget would be exceeded (fleet): ${limit:.2f} limit",
+                            limit_type="budget",
+                        )
+                    _shared_reserved = True
+                else:
+                    projected = self._store.budget_spend(self._budget_key) + est
+                    if projected >= limit:
+                        return QuotaDecision(
+                            allowed=False,
+                            reason=f"Budget would be exceeded (fleet): ${projected:.4f} / ${limit:.2f} limit",
+                            limit_type="budget",
+                        )
+            else:
+                projected = self._total_spend + self._reserved_total() + est
+                if projected >= limit:
+                    return QuotaDecision(
+                        allowed=False,
+                        reason=f"Budget would be exceeded: ${projected:.4f} projected / ${limit:.2f} limit",
+                        limit_type="budget",
+                    )
 
         # Model allowlist check
         if self._config.allowed_models is not None and model:
@@ -176,12 +219,16 @@ class QuotaEnforcer:
                 )
 
         decision = QuotaDecision(allowed=True)
-        # Book the reservation in the same synchronous block that just passed the
-        # projection — no await between, so it's atomic w.r.t. other coroutines.
-        if reserve and self._config.budget_limit_usd is not None and (estimated_cost or 0) > 0:
+        # Book a reservation so record_spend can reconcile estimate→actual.
+        # Shared: the amount is already added to Redis (atomic reserve above);
+        # we just remember it. Local: track in-flight for the projection above.
+        # No await between projection and booking, so it's atomic under asyncio.
+        if reserve and limit is not None and est > 0:
             self._reservation_seq += 1
             rid = self._reservation_seq
-            self._reservations[rid] = (estimated_cost or 0, time.monotonic())
+            self._reservations[rid] = (est, time.monotonic())
+            if _shared_reserved:
+                self._shared_reservations.add(rid)
             decision.reservation_id = rid
         return decision
 
@@ -227,24 +274,49 @@ class QuotaEnforcer:
         If a reservation_id from check(reserve=True) is supplied, release that
         reservation — its estimated amount stops counting toward the projection
         now that the real cost is booked here.
+
+        With a shared store, a shared reservation already added the *estimate* to
+        Redis; here we adjust by (actual - estimate) so the fleet total reflects
+        the real cost. Without a store, we book the actual into local spend.
         """
+        est = 0.0
         if reservation_id is not None:
-            self._reservations.pop(reservation_id, None)
-        self._total_spend += cost_usd
+            resv = self._reservations.pop(reservation_id, None)
+            if resv is not None:
+                est = resv[0]
+        if reservation_id is not None and reservation_id in self._shared_reservations:
+            self._shared_reservations.discard(reservation_id)
+            if self._store is not None:
+                # Reconcile the pre-added estimate to the actual cost.
+                self._store.budget_adjust(self._budget_key, cost_usd - est)
+        elif self._store is not None:
+            # No shared reservation (e.g. a spend recorded without reserve=True) —
+            # add the actual cost to the fleet total directly.
+            self._store.budget_adjust(self._budget_key, cost_usd)
+        else:
+            self._total_spend += cost_usd
         self._check_alert_thresholds()
 
     def release_reservation(self, reservation_id: int | None) -> None:
         """Release a budget reservation without recording spend (request failed
         before it incurred cost). Safe to call with None or an unknown id."""
-        if reservation_id is not None:
-            self._reservations.pop(reservation_id, None)
+        if reservation_id is None:
+            return
+        resv = self._reservations.pop(reservation_id, None)
+        if reservation_id in self._shared_reservations:
+            self._shared_reservations.discard(reservation_id)
+            if self._store is not None and resv is not None:
+                # Subtract the estimate we optimistically added at reserve time.
+                self._store.budget_adjust(self._budget_key, -resv[0])
 
     def get_status(self) -> dict[str, Any]:
         """Get current quota status for reporting."""
         self._prune_old_requests()
+        spend = self._store.budget_spend(self._budget_key) if self._store is not None else self._total_spend
         status: dict[str, Any] = {
             "current_rpm": len(self._request_times),
-            "current_spend": round(self._total_spend, 4),
+            "current_spend": round(spend, 4),
+            "spend_scope": "fleet" if self._store is not None else "process",
         }
         if self._config:
             status["rate_limit_rpm"] = self._config.rate_limit_rpm
@@ -253,7 +325,7 @@ class QuotaEnforcer:
             status["allowed_models"] = self._config.allowed_models
             if self._config.budget_limit_usd:
                 status["budget_pct_used"] = round(
-                    (self._total_spend / self._config.budget_limit_usd) * 100, 1
+                    (spend / self._config.budget_limit_usd) * 100, 1
                 )
             status["pricing_models"] = len(self._config.pricing) + len(DEFAULT_PRICING)
         return status
@@ -262,6 +334,8 @@ class QuotaEnforcer:
         """Reset spend counter (e.g., at start of billing period)."""
         self._total_spend = 0.0
         self._alerted_thresholds.clear()
+        if self._store is not None:
+            self._store.budget_reset(self._budget_key)
 
     def _get_pricing(self, model: str) -> dict[str, float]:
         """Get pricing for a model from config or defaults."""

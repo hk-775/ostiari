@@ -104,15 +104,20 @@ class RateLimitMiddleware:
     """Per-caller sliding-window rate limit (DoS guard) — off unless configured.
 
     Pure-ASGI (safe for streaming responses). Keyed by X-Agent-Id when present,
-    else client IP. In-process (per gateway instance); a distributed deployment
-    would back this with Redis. No-op unless OSTIARI_GATEWAY_RATE_LIMIT_RPM is
-    set. Returns 429 with Retry-After.
+    else client IP. No-op unless OSTIARI_GATEWAY_RATE_LIMIT_RPM is set. Returns
+    429 with Retry-After.
+
+    In-process per gateway instance by default. Pass a `store` exposing
+    `rate_allow(key, limit, window_s) -> bool` (the gateway's Redis-backed shared
+    store) to make the limit hold **fleet-wide** across replicas; without it the
+    limit is per-process (so N replicas ⇒ N× the effective rate).
     """
 
-    def __init__(self, app, rpm: int | None = None) -> None:
+    def __init__(self, app, rpm: int | None = None, store=None) -> None:
         self.app = app
         self._rpm = rpm if rpm is not None else rate_limit_rpm()
         self._hits: dict[str, deque[float]] = {}
+        self._store = store
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or self._rpm <= 0:
@@ -120,12 +125,20 @@ class RateLimitMiddleware:
             return
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
         key = headers.get("x-agent-id") or (scope.get("client") or ("unknown",))[0]
-        now = time.monotonic()
-        window = self._hits.setdefault(key, deque())
-        cutoff = now - 60.0
-        while window and window[0] < cutoff:
-            window.popleft()
-        if len(window) >= self._rpm:
+
+        if self._store is not None:
+            allowed = self._store.rate_allow(key, self._rpm, 60.0)
+        else:
+            now = time.monotonic()
+            window = self._hits.setdefault(key, deque())
+            cutoff = now - 60.0
+            while window and window[0] < cutoff:
+                window.popleft()
+            allowed = len(window) < self._rpm
+            if allowed:
+                window.append(now)
+
+        if not allowed:
             import json as _json
             payload = _json.dumps({"detail": f"rate limit exceeded ({self._rpm}/min)"}).encode()
             await send({"type": "http.response.start", "status": 429,
@@ -134,5 +147,4 @@ class RateLimitMiddleware:
                                     (b"retry-after", b"60")]})
             await send({"type": "http.response.body", "body": payload})
             return
-        window.append(now)
         await self.app(scope, receive, send)

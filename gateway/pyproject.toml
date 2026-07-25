@@ -30,6 +30,12 @@ dependencies = [
 routing = [
     "tiktoken>=0.7",   # required by AxonLLM smart_routing token estimation
 ]
+# Fleet-wide shared enforcement state (rate limit / budget / wallets) across
+# horizontally-scaled replicas. Without it the gateway runs fine with
+# per-process limits (the import is lazy, only when a Redis endpoint is set).
+redis = [
+    "redis[hiredis]>=5.0",
+]
 
 [project.scripts]
 ostiari-gateway = "ostiari_gateway.main:cli"
