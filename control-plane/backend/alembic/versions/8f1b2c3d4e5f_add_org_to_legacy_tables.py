@@ -18,9 +18,12 @@ down_revision = "2c8a75232ada"
 branch_labels = None
 depends_on = None
 
-# Tenant tables that gain an org_id in the foundational slice.
+# Tenant tables that gain an org_id (foundational slice + the follow-up tables
+# mcp_servers / a2a_agents / payment_records). Each add is existence-guarded so
+# fresh DBs (baseline already has the column) are a no-op.
 _ORG_TABLES = ("users", "gateways", "tools", "policies", "wallets",
-               "usage_records", "audit_logs")
+               "usage_records", "audit_logs",
+               "mcp_servers", "a2a_agents", "payment_records")
 
 
 def _insp():

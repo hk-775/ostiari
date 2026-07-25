@@ -79,13 +79,17 @@ async def ingest_payment(body: PaymentIngest, db: AsyncSession = Depends(get_db)
     ledger, summary, and dashboard reflect real spend. On a settled charge we
     also decrement the DB wallet so CP balances track the gateway's.
     """
+    # Unauthenticated gateway path — org comes from the reporting gateway's row
+    # (default when the gateway is unknown/empty), not a user token.
+    gw = await db.get(Gateway, body.gateway_id) if body.gateway_id else None
+    rec_org = (gw.org_id if gw else None) or "default"
     db.add(PaymentRecord(
         agent_id=body.agent_id, gateway_id=body.gateway_id, action=body.action,
         amount_usdc=body.amount_usdc, settled=body.settled, tx_hash=body.tx_hash,
-        mode=body.mode, source=body.source,
+        mode=body.mode, source=body.source, org_id=rec_org,
     ))
     if body.settled:
-        w = await db.get(Wallet, body.agent_id)
+        w = await get_scoped(db, Wallet, body.agent_id, rec_org)
         if w is not None:
             w.balance_usdc -= body.amount_usdc
             w.spent_today_usdc += body.amount_usdc
@@ -154,8 +158,10 @@ async def patch_wallet(agent_id: str, body: WalletPatch, db: AsyncSession = Depe
 # ─── Ledger + summary ────────────────────────────────────────────────────────
 
 @router.get("/ledger")
-async def ledger(agent_id: str | None = None, limit: int = 100, db: AsyncSession = Depends(get_db)):
-    query = select(PaymentRecord).order_by(PaymentRecord.timestamp.desc()).limit(limit)
+async def ledger(agent_id: str | None = None, limit: int = 100, db: AsyncSession = Depends(get_db),
+                 org: str = Depends(get_current_org)):
+    query = scoped(select(PaymentRecord), PaymentRecord, org).order_by(
+        PaymentRecord.timestamp.desc()).limit(limit)
     if agent_id:
         query = query.where(PaymentRecord.agent_id == agent_id)
     rows = (await db.execute(query)).scalars().all()
@@ -163,21 +169,23 @@ async def ledger(agent_id: str | None = None, limit: int = 100, db: AsyncSession
 
 
 @router.get("/summary")
-async def summary(db: AsyncSession = Depends(get_db)):
-    """Totals + spend-by-agent for the payments dashboard."""
+async def summary(db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+    """Totals + spend-by-agent for the payments dashboard (scoped to the org)."""
     total_settled = (await db.execute(
-        select(func.coalesce(func.sum(PaymentRecord.amount_usdc), 0.0))
+        scoped(select(func.coalesce(func.sum(PaymentRecord.amount_usdc), 0.0)), PaymentRecord, org)
         .where(PaymentRecord.settled == True)  # noqa: E712
     )).scalar_one()
     count = (await db.execute(
-        select(func.count()).select_from(PaymentRecord).where(PaymentRecord.settled == True)  # noqa: E712
+        scoped(select(func.count()).select_from(PaymentRecord), PaymentRecord, org)
+        .where(PaymentRecord.settled == True)  # noqa: E712
     )).scalar_one()
     blocked = (await db.execute(
-        select(func.count()).select_from(PaymentRecord).where(PaymentRecord.settled == False)  # noqa: E712
+        scoped(select(func.count()).select_from(PaymentRecord), PaymentRecord, org)
+        .where(PaymentRecord.settled == False)  # noqa: E712
     )).scalar_one()
     by_agent_rows = (await db.execute(
-        select(PaymentRecord.agent_id, func.coalesce(func.sum(PaymentRecord.amount_usdc), 0.0),
-               func.count())
+        scoped(select(PaymentRecord.agent_id, func.coalesce(func.sum(PaymentRecord.amount_usdc), 0.0),
+               func.count()), PaymentRecord, org)
         .where(PaymentRecord.settled == True)  # noqa: E712
         .group_by(PaymentRecord.agent_id)
     )).all()

@@ -96,6 +96,7 @@ class McpServer(Base):
     __tablename__ = "mcp_servers"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[str] = mapped_column(String(64), default=DEFAULT_ORG, index=True, nullable=True)
     name: Mapped[str] = mapped_column(String(128))
     mode: Mapped[str] = mapped_column(String(20))  # embedded | remote | stdio
     # For embedded mode
@@ -145,6 +146,7 @@ class A2AAgentRecord(Base):
     __tablename__ = "a2a_agents"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[str] = mapped_column(String(64), default=DEFAULT_ORG, index=True, nullable=True)
     name: Mapped[str] = mapped_column(String(128))          # display name
     agent_key: Mapped[str] = mapped_column(String(128))     # a2a.<agent_key>
     url: Mapped[str] = mapped_column(String(512))
@@ -231,6 +233,7 @@ class PaymentRecord(Base):
     __tablename__ = "payment_records"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[str] = mapped_column(String(64), default=DEFAULT_ORG, index=True, nullable=True)
     agent_id: Mapped[str] = mapped_column(String(128), default="unknown")
     gateway_id: Mapped[str] = mapped_column(String(64), default="")
     action: Mapped[str] = mapped_column(String(128), default="")
