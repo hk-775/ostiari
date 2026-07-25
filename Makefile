@@ -57,7 +57,7 @@ demo-full: ## Full demo — all gateways, A2A agent, control plane (seeded demo 
 
 clean-start: ## Clean install — wipe demo data, start all components empty
 	rm -f control-plane/backend/data/state.json
-	rm -f ostiari.db ostiari.db.lock
+	rm -f control-plane/data/control_plane.db control-plane/data/control_plane.db-shm control-plane/data/control_plane.db-wal
 	cd control-plane/backend && OSTIARI_NO_DEMO=1 python main.py &
 	cd control-plane/frontend && npm run dev &
 	cd gateway && python -m ostiari_gateway.main --port 8421 --sidecar-id my-gateway --control-plane http://localhost:8400 &

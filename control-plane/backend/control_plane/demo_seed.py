@@ -188,6 +188,16 @@ def seed_demo_pricing() -> None:
     log.info("Seeded demo payment pricing (crm-agent: passthrough)")
 
 
+def seed_demo_agents() -> None:
+    """Seed the in-memory agent registry with the demo agents (idempotent)."""
+    from control_plane.routers.agents import DEMO_AGENTS, _agents
+
+    if _agents:
+        return
+    _agents.update(DEMO_AGENTS)
+    log.info("Seeded %d demo agents", len(_agents))
+
+
 def seed_demo_experiments() -> None:
     """Seed in-memory A/B experiments (persisted via the state file on shutdown)."""
     from control_plane.routers.experiments import ExperimentResponse, _experiments
