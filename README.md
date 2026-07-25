@@ -229,9 +229,13 @@ docs/                 # architecture + the control plane guide
 
 ## Documentation
 
+- [`STARTUP.md`](STARTUP.md) — full startup & deployment guide: local (no demo),
+  local (full demo), and enterprise service, with per-feature config and diagrams
+- [`QUICKSTART.md`](QUICKSTART.md) — condensed quick-start cheat-sheet
 - [`docs/control-plane-guide.md`](docs/control-plane-guide.md) — complete
   control-plane tour (novice-friendly, with diagrams, best practices, pitfalls)
 - [`docs/gateway-architecture.md`](docs/gateway-architecture.md) — gateway internals
+- [`deploy/README.md`](deploy/README.md) — deployment reference
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to contribute
 
 ## License
