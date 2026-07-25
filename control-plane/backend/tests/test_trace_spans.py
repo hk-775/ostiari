@@ -98,7 +98,7 @@ class TestSessionParentsEviction:
         self._assign("b1", "B")
         # C arrives at cap → evicts the LRU (A), but B must remain.
         self._assign("c1", "C")
-        assert len(traces._session_parents) == 2
+        assert len(traces._session_parents[traces.DEFAULT_ORG]) == 2
         # B still known (not cleared) → its next call references b1.
         assert self._assign("b2", "B")["parent_trace_id"] == "b1"
         # A was evicted → its next call starts a fresh parent.

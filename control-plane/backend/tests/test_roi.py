@@ -71,10 +71,10 @@ def seeded(app_and_db):
     (which clears _recent_traces), not before.
     """
     from control_plane.routers import roi as roi_router
-    from control_plane.routers.traces import _recent_traces
+    from control_plane.routers.traces import DEFAULT_ORG, _recent_traces
     roi_router._cost_model.update({"entries": None, "fallback": roi.DEFAULT_FALLBACK_COST})
     _recent_traces.clear()
-    _recent_traces.extend([
+    _recent_traces[DEFAULT_ORG].extend([
         {"action": "db_delete", "tier": "block", "score": 95},
         {"action": "send_email", "tier": "block", "score": 60},
         {"action": "web_search", "tier": "allow", "score": 10},

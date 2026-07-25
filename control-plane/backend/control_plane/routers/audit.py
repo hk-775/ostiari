@@ -11,9 +11,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from control_plane.auth.dependencies import get_current_user
+from control_plane.auth.dependencies import get_current_org, get_current_user
 from control_plane.database import get_db
 from control_plane.models.database import AuditLog
+from control_plane.models.scoping import scoped
 from control_plane.models.schemas import AuditLogResponse
 from control_plane.services.audit_service import audit
 
@@ -42,10 +43,11 @@ async def list_audit_logs(
     action: str | None = None,
     limit: int = Query(default=100, le=500),
     db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
 ):
-    """List audit log entries with optional filters."""
+    """List audit log entries with optional filters (scoped to the caller's org)."""
     await _require_audit_reader(request)
-    query = select(AuditLog).order_by(AuditLog.timestamp.desc()).limit(limit)
+    query = scoped(select(AuditLog), AuditLog, org).order_by(AuditLog.timestamp.desc()).limit(limit)
     if resource_type:
         query = query.where(AuditLog.resource_type == resource_type)
     if resource_id:

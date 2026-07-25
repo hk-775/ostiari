@@ -8,11 +8,12 @@ are editable assumptions, persisted in the state file.
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from control_plane import roi
-from control_plane.routers.traces import _recent_traces
+from control_plane.auth.dependencies import get_current_org
+from control_plane.routers.traces import recent_traces_for
 
 router = APIRouter(prefix="/api/roi", tags=["roi"])
 
@@ -66,10 +67,10 @@ async def reset_cost_model():
 
 
 @router.get("/report")
-async def report(weight_by_score: bool = True):
+async def report(weight_by_score: bool = True, org: str = Depends(get_current_org)):
     """Damage-prevented estimate from blocked actions in the trace buffer."""
     rep = roi.compute_roi(
-        list(_recent_traces),
+        recent_traces_for(org),
         cost_model=_model_entries(),
         fallback_cost=_cost_model.get("fallback", roi.DEFAULT_FALLBACK_COST),
         weight_by_score=weight_by_score,

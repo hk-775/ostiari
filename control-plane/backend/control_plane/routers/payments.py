@@ -14,8 +14,10 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
 from control_plane.models.database import Gateway, PaymentRecord, Wallet
+from control_plane.models.scoping import get_scoped, scoped, stamp
 
 router = APIRouter(prefix="/api/payments", tags=["payments"])
 
@@ -94,16 +96,17 @@ async def ingest_payment(body: PaymentIngest, db: AsyncSession = Depends(get_db)
 # ─── Wallets ─────────────────────────────────────────────────────────────────
 
 @router.get("/wallets")
-async def list_wallets(db: AsyncSession = Depends(get_db)):
-    rows = (await db.execute(select(Wallet))).scalars().all()
+async def list_wallets(db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+    rows = (await db.execute(scoped(select(Wallet), Wallet, org))).scalars().all()
     return [_wallet_dict(w) for w in rows]
 
 
 @router.post("/wallets")
-async def upsert_wallet(body: WalletUpsert, db: AsyncSession = Depends(get_db)):
-    w = await db.get(Wallet, body.agent_id)
+async def upsert_wallet(body: WalletUpsert, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+    w = await get_scoped(db, Wallet, body.agent_id, org)
     if w is None:
         w = Wallet(agent_id=body.agent_id)
+        stamp(w, org)
         db.add(w)
     w.balance_usdc = body.balance_usdc
     w.address = body.address
@@ -115,9 +118,9 @@ async def upsert_wallet(body: WalletUpsert, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/wallets/{agent_id}/fund")
-async def fund_wallet(agent_id: str, body: FundRequest, db: AsyncSession = Depends(get_db)):
+async def fund_wallet(agent_id: str, body: FundRequest, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
     """Deposit USDC into an agent wallet (sim: bump balance; reactivates if paused)."""
-    w = await db.get(Wallet, agent_id)
+    w = await get_scoped(db, Wallet, agent_id, org)
     if w is None:
         raise HTTPException(status_code=404, detail="Wallet not found")
     w.balance_usdc += body.amount_usdc
@@ -131,8 +134,8 @@ async def fund_wallet(agent_id: str, body: FundRequest, db: AsyncSession = Depen
 
 
 @router.patch("/wallets/{agent_id}")
-async def patch_wallet(agent_id: str, body: WalletPatch, db: AsyncSession = Depends(get_db)):
-    w = await db.get(Wallet, agent_id)
+async def patch_wallet(agent_id: str, body: WalletPatch, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+    w = await get_scoped(db, Wallet, agent_id, org)
     if w is None:
         raise HTTPException(status_code=404, detail="Wallet not found")
     if body.daily_limit_usdc is not None:

@@ -10,9 +10,11 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane import compliance
+from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
 from control_plane.models.database import AuditLog, Policy
-from control_plane.routers.traces import _recent_traces
+from control_plane.models.scoping import scoped
+from control_plane.routers.traces import recent_traces_for
 
 router = APIRouter(prefix="/api/compliance", tags=["compliance"])
 
@@ -28,22 +30,23 @@ async def report(
     framework: str = "eu-ai-act",
     period_days: int = 90,
     db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
 ) -> Any:
-    """Generate a compliance report from audit logs, traces, and policies."""
+    """Generate a compliance report from audit logs, traces, and policies (org-scoped)."""
     if framework not in compliance.list_frameworks():
         raise HTTPException(status_code=400, detail=f"Unknown framework: {framework}")
 
     since = datetime.now(timezone.utc) - timedelta(days=period_days)
 
     audit_rows = (
-        await db.execute(select(AuditLog).where(AuditLog.timestamp >= since))
+        await db.execute(scoped(select(AuditLog), AuditLog, org).where(AuditLog.timestamp >= since))
     ).scalars().all()
 
     policy_count = (
-        await db.execute(select(func.count()).select_from(Policy).where(Policy.is_active == True))  # noqa: E712
+        await db.execute(scoped(select(func.count()).select_from(Policy), Policy, org).where(Policy.is_active == True))  # noqa: E712
     ).scalar_one()
 
-    traces = list(_recent_traces)
+    traces = recent_traces_for(org)
 
     evidence = compliance.build_evidence(audit_rows, traces, policy_count)
     result = compliance.generate_report(framework, evidence)

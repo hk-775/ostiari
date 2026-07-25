@@ -62,6 +62,7 @@ class AuditService:
         resource_type: str,
         resource_id: str,
         details: dict[str, Any] | None = None,
+        org: str = "default",
     ) -> AuditLog:
         details = details or {}
         prev = await self._last_hash(db)
@@ -69,6 +70,9 @@ class AuditService:
         # value we hash is the value that's stored — SQLite datetime round-tripping
         # can otherwise lose microseconds and falsely break the chain on re-read.
         ts = datetime.now(timezone.utc)
+        # org_id is NOT part of the hashed content — the audit chain stays a single
+        # global chain (verify_chain checks integrity across all orgs); org only
+        # scopes which rows a tenant can READ.
         content = _canonical(actor, action, resource_type, resource_id, details,
                              _ts_str(ts))
         entry = AuditLog(
@@ -78,6 +82,7 @@ class AuditService:
             resource_id=resource_id,
             details=details,
             timestamp=ts,
+            org_id=org,
             prev_hash=prev,
             entry_hash=_hash(prev, content),
         )

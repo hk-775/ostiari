@@ -84,14 +84,14 @@ def seeded_traces(app_and_db, monkeypatch):
     Enable the mock cloud collector (off by default) for the multi-source tests."""
     monkeypatch.setenv("OSTIARI_DISCOVERY_MOCK", "1")
     from control_plane.routers import agents as agents_mod
-    from control_plane.routers.traces import _recent_traces
+    from control_plane.routers.traces import DEFAULT_ORG, _recent_traces
     saved = dict(agents_mod._agents)   # snapshot (conftest may have cleared it)
     # Ensure a KNOWN agent exists so we can assert governed vs. discovered.
     agents_mod._agents["research-agent"] = agents_mod.AgentConfig(
         name="research-agent", framework="openai", gateway_id="crm-agent",
     )
     _recent_traces.clear()
-    _recent_traces.extend([
+    _recent_traces[DEFAULT_ORG].extend([
         {"agent_id": "research-agent", "gateway_id": "crm-agent", "action": "web_search", "tier": "allow"},
         {"agent_id": "rogue-scraper", "gateway_id": "crm-agent", "action": "web_search", "tier": "allow"},
         {"agent_id": "rogue-scraper", "gateway_id": "crm-agent", "action": "db_query", "tier": "block"},
