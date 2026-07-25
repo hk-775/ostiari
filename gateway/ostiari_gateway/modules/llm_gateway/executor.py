@@ -161,7 +161,13 @@ class AgenticExecutor:
         if self._quota_enforcer:
             effective_max_tokens = self._quota_enforcer.cap_max_tokens(effective_max_tokens)
 
-        # Pre-request budget projection: estimate cost and check quota before calling LLM
+        # Pre-request budget projection: estimate cost and check quota before calling LLM.
+        # NOTE: unlike the interactive chat/messages shims, /invoke is a multi-round
+        # agentic loop that books real spend incrementally via the cost reporter
+        # (record_spend per round). We deliberately do NOT hold a single in-flight
+        # reservation across the whole loop here; the per-round record_spend keeps
+        # _total_spend current so a concurrent /invoke sees it on its next round's
+        # quota check. The concurrency window is one round, not the whole call.
         if self._quota_enforcer:
             estimated_cost = self._quota_enforcer.estimate_cost(model)
             quota_decision = self._quota_enforcer.check(model=model, estimated_cost=estimated_cost)

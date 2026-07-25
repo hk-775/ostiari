@@ -13,6 +13,7 @@ Enable via env (unset = gateway auth off, current header behavior preserved):
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from typing import Any
@@ -118,10 +119,22 @@ def get_validator(tenant_id: str = "default") -> OIDCValidator | None:
     if not issuer:
         return None
     if issuer not in _validators:
+        audience = os.environ.get("OSTIARI_OIDC_AUDIENCE") or None
+        if audience is None:
+            # Without an audience, any token from the trusted issuer is accepted
+            # — including one minted for a DIFFERENT app sharing the same pool
+            # (e.g. a sibling Cognito client). Pin OSTIARI_OIDC_AUDIENCE in
+            # shared-IdP deployments.
+            logging.getLogger("ostiari.oidc").warning(
+                "OIDC audience not configured (OSTIARI_OIDC_AUDIENCE unset) — "
+                "any token from issuer '%s' is accepted regardless of its 'aud'. "
+                "Set OSTIARI_OIDC_AUDIENCE to restrict to this application.",
+                issuer,
+            )
         _validators[issuer] = OIDCValidator(
             issuer=issuer,
             jwks_url=os.environ.get("OSTIARI_OIDC_JWKS_URL") or None,
-            audience=os.environ.get("OSTIARI_OIDC_AUDIENCE") or None,
+            audience=audience,
         )
     return _validators[issuer]
 

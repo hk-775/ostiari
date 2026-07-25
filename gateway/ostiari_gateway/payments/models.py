@@ -62,6 +62,12 @@ class Wallet:
         """Check balance, per-call cap, daily cap, and pause state."""
         if self.status != "active":
             return False, f"wallet {self.status}"
+        # A charge must be positive. A negative amount would otherwise pass every
+        # check below and CREDIT the wallet in debit() (balance -= negative), so a
+        # malicious 402 like {"amount_usdc": -100} could refill a wallet and reset
+        # its daily cap. Reject it here (defense in depth for all settle paths).
+        if amount < 0:
+            return False, f"invalid negative charge: ${amount:.4f}"
         if self.per_call_limit_usdc is not None and amount > self.per_call_limit_usdc:
             return False, (
                 f"per-call limit exceeded: ${amount:.4f} > ${self.per_call_limit_usdc:.4f}"

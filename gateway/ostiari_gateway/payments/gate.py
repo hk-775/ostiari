@@ -184,6 +184,10 @@ def parse_402(body: Any, status_code: int, action: str) -> Quote | None:
         amount = float(amount)
     except (TypeError, ValueError):
         amount = 0.0
+    # A tool must never demand a negative charge — that would credit the wallet
+    # on settle. Clamp to 0 (treated as free) rather than trusting the downstream.
+    if amount < 0:
+        amount = 0.0
     return Quote(
         action=action,
         amount_usdc=amount,
