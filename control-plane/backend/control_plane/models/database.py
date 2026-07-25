@@ -10,10 +10,27 @@ class Base(DeclarativeBase):
     pass
 
 
+# Tenant identifier used everywhere a row/record has no explicit org yet.
+# Single-org (dev/demo) deployments run entirely under this org, so behavior is
+# unchanged; multi-tenant deployments assign real org ids via the auth token.
+DEFAULT_ORG = "default"
+
+
+class Organization(Base):
+    __tablename__ = "organizations"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
 class Gateway(Base):
     __tablename__ = "gateways"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str] = mapped_column(String(64), default=DEFAULT_ORG, index=True, nullable=True)
     name: Mapped[str] = mapped_column(String(128))
     description: Mapped[str] = mapped_column(Text, default="")
     endpoint: Mapped[str] = mapped_column(String(512))
@@ -35,6 +52,7 @@ class Tool(Base):
     __tablename__ = "tools"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[str] = mapped_column(String(64), default=DEFAULT_ORG, index=True, nullable=True)
     name: Mapped[str] = mapped_column(String(128))
     endpoint: Mapped[str] = mapped_column(String(512))
     method: Mapped[str] = mapped_column(String(10), default="POST")
@@ -57,6 +75,9 @@ class Policy(Base):
     __tablename__ = "policies"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[str] = mapped_column(String(64), default=DEFAULT_ORG, index=True, nullable=True)
+    # NOTE: name is globally unique for now — two orgs can't reuse a policy name.
+    # Composite (org_id, name) uniqueness is deferred (see multi-tenancy plan).
     name: Mapped[str] = mapped_column(String(128), unique=True)
     description: Mapped[str] = mapped_column(Text, default="")
     content: Mapped[dict] = mapped_column(JSON)
@@ -101,6 +122,7 @@ class UsageRecord(Base):
     __tablename__ = "usage_records"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[str] = mapped_column(String(64), default=DEFAULT_ORG, index=True, nullable=True)
     gateway_id: Mapped[str] = mapped_column(String(64), ForeignKey("gateways.id"))
     agent_id: Mapped[str] = mapped_column(String(128), default="unknown")
     model: Mapped[str] = mapped_column(String(128))
@@ -191,6 +213,7 @@ class Wallet(Base):
     __tablename__ = "wallets"
 
     agent_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    org_id: Mapped[str] = mapped_column(String(64), default=DEFAULT_ORG, index=True, nullable=True)
     address: Mapped[str] = mapped_column(String(128), default="")
     balance_usdc: Mapped[float] = mapped_column(Float, default=0.0)
     daily_limit_usdc: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -225,6 +248,7 @@ class AuditLog(Base):
     __tablename__ = "audit_logs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[str] = mapped_column(String(64), default=DEFAULT_ORG, index=True, nullable=True)
     actor: Mapped[str] = mapped_column(String(128))
     action: Mapped[str] = mapped_column(String(64))
     resource_type: Mapped[str] = mapped_column(String(64))

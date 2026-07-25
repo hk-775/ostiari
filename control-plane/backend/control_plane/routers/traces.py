@@ -5,10 +5,12 @@ import logging
 import os
 import time
 import uuid
-from collections import OrderedDict, deque
+from collections import OrderedDict, defaultdict, deque
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect, status
+
+from control_plane.auth.dependencies import get_current_org
 
 log = logging.getLogger("control_plane.traces")
 
@@ -50,23 +52,39 @@ def _require_ingest_auth(request: Request) -> None:
             detail="Invalid or missing X-Ingest-Key",
         )
 
-# In-memory buffer of recent traces (for new WebSocket clients to catch up)
-_recent_traces: deque[dict[str, Any]] = deque(maxlen=200)
-_ws_clients: set[WebSocket] = set()
+# All trace state is keyed by org (tenant) so one org's traces are never
+# stored in, listed from, or broadcast to another org's buffer/sockets.
+# Single-org dev/demo uses only the "default" org, so behavior is unchanged.
+DEFAULT_ORG = "default"
 
-# session_id -> parent_trace_id. The first trace seen for a session becomes the
-# parent span; every later trace in that session references it as parent, so a
-# prompt's many sub-calls nest under one span. LRU-bounded: an OrderedDict where
-# touching a session moves it to the end, and eviction drops only the single
-# least-recently-used entry. (A plain dict + clear()-at-cap dropped EVERY session
-# at once, so a long-running session's later calls lost their parent and its span
-# tree fragmented into new roots.)
-_session_parents: OrderedDict[str, str] = OrderedDict()
+# org -> buffer of recent traces (for new WebSocket clients to catch up)
+_recent_traces: dict[str, deque[dict[str, Any]]] = defaultdict(lambda: deque(maxlen=200))
+# org -> set of connected WebSocket clients (fan-out is per-org — no cross-tenant leak)
+_ws_clients: dict[str, set[WebSocket]] = defaultdict(set)
+
+# org -> (session_id -> parent_trace_id). The first trace seen for a session
+# becomes the parent span; later traces in that session reference it, so a
+# prompt's sub-calls nest under one span. LRU-bounded per org: touching a
+# session moves it to the end; at the cap only the single least-recently-used
+# entry is evicted (not a full clear, which would fragment an active session).
+_session_parents: dict[str, OrderedDict[str, str]] = defaultdict(OrderedDict)
 _SESSION_PARENTS_MAX = 2000
 
 
-def _assign_parent(event: dict[str, Any]) -> None:
-    """Stamp parent_trace_id on an event based on its session.
+def _event_org(event: dict[str, Any]) -> str:
+    """The org a trace event belongs to (gateway includes it; defaults to 'default')."""
+    return (event.get("org_id") or DEFAULT_ORG)
+
+
+def recent_traces_for(org: str = DEFAULT_ORG) -> list[dict[str, Any]]:
+    """The recent-trace buffer for one org, as a list. The canonical accessor
+    for other routers (roi/compliance/trust/discovery) that analyze traces —
+    they must NOT iterate the org-keyed dict directly."""
+    return list(_recent_traces[org])
+
+
+def _assign_parent(event: dict[str, Any], org: str = DEFAULT_ORG) -> None:
+    """Stamp parent_trace_id on an event based on its session (within its org).
 
     First trace in a session is the parent (parent_trace_id == its own trace_id);
     subsequent traces in the same session point at that parent. Traces with no
@@ -77,17 +95,18 @@ def _assign_parent(event: dict[str, Any]) -> None:
     if not sid:
         event["parent_trace_id"] = tid          # standalone root
         return
-    parent = _session_parents.get(sid)
+    parents = _session_parents[org]
+    parent = parents.get(sid)
     if parent is None:
         # first call in this session → it is the parent
-        if len(_session_parents) >= _SESSION_PARENTS_MAX:
-            _session_parents.popitem(last=False)   # evict only the LRU session
-        _session_parents[sid] = tid
+        if len(parents) >= _SESSION_PARENTS_MAX:
+            parents.popitem(last=False)   # evict only the LRU session
+        parents[sid] = tid
         parent = tid
     else:
         # touch: mark this session most-recently-used so an active session isn't
         # evicted out from under its own later calls.
-        _session_parents.move_to_end(sid)
+        parents.move_to_end(sid)
     event["parent_trace_id"] = parent
     event["is_span_root"] = (parent == tid)
 
@@ -142,7 +161,8 @@ def seed_traces() -> None:
     Covers all seeded gateways/agents with a mix of allow/intervene/block/error
     tiers, HTTP and MCP tools, and one multi-step planner session.
     """
-    if _recent_traces:
+    buf = _recent_traces[DEFAULT_ORG]
+    if buf:
         return
 
     now = time.time()
@@ -267,7 +287,7 @@ def seed_traces() -> None:
         ))
 
     for e in events:
-        _recent_traces.append(e)
+        buf.append(e)
 
     # --- Blocked cross-agent delegations (Protocol Governance + Shadow feeds).
     #     These carry limit_type/would_block/delegation_chain, which _trace()
@@ -281,7 +301,7 @@ def seed_traces() -> None:
     ]
     for caller, callee, reason, shadow, count in delegations:
         for _ in range(count):
-            _recent_traces.append({
+            buf.append({
                 "trace_id": uuid.uuid4().hex,
                 "sidecar_id": "crm-agent", "gateway_id": "crm-agent",
                 "action": f"a2a.{callee}", "tier": "block", "score": 0,
@@ -292,7 +312,7 @@ def seed_traces() -> None:
                 "timestamp": now - _rnd.uniform(10, 1800),
             })
 
-    log.info("Seeded %d demo traces", len(_recent_traces))
+    log.info("Seeded %d demo traces", len(buf))
 
 
 @router.post("/api/traces/ingest")
@@ -309,20 +329,25 @@ async def ingest_trace(request: Request) -> Any:
     if not event.get("trace_id"):
         event["trace_id"] = uuid.uuid4().hex
 
+    # The org this event belongs to (gateway includes org_id; defaults to
+    # "default"). All storage + fan-out below is confined to this org.
+    org = _event_org(event)
+    buf = _recent_traces[org]
+
     # Assign the session parent span (parent_trace_id) so a prompt's sub-calls nest.
-    _assign_parent(event)
+    _assign_parent(event, org)
 
     # Dedup: if we've already seen this trace_id, replace it in place (retry /
     # update) rather than appending a second copy.
     tid = event["trace_id"]
     duplicate = False
-    for i, existing in enumerate(_recent_traces):
+    for i, existing in enumerate(buf):
         if existing.get("trace_id") == tid:
-            _recent_traces[i] = event
+            buf[i] = event
             duplicate = True
             break
     if not duplicate:
-        _recent_traces.append(event)
+        buf.append(event)
 
     # Export the governance span over OTLP (no-op unless OTEL endpoint configured).
     # New events only — a duplicate (retry) is the same span.
@@ -333,27 +358,28 @@ async def ingest_trace(request: Request) -> Any:
         except Exception:  # noqa: BLE001 — export must never break ingest
             pass
 
-    # Broadcast to all connected WebSocket clients (clients dedup on trace_id).
+    # Broadcast ONLY to clients connected for this org (no cross-tenant leak).
+    clients = _ws_clients[org]
     disconnected = set()
-    for ws in _ws_clients:
+    for ws in clients:
         try:
             await ws.send_json(event)
         except Exception:
             disconnected.add(ws)
 
-    _ws_clients.difference_update(disconnected)
-    return {"status": "ok", "trace_id": tid, "duplicate": duplicate, "clients": len(_ws_clients)}
+    clients.difference_update(disconnected)
+    return {"status": "ok", "trace_id": tid, "duplicate": duplicate, "clients": len(clients)}
 
 
 @router.get("/api/traces/recent")
-async def get_recent_traces(limit: int = 50) -> Any:
+async def get_recent_traces(limit: int = 50, org: str = Depends(get_current_org)) -> Any:
     """Get recent traces (for initial page load before WebSocket connects)."""
-    traces = list(_recent_traces)[-limit:]
+    traces = list(_recent_traces[org])[-limit:]
     return {"traces": traces, "total": len(traces)}
 
 
 @router.get("/api/traces/spans")
-async def get_spans(limit: int = 200) -> Any:
+async def get_spans(limit: int = 200, org: str = Depends(get_current_org)) -> Any:
     """Return traces grouped into parent spans (one prompt = one span tree).
 
     Groups by parent_trace_id: each span carries the child traces plus a rollup
@@ -361,7 +387,7 @@ async def get_spans(limit: int = 200) -> Any:
     (no session) appear as single-child spans. This is what powers a nested
     span view — a prompt's many sub-calls under one parent.
     """
-    traces = list(_recent_traces)[-limit:]
+    traces = list(_recent_traces[org])[-limit:]
     spans: dict[str, dict[str, Any]] = {}
     order: list[str] = []
     tier_rank = {"allow": 0, "intervene": 1, "error": 2, "block": 3}
@@ -394,14 +420,14 @@ async def get_spans(limit: int = 200) -> Any:
 
 
 @router.get("/api/traces/shadow-report")
-async def shadow_report() -> Any:
+async def shadow_report(org: str = Depends(get_current_org)) -> Any:
     """Summarize shadow-mode activity: what enforce mode WOULD have blocked.
 
     Aggregates the trace buffer's shadow events into a report suitable for the
     'try before you enforce' workflow — total shadow calls, how many would have
     been blocked, and the offending actions grouped by reason.
     """
-    shadow_traces = [t for t in _recent_traces if t.get("shadow")]
+    shadow_traces = [t for t in _recent_traces[org] if t.get("shadow")]
     would_block = [t for t in shadow_traces if t.get("would_block")]
 
     by_action: dict[str, dict[str, Any]] = {}
@@ -436,7 +462,7 @@ async def shadow_report() -> Any:
 
 
 @router.get("/api/traces/delegation-report")
-async def delegation_report() -> Any:
+async def delegation_report(org: str = Depends(get_current_org)) -> Any:
     """Summarize blocked (and would-be-blocked) cross-agent delegations.
 
     Surfaces the A2A edges that governance stopped: which caller tried to
@@ -444,7 +470,7 @@ async def delegation_report() -> Any:
     the Protocol Governance "would-block" feed.
     """
     blocked = [
-        t for t in _recent_traces
+        t for t in _recent_traces[org]
         if t.get("limit_type") == "cross_agent_delegation" and t.get("would_block")
     ]
 
@@ -476,23 +502,48 @@ async def delegation_report() -> Any:
     }
 
 
+def _ws_org(websocket: WebSocket) -> str:
+    """Resolve the org a trace-viewer socket belongs to.
+
+    When auth is enforced, derive it from the token (query `?token=` or the
+    Authorization header) so a viewer can only subscribe to its own org.
+    Otherwise (demo/single-org) accept an explicit `?org=` and default to
+    "default". A socket only ever receives events for the org resolved here.
+    """
+    require_auth = os.environ.get("OSTIARI_REQUIRE_AUTH", "").lower() in ("1", "true", "yes", "on")
+    if require_auth:
+        from control_plane.auth.service import decode_token
+        token = websocket.query_params.get("token", "")
+        if not token:
+            auth = websocket.headers.get("authorization", "")
+            if auth.startswith("Bearer "):
+                token = auth.removeprefix("Bearer ")
+        try:
+            return decode_token(token).get("org", DEFAULT_ORG) or DEFAULT_ORG
+        except Exception:  # noqa: BLE001 — invalid token → default org (empty view)
+            return DEFAULT_ORG
+    return websocket.query_params.get("org", DEFAULT_ORG) or DEFAULT_ORG
+
+
 @router.websocket("/ws/traces")
 async def websocket_traces(websocket: WebSocket) -> None:
     """WebSocket endpoint for live trace streaming.
 
-    Clients connect here to receive real-time tool call events from all gateways.
-    On connect, sends recent history so the UI isn't empty.
+    Clients connect here to receive real-time tool call events for THEIR org.
+    On connect, sends that org's recent history so the UI isn't empty.
     """
     await websocket.accept()
-    _ws_clients.add(websocket)
-    log.info("Trace viewer connected (total: %d)", len(_ws_clients))
+    org = _ws_org(websocket)
+    clients = _ws_clients[org]
+    clients.add(websocket)
+    log.info("Trace viewer connected to org=%s (total: %d)", org, len(clients))
 
-    # Send recent history on connect
+    # Send recent history (this org only) on connect
     try:
-        for trace in list(_recent_traces)[-50:]:
+        for trace in list(_recent_traces[org])[-50:]:
             await websocket.send_json(trace)
     except Exception:
-        _ws_clients.discard(websocket)
+        clients.discard(websocket)
         return
 
     # Keep alive until disconnect
@@ -502,5 +553,5 @@ async def websocket_traces(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     finally:
-        _ws_clients.discard(websocket)
-        log.info("Trace viewer disconnected (total: %d)", len(_ws_clients))
+        clients.discard(websocket)
+        log.info("Trace viewer disconnected from org=%s (total: %d)", org, len(clients))

@@ -92,6 +92,13 @@ async def seed_demo_mcp(db: AsyncSession, gateway_id: str = "crm-agent") -> None
 
 async def seed_demo_db(db: AsyncSession) -> None:
     """Populate DB-backed demo data; idempotent (skips if already present)."""
+    # Ensure the default org exists so org_id FKs resolve even when the admin
+    # seed path (auth/router._seed_admin) hasn't run yet.
+    from control_plane.models.database import DEFAULT_ORG, Organization
+    if await db.get(Organization, DEFAULT_ORG) is None:
+        db.add(Organization(id=DEFAULT_ORG, name="Default Organization"))
+        await db.commit()
+
     await seed_demo_mcp(db)
     await seed_demo_payments(db)
 

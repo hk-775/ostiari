@@ -42,9 +42,16 @@ class PushService:
             except httpx.TimeoutException:
                 return PushResult(gateway_id=gateway_id, status="error", message="Timeout")
 
-    async def push_to_all(self, db: AsyncSession) -> PushResponse:
-        """Push config to all registered gateways."""
-        result = await db.execute(select(Gateway))
+    async def push_to_all(self, db: AsyncSession, org: str | None = None) -> PushResponse:
+        """Push config to all registered gateways.
+
+        When `org` is given, restrict to that org's gateways (operator-scoped
+        push); when None, push to every gateway (system/background callers).
+        """
+        stmt = select(Gateway)
+        if org is not None:
+            stmt = stmt.where(Gateway.org_id == org)
+        result = await db.execute(stmt)
         gateways = result.scalars().all()
 
         results = []

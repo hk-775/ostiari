@@ -37,10 +37,12 @@ class TraceCollector:
     source = "gateway-traces"
 
     def collect(self) -> list[Sighting]:
-        from control_plane.routers.traces import _recent_traces
+        # Discovery reads the default-org trace buffer (this collector is not
+        # org-scoped in the foundational slice; deferred with the discovery router).
+        from control_plane.routers.traces import recent_traces_for
 
         agg: dict[str, dict] = {}
-        for t in _recent_traces:
+        for t in recent_traces_for():
             aid = t.get("agent_id")
             if not aid or aid == "unknown":
                 continue
