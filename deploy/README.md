@@ -132,17 +132,19 @@ For ECS, store secrets in AWS Secrets Manager and reference them in the task def
 
 - **Database**: The control plane uses SQLite for dev. For production, configure PostgreSQL via RDS.
 - **TLS**: Terminate TLS at the load balancer or ingress controller, not at the gateway.
-- **Scaling & per-replica limits**: Each gateway holds its enforcement state
-  **in-process** — the rate limiter, quota/budget counters, and payment wallets
-  are per-instance. Config (tools/policy/quotas) is pushed/pulled fleet-wide, but
-  the *running counters* are not shared. Consequently, quantitative limits are
-  enforced **per replica, not fleet-wide**: with N gateway instances an effective
-  `budget_limit_usd`/`rate_limit_rpm` becomes N× the configured value, and a
-  wallet balance is tracked independently per instance. Plan capacity per replica
-  accordingly, and pin agents to a stable instance (or run a single instance)
-  where an exact global cap matters.
-- **Redis**: The `REDIS_ENDPOINT`/`REDIS_PORT` env vars are surfaced by the
-  deploy manifests for a future shared-state backend, but the gateway does **not**
-  yet use Redis — enforcement state is in-process regardless of whether Redis is
-  reachable. Sharing rate-limit/quota/wallet state across replicas via Redis is
-  tracked as follow-up work.
+- **Scaling & fleet-wide limits**: Enforcement state — the rate limiter,
+  quota/budget counters, and payment wallets — is **in-process by default**, so
+  a horizontally-scaled fleet enforces limits **per replica** (N instances ⇒ N×
+  the effective `rate_limit_rpm`/`budget_limit_usd`; wallet balances diverge per
+  pod). To make limits hold **fleet-wide**, point the gateway at Redis (below);
+  the rate limiter, budget reservations, and wallet debits then run as atomic
+  operations against shared Redis state, correct across replicas.
+- **Redis (shared state)**: Install the extra (`pip install "ostiari-gateway[redis]"`,
+  already in the deploy images if you add it) and set `REDIS_ENDPOINT`
+  (+ optional `REDIS_PORT`, default 6379) or `OSTIARI_REDIS_URL`
+  (`redis://[:pass@]host:port/db`). On startup the gateway PINGs Redis and, if
+  reachable, shares rate-limit/budget/wallet state across the fleet; if Redis is
+  **unset or unreachable**, it logs and falls back to per-process limits (never a
+  hard failure). `OSTIARI_REDIS_PREFIX` (default `ostiari`) namespaces keys so
+  several gateways/tenants can share one Redis; a shared `budget_key` in the
+  pushed quota config lets gateways share (or partition) one budget.

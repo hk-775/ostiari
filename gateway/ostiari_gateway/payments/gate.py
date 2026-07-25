@@ -23,7 +23,7 @@ import fnmatch
 import logging
 from typing import Any
 
-from ostiari_gateway.payments.models import PaymentDecision, Quote, Wallet
+from ostiari_gateway.payments.models import PaymentDecision, Quote, Receipt, Wallet
 from ostiari_gateway.payments.settler import Settler, SimulatedSettler
 
 log = logging.getLogger("ostiari.sidecar.payments")
@@ -38,6 +38,23 @@ class PaymentGate:
         self._mode: str = "off"
         self._default_price: float = 0.0
         self._overrides: dict[str, float] = {}
+        # Optional Redis-backed shared store. When attached, wallet check-and-
+        # debit is a single atomic Lua op in Redis, so a horizontally-scaled
+        # fleet shares one balance (no cross-replica double-spend). None =
+        # per-process wallets (unchanged behavior).
+        self._store: Any = None
+
+    def attach_shared_store(self, store: Any) -> None:
+        """Attach (or clear) the Redis-backed shared store. Mirrors current
+        wallets into it so the shared balance starts from the configured state."""
+        self._store = store
+        if store is not None:
+            for agent_id, w in self._wallets.items():
+                store.upsert_wallet(agent_id, {
+                    "balance_usdc": w.balance_usdc, "spent_today_usdc": w.spent_today_usdc,
+                    "status": w.status, "daily_limit_usdc": w.daily_limit_usdc,
+                    "per_call_limit_usdc": w.per_call_limit_usdc,
+                })
 
     # ─── Configuration (pushed from control plane) ──────────────────────────
 
@@ -65,6 +82,10 @@ class PaymentGate:
             spent_today_usdc=float(w.get("spent_today_usdc", 0.0)),
             status=w.get("status", "active"),
         )
+        # Propagate to the shared store so a config push updates the fleet-wide
+        # balance (also un-pauses / refills like the in-process path).
+        if self._store is not None:
+            self._store.upsert_wallet(agent_id, w)
 
     # ─── Pricing ────────────────────────────────────────────────────────────
 
@@ -119,7 +140,23 @@ class PaymentGate:
             )
 
         quote = Quote(action=action, amount_usdc=amount, pay_to=pay_to, source=source)
-        receipt = await self._settler.settle(quote=quote, wallet=wallet)
+
+        # Fleet-wide path: the shared store does an ATOMIC check-and-debit in
+        # Redis, so concurrent charges across replicas can't double-spend one
+        # balance. Mirror the result into the local wallet for status/reporting.
+        if self._store is not None:
+            ok, reason, new_balance = self._store.wallet_debit(agent_id, amount)
+            wallet.balance_usdc = new_balance
+            if ok:
+                self._settler._counter = getattr(self._settler, "_counter", 0) + 1
+                tx = f"shared-{action}-{self._settler._counter}"
+                receipt = Receipt(settled=True, amount_usdc=amount, tx_hash=tx,
+                                  mode=self._settler.mode)
+            else:
+                receipt = Receipt(settled=False, amount_usdc=amount, reason=reason,
+                                  mode=self._settler.mode)
+        else:
+            receipt = await self._settler.settle(quote=quote, wallet=wallet)
         retry_header: dict[str, str] = {}
         if receipt.settled and source == "tool_402":
             # Minimal X-PAYMENT proof for the tool retry. A live build would put
