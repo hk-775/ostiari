@@ -53,6 +53,8 @@ class SidecarConfig(BaseModel):
     payments: dict = Field(default_factory=dict)
     sidecar_id: str = ""
     control_plane_url: str = ""
+    # URL the control plane uses to reach THIS gateway for config pushes.
+    callback_url: str = ""
     poll_interval_seconds: int = 60
     # Enforcement mode: "enforce" applies policy decisions (block/deny);
     # "shadow" evaluates everything but never blocks and never executes real

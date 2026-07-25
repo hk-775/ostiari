@@ -46,6 +46,16 @@ def cli(
             return [_resolve_env_vars(i) for i in obj]
         return obj
 
+    # Callback URL the control plane uses to push config to THIS gateway.
+    # 0.0.0.0 is a bind address, not reachable — advertise localhost for the
+    # host so a control plane on the same box can reach us; override with
+    # OSTIARI_ADVERTISE_HOST for cross-host deployments (e.g. a k8s service DNS).
+    import os as _os
+    advertise_host = _os.environ.get("OSTIARI_ADVERTISE_HOST") or (
+        "localhost" if host in ("0.0.0.0", "") else host
+    )
+    callback_url = f"http://{advertise_host}:{port}"
+
     initial_config = None
     if config_path:
         path = Path(config_path)
@@ -55,6 +65,7 @@ def cli(
             data["sidecar_id"] = sidecar_id
             if control_plane:
                 data["control_plane_url"] = control_plane
+            data["callback_url"] = callback_url
             initial_config = SidecarConfig(**data)
             click.echo(f"Loaded config from {path}")
 
@@ -62,6 +73,7 @@ def cli(
         initial_config = SidecarConfig(
             sidecar_id=sidecar_id,
             control_plane_url=control_plane or "",
+            callback_url=callback_url,
         )
 
     app = create_app(initial_config=initial_config)

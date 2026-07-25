@@ -231,20 +231,40 @@ async def gateway_register(
     provisioning-order dependency — a fresh gateway becomes governed the moment it
     starts, and the demo stack / restarts don't require a separate create step.
     """
+    # The gateway advertises the URL the control plane should push config to.
+    # This MUST include the port — the caller's source host alone (from
+    # request.client) drops it, breaking config pushes (config goes to
+    # http://host/config with no port → connection refused).
+    callback_url = ""
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            callback_url = (body.get("callback_url") or "").strip()
+    except Exception:
+        pass
+
+    def _fallback_endpoint() -> str:
+        """Best-effort endpoint from the caller's host (no port — last resort)."""
+        client_host = request.client.host if request.client else ""
+        return f"http://{client_host}" if client_host else ""
+
     gateway = await db.get(Gateway, gateway_id)
     created = False
     if not gateway:
-        # Auto-provision on first contact. Endpoint is best-effort from the
-        # caller's host; it can be corrected later via PATCH /{id}.
-        client_host = request.client.host if request.client else ""
+        # Auto-provision on first contact. Prefer the advertised callback URL
+        # (has the port); fall back to the caller's host if none was sent.
         gateway = Gateway(
             id=gateway_id,
             name=gateway_id,
-            endpoint=f"http://{client_host}" if client_host else "",
+            endpoint=callback_url or _fallback_endpoint(),
             description="Auto-registered on gateway startup",
         )
         db.add(gateway)
         created = True
+    elif callback_url and gateway.endpoint != callback_url:
+        # Keep the endpoint current — a gateway may restart on a new port, or an
+        # earlier portless auto-register needs correcting so pushes can reach it.
+        gateway.endpoint = callback_url
 
     gateway.status = "healthy"
     gateway.last_heartbeat = datetime.now(timezone.utc)

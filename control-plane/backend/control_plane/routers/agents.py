@@ -16,8 +16,15 @@ class AgentConfig(BaseModel):
     model: str = ""
 
 
-# Pre-seed with demo agents
-_agents: dict[str, AgentConfig] = {
+# Live agent registry. Empty by default — populated at runtime as agents
+# register (POST /api/agents) or, in demo mode, by seed_demo_agents() which
+# loads DEMO_AGENTS below. A clean/no-demo install starts with no agents.
+_agents: dict[str, AgentConfig] = {}
+
+
+# Demo agents — loaded ONLY by the demo seeder (gated by OSTIARI_NO_DEMO), so a
+# clean install isn't pre-populated with sample data.
+DEMO_AGENTS: dict[str, AgentConfig] = {
     "research-agent": AgentConfig(
         name="research-agent", framework="openai", gateway_id="crm-agent",
         tools=["web_search", "file_read", "file_write", "execute_code"],

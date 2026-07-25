@@ -315,6 +315,7 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
         lifecycle = LifecycleManager(
             gateway_id=initial_config.sidecar_id,
             control_plane_url=initial_config.control_plane_url,
+            callback_url=initial_config.callback_url,
         )
 
         def _apply_bundle(bundle: dict) -> None:

@@ -84,12 +84,14 @@ async def lifespan(app: FastAPI):
     import os
     if os.environ.get("OSTIARI_NO_DEMO", "").lower() not in ("1", "true", "yes"):
         from control_plane.demo_seed import (
+            seed_demo_agents,
             seed_demo_db,
             seed_demo_experiments,
             seed_demo_pricing,
         )
         from control_plane.routers.traces import seed_traces
         seed_traces()
+        seed_demo_agents()
         seed_demo_experiments()
         seed_demo_pricing()
         from control_plane.database import async_session
