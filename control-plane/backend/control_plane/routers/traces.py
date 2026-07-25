@@ -5,7 +5,7 @@ import logging
 import os
 import time
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect, status
@@ -56,8 +56,12 @@ _ws_clients: set[WebSocket] = set()
 
 # session_id -> parent_trace_id. The first trace seen for a session becomes the
 # parent span; every later trace in that session references it as parent, so a
-# prompt's many sub-calls nest under one span. Bounded to avoid unbounded growth.
-_session_parents: dict[str, str] = {}
+# prompt's many sub-calls nest under one span. LRU-bounded: an OrderedDict where
+# touching a session moves it to the end, and eviction drops only the single
+# least-recently-used entry. (A plain dict + clear()-at-cap dropped EVERY session
+# at once, so a long-running session's later calls lost their parent and its span
+# tree fragmented into new roots.)
+_session_parents: OrderedDict[str, str] = OrderedDict()
 _SESSION_PARENTS_MAX = 2000
 
 
@@ -77,9 +81,13 @@ def _assign_parent(event: dict[str, Any]) -> None:
     if parent is None:
         # first call in this session → it is the parent
         if len(_session_parents) >= _SESSION_PARENTS_MAX:
-            _session_parents.clear()            # simple bound; drops old sessions
+            _session_parents.popitem(last=False)   # evict only the LRU session
         _session_parents[sid] = tid
         parent = tid
+    else:
+        # touch: mark this session most-recently-used so an active session isn't
+        # evicted out from under its own later calls.
+        _session_parents.move_to_end(sid)
     event["parent_trace_id"] = parent
     event["is_span_root"] = (parent == tid)
 
