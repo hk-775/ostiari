@@ -187,36 +187,39 @@ def seed_demo_pricing() -> None:
     Pricing lives in the payments router's in-memory policy; set it only if
     unset so a real configuration isn't overwritten.
     """
+    from control_plane.models.database import DEFAULT_ORG
     from control_plane.routers.payments import _pricing
 
-    if "crm-agent" in _pricing:
+    if "crm-agent" in _pricing[DEFAULT_ORG]:
         return
-    _pricing["crm-agent"] = {"mode": "passthrough", "default": 0.0, "overrides": {}}
+    _pricing[DEFAULT_ORG]["crm-agent"] = {"mode": "passthrough", "default": 0.0, "overrides": {}}
     log.info("Seeded demo payment pricing (crm-agent: passthrough)")
 
 
 def seed_demo_agents() -> None:
     """Seed the in-memory agent registry with the demo agents (idempotent)."""
+    from control_plane.models.database import DEFAULT_ORG
     from control_plane.routers.agents import DEMO_AGENTS, _agents
 
-    if _agents:
+    if _agents[DEFAULT_ORG]:
         return
-    _agents.update(DEMO_AGENTS)
-    log.info("Seeded %d demo agents", len(_agents))
+    _agents[DEFAULT_ORG].update(DEMO_AGENTS)
+    log.info("Seeded %d demo agents", len(_agents[DEFAULT_ORG]))
 
 
 def seed_demo_experiments() -> None:
     """Seed in-memory A/B experiments (persisted via the state file on shutdown)."""
+    from control_plane.models.database import DEFAULT_ORG
     from control_plane.routers.experiments import ExperimentResponse, _experiments
 
-    if _experiments:
+    if _experiments[DEFAULT_ORG]:
         return
     for name, a, b, pct, gw in [
         ("haiku-vs-sonnet", "claude-haiku", "claude-sonnet", 30, "crm-agent"),
         ("gpt4o-vs-o3", "gpt-4o", "o3", 20, "crm-agent"),
         ("cost-routing-test", "gpt-4o-mini", "claude-haiku", 50, "ops-agent"),
     ]:
-        _experiments[name] = ExperimentResponse(
+        _experiments[DEFAULT_ORG][name] = ExperimentResponse(
             name=name, model_a=a, model_b=b, traffic_pct_b=pct, gateway_id=gw, is_active=True,
         )
-    log.info("Seeded %d demo experiments", len(_experiments))
+    log.info("Seeded %d demo experiments", len(_experiments[DEFAULT_ORG]))

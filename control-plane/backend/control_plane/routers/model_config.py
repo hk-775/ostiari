@@ -1,7 +1,12 @@
 """Model configuration API — registry of available models and their routing config."""
 
-from fastapi import APIRouter, HTTPException
+from collections import defaultdict
+
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+
+from control_plane.auth.dependencies import get_current_org
+from control_plane.models.database import DEFAULT_ORG
 
 router = APIRouter(prefix="/api/models", tags=["models"])
 
@@ -26,41 +31,42 @@ class ModelConfig(BaseModel):
     category: str = "general"
 
 
-# In-memory model registry
-_models: dict[str, ModelConfig] = {}
+# In-memory model registry, scoped per org (tenant): org -> name -> config.
+# Single-org dev/demo uses only the "default" org.
+_models: dict[str, dict[str, ModelConfig]] = defaultdict(dict)
 
 
 @router.get("")
-async def list_models() -> list[ModelConfig]:
-    return list(_models.values())
+async def list_models(org: str = Depends(get_current_org)) -> list[ModelConfig]:
+    return list(_models[org].values())
 
 
 @router.get("/{name}")
-async def get_model(name: str) -> ModelConfig:
-    if name not in _models:
+async def get_model(name: str, org: str = Depends(get_current_org)) -> ModelConfig:
+    if name not in _models[org]:
         raise HTTPException(status_code=404, detail=f"Model '{name}' not found")
-    return _models[name]
+    return _models[org][name]
 
 
 @router.post("")
-async def add_model(body: ModelConfig) -> ModelConfig:
-    _models[body.name] = body
+async def add_model(body: ModelConfig, org: str = Depends(get_current_org)) -> ModelConfig:
+    _models[org][body.name] = body
     return body
 
 
 @router.put("/{name}")
-async def update_model(name: str, body: ModelConfig) -> ModelConfig:
-    if name not in _models:
+async def update_model(name: str, body: ModelConfig, org: str = Depends(get_current_org)) -> ModelConfig:
+    if name not in _models[org]:
         raise HTTPException(status_code=404, detail=f"Model '{name}' not found")
-    _models[name] = body
+    _models[org][name] = body
     return body
 
 
 @router.delete("/{name}")
-async def delete_model(name: str):
-    if name not in _models:
+async def delete_model(name: str, org: str = Depends(get_current_org)):
+    if name not in _models[org]:
         raise HTTPException(status_code=404, detail=f"Model '{name}' not found")
-    del _models[name]
+    del _models[org][name]
     return {"deleted": name}
 
 
@@ -111,7 +117,7 @@ def seed_models():
                     input_cost_per_1k=0.002, output_cost_per_1k=0.006, max_tokens=8192, supports_tools=True, category="general"),
     ]
     for m in models:
-        _models[m.name] = m
+        _models[DEFAULT_ORG][m.name] = m
 
 
 # Auto-seed on import

@@ -3,13 +3,14 @@
 import logging
 import os
 import time
+from collections import defaultdict
 from datetime import datetime, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from control_plane.auth.dependencies import require_role
+from control_plane.auth.dependencies import get_current_org, require_role
 
 log = logging.getLogger("control_plane.routers.providers")
 
@@ -127,7 +128,10 @@ class _ProviderRecord(BaseModel):
     models_available: list[str] = Field(default_factory=list)
 
 
-_providers: dict[str, _ProviderRecord] = {}
+# Provider credentials, scoped per org (tenant). Nested org -> name -> record
+# so one org can never read or overwrite another org's encrypted API keys by
+# reusing a provider name. Single-org dev/demo uses only the "default" org.
+_providers: dict[str, dict[str, "_ProviderRecord"]] = defaultdict(dict)
 
 
 def _mask_key(key: str) -> str:
@@ -212,15 +216,15 @@ _admin_dep = Depends(require_role("admin"))
 
 
 @router.get("", response_model=list[ProviderResponse])
-async def list_providers():
-    """List all configured providers (no keys exposed)."""
-    return [_to_response(p) for p in _providers.values()]
+async def list_providers(org: str = Depends(get_current_org)):
+    """List this org's configured providers (no keys exposed)."""
+    return [_to_response(p) for p in _providers[org].values()]
 
 
 @router.post("", response_model=ProviderResponse)
-async def add_provider(body: ProviderCreate, _user=_admin_dep):
-    """Add a new provider configuration."""
-    if body.name in _providers:
+async def add_provider(body: ProviderCreate, _user=_admin_dep, org: str = Depends(get_current_org)):
+    """Add a new provider configuration (within the caller's org)."""
+    if body.name in _providers[org]:
         raise HTTPException(status_code=409, detail=f"Provider '{body.name}' already exists")
 
     rec = _ProviderRecord(
@@ -232,17 +236,17 @@ async def add_provider(body: ProviderCreate, _user=_admin_dep):
         tenant_id=body.tenant_id,
         enabled=body.enabled,
     )
-    _providers[body.name] = rec
+    _providers[org][body.name] = rec
     return _to_response(rec)
 
 
 @router.put("/{name}", response_model=ProviderResponse)
-async def update_provider(name: str, body: ProviderUpdate, _user=_admin_dep):
-    """Update an existing provider."""
-    if name not in _providers:
+async def update_provider(name: str, body: ProviderUpdate, _user=_admin_dep, org: str = Depends(get_current_org)):
+    """Update an existing provider (within the caller's org)."""
+    if name not in _providers[org]:
         raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
 
-    rec = _providers[name]
+    rec = _providers[org][name]
     if body.api_key is not None:
         rec.api_key_encrypted = _encrypt(body.api_key)
     if body.api_base_url is not None:
@@ -256,26 +260,26 @@ async def update_provider(name: str, body: ProviderUpdate, _user=_admin_dep):
     if body.enabled is not None:
         rec.enabled = body.enabled
 
-    _providers[name] = rec
+    _providers[org][name] = rec
     return _to_response(rec)
 
 
 @router.delete("/{name}")
-async def delete_provider(name: str, _user=_admin_dep):
-    """Remove a provider."""
-    if name not in _providers:
+async def delete_provider(name: str, _user=_admin_dep, org: str = Depends(get_current_org)):
+    """Remove a provider (within the caller's org)."""
+    if name not in _providers[org]:
         raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
-    del _providers[name]
+    del _providers[org][name]
     return {"deleted": name}
 
 
 @router.post("/{name}/test")
-async def test_provider(name: str, _user=_admin_dep):
+async def test_provider(name: str, _user=_admin_dep, org: str = Depends(get_current_org)):
     """Test connectivity to a provider by making a minimal API call."""
-    if name not in _providers:
+    if name not in _providers[org]:
         raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
 
-    rec = _providers[name]
+    rec = _providers[org][name]
     try:
         api_key = _decrypt(rec.api_key_encrypted)
     except Exception:
@@ -453,7 +457,7 @@ async def test_provider(name: str, _user=_admin_dep):
     rec.status = "connected" if success else "error"
     if success:
         rec.models_available = _KNOWN_MODELS.get(name, [])
-    _providers[name] = rec
+    _providers[org][name] = rec
 
     return {
         "name": name,
@@ -465,12 +469,12 @@ async def test_provider(name: str, _user=_admin_dep):
 
 
 @router.get("/{name}/health")
-async def provider_health(name: str):
+async def provider_health(name: str, org: str = Depends(get_current_org)):
     """Check cached health status and latency for a provider."""
-    if name not in _providers:
+    if name not in _providers[org]:
         raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
 
-    rec = _providers[name]
+    rec = _providers[org][name]
     return {
         "name": name,
         "status": rec.status,
@@ -482,12 +486,12 @@ async def provider_health(name: str):
 
 
 @router.get("/{name}/key")
-async def get_provider_key(name: str, _user=_admin_dep):
+async def get_provider_key(name: str, _user=_admin_dep, org: str = Depends(get_current_org)):
     """Return the decrypted API key (admin only, for reveal toggle)."""
-    if name not in _providers:
+    if name not in _providers[org]:
         raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
 
-    rec = _providers[name]
+    rec = _providers[org][name]
     try:
         raw_key = _decrypt(rec.api_key_encrypted)
     except Exception:

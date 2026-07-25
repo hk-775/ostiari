@@ -8,6 +8,8 @@ trail and the dashboard's data source.
 
 from __future__ import annotations
 
+from collections import defaultdict
+
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -23,11 +25,11 @@ router = APIRouter(prefix="/api/payments", tags=["payments"])
 
 # Per-gateway pricing policy (mode + priced patterns). Kept in the control
 # plane; pushed to gateways alongside wallet balances. Defaults to off.
-_pricing: dict[str, dict] = {}
+_pricing: dict[str, dict[str, dict]] = defaultdict(dict)
 
 
-def _gateway_pricing(gateway_id: str) -> dict:
-    return _pricing.get(gateway_id, {"mode": "off", "default": 0.0, "overrides": {}})
+def _gateway_pricing(org: str, gateway_id: str) -> dict:
+    return _pricing[org].get(gateway_id, {"mode": "off", "default": 0.0, "overrides": {}})
 
 
 # ─── Schemas ─────────────────────────────────────────────────────────────────
@@ -196,24 +198,24 @@ async def summary(db: AsyncSession = Depends(get_db)):
 # ─── Pricing + push ──────────────────────────────────────────────────────────
 
 @router.get("/pricing")
-async def get_pricing(gateway_id: str = "crm-agent"):
-    return {"gateway_id": gateway_id, **_gateway_pricing(gateway_id)}
+async def get_pricing(gateway_id: str = "crm-agent", org: str = Depends(get_current_org)):
+    return {"gateway_id": gateway_id, **_gateway_pricing(org, gateway_id)}
 
 
 @router.post("/pricing")
-async def set_pricing(body: PricingConfig, gateway_id: str = "crm-agent"):
-    _pricing[gateway_id] = body.model_dump()
-    return {"gateway_id": gateway_id, **_pricing[gateway_id]}
+async def set_pricing(body: PricingConfig, gateway_id: str = "crm-agent", org: str = Depends(get_current_org)):
+    _pricing[org][gateway_id] = body.model_dump()
+    return {"gateway_id": gateway_id, **_pricing[org][gateway_id]}
 
 
 @router.post("/push")
-async def push_payments(gateway_id: str = "crm-agent", db: AsyncSession = Depends(get_db)):
+async def push_payments(gateway_id: str = "crm-agent", db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
     """Push the full payment config (pricing + wallet balances) to a gateway."""
     gateway = await db.get(Gateway, gateway_id)
     if gateway is None:
         raise HTTPException(status_code=404, detail="Gateway not found")
 
-    payload = await build_payment_config(db, gateway_id)
+    payload = await build_payment_config(db, gateway_id, org)
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             resp = await client.post(f"{gateway.endpoint}/config/payments", json=payload)
@@ -223,10 +225,14 @@ async def push_payments(gateway_id: str = "crm-agent", db: AsyncSession = Depend
     return {"gateway_id": gateway_id, "pushed": True, "wallets": len(payload["wallets"])}
 
 
-async def build_payment_config(db: AsyncSession, gateway_id: str) -> dict:
-    """Assemble the gateway payment bundle: pricing policy + all wallet balances."""
-    wallets = (await db.execute(select(Wallet))).scalars().all()
-    pricing = _gateway_pricing(gateway_id)
+async def build_payment_config(db: AsyncSession, gateway_id: str, org: str = "default") -> dict:
+    """Assemble the gateway payment bundle: pricing policy + org's wallet balances.
+
+    Called from push paths (push_service, lifecycle) where the org is the
+    gateway's own org_id; defaults to "default" for single-org/back-compat.
+    """
+    wallets = (await db.execute(scoped(select(Wallet), Wallet, org))).scalars().all()
+    pricing = _gateway_pricing(org, gateway_id)
     return {
         **pricing,
         "wallets": [

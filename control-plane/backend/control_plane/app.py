@@ -46,37 +46,65 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    # Restore in-memory state from previous session
+    # Restore in-memory state from previous session. Records are tagged with an
+    # "_org" key so per-org stores rebuild correctly; state files written before
+    # multi-tenancy have no "_org" and fall back to the default org.
+    from control_plane.models.database import DEFAULT_ORG
     state = load_state()
+
+    def _org_of(rec: dict) -> str:
+        return rec.get("_org") or DEFAULT_ORG
+
     if "quotas" in state:
         from control_plane.routers.quotas import QuotaResponse, _next_id, _quotas
         for q in state["quotas"]:
-            _quotas[q["id"]] = QuotaResponse(**q)
-        if state["quotas"]:
-            _next_id[0] = max(q["id"] for q in state["quotas"]) + 1
+            org = _org_of(q)
+            data = {k: v for k, v in q.items() if k != "_org"}
+            _quotas[org][data["id"]] = QuotaResponse(**data)
+        for org, quotas in _quotas.items():
+            if quotas:
+                _next_id[org] = max(quotas) + 1
 
     if "experiments" in state:
         from control_plane.routers.experiments import ExperimentResponse, _experiments
         for e in state["experiments"]:
-            _experiments[e["name"]] = ExperimentResponse(**e)
+            org = _org_of(e)
+            data = {k: v for k, v in e.items() if k != "_org"}
+            _experiments[org][data["name"]] = ExperimentResponse(**data)
 
     if "models" in state:
         from control_plane.routers.model_config import ModelConfig, _models
         for m in state["models"]:
-            _models[m["name"]] = ModelConfig(**m)
+            org = _org_of(m)
+            data = {k: v for k, v in m.items() if k != "_org"}
+            _models[org][data["name"]] = ModelConfig(**data)
 
     if "providers" in state:
         from control_plane.routers.providers import _ProviderRecord, _providers
         for p in state["providers"]:
-            _providers[p["name"]] = _ProviderRecord(**p)
+            org = _org_of(p)
+            data = {k: v for k, v in p.items() if k != "_org"}
+            _providers[org][data["name"]] = _ProviderRecord(**data)
 
     if "roi_cost_model" in state and state["roi_cost_model"]:
         from control_plane.routers.roi import _cost_model
-        _cost_model.update(state["roi_cost_model"])
+        cm = state["roi_cost_model"]
+        # New shape: {org: {...}}. Old flat shape {"entries":..,"fallback":..} → default org.
+        if "entries" in cm or "fallback" in cm:
+            _cost_model[DEFAULT_ORG].update(cm)
+        else:
+            for org, sub in cm.items():
+                _cost_model[org].update(sub)
 
     if "token_broker_config" in state and state["token_broker_config"]:
         from control_plane.routers.token_broker import _config as _tb_config
-        _tb_config.update(state["token_broker_config"])
+        cfg = state["token_broker_config"]
+        # New shape: {org: {...}}. Old flat shape (has bulk_discount/markup) → default org.
+        if "bulk_discount" in cfg or "markup" in cfg:
+            _tb_config[DEFAULT_ORG].update(cfg)
+        else:
+            for org, sub in cfg.items():
+                _tb_config[org].update(sub)
 
     # Seed demo data so the dashboard isn't empty (skip in clean-install mode).
     # Traces + experiments are in-memory; metering usage records are DB-backed.
@@ -114,13 +142,23 @@ async def lifespan(app: FastAPI):
     from control_plane.routers.roi import _cost_model
     from control_plane.routers.token_broker import _config as _tb_config
 
+    # Flatten the org-nested stores into tagged record lists ({..., "_org": org})
+    # so restore can rebuild the per-org structure. cost_model/config are already
+    # org-keyed dicts and serialize directly.
+    def _dump(store) -> list:
+        out = []
+        for org, inner in store.items():
+            for rec in inner.values():
+                out.append({**rec.model_dump(), "_org": org})
+        return out
+
     save_state({
-        "quotas": [q.model_dump() for q in _quotas.values()],
-        "experiments": [e.model_dump() for e in _experiments.values()],
-        "models": [m.model_dump() for m in _models.values()],
-        "providers": [p.model_dump() for p in _providers.values()],
-        "roi_cost_model": _cost_model,
-        "token_broker_config": _tb_config,
+        "quotas": _dump(_quotas),
+        "experiments": _dump(_experiments),
+        "models": _dump(_models),
+        "providers": _dump(_providers),
+        "roi_cost_model": dict(_cost_model),
+        "token_broker_config": dict(_tb_config),
     })
 
     await engine.dispose()
