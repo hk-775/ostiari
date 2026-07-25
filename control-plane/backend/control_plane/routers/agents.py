@@ -1,7 +1,11 @@
 """Agent registry API — tracks agents across frameworks."""
 
-from fastapi import APIRouter, HTTPException
+from collections import defaultdict
+
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+
+from control_plane.auth.dependencies import get_current_org
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -19,7 +23,9 @@ class AgentConfig(BaseModel):
 # Live agent registry. Empty by default — populated at runtime as agents
 # register (POST /api/agents) or, in demo mode, by seed_demo_agents() which
 # loads DEMO_AGENTS below. A clean/no-demo install starts with no agents.
-_agents: dict[str, AgentConfig] = {}
+# Scoped per org (tenant): org -> name -> config. Single-org dev/demo uses
+# only the "default" org.
+_agents: dict[str, dict[str, AgentConfig]] = defaultdict(dict)
 
 
 # Demo agents — loaded ONLY by the demo seeder (gated by OSTIARI_NO_DEMO), so a
@@ -83,26 +89,26 @@ DEMO_AGENTS: dict[str, AgentConfig] = {
 
 
 @router.get("")
-async def list_agents() -> list[AgentConfig]:
-    return list(_agents.values())
+async def list_agents(org: str = Depends(get_current_org)) -> list[AgentConfig]:
+    return list(_agents[org].values())
 
 
 @router.get("/{name}")
-async def get_agent(name: str) -> AgentConfig:
-    if name not in _agents:
+async def get_agent(name: str, org: str = Depends(get_current_org)) -> AgentConfig:
+    if name not in _agents[org]:
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
-    return _agents[name]
+    return _agents[org][name]
 
 
 @router.post("")
-async def register_agent(body: AgentConfig) -> AgentConfig:
-    _agents[body.name] = body
+async def register_agent(body: AgentConfig, org: str = Depends(get_current_org)) -> AgentConfig:
+    _agents[org][body.name] = body
     return body
 
 
 @router.delete("/{name}")
-async def delete_agent(name: str):
-    if name not in _agents:
+async def delete_agent(name: str, org: str = Depends(get_current_org)):
+    if name not in _agents[org]:
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
-    del _agents[name]
+    del _agents[org][name]
     return {"deleted": name}

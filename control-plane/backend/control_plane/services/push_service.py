@@ -147,7 +147,7 @@ class PushService:
 
         # Payment config (x402 pricing + wallet balances), if any.
         from control_plane.routers.payments import build_payment_config
-        payments = await build_payment_config(db, gateway.id)
+        payments = await build_payment_config(db, gateway.id, gateway.org_id or "default")
         if payments.get("mode", "off") != "off" or payments.get("wallets"):
             config["payments"] = payments
 

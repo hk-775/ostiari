@@ -8,6 +8,8 @@ are editable assumptions, persisted in the state file.
 
 from __future__ import annotations
 
+from collections import defaultdict
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
@@ -20,11 +22,13 @@ router = APIRouter(prefix="/api/roi", tags=["roi"])
 # CIO-editable cost model. None => use roi.DEFAULT_COST_MODEL. Stored as an
 # ordered list of {pattern, cost} so the UI can edit/reorder; persisted via the
 # state file (see app.py lifespan).
-_cost_model: dict = {"entries": None, "fallback": roi.DEFAULT_FALLBACK_COST}
+_cost_model: dict[str, dict] = defaultdict(
+    lambda: {"entries": None, "fallback": roi.DEFAULT_FALLBACK_COST}
+)
 
 
-def _model_entries() -> list[tuple[str, float]] | None:
-    entries = _cost_model.get("entries")
+def _model_entries(org: str) -> list[tuple[str, float]] | None:
+    entries = _cost_model[org].get("entries")
     if not entries:
         return None
     return [(e["pattern"], float(e["cost"])) for e in entries]
@@ -40,29 +44,29 @@ class CostModel(BaseModel):
 
 
 @router.get("/cost-model")
-async def get_cost_model():
+async def get_cost_model(org: str = Depends(get_current_org)):
     """Current editable cost model (defaults if the CIO hasn't customized it)."""
-    entries = _cost_model.get("entries")
+    entries = _cost_model[org].get("entries")
     return {
         "entries": entries if entries else _default_entries(),
-        "fallback": _cost_model.get("fallback", roi.DEFAULT_FALLBACK_COST),
+        "fallback": _cost_model[org].get("fallback", roi.DEFAULT_FALLBACK_COST),
         "customized": bool(entries),
     }
 
 
 @router.post("/cost-model")
-async def set_cost_model(body: CostModel):
+async def set_cost_model(body: CostModel, org: str = Depends(get_current_org)):
     """Replace the cost model with the CIO's assumptions."""
-    _cost_model["entries"] = [{"pattern": e["pattern"], "cost": float(e["cost"])} for e in body.entries]
-    _cost_model["fallback"] = float(body.fallback)
-    return {"entries": _cost_model["entries"], "fallback": _cost_model["fallback"], "customized": True}
+    _cost_model[org]["entries"] = [{"pattern": e["pattern"], "cost": float(e["cost"])} for e in body.entries]
+    _cost_model[org]["fallback"] = float(body.fallback)
+    return {"entries": _cost_model[org]["entries"], "fallback": _cost_model[org]["fallback"], "customized": True}
 
 
 @router.post("/cost-model/reset")
-async def reset_cost_model():
+async def reset_cost_model(org: str = Depends(get_current_org)):
     """Revert to the default cost model."""
-    _cost_model["entries"] = None
-    _cost_model["fallback"] = roi.DEFAULT_FALLBACK_COST
+    _cost_model[org]["entries"] = None
+    _cost_model[org]["fallback"] = roi.DEFAULT_FALLBACK_COST
     return {"entries": _default_entries(), "fallback": roi.DEFAULT_FALLBACK_COST, "customized": False}
 
 
@@ -71,8 +75,8 @@ async def report(weight_by_score: bool = True, org: str = Depends(get_current_or
     """Damage-prevented estimate from blocked actions in the trace buffer."""
     rep = roi.compute_roi(
         recent_traces_for(org),
-        cost_model=_model_entries(),
-        fallback_cost=_cost_model.get("fallback", roi.DEFAULT_FALLBACK_COST),
+        cost_model=_model_entries(org),
+        fallback_cost=_cost_model[org].get("fallback", roi.DEFAULT_FALLBACK_COST),
         weight_by_score=weight_by_score,
     )
     return {

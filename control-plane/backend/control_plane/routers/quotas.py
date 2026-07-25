@@ -1,7 +1,11 @@
 """Quota management API — rate limits, budgets, model restrictions."""
 
-from fastapi import APIRouter, HTTPException
+from collections import defaultdict
+
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+
+from control_plane.auth.dependencies import get_current_org
 
 router = APIRouter(prefix="/api/quotas", tags=["quotas"])
 
@@ -29,20 +33,20 @@ class QuotaResponse(BaseModel):
     current_rpm: int
 
 
-# In-memory store (production would use DB)
-_quotas: dict[int, QuotaResponse] = {}
-_next_id = [1]
+# In-memory store (production would use DB), scoped per org (tenant).
+_quotas: dict[str, dict[int, QuotaResponse]] = defaultdict(dict)
+_next_id: dict[str, int] = defaultdict(lambda: 1)
 
 
 @router.get("", response_model=list[QuotaResponse])
-async def list_quotas():
-    return list(_quotas.values())
+async def list_quotas(org: str = Depends(get_current_org)):
+    return list(_quotas[org].values())
 
 
 @router.post("", response_model=QuotaResponse)
-async def create_quota(body: QuotaCreate):
+async def create_quota(body: QuotaCreate, org: str = Depends(get_current_org)):
     quota = QuotaResponse(
-        id=_next_id[0],
+        id=_next_id[org],
         name=body.name,
         scope=body.scope,
         scope_id=body.scope_id,
@@ -53,25 +57,25 @@ async def create_quota(body: QuotaCreate):
         current_spend=0.0,
         current_rpm=0,
     )
-    _quotas[_next_id[0]] = quota
-    _next_id[0] += 1
+    _quotas[org][_next_id[org]] = quota
+    _next_id[org] += 1
     return quota
 
 
 @router.delete("/{quota_id}")
-async def delete_quota(quota_id: int):
-    if quota_id not in _quotas:
+async def delete_quota(quota_id: int, org: str = Depends(get_current_org)):
+    if quota_id not in _quotas[org]:
         raise HTTPException(status_code=404, detail="Quota not found")
-    del _quotas[quota_id]
+    del _quotas[org][quota_id]
     return {"deleted": quota_id}
 
 
 @router.post("/{quota_id}/push")
-async def push_quota(quota_id: int):
+async def push_quota(quota_id: int, org: str = Depends(get_current_org)):
     """Push this quota to its assigned gateway."""
     import httpx
 
-    quota = _quotas.get(quota_id)
+    quota = _quotas[org].get(quota_id)
     if not quota:
         raise HTTPException(status_code=404, detail="Quota not found")
     if quota.scope != "gateway" or not quota.scope_id:
