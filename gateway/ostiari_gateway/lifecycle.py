@@ -12,9 +12,12 @@ log = logging.getLogger("ostiari.lifecycle")
 class LifecycleManager:
     """Manages gateway registration and heartbeat with the control plane."""
 
-    def __init__(self, gateway_id: str, control_plane_url: str) -> None:
+    def __init__(
+        self, gateway_id: str, control_plane_url: str, callback_url: str = ""
+    ) -> None:
         self._gateway_id = gateway_id
         self._cp_url = control_plane_url.rstrip("/")
+        self._callback_url = callback_url
         self._heartbeat_task: asyncio.Task | None = None
         self._client = httpx.AsyncClient(timeout=10.0)
         self._config_callback: Any = None
@@ -30,8 +33,10 @@ class LifecycleManager:
     async def register(self) -> dict[str, Any]:
         """POST to /api/gateways/{id}/register. Returns config bundle."""
         url = f"{self._cp_url}/api/gateways/{self._gateway_id}/register"
+        # Advertise our callback URL so the control plane can push config back.
+        body = {"callback_url": self._callback_url} if self._callback_url else {}
         try:
-            resp = await self._client.post(url)
+            resp = await self._client.post(url, json=body)
             resp.raise_for_status()
             data = resp.json()
             log.info(f"Registered with control plane: {self._cp_url}")
