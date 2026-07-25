@@ -576,7 +576,7 @@ kubectl apply -f deploy/kubernetes/control-plane.yaml
 
 Config push targets the Service DNS (reaches one replica); every replica also **pulls** its config on each heartbeat, so the fleet self-syncs. An HPA scales 3→20 pods on CPU/memory.
 
-> **Note:** config self-syncs, but *enforcement counters* (rate limit, quota/budget, wallets) are per-replica in-process state — they are **not** shared across the fleet. A limit configured on the fleet is enforced per pod (N pods ⇒ N× effective). See the [Production checklist](#38-production-checklist).
+> **Note:** config self-syncs, and *enforcement counters* (rate limit, quota/budget, wallets) are per-replica in-process **unless** you point the gateway at Redis (`REDIS_ENDPOINT`/`OSTIARI_REDIS_URL`) — then they're shared fleet-wide via atomic Redis ops. Without Redis, a limit configured on the fleet is enforced per pod (N pods ⇒ N× effective). See the [Production checklist](#38-production-checklist).
 
 Secrets:
 
@@ -637,12 +637,12 @@ sam build && sam deploy --guided
 - [ ] `OSTIARI_ADVERTISE_HOST` set on every gateway to a name the control plane can reach.
 - [ ] API keys sourced from Secrets Manager / k8s Secrets, never baked into images.
 - [ ] TLS terminated at the ALB / ingress (not the gateway).
-- [ ] Sized capacity **per gateway replica** — enforcement state (rate limit,
-      quota/budget, wallets) is in-process, so limits apply per replica, not
-      fleet-wide (N instances ⇒ N× the effective `budget_limit_usd`/`rate_limit_rpm`).
-      Where an exact global cap matters, run a single instance or pin agents to
-      one. Fleet-wide shared state via Redis is not yet implemented — see
-      [`deploy/README.md`](deploy/README.md) Production Notes.
+- [ ] For a multi-replica fleet, set `REDIS_ENDPOINT` (or `OSTIARI_REDIS_URL`)
+      so rate-limit / budget / wallet limits hold **fleet-wide** — otherwise
+      enforcement state is in-process and limits apply per replica (N instances
+      ⇒ N× the effective `budget_limit_usd`/`rate_limit_rpm`). Install the extra:
+      `pip install "ostiari-gateway[redis]"`. See [`deploy/README.md`](deploy/README.md)
+      Production Notes.
 - [ ] (Optional) `OTEL_EXPORTER_OTLP_ENDPOINT` for trace export — see [`docs/otlp-export.md`](docs/otlp-export.md).
 
 ## 3.9 Troubleshooting (Part 3)

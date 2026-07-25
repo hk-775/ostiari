@@ -482,10 +482,17 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
 
     app = FastAPI(title="Ostiari Sidecar", lifespan=lifespan)
 
+    # Optional Redis-backed shared state so rate limit / budget / wallet limits
+    # hold across a horizontally-scaled fleet. None (default) = per-process.
+    from ostiari_gateway.shared_store import get_shared_store
+    shared_store = get_shared_store()
+    quota_enforcer.attach_shared_store(shared_store)
+    payment_gate.attach_shared_store(shared_store)
+
     # DoS guards: reject oversized bodies, and per-caller rate limiting
     # (off unless OSTIARI_GATEWAY_RATE_LIMIT_RPM is set).
     from ostiari.http_limits import BodySizeLimitMiddleware, RateLimitMiddleware
-    app.add_middleware(RateLimitMiddleware)
+    app.add_middleware(RateLimitMiddleware, store=shared_store)
     app.add_middleware(BodySizeLimitMiddleware)
 
     @app.middleware("http")
