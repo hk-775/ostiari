@@ -1,0 +1,29 @@
+# Ostiari gateway image. Built from the REPO ROOT context so it can install the
+# local `ostiari` core package (a dependency of ostiari-gateway that is not
+# published to PyPI).
+#
+#   docker build -f deploy/docker/Dockerfile.gateway -t ostiari-gateway:latest .
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# curl is used by the container healthcheck.
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install the core package first (gateway depends on `ostiari>=0.1.0`).
+COPY pyproject.toml README.md ./
+COPY src/ src/
+RUN pip install --no-cache-dir .
+
+# Install the gateway package.
+COPY gateway/pyproject.toml gateway/
+COPY gateway/ostiari_gateway/ gateway/ostiari_gateway/
+RUN pip install --no-cache-dir ./gateway
+
+EXPOSE 8421
+
+# Config is driven by env vars (OSTIARI_GATEWAY_ID / OSTIARI_CONTROL_PLANE_URL /
+# OSTIARI_PORT), so no CLI flags are needed here.
+ENTRYPOINT ["ostiari-gateway"]
+CMD ["--host", "0.0.0.0"]

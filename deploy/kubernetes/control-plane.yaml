@@ -34,20 +34,22 @@ spec:
             - containerPort: 8400
               name: api
           env:
-            - name: OSTIARI_DB_PATH
-              value: "/data/ostiari.db"
+            # SQLite on the PVC by default. For production point this at RDS:
+            # postgresql+asyncpg://user:pass@host:5432/ostiari
+            - name: DATABASE_URL
+              value: "sqlite+aiosqlite:////data/control_plane.db"
           volumeMounts:
             - name: data
               mountPath: /data
           readinessProbe:
             httpGet:
-              path: /health
+              path: /api/health
               port: 8400
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             httpGet:
-              path: /health
+              path: /api/health
               port: 8400
             initialDelaySeconds: 10
             periodSeconds: 15
@@ -59,15 +61,23 @@ spec:
               cpu: "1"
               memory: 512Mi
 
+        # The frontend is a separate static-asset image (nginx). VITE_API_URL is
+        # baked at build time and called from the browser, so build the image
+        # with the API URL your users' browsers can reach:
+        #   docker build -f deploy/docker/Dockerfile.frontend \
+        #     --build-arg VITE_API_URL=https://ostiari.example.com:8400 \
+        #     -t ostiari-frontend:latest .
         - name: frontend
-          image: ostiari-control-plane:latest
-          command: ["serve-frontend"]
+          image: ostiari-frontend:latest
           ports:
             - containerPort: 9000
               name: ui
-          env:
-            - name: OSTIARI_API_URL
-              value: "http://localhost:8400"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 9000
+            initialDelaySeconds: 5
+            periodSeconds: 10
           resources:
             requests:
               cpu: 100m

@@ -7,6 +7,9 @@ data:
   OSTIARI_GATEWAY_ID: "gateway-sidecar-1"
   OSTIARI_CONTROL_PLANE_URL: "http://ostiari-control-plane:8400"
   OSTIARI_PORT: "8421"
+  # Control plane pushes config here. The agent-with-ostiari Service (below)
+  # exposes port 8421, so advertise that Service DNS name.
+  OSTIARI_ADVERTISE_HOST: "agent-with-ostiari"
 ---
 apiVersion: v1
 kind: Pod
