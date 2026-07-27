@@ -52,8 +52,38 @@ jobs:
           python -c "from ostiari_gateway.cross_agent import CrossAgentPolicy; print('CrossAgent OK')"
           python -c "from ostiari_gateway.a2a import A2AManager; print('A2A OK')"
 
+      # AxonLLM is a hard runtime requirement: with llm_gateway enabled the gateway
+      # refuses to start without it, because routing governance and token cost
+      # tracking live there. It is a separate private repo, not on PyPI, so CI has
+      # to be told where to find it — otherwise 25 tests fail at create_app() with
+      # "AxonLLM could not be embedded". Those failures are an unsatisfied
+      # dependency, not a code defect, and they do NOT self-skip: the suite goes
+      # red. This step is what makes the requirement satisfiable in CI.
+      #
+      # Requires an AXONLLM_TOKEN secret with read access to the AxonLLM repo.
+      # Deliberately NOT continue-on-error: a missing token has to fail loudly.
+      # Skipping the affected tests instead would report green while leaving the
+      # gateway's entire LLM surface untested.
+      #
+      # OSTIARI_ALLOW_NO_AXON=1 is also deliberately NOT the fix here. It
+      # downgrades the requirement to a warning, so CI would pass while exercising
+      # an ungoverned gateway — the exact silent degradation the requirement exists
+      # to prevent.
+      - name: Check out AxonLLM (required dependency)
+        id: axon
+        uses: actions/checkout@v7
+        with:
+          repository: hk-775/axonllm
+          path: .axonllm
+          token: ${{ secrets.AXONLLM_TOKEN }}
+
+      - name: Install AxonLLM
+        run: pip install -e .axonllm
+
       - name: Test (gateway suite)
         working-directory: gateway
+        env:
+          OSTIARI_AXON_ROOT: ${{ github.workspace }}/.axonllm
         run: PYTHONPATH=. pytest tests/ -v --tb=short
 
   control-plane:
