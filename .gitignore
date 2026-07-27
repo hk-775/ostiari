@@ -69,5 +69,40 @@ site/infra/.venv/
 # Microsoft Office lock/temp files
 ~$*
 
-# Internal strategy / competitive / assessment docs — never commit
+# Internal strategy / competitive / assessment docs — never commit.
+#
+# docs/internal/ was the intended home for this material, but most of it never
+# landed there: 31 files sat tracked at the repo root, in docs/, and under
+# control-plane/docs/CMA/ — PRFAQs, launch materials, the OSPO justification,
+# comparative market analysis, positioning, funding plans, and the investment
+# business case. This repo is private today, so that was invisible; it stops
+# being invisible the moment the repo goes public, and that door only opens one
+# way. Hence patterns by *name* as well as by directory.
+#
+# Note that .gitignore does nothing for files git already tracks. If one of
+# these reappears in `git status` as staged, it was added with `git add -f` or
+# predates these rules — untrack it with `git rm --cached`, don't just re-ignore.
 docs/internal/
+
+# Product/market strategy by name, wherever it lands
+PRFAQ*
+launch-materials*
+*Launch Materials*
+*Launch-Materials*
+OSPO*Business*Justification*
+control-plane/docs/CMA/
+control-plane/docs/CMA.docx
+*Investment Business Case*
+*Funding Plan*
+*funding_support*
+*unconventional_paths*
+*cio_questions*
+*Features Worth Building*
+# Competitor comparisons. Scoped to documents, not a bare *-vs-* — that would
+# also swallow any source file that happens to use the word.
+*-vs-*.docx
+*-vs-*.pdf
+*-vs-*.md
+
+# Draft snapshots written by Office/Pages alongside the originals
+.versions/
