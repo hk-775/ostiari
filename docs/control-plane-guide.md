@@ -538,6 +538,21 @@ their credentials/health. **Novice note:** "LLM Providers" (model vendors) are
 different from the agent *frameworks* on the Agents page. Providers supply the
 brains (models); frameworks are how the agent is built.
 
+**xAI (Grok) and Together** are first-class here: both speak the OpenAI wire format,
+so connectivity is one shared `/v1/chat/completions` probe rather than a near-copy per
+vendor. Their base URLs and probe models mirror AxonLLM's adapters deliberately — a
+divergence would let this page "pass" a key the router can't actually route with.
+Seeded models: `grok-3`, `grok-3-mini`, `llama-3.3-70b`, `deepseek-r1-together`.
+
+**This store is process memory, not a table.** It renders empty on a fresh control
+plane, and it does not survive a restart. `gateway/register_demo_providers.py` seeds it
+from the same env file the gateways load, so the page shows exactly the providers this
+machine can reach — run it after every control-plane restart (the `make dev` and
+`make demo-full` targets do). Keys are Fernet-encrypted at rest under
+`OSTIARI_ENCRYPTION_KEY`; unset, the control plane mints a transient key, so the
+stored keys die with the process regardless. Persisting this to a real table is
+outstanding work.
+
 ### 9.2 Users (`/users`)
 Control-plane accounts and roles (admin / operator / viewer). RBAC: viewers can
 watch but not change config. **Best practice:** most people are viewers; a small
@@ -573,6 +588,43 @@ A recurring source of confusion, made explicit:
 **What to avoid:** editing config and forgetting to push. The dashboard shows the
 new value, but the gateway is still enforcing the old one until you push. If a
 change "isn't taking effect," check that you pushed.
+
+---
+
+## 10a. Tenant scoping — which org sees what
+
+Every stored record carries an `org_id`, and read endpoints are scoped to the
+caller's org. Two things make this non-obvious, and both have bitten:
+
+**1. Gateways have no user token.** A gateway posting traces, usage, payments, or
+approvals authenticates as itself, not as a person — so there is no caller org to
+scope by. The org is derived from the **reporting gateway's row** (`org_of_gateway`),
+which is the only trustworthy source available on those paths.
+
+**2. The payload is not believed.** An ingest body naming its own `org_id` was
+previously honored, which let any caller that could reach `/api/traces/ingest` file a
+trace into an arbitrary tenant's buffer. That buffer is read back by `/recent`, the
+WebSocket fan-out, compliance, ROI, trust scoring, and discovery. Any `org_id` in the
+body is now overwritten with the gateway-derived value before storage.
+
+| Surface | How the org is decided |
+|---|---|
+| Trace / usage / payment / approval **ingest** | the reporting gateway's `gateways` row |
+| Everything a **human** reads | the caller's token (`get_current_org`) |
+| Approvals addressed **by id** | owner org of that approval; a tokened caller from another org gets 404 |
+
+An unknown or empty gateway falls back to the default org, so its records are still
+kept rather than silently dropped — the demo posture, consistent across ingest paths.
+
+**Approvals are the subtle one.** The queue holds an agent's raw tool parameters —
+SQL, recipients, payloads — plus the reviewer's identity. A flat id-keyed store put
+one tenant's most sensitive call detail in every other tenant's review queue, and let
+anyone decide it. It's now keyed per org. The id-addressed routes stay reachable
+without a token because that's the gateway's own resume-check path; a caller that
+*does* present a token is held to its own org.
+
+**Discovery, too:** "shadow AI" is computed as seen-minus-known, so an unscoped read
+listed another tenant's agent ids and gateway names as *your* shadow AI.
 
 ---
 

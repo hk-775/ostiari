@@ -1,6 +1,7 @@
 """Gateway lifecycle management — registration + heartbeat loop with the Control Plane."""
 
 import asyncio
+import contextlib
 import logging
 from typing import Any
 
@@ -105,10 +106,10 @@ class LifecycleManager:
         """Cancel heartbeat task and close HTTP client."""
         if self._heartbeat_task and not self._heartbeat_task.done():
             self._heartbeat_task.cancel()
-            try:
+            # We just cancelled it, so CancelledError is the expected outcome,
+            # not a failure to report.
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._heartbeat_task
-            except asyncio.CancelledError:
-                pass
             self._heartbeat_task = None
         await self._client.aclose()
         log.info("Lifecycle manager stopped")

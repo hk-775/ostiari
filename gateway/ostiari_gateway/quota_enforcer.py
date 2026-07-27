@@ -210,13 +210,13 @@ class QuotaEnforcer:
                     )
 
         # Model allowlist check
-        if self._config.allowed_models is not None and model:
-            if model not in self._config.allowed_models:
-                return QuotaDecision(
-                    allowed=False,
-                    reason=f"Model '{model}' not in allowed list: {self._config.allowed_models}",
-                    limit_type="model_restriction",
-                )
+        if (self._config.allowed_models is not None and model
+                and model not in self._config.allowed_models):
+            return QuotaDecision(
+                allowed=False,
+                reason=f"Model '{model}' not in allowed list: {self._config.allowed_models}",
+                limit_type="model_restriction",
+            )
 
         decision = QuotaDecision(allowed=True)
         # Book a reservation so record_spend can reconcile estimate→actual.
@@ -339,9 +339,8 @@ class QuotaEnforcer:
 
     def _get_pricing(self, model: str) -> dict[str, float]:
         """Get pricing for a model from config or defaults."""
-        if self._config and self._config.pricing:
-            if model in self._config.pricing:
-                return self._config.pricing[model]
+        if self._config and self._config.pricing and model in self._config.pricing:
+            return self._config.pricing[model]
         if model in DEFAULT_PRICING:
             return DEFAULT_PRICING[model]
         # Fuzzy match
@@ -367,8 +366,12 @@ class QuotaEnforcer:
                 for cb in self._alert_callbacks:
                     try:
                         cb(label, self._total_spend, self._config.budget_limit_usd)
-                    except Exception:
-                        pass
+                    except Exception as e:  # noqa: BLE001
+                        # One bad callback must not stop the others firing or
+                        # break the call that triggered the alert. Logged rather
+                        # than suppressed outright: a silently-broken budget
+                        # alert is exactly the failure nobody notices.
+                        log.warning("Budget alert callback failed: %s", e)
 
     def _prune_old_requests(self) -> None:
         """Remove requests older than the sliding window."""

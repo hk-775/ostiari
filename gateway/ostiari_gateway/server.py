@@ -1,9 +1,11 @@
 """Generic sidecar server — validates and proxies tool calls to remote endpoints."""
 
 import logging
+import os as _os
 from contextlib import asynccontextmanager
 from typing import Any
 
+import httpx as _httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from opentelemetry import trace
@@ -24,12 +26,6 @@ from ostiari_gateway.telemetry import (
 )
 
 log = logging.getLogger("ostiari.sidecar")
-
-
-import os as _os
-
-import httpx as _httpx
-
 
 _NON_SECRET_CRED_FIELDS = {
     "azure_endpoint", "azure_api_version", "bedrock_region",
@@ -529,7 +525,17 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
         is reported with shadow=True and would_block set when enforce mode
         would have blocked the call.
         """
-        params: dict[str, Any] = await request.json()
+        # A bad body is the caller's error. Unguarded, the decode failure escaped
+        # as an unhandled exception — a 500 plus a stack trace on the gateway's
+        # hottest path, where the agent needs an actionable 400 instead.
+        try:
+            params: dict[str, Any] = await request.json()
+        except Exception:  # noqa: BLE001 — any decode failure is a bad request
+            return JSONResponse(status_code=400, content={"error": "Malformed JSON body"})
+        if not isinstance(params, dict):
+            return JSONResponse(status_code=400,
+                                content={"error": "Tool parameters must be a JSON object"})
+
         agent_id = request.headers.get("X-Agent-Id", "unknown")
         framework = request.headers.get("X-Framework", "unknown")
         session_id = request.headers.get("X-Session-Id", "")

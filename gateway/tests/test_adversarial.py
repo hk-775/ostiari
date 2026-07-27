@@ -17,11 +17,9 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-
 from ostiari_gateway.payments.gate import PaymentGate, parse_402
 from ostiari_gateway.payments.models import Quote, Wallet
 from ostiari_gateway.quota_enforcer import QuotaEnforcer
-
 
 # ─── 1. Payments ────────────────────────────────────────────────────────────
 

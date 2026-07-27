@@ -34,6 +34,11 @@ class SSRFError(ValueError):
     """Raised when a request-supplied URL targets a disallowed destination."""
 
 
+# The public union, not ipaddress._BaseAddress: the private base class doesn't
+# declare is_private/is_loopback/is_link_local/is_reserved/is_multicast, so
+# annotating with it type-errors on every check this module exists to perform.
+IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
+
 _ALLOWED_SCHEMES = ("http", "https")
 
 
@@ -46,7 +51,7 @@ def _allowlist() -> list[str]:
     return [x.strip() for x in raw.split(",") if x.strip()]
 
 
-def _matches_allowlist(host: str, ip: ipaddress._BaseAddress) -> bool:
+def _matches_allowlist(host: str, ip: IPAddress) -> bool:
     """True if the host or resolved IP is explicitly allowlisted (prod escape hatch)."""
     for entry in _allowlist():
         if entry == host:
@@ -61,15 +66,20 @@ def _matches_allowlist(host: str, ip: ipaddress._BaseAddress) -> bool:
     return False
 
 
-def _resolve_ips(host: str) -> list[ipaddress._BaseAddress]:
+def _resolve_ips(host: str) -> list[IPAddress]:
     """Resolve a hostname to all its IPs (so DNS can't hide an internal target)."""
     try:
         infos = socket.getaddrinfo(host, None)
     except OSError as e:
         raise SSRFError(f"could not resolve host '{host}': {e}") from e
-    ips: list[ipaddress._BaseAddress] = []
+    ips: list[IPAddress] = []
     for info in infos:
+        # sockaddr[0] is the address for both AF_INET and AF_INET6, but it's
+        # typed `str | int` because the tuple shape differs by family — narrow
+        # before parsing rather than assuming.
         addr = info[4][0]
+        if not isinstance(addr, str):
+            continue
         try:
             ips.append(ipaddress.ip_address(addr.split("%")[0]))  # strip scope id
         except ValueError:
@@ -77,14 +87,14 @@ def _resolve_ips(host: str) -> list[ipaddress._BaseAddress]:
     return ips
 
 
-def _always_blocked(ip: ipaddress._BaseAddress) -> bool:
+def _always_blocked(ip: IPAddress) -> bool:
     """Ranges that are blocked in EVERY mode (metadata / link-local)."""
     # 169.254.0.0/16 (IPv4 link-local, incl. cloud metadata 169.254.169.254),
     # fe80::/10 (IPv6 link-local), and the metadata mapping fd00:ec2::254.
     return ip.is_link_local or str(ip) in ("fd00:ec2::254",)
 
 
-def _private_blocked(ip: ipaddress._BaseAddress) -> bool:
+def _private_blocked(ip: IPAddress) -> bool:
     """Ranges blocked in production (private/loopback/reserved)."""
     return ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_multicast
 

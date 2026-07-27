@@ -1,12 +1,10 @@
 """Tests for cross-agent (A2A) protocol governance:
 delegation policy, trust scoring, chain depth, identity propagation, shadow."""
 
-import pytest
 from ostiari_gateway.cross_agent import CrossAgentPolicy
 from ostiari_gateway.models import SidecarConfig
 from ostiari_gateway.server import create_app
 from starlette.testclient import TestClient
-
 
 # ─── Policy engine (unit) ────────────────────────────────────────────────────
 
@@ -107,6 +105,7 @@ def _app_with_fake_agent(callee="coder"):
     """Build an app and inject a fake connected A2A agent so the a2a.* path is
     reachable without a real remote server. Returns (app, fake_client)."""
     from unittest.mock import AsyncMock, MagicMock
+
     from ostiari_gateway.a2a.models import AgentCard
 
     app = create_app()
@@ -186,6 +185,7 @@ class TestA2AStartupReconnect:
 
     def test_reconnects_from_registration_bundle(self, monkeypatch):
         from unittest.mock import AsyncMock
+
         from ostiari_gateway.a2a.models import AgentCard, AgentSkill
 
         # Discovery returns a fake card; add_agent uses it (patched at source).

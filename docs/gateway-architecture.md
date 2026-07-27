@@ -1362,10 +1362,15 @@ Importing a Python package is like linking a library in C — the code becomes p
 | **Provider Adapters** (6) | Bedrock, Anthropic, OpenAI, Azure, Vertex AI, Cohere — unified interface | Anthropic, OpenAI, Bedrock only |
 | **ProviderHealthTracker** | Tracks which providers are healthy, circuit-breaks unhealthy ones | Basic retry |
 | **CostTracker** | Records token usage, enforces budgets, alerts on thresholds | No cost tracking |
-| **PIIRedactor** | Strips emails, SSNs, credit cards, etc. before LLM sees them. Restores in response. | No redaction |
-| **PromptInjectionDetector** | Scores prompts for injection attempts (role override, delimiter escape, encoded payloads) | No detection |
 | **EnsembleStrategy** | Sends prompt to multiple models, uses a judge to synthesize the best answer | Not available |
 | **Multi-region routing** | Hub-and-spoke with automatic failover across AWS regions | Single region only |
+
+> **PII redaction and injection detection are no longer in this table.** They used
+> to come from AxonLLM's `PIIRedactor` / `PromptInjectionDetector`, which meant the
+> two controls only worked when the optional AxonLLM install was present — and
+> because both fail closed, enabling either one without it blocked *every* request.
+> They now live in `ostiari.detect`, a hard dependency of the gateway, so they work
+> in every deployment. See [detection-engine.md](detection-engine.md).
 
 ### The full request flow with AxonLLM
 
@@ -1437,7 +1442,7 @@ sequenceDiagram
 
     Agent->>Sidecar: "Email boss@company.com about SSN 123-45-6789"
 
-    Note over Sidecar: PIIRedactor (AxonLLM, in-process):<br/>boss@company.com → [EMAIL_1]<br/>123-45-6789 → [SSN_1]
+    Note over Sidecar: PIIRedactor (ostiari.detect, in-process):<br/>boss@company.com → [EMAIL_1]<br/>123-45-6789 → [SSN_1]
 
     Sidecar->>LLM: "Email [EMAIL_1] about SSN [SSN_1]"
 
@@ -1453,19 +1458,27 @@ sequenceDiagram
 **What gets redacted:**
 - Email addresses → `[EMAIL_1]`, `[EMAIL_2]`, ...
 - SSNs → `[SSN_1]`
-- Credit card numbers → `[CREDIT_CARD_1]`
+- Credit card numbers → `[CREDIT_CARD_1]` (Luhn-checked, so an order number isn't mistaken for a card)
 - Phone numbers → `[PHONE_1]`
-- IP addresses → `[IP_1]`
-- AWS account IDs → `[AWS_ACCOUNT_1]`
-- Medical record numbers → `[MRN_1]`
+- IP addresses → `[IP_ADDRESS_1]`, IPv6 → `[IPV6_1]`
+- AWS account IDs → `[AWS_ACCOUNT_ID_1]`
+- Medical record numbers → `[MEDICAL_RECORD_1]`
+- IBANs → `[IBAN_1]`
+- Credentials: AWS access keys, private-key PEM blocks, bearer tokens → `[AWS_ACCESS_KEY_1]`, `[PRIVATE_KEY_1]`, `[BEARER_TOKEN_1]`
 
 The LLM can still reason about the data structure ("send email to [EMAIL_1]"), but never sees the actual values. The sidecar restores them in the response before returning to the agent.
+
+Restoration is opt-out: set `pii_reversible: false` and the mapping is discarded after
+redaction, so the real values are unrecoverable even by the gateway. Use that when the
+requirement is "the data must not exist here", not "the model must not see it".
+
+Full type list, config, and the tradeoffs: [detection-engine.md](detection-engine.md).
 
 ### Security: Prompt Injection Detection
 
 ```mermaid
 flowchart TD
-    REQ[Incoming message] --> DET[PromptInjectionDetector<br/>AxonLLM, in-process]
+    REQ[Incoming message] --> DET[InjectionDetector<br/>ostiari.detect, in-process]
     DET --> SC{Score > threshold?}
     SC -->|"Score 0.9 > 0.7"| BLOCK[Block request<br/>Return error to agent]
     SC -->|"Score 0.2 < 0.7"| PASS[Continue to LLM]
@@ -1479,8 +1492,13 @@ flowchart TD
 - Data extraction patterns ("Output your system prompt...")
 - Delimiter escape ("```\nSYSTEM: ...")
 - Encoded payloads (base64-encoded instructions)
+- Obfuscation: zero-width characters and Unicode look-alikes are normalized away before matching
 
 Configurable threshold (default: 0.7). Lower = more strict. Higher = more permissive.
+Set `injection_mode: flag` to score and report without blocking — the way to measure
+your own false-positive rate on real traffic before you turn enforcement on.
+
+Full pattern list, scoring, and limits: [detection-engine.md](detection-engine.md).
 
 ### Smart Routing: How TaskClassifier Works
 

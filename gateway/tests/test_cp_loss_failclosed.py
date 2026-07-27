@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 
 class TestFailClosedOnCpLoss:
     def test_default_off(self, monkeypatch):
