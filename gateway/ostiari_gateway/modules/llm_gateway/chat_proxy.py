@@ -125,10 +125,11 @@ class ChatProxy:
         if self._axon is None or not self._axon.available:
             return _err(503, "LLM router unavailable", "api_error")
 
-        # AxonLLM drops tool specs (see AxonRouter.supports_tools). Unlike the
-        # /v1/messages shim, this path has no direct-provider fallback to hand the
-        # call to — so refuse it rather than return a fluent answer from a model
-        # that was never told the tools exist. Codex surfaces a 501 to the user.
+        # AxonLLM carries tool specs now, so this is a version guard rather than a
+        # standing limitation: an AxonLLM predating tool pass-through would drop
+        # them and answer fluently as if no tools existed. Unlike the /v1/messages
+        # shim, this path has no direct-provider fallback to hand the call to — so
+        # refuse rather than return that answer. Codex surfaces a 501 to the user.
         if body.get("tools") and not self._axon.supports_tools():
             if self._quota is not None:
                 self._quota.release_reservation(reservation_id)

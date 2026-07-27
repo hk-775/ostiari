@@ -7,9 +7,15 @@ fallback, cost tracking, smart routing, and ensemble; Ostiari owns everything
 around it.
 
 ``build_gateway_agent()`` (AxonLLM's own bootstrap) wires the whole router graph
-standalone — no AWS/Dynamo required (persistence auto-disables). If AxonLLM isn't
-installed, ``AxonRouter.available`` is False and the caller falls back to its own
-direct provider calls.
+standalone — no AWS/Dynamo required (persistence auto-disables).
+
+AxonLLM is a **required** runtime dependency: it is where routing governance and
+token cost tracking happen, so a gateway that quietly runs without it enforces
+less than it claims to while still returning 200s. ``require()`` is called at
+startup and refuses to boot when the router can't be built. The direct-provider
+fallback in each caller remains for a *mid-flight* failure (one call, logged), not
+as a supported way to run — and ``OSTIARI_DISABLE_AXON_ROUTER=1`` remains for
+tests and for deliberately exercising that path.
 
 Routing modes are selected by the request/context, matching AxonLLM's contract:
   - ensemble:  model == "ensemble" | "ensemble:<preset>", or context["ensemble"]=True
@@ -48,12 +54,59 @@ class AxonRouter:
         self._agent: Any = None
         self._built = False
         self._available = False
+        self._error: str = ""
+        self._root: str | None = None
+        self._disabled = False
 
     @property
     def available(self) -> bool:
         """Whether AxonLLM's router could be built (lazy on first use)."""
         self._ensure()
         return self._available
+
+    @property
+    def error(self) -> str:
+        """Why the router is unavailable, or "" when it's up.
+
+        Retained so startup and /health can say what actually went wrong instead
+        of "unavailable" — the failure modes (not installed, config dir missing,
+        bootstrap raised) need different fixes.
+        """
+        self._ensure()
+        return self._error
+
+    @property
+    def root(self) -> str | None:
+        """The AxonLLM checkout this router loaded, for startup/health output."""
+        self._ensure()
+        return self._root
+
+    def require(self) -> None:
+        """Refuse to run without AxonLLM. Raises RuntimeError if unavailable.
+
+        Called at gateway startup. Routing governance and token cost tracking
+        live in AxonLLM, so a gateway running on the direct-provider fallback
+        looks healthy and answers requests while enforcing none of that — a
+        silent downgrade of the guarantee Ostiari exists to make. Better to not
+        start than to under-govern invisibly.
+        """
+        self._ensure()
+        if self._available:
+            return
+        if self._disabled:
+            raise RuntimeError(
+                "AxonLLM routing is disabled (OSTIARI_DISABLE_AXON_ROUTER) but the "
+                "gateway requires it: routing governance and token cost tracking "
+                "happen in AxonLLM. Unset the variable, or set "
+                "OSTIARI_ALLOW_NO_AXON=1 to run ungoverned anyway."
+            )
+        raise RuntimeError(
+            f"AxonLLM could not be embedded ({self._error or 'unknown error'}) and the "
+            "gateway requires it: routing governance and token cost tracking happen "
+            "in AxonLLM, so running without it would return 200s while enforcing "
+            "neither. Install AxonLLM (pip install -e /path/to/AxonLLM) or point "
+            "OSTIARI_AXON_ROOT at its checkout."
+        )
 
     def _ensure(self) -> None:
         if self._built:
@@ -64,17 +117,20 @@ class AxonRouter:
         import os
         if os.environ.get("OSTIARI_DISABLE_AXON_ROUTER", "").lower() in ("1", "true", "yes"):
             self._available = False
+            self._disabled = True
+            self._error = "disabled via OSTIARI_DISABLE_AXON_ROUTER"
             log.info("AxonLLM router disabled via OSTIARI_DISABLE_AXON_ROUTER")
             return
 
         try:
-            import src.gateway  # noqa: F401  — locate the installed AxonLLM package
+            axon_root = _prepare_axon_path()
+            self._root = axon_root
+
             from src.gateway.bootstrap import build_gateway_agent
 
             # AxonLLM resolves its config files relative to cwd (its own CLI
             # chdir's to the repo root). Do the same transiently while building,
-            # deriving the root from the installed package, then restore cwd.
-            axon_root = _axon_root()
+            # then restore cwd.
             prev = os.getcwd()
             try:
                 if axon_root:
@@ -84,10 +140,14 @@ class AxonRouter:
                 os.chdir(prev)
 
             self._available = True
+            self._error = ""
             log.info("AxonLLM router embedded — GatewayAgent routing active (root=%s)", axon_root)
         except Exception as e:  # noqa: BLE001 — any failure => unavailable, degrade
             self._agent = None
             self._available = False
+            # Keep the class name: "No module named 'src'" and a config
+            # KeyError need different fixes, and the message alone hides which.
+            self._error = f"{type(e).__name__}: {e}"
             log.warning("AxonLLM router unavailable (%s) — falling back to direct provider calls", e)
 
     def knows_model(self, model: str) -> bool:
@@ -109,14 +169,15 @@ class AxonRouter:
     def supports_tools(self) -> bool:
         """Whether AxonLLM can carry tool specs through to the provider.
 
-        It cannot: ``src.gateway.models.ChatCompletionRequest`` has no ``tools``
-        field and ``GatewayAgent._parse_request`` reads only the fields it does
-        have, so a ``tools`` key in the request dict is dropped on the floor —
-        no error, just a model that was never told any tools exist. AxonLLM's own
-        PRD lists tool-use pass-through as an open question, not a feature.
+        Probed off the dataclass rather than hardcoded either way. AxonLLM used to
+        lack a ``tools`` field entirely, so a ``tools`` key was dropped on the
+        floor — no error, just a model that was never told any tools exist, which
+        answers confidently that it has no such capability. It carries them now,
+        translating into each provider's dialect.
 
-        Probed off the dataclass rather than hardcoded so this flips to True on
-        its own once AxonLLM gains the field.
+        Kept as a runtime probe because Ostiari doesn't pin an AxonLLM version: an
+        older checkout still returns False here and callers still degrade rather
+        than lose the caller's tools silently.
         """
         try:
             import dataclasses
@@ -145,10 +206,11 @@ class AxonRouter:
         ``ensemble`` may be True (default preset), a preset name, or False.
         ``smart`` requests task-classification routing. Otherwise ``model`` is used.
 
-        Raises if ``tools`` is set but AxonLLM can't carry them — routing the call
-        anyway would return a confident tool-free answer ("I don't have access to
-        a database") that reads like a successful response. Callers must check
-        ``supports_tools()`` first and take their direct-provider path instead.
+        ``tools`` are forwarded OpenAI-shaped; AxonLLM translates them into each
+        provider's dialect. Raises if an AxonLLM too old to carry them is loaded —
+        routing anyway would return a confident tool-free answer ("I don't have
+        access to a database") that reads like a successful response. Callers
+        check ``supports_tools()`` first so they can degrade deliberately.
         """
         self._ensure()
         if not self._available or self._agent is None:
@@ -156,7 +218,7 @@ class AxonRouter:
 
         if tools and not self.supports_tools():
             raise RuntimeError(
-                f"AxonLLM cannot carry tool specs ({len(tools)} requested) — "
+                f"this AxonLLM cannot carry tool specs ({len(tools)} requested) — "
                 "it would silently drop them and answer as if no tools existed"
             )
 
@@ -194,23 +256,59 @@ class AxonRouter:
         return _to_result(out)
 
 
+def _prepare_axon_path() -> str | None:
+    """Put AxonLLM's repo root on sys.path so ``src.gateway`` imports work.
+
+    AxonLLM's modules import each other as ``src.gateway.*``, but its editable
+    install puts ``<root>/src`` on sys.path — which makes ``gateway`` importable
+    and ``src.gateway`` not. So the root has to go on the path *before* importing,
+    rather than importing ``src.gateway`` in order to find the root, which can
+    never succeed. That ordering is why the router silently ran unavailable: every
+    call took the direct-provider fallback, with no AxonLLM cost tracking or
+    routing governance, and nothing looked wrong.
+
+    Returns the root, or None if AxonLLM couldn't be located. Idempotent, and
+    shared with ModelRouter's TaskClassifier import, which hit the same trap.
+    """
+    import sys
+
+    axon_root = _axon_root()
+    if axon_root and axon_root not in sys.path:
+        sys.path.insert(0, axon_root)
+    return axon_root
+
+
 def _axon_root() -> str | None:
     """Locate AxonLLM's repo root (which holds its ``config/`` dir).
 
-    Prefer an explicit override, else derive it from the installed
-    ``src.gateway`` package (…/<root>/src/gateway → <root>).
+    Prefer an explicit override, else derive it from the installed package.
+
+    Deliberately locates the package as ``gateway``, not ``src.gateway``: the
+    editable install exposes it under the former, and the latter is exactly what
+    isn't importable until this function's result is on sys.path. Importing
+    ``src.gateway`` here made the whole probe fail on a fresh install, which read
+    as "AxonLLM not installed" when it was.
     """
+    import importlib.util
     import os
+
     override = os.environ.get("OSTIARI_AXON_ROOT", "")
     if override and os.path.isdir(os.path.join(override, "config")):
         return override
-    try:
-        import src.gateway
-        root = os.path.dirname(os.path.dirname(os.path.dirname(src.gateway.__file__)))
+
+    # find_spec avoids importing the package (importing it as `gateway` would
+    # register a second copy of modules that also live under `src.gateway`).
+    for name in ("gateway", "src.gateway"):
+        try:
+            spec = importlib.util.find_spec(name)
+        except (ImportError, ValueError):
+            continue
+        if spec is None or not spec.origin:
+            continue
+        # …/<root>/src/gateway/__init__.py → <root>
+        root = os.path.dirname(os.path.dirname(os.path.dirname(spec.origin)))
         if os.path.isdir(os.path.join(root, "config")):
             return root
-    except Exception:  # noqa: BLE001
-        pass
     return None
 
 

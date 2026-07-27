@@ -40,11 +40,18 @@ class ModelRouter:
     def _init_smart_routing(self) -> None:
         """Initialize AxonLLM's smart routing (task classification).
 
-        AxonLLM is embedded as the ``src.gateway`` package. If it isn't
-        importable, smart routing degrades to explicit rules + default model —
-        logged explicitly (a silent no-op previously hid a broken embed).
+        AxonLLM imports itself as ``src.gateway``, but its editable install puts
+        ``<root>/src`` on sys.path — so the root has to be added first or the
+        import can never succeed. Same ordering trap that kept AxonRouter
+        permanently unavailable; ``_prepare_axon_path`` is shared with it.
+
+        A failure here degrades to explicit rules + default model, and is logged
+        (a silent no-op previously hid a broken embed).
         """
+        from ostiari_gateway.modules.llm_gateway.axon_router import _prepare_axon_path
+
         try:
+            _prepare_axon_path()
             from src.gateway.task_classifier import TaskClassifier
 
             self._task_classifier = TaskClassifier()

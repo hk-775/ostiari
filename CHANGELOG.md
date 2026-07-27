@@ -19,8 +19,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   connectivity probe and four seeded models.
 - `gateway/register_demo_providers.py` — seeds the in-memory provider store from the
   env file the gateways already load.
+- **AxonLLM is now a required runtime dependency.** With `llm_gateway` enabled, the
+  gateway refuses to start unless AxonLLM embeds successfully, naming the failure and
+  the fix. Routing governance and token cost tracking live in AxonLLM, and the
+  direct-provider fallback is good enough that a gateway without it serves traffic and
+  reports healthy — so the absence has to be fatal, not inferred. `OSTIARI_ALLOW_NO_AXON=1`
+  downgrades it to a warning for running the non-LLM surface.
+- `GET /health` reports `llm_router` (`embedded`, `root`, `governed`, `cost_tracking`,
+  `tools`, and `reason` when down) — "the gateway is up" and "LLM calls are governed"
+  are different facts, and nothing else in the payload distinguished them.
+- `ModuleRegistry.get()` — lets the server inspect an activated module's state without
+  reaching through private dicts.
 - 145 tests: `tests/unit/test_detect.py` (103), `tests/unit/test_http_limits.py` (16),
   IPv6/MRN/openapi edge cases, plus gateway and control-plane regression tests.
+- Gateway tests for the AxonLLM requirement, the `/health` router report, and tool
+  specs reaching AxonLLM on all three endpoints.
 
 ### Fixed
 - **PII redaction and injection detection never worked outside a dev machine.** Both
@@ -40,9 +53,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Discovery read the outer org-keyed dict as if it held agent names, so every properly
   registered agent was reported as shadow AI; onboarding wrote to the same wrong level,
   corrupting the registry.
-- AxonLLM silently dropped tool specs (`ChatCompletionRequest` has no `tools` field),
-  so tool-carrying calls got a fluent "I have no database access" that looked like
-  success. Those rounds now go direct to the provider.
+- **AxonLLM was never actually loading.** `AxonRouter._ensure()` imported `src.gateway`
+  to locate AxonLLM's checkout, then called `_axon_root()`, which imported
+  `src.gateway` again — but AxonLLM's editable install puts `<root>/src` on `sys.path`,
+  so `src.gateway` is not importable until the root is added. The chicken-and-egg meant
+  `available` was always False: **every** LLM call took the direct-provider fallback,
+  with no AxonLLM cost tracking or routing governance, and nothing looked wrong. The
+  root is now found with `importlib.util.find_spec` (no import) and added to `sys.path`
+  first. Predates this release; introduced with "Unify routing on AxonLLM".
+- **AxonLLM silently dropped tool specs** (`ChatCompletionRequest` had no `tools`
+  field), so tool-carrying calls got a fluent "I have no database access" that looked
+  like success. Fixed at the source in AxonLLM — it now carries `tools`/`tool_choice`
+  and translates them into each provider's dialect (OpenAI, Anthropic, Bedrock
+  Converse, Gemini, Cohere) in both directions — so tool-using traffic routes through
+  AxonLLM like everything else instead of around it. `supports_tools()` survives as a
+  version guard for an older AxonLLM checkout: `/invoke` and `/v1/messages` warn and
+  degrade, `/v1/chat/completions` returns 501.
 - AxonLLM returns `{"error": …}` instead of raising; parsing it optimistically produced
   an empty HTTP 200. It now raises so the caller falls back.
 - `/invoke` passed a configured default model straight to AxonLLM, 404ing whenever that

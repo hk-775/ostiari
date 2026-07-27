@@ -172,18 +172,21 @@ class MessagesProxy:
         # It selects the model + provider, enforces model access, tracks cost,
         # and does health-aware fallback. We run it in single-response mode
         # (ensemble stays on /invoke) and translate the result back to Anthropic.
-        # Claude Code always sends tools; AxonLLM drops them (see
-        # AxonRouter.supports_tools), which would strip the client's whole
-        # tool-use loop and return prose instead. Fall through to the direct
-        # Anthropic path, which does carry them.
+        #
+        # Tool-bearing calls route through it too. AxonLLM carries tool specs and
+        # translates them per provider; the ``supports_tools()`` check survives
+        # only as a version guard, since Ostiari doesn't pin an AxonLLM version and
+        # an older checkout would drop the caller's tools without saying so.
         _wants_tools = bool(body.get("tools"))
         if (self._axon is not None and self._axon.available
                 and not (_wants_tools and not self._axon.supports_tools())):
             return await self._forward_axon(request, body, requested_model, agent_id,
                                             session_id, framework, streaming, reservation_id)
         if _wants_tools and self._axon is not None and self._axon.available:
-            log.info("Tools requested (%d) — bypassing AxonLLM (no tool pass-through), "
-                     "using direct provider path", len(body.get("tools") or []))
+            log.warning("AxonLLM predates tool pass-through — using the direct provider "
+                        "path for %d tool(s); routing governance and cost tracking are "
+                        "bypassed for this call. Upgrade AxonLLM.",
+                        len(body.get("tools") or []))
 
         # ── Fallback: no AxonLLM — Ostiari's own ModelRouter + direct call ─
         model = self._route(agent_id, requested_model, flat, session_id)
