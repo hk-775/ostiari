@@ -7,8 +7,8 @@ routing on the way to a provider — without Ostiari touching the client's own
 tool loop.
 
 ```
-Claude Code ──▶ Ostiari gateway /v1/messages ──▶ (routed) ──▶ Anthropic / OpenAI / Azure / Bedrock
-                  │  auth → injection → quota → content-based routing → trace
+Claude Code ──▶ Ostiari gateway /v1/messages ──▶ (routed by embedded AxonLLM) ──▶ Anthropic / OpenAI / Azure / Bedrock
+                  │  auth → injection → quota → AxonLLM routing → trace
                   ▼
              control plane (traces, spend)
 ```
@@ -43,9 +43,10 @@ Optional headers Ostiari reads for attribution:
 1. **Agent authorization** — `agent_auth.check(agent_id, "/v1/messages")`.
 2. **Prompt-injection detection** — detection-only; blocks but never rewrites
    the forwarded body (rewriting would corrupt tool round-trips).
-3. **Content-based routing** — the existing `ModelRouter` picks a model from the
-   request content (task classification, rules, A/B). The pick can be **any
-   provider**.
+3. **Routing** — the embedded **AxonLLM** router selects model + provider,
+   enforces model access, tracks cost, and does health-aware fallback. Run in
+   single-response mode (ensemble stays on `/invoke`), since Claude Code needs
+   exactly one Anthropic response per call to drive its tool loop.
 4. **Quota / budget** — pre-call projection; blocks with a `rate_limit_error`
    when over budget; records spend from response usage.
 5. **Trace** — one `llm.messages` event to the control plane per call, with
@@ -53,14 +54,26 @@ Optional headers Ostiari reads for attribution:
 
 ## Cross-provider routing
 
+Every call — tool-bearing or not — routes through AxonLLM, which is the single
+routing authority across the gateway and a required dependency (see
+[axon-router.md](axon-router.md)). AxonLLM's OpenAI-shaped result is translated
+back into an **Anthropic Messages object**, re-emitted as valid Anthropic SSE when
+the client asked to stream, so Claude Code sees Anthropic format regardless of
+which provider served the call. Tool specs and `tool_use`/`tool_result` blocks are
+translated per provider inside AxonLLM.
+
+The tradeoff: streaming on this path is buffered-then-chunked rather than
+token-by-token, which is the cost of having one routing authority that also gives
+the shim cost tracking, model access control, and health-aware fallback.
+
+**Degraded path.** If AxonLLM fails *mid-flight*, the shim falls back to Ostiari's
+own `ModelRouter` + a direct provider call for that one call, logged as a warning:
+
 - **Anthropic target** → raw SSE passthrough. True end-to-end streaming,
   byte-for-byte fidelity (httpx auto-decompresses; we relay decoded SSE).
-- **Other provider** (OpenAI / Azure / Bedrock) → Ostiari translates the
-  Anthropic request to the provider (including `tool_use`/`tool_result`
-  round-trip blocks and tool schemas), calls it, and translates the response
-  back into an **Anthropic Messages object** — re-emitted as valid Anthropic SSE
-  when the client asked to stream. Claude Code sees Anthropic format regardless
-  of which provider served the call.
+- **Other provider** (OpenAI / Azure / Bedrock) → Ostiari translates the Anthropic
+  request itself (including `tool_use`/`tool_result` round-trip blocks and tool
+  schemas) and translates the response back.
 
 Tool names with dots (`fs.delete`) are sanitized to `fs_delete` for OpenAI's
 name regex and restored on the way back.

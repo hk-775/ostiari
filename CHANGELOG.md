@@ -30,12 +30,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are different facts, and nothing else in the payload distinguished them.
 - `ModuleRegistry.get()` — lets the server inspect an activated module's state without
   reaching through private dicts.
-- 145 tests: `tests/unit/test_detect.py` (103), `tests/unit/test_http_limits.py` (16),
+- 154 tests: `tests/unit/test_detect.py` (103), `tests/unit/test_http_limits.py` (16),
   IPv6/MRN/openapi edge cases, plus gateway and control-plane regression tests.
 - Gateway tests for the AxonLLM requirement, the `/health` router report, and tool
   specs reaching AxonLLM on all three endpoints.
+- `gateway/tests/test_hitl.py` gained 9 tests pinning the production/HITL interaction:
+  a fail-closed intervene queues rather than 403s, the approve and deny loops complete,
+  the explanation survives the raise, and the three non-bypass properties (genuine
+  block, HITL off, shadow mode) each stay blocked.
+
+### Documentation
+- `docs/axon-router.md` — AxonLLM is required (startup refusal, `/health` `llm_router`,
+  `OSTIARI_ALLOW_NO_AXON`), tool calls route *through* AxonLLM with a per-provider
+  dialect table, and why the router silently never loaded (import ordering).
+- `docs/embedded-routing.md` — replaced "graceful degradation if AxonLLM is absent"
+  with the actual requirement; documented ensemble as wired on `/invoke` (it was
+  described as "not yet wired") and added the tool-call pointer.
+- `docs/claude-code-shim.md` — the shim routes through AxonLLM; its own
+  cross-provider translation is now the *degraded* mid-flight path, not the primary
+  one, and the buffered-streaming tradeoff is stated.
+- `docs/codex-shim.md` — tool calls translate through AxonLLM rather than passing
+  through; 503 vs 501 distinguished.
+- `docs/gateway-architecture.md` — "Graceful Degradation" (which described AxonLLM
+  as an optional paid module and credited it with PII/injection) rewritten as the
+  requirement plus what one mid-flight failure degrades to; added tool translation;
+  corrected the provider table's "direct fallback calls" framing.
+- `docs/internal/ostiari-architecture-and-features.md` §6 — the requirement, tool
+  forwarding, and the import-ordering bug that motivated both.
+- `docs/control-plane-guide.md` — brought current with the shipped UI and backend.
+  Three routed pages were undocumented: **Approvals** (the guide described the
+  *intervene* tier at length but never said where a human acts on it, nor that
+  `OSTIARI_HITL` is off by default and the 202 → `X-Approval-Id` resubmit is the
+  caller's job), **Discovery**, and **Token Efficiency** (routed but absent from
+  the nav, so unreachable except by URL). Also: the gate-chain diagram gained the
+  approval gate it was missing; the nav order is documented as it actually ships
+  (Observe first) separately from the setup lifecycle the guide follows; the
+  `operator` vs UI-"Editor" role split is spelled out, along with the fact that
+  viewer is a frontend affordance — only providers, users, and audit check the role
+  server-side; production now *refuses to boot* without `OSTIARI_ADMIN_PASSWORD`
+  rather than merely warranting a "change it immediately"; `OSTIARI_INGEST_KEY` is
+  required in production; and the detection engine is documented as
+  gateway-config-only with no control-plane surface. §7.4 now documents what HITL-off
+  means *per environment* — advisory in dev, a refusal in production — since a
+  threshold tuned where the intervene band is effectively "log it" becomes a wall of
+  403s the day `OSTIARI_ENV=production` is set.
 
 ### Fixed
+- **Production silently deleted the *intervene* tier.** Production is fail-closed, so a
+  Guard with no way to resolve an intervene in-process collapsed it to a block and
+  *raised* — and the sidecar's exception handler returned 403 from a point upstream of
+  the approval gate, which was therefore unreachable. Every scored-intervene call was
+  refused and the Approvals queue stayed empty regardless of `OSTIARI_HITL`: the
+  three-tier model degraded to two, in the one environment where the middle tier
+  matters most. `ActionBlockedError` now carries `original_tier` and `signals`, so
+  "this is forbidden" and "a human needs to look at this, and none was reachable"
+  stay distinguishable across the raise, and the gateway defers the second to the
+  approvals queue. It is an escalation path, not a bypass — a genuine block still
+  403s and creates no approval, HITL off still blocks (nobody to defer to), and
+  shadow mode still never queues. `/validate` reports `original_tier` alongside
+  `tier` for the same reason.
 - **PII redaction and injection detection never worked outside a dev machine.** Both
   imported from AxonLLM, an *optional* install — and because an enabled-but-unavailable
   control fails closed, turning either one on blocked **every** request, benign ones

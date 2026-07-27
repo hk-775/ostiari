@@ -1581,21 +1581,39 @@ llm:
   max_tool_rounds: 10
 ```
 
-### Graceful Degradation
+### AxonLLM is required (and what a mid-flight failure degrades to)
 
-If AxonLLM is not installed (e.g., community tier without the paid module), the sidecar falls back gracefully:
+AxonLLM is **not** optional. With `llm_gateway` enabled the sidecar refuses to
+start unless it embeds successfully, naming the failure and the fix. The reason is
+the table below: every entry in the right-hand column is a silent downgrade of
+something Ostiari claims to enforce, and the degraded path is good enough that
+traffic keeps flowing and `/health` keeps saying "ok". So the absence has to be
+fatal at boot rather than discovered later from a cost report that never filled in.
 
-| Feature | With AxonLLM | Without AxonLLM |
+`GET /health` reports the router's state under `llm_router` (`embedded`, `root`,
+`governed`, `cost_tracking`, `tools`), because "the gateway is up" and "LLM calls
+are governed" are different facts. `OSTIARI_ALLOW_NO_AXON=1` downgrades the
+refusal to a warning, for running the sidecar's non-LLM surface (tool proxy,
+policy) without AxonLLM installed.
+
+The right-hand column is therefore what **one call** falls back to when AxonLLM
+fails mid-flight — not a supported way to run:
+
+| Feature | With AxonLLM | Degraded (mid-flight failure) |
 |---------|-------------|----------------|
 | Model selection | Smart (task classification) | Simple rules only |
 | Providers | 6 (Bedrock, Anthropic, OpenAI, Azure, Vertex, Cohere) | 3 (Anthropic, OpenAI, Bedrock) |
-| PII redaction | Full (7 PII types, reversible) | Disabled |
-| Injection detection | Pattern scoring (configurable threshold) | Disabled |
+| Tool calls | Specs translated into each provider's dialect | Direct provider call (or 501 on `/v1/chat/completions`) |
 | Health tracking | Per-provider circuit breaking | Basic retry |
 | Cost tracking | Per-project budgets with alerts | Disabled |
 | Ensemble routing | Scatter-gather-synthesize | Disabled |
 
-Nothing breaks. The sidecar detects what's available at startup and uses it. This is how the free/paid tier split works in practice — the paid module brings AxonLLM as a dependency, unlocking all its capabilities.
+**PII redaction and injection detection are deliberately absent from this table.**
+They used to come from AxonLLM, which meant both controls only worked when the
+then-optional install was present — and since an enabled-but-unavailable control
+fails closed, turning either one on without it blocked *every* request. They now
+live in `ostiari.detect`, a hard dependency, so they work in every deployment
+regardless of AxonLLM. See [detection-engine.md](detection-engine.md).
 
 ---
 
@@ -2275,7 +2293,8 @@ print(f"Result: {resp.json()}")
 
 ## All 6 AxonLLM Providers
 
-The sidecar now supports all 6 providers from AxonLLM with direct fallback calls:
+The sidecar reaches all 6 providers through AxonLLM's adapters (three of them also
+have a direct-call path, used only when AxonLLM fails mid-flight):
 
 | Provider | Models | Authentication |
 |----------|--------|---------------|

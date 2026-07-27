@@ -7,11 +7,19 @@ to route by prompt content.
 
 ## Why this doc exists
 
-The embed was coded but silently broken: the gateway imported `gateway.*` while
-AxonLLM's real package root is `src.gateway.*`, so the `try/except ImportError`
-always fell through and smart routing quietly no-op'd. This is now fixed — the
-imports point at `src.gateway.*`, AxonLLM is installed into the gateway
-environment, and startup logs which mode is active.
+The embed was coded but silently broken — twice, the same way. AxonLLM imports
+itself as `src.gateway.*`, but its editable install puts `<root>/src` on
+`sys.path`, which makes `gateway` importable and `src.gateway` **not**. So a
+`try/except ImportError` around `import src.gateway` always fell through and the
+embed quietly no-op'd: first for the classifier (smart routing silently
+disabled), then again in `AxonRouter`, where it meant **every** LLM call took the
+direct-provider fallback with no AxonLLM cost tracking or routing governance —
+and nothing looked wrong.
+
+Both are fixed. `_prepare_axon_path()` (in `axon_router.py`) locates the repo root
+with `importlib.util.find_spec("gateway")` — no import — and inserts it into
+`sys.path` *before* importing; `ModelRouter` and `AxonRouter` share it. Startup
+logs which mode is active, and the router's state is visible in `GET /health`.
 
 ## Install (embed AxonLLM)
 
@@ -29,8 +37,16 @@ one of:
 - `AxonLLM TaskClassifier embedded — smart routing active`
 - `AxonLLM not importable (...) — smart routing disabled, falling back to rules/default`
 
-**Graceful degradation:** if AxonLLM is absent, the gateway still runs — routing
-falls back to explicit rules + the default model. Nothing crashes.
+**This is a required install, not an optional one.** With `llm_gateway` enabled
+the gateway refuses to start unless AxonLLM embeds — routing governance and token
+cost tracking happen inside it, and the direct-provider fallback is good enough
+that a gateway without it serves traffic and reports healthy while enforcing
+neither. `OSTIARI_ALLOW_NO_AXON=1` downgrades the refusal to a warning for running
+the non-LLM surface. See [axon-router.md](axon-router.md).
+
+The classifier line above is a *narrower* degradation: if the classifier alone
+fails to import while the router embeds fine, model selection falls back to
+explicit rules + the default model and the call still routes through AxonLLM.
 
 ## How smart routing selects a model
 
@@ -67,9 +83,20 @@ fast and free but approximate (e.g. a trailing "?" can nudge classification).
 Treat `task_type` routing as a cost/latency optimization, not a semantic
 guarantee.
 
-## Ensemble (not yet wired)
+## Ensemble
 
-AxonLLM also provides ensemble (scatter-gather-synthesize). It is **not** wired
-into the gateway path yet, and it does not fit behind the Claude Code shim
-(which needs one Anthropic response per `/v1/messages` to drive its tool loop).
-Ensemble belongs on the own-the-loop `/invoke` path — a planned follow-up.
+AxonLLM's ensemble (scatter-gather-synthesize) is wired on the own-the-loop
+`/invoke` path, opt-in per call via `context.ensemble` (`true` for the default
+preset, or a preset name). It does **not** fit behind the Claude Code or Codex
+shims, which each need exactly one response per call to drive their own tool
+loops — those route in single-response mode. See
+[axon-router.md](axon-router.md#routing-modes-opt-in-via-invoke-context).
+
+## Tool calls
+
+Tool-bearing calls route through AxonLLM like everything else; it translates the
+specs into each provider's dialect. This used not to work — AxonLLM had no `tools`
+field, so specs were dropped and the model answered as though no tools existed —
+and it was fixed at the source rather than routed around. Details and the
+per-provider dialect table are in
+[axon-router.md](axon-router.md#tool-calls-route-through-axonllm).
