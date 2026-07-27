@@ -19,12 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   connectivity probe and four seeded models.
 - `gateway/register_demo_providers.py` — seeds the in-memory provider store from the
   env file the gateways already load.
-- **AxonLLM is now a required runtime dependency.** With `llm_gateway` enabled, the
-  gateway refuses to start unless AxonLLM embeds successfully, naming the failure and
-  the fix. Routing governance and token cost tracking live in AxonLLM, and the
-  direct-provider fallback is good enough that a gateway without it serves traffic and
-  reports healthy — so the absence has to be fatal, not inferred. `OSTIARI_ALLOW_NO_AXON=1`
-  downgrades it to a warning for running the non-LLM surface.
+- **A gateway starting without AxonLLM now says so.** Routing governance and token cost
+  tracking live in AxonLLM, and the direct-provider fallback is good enough that a
+  gateway without it serves traffic and reports healthy — which is how it once ran
+  unnoticed. With `llm_gateway` enabled, startup logs a warning naming exactly what
+  stopped applying and how to fix it. It warns rather than refusing because AxonLLM is
+  a separate private repo, not on PyPI: a hard requirement would make it a deployment
+  dependency of every gateway, CI runner, and contributor checkout, including the ones
+  that only ever proxy tools. `OSTIARI_REQUIRE_AXON=1` refuses to start instead, and is
+  the right setting in production.
 - `GET /health` reports `llm_router` (`embedded`, `root`, `governed`, `cost_tracking`,
   `tools`, and `reason` when down) — "the gateway is up" and "LLM calls are governed"
   are different facts, and nothing else in the payload distinguished them.
@@ -32,20 +35,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reaching through private dicts.
 - 154 tests: `tests/unit/test_detect.py` (103), `tests/unit/test_http_limits.py` (16),
   IPv6/MRN/openapi edge cases, plus gateway and control-plane regression tests.
-- Gateway tests for the AxonLLM requirement, the `/health` router report, and tool
-  specs reaching AxonLLM on all three endpoints.
+- Gateway tests for the startup warning (it must name both governance and cost
+  tracking, plus its own off switch), `OSTIARI_REQUIRE_AXON=1` refusing to boot, the
+  `/health` router report, and tool specs reaching AxonLLM on all three endpoints.
 - `gateway/tests/test_hitl.py` gained 8 tests pinning the production/HITL interaction:
   a fail-closed intervene queues rather than 403s, the approve and deny loops complete,
   the explanation survives the raise, and the three non-bypass properties (genuine
   block, HITL off, shadow mode) each stay blocked.
 
 ### Documentation
-- `docs/axon-router.md` — AxonLLM is required (startup refusal, `/health` `llm_router`,
-  `OSTIARI_ALLOW_NO_AXON`), tool calls route *through* AxonLLM with a per-provider
-  dialect table, and why the router silently never loaded (import ordering).
+- `docs/axon-router.md` — what running without AxonLLM actually costs (startup warning,
+  `/health` `llm_router`, `OSTIARI_REQUIRE_AXON` for production), tool calls route
+  *through* AxonLLM with a per-provider dialect table, and why the router silently
+  never loaded (import ordering).
 - `docs/embedded-routing.md` — replaced "graceful degradation if AxonLLM is absent"
-  with the actual requirement; documented ensemble as wired on `/invoke` (it was
-  described as "not yet wired") and added the tool-call pointer.
+  with what is actually lost when it is; documented ensemble as wired on `/invoke` (it
+  was described as "not yet wired") and added the tool-call pointer.
 - `docs/claude-code-shim.md` — the shim routes through AxonLLM; its own
   cross-provider translation is now the *degraded* mid-flight path, not the primary
   one, and the buffered-streaming tradeoff is stated.

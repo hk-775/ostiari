@@ -105,6 +105,7 @@ sam deploy --guided
 | `OSTIARI_ENV` | _(unset = dev)_ | `production` flips every gateway control **fail-closed**. Unset, controls fail open (the demo posture). See "Production Notes". |
 | `OSTIARI_HITL` | `off` | `on` enables human-in-the-loop for the *intervene* tier: a mid-band call returns **202** with an approval id instead of executing, and the caller re-submits with `X-Approval-Id` once a human approves. **Set this in production** — see below. |
 | `OSTIARI_STRICT` | _(unset)_ | With `OSTIARI_ENV=production`, makes the startup fail-open warning **fatal** instead of a log line. |
+| `OSTIARI_REQUIRE_AXON` | _(unset)_ | Refuse to start when AxonLLM can't embed. Unset, the gateway warns and serves LLM traffic with **no routing governance and no token cost tracking** (`GET /health` → `llm_router` reports it). Not shipped on in the manifests here — AxonLLM is a separate private repo, so a gateway that only proxies tools shouldn't need it installed. Set it if you route LLM calls. |
 | `OSTIARI_CONFIG_ADMIN_KEY` | _(none)_ | Required in production: without it `/config/*` (mode, tools, policy, quota, payments) is **unauthenticated**. |
 | `OSTIARI_GATEWAY_AUTH` | `off` | Set `required` in production: otherwise `X-Agent-Id` is trusted with no token, so any caller can impersonate any agent. |
 | `REDIS_ENDPOINT` | _(none)_ | Redis host for distributed state |

@@ -19,20 +19,29 @@ Claude Code / caller
 Two hops total, both irreducible (client→Ostiari, Ostiari→LLM). AxonLLM sits in
 the middle as embedded code, not a service.
 
-## AxonLLM is required, not optional
+## AxonLLM is optional to install, but load-bearing when absent
 
 Routing governance and **token cost tracking** happen inside AxonLLM. A gateway
 running without it answers every request and reports healthy while enforcing none
 of that — which is precisely how it ran unnoticed for a while (see *Import
-ordering* below). So the dependency is now checked once, loudly, at startup:
+ordering* below). That invisibility is the actual defect, so the dependency is
+checked once, loudly, at startup:
 
 ```
-RuntimeError: AxonLLM could not be embedded (ModuleNotFoundError: No module
-named 'src') and the gateway requires it: routing governance and token cost
-tracking happen in AxonLLM, so running without it would return 200s while
-enforcing neither. Install AxonLLM (pip install -e /path/to/AxonLLM) or point
-OSTIARI_AXON_ROOT at its checkout.
+WARNING AxonLLM could not be embedded (ModuleNotFoundError: No module named
+'src'): routing governance and token cost tracking happen in AxonLLM, so LLM
+calls return 200s while enforcing neither. Install AxonLLM (pip install -e
+/path/to/AxonLLM) or point OSTIARI_AXON_ROOT at its checkout. Continuing WITHOUT
+AxonLLM: LLM calls take the direct provider path with NO routing governance and
+NO token cost tracking. GET /health reports llm_router for the machine-readable
+version. Set OSTIARI_REQUIRE_AXON=1 to refuse to start instead.
 ```
+
+A warning and not a refusal, because AxonLLM is a separate private repo and isn't
+on PyPI: requiring it makes it a *deployment* dependency of every gateway, CI
+runner, and contributor checkout — including the ones that only ever proxy tools
+and never make an LLM call. **Set `OSTIARI_REQUIRE_AXON=1` in production**, where
+silently ungoverned LLM traffic is not an acceptable degradation.
 
 `GET /health` reports the state under `llm_router`, because "the gateway is up"
 and "LLM calls are governed" are different facts and nothing else in that payload
@@ -43,10 +52,8 @@ distinguishes them:
                "governed": true, "cost_tracking": true, "tools": true}
 ```
 
-`OSTIARI_ALLOW_NO_AXON=1` downgrades the refusal to a warning — for running the
-gateway's non-LLM surface (tool proxy, policy) without AxonLLM installed. Each
-caller keeps a direct-provider fallback for a *mid-flight* failure (one call,
-logged as a warning), which is not a supported way to run the gateway.
+Each caller also keeps a direct-provider fallback for a *mid-flight* failure (one
+call, logged as a warning), which is not a supported way to run the gateway.
 
 ## Where it's wired
 
@@ -180,12 +187,12 @@ restores cwd. Override the root with `OSTIARI_AXON_ROOT` if needed.
 | Variable | Effect |
 |---|---|
 | `OSTIARI_AXON_ROOT` | Point at AxonLLM's checkout when auto-detection can't find it. |
-| `OSTIARI_DISABLE_AXON_ROUTER=1` | Force the direct provider path. Needs `OSTIARI_ALLOW_NO_AXON=1` too, or startup refuses. Used by the deterministic `/invoke` unit tests. |
-| `OSTIARI_ALLOW_NO_AXON=1` | Downgrade the startup requirement to a warning — LLM calls then run **ungoverned and untracked**. |
+| `OSTIARI_DISABLE_AXON_ROUTER=1` | Force the direct provider path — LLM calls then run **ungoverned and untracked**. Used by the deterministic `/invoke` unit tests. |
+| `OSTIARI_REQUIRE_AXON=1` | Refuse to start when AxonLLM can't embed, instead of warning. **Set this in production.** |
 
-On startup you'll see `AxonLLM embedded and required — routing governance active
-(root=…)`, or the gateway won't start. Check `GET /health` → `llm_router` to
-confirm from outside the process.
+On startup you'll see `AxonLLM embedded — routing governance active (root=…)`, or
+a warning naming what is no longer being enforced. Check `GET /health` →
+`llm_router` to confirm from outside the process.
 
 ## Notes
 

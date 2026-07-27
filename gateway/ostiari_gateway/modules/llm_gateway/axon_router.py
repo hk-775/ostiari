@@ -9,13 +9,18 @@ around it.
 ``build_gateway_agent()`` (AxonLLM's own bootstrap) wires the whole router graph
 standalone — no AWS/Dynamo required (persistence auto-disables).
 
-AxonLLM is a **required** runtime dependency: it is where routing governance and
-token cost tracking happen, so a gateway that quietly runs without it enforces
-less than it claims to while still returning 200s. ``require()`` is called at
-startup and refuses to boot when the router can't be built. The direct-provider
-fallback in each caller remains for a *mid-flight* failure (one call, logged), not
-as a supported way to run — and ``OSTIARI_DISABLE_AXON_ROUTER=1`` remains for
-tests and for deliberately exercising that path.
+AxonLLM is an **optional** runtime dependency, but a load-bearing one: it is where
+routing governance and token cost tracking happen, so a gateway that quietly runs
+without it enforces less than it claims to while still returning 200s. It is a
+separate private repo and not on PyPI, so requiring it made it a deployment
+dependency of every gateway, CI runner, and contributor checkout — including the
+ones that only ever proxy tools. So ``require()`` is called at startup to *warn*,
+naming what is off, and ``/health`` reports ``llm_router`` for anything reading
+machine-side. ``OSTIARI_REQUIRE_AXON=1`` restores refuse-to-boot, which is the
+right setting in production. The direct-provider fallback in each caller remains
+for a *mid-flight* failure (one call, logged), and
+``OSTIARI_DISABLE_AXON_ROUTER=1`` remains for tests and for deliberately
+exercising that path.
 
 Routing modes are selected by the request/context, matching AxonLLM's contract:
   - ensemble:  model == "ensemble" | "ensemble:<preset>", or context["ensemble"]=True
@@ -82,30 +87,35 @@ class AxonRouter:
         return self._root
 
     def require(self) -> None:
-        """Refuse to run without AxonLLM. Raises RuntimeError if unavailable.
+        """Raise RuntimeError if AxonLLM is unavailable; return silently if not.
 
-        Called at gateway startup. Routing governance and token cost tracking
-        live in AxonLLM, so a gateway running on the direct-provider fallback
-        looks healthy and answers requests while enforcing none of that — a
-        silent downgrade of the guarantee Ostiari exists to make. Better to not
-        start than to under-govern invisibly.
+        Routing governance and token cost tracking live in AxonLLM, so a gateway
+        running on the direct-provider fallback looks healthy and answers requests
+        while enforcing none of that — a silent downgrade of the guarantee Ostiari
+        exists to make.
+
+        The caller decides what to do about it. At startup ``_check_axon`` logs
+        this as a warning and continues, because AxonLLM is a separate private
+        repo and a hard requirement makes it a deployment dependency of every
+        gateway — including ones that never make an LLM call. Set
+        ``OSTIARI_REQUIRE_AXON=1`` to have that warning refuse to start instead.
         """
         self._ensure()
         if self._available:
             return
         if self._disabled:
             raise RuntimeError(
-                "AxonLLM routing is disabled (OSTIARI_DISABLE_AXON_ROUTER) but the "
-                "gateway requires it: routing governance and token cost tracking "
-                "happen in AxonLLM. Unset the variable, or set "
-                "OSTIARI_ALLOW_NO_AXON=1 to run ungoverned anyway."
+                "AxonLLM routing is disabled (OSTIARI_DISABLE_AXON_ROUTER): routing "
+                "governance and token cost tracking happen in AxonLLM, so LLM calls "
+                "take the ungoverned direct-provider path. Unset the variable to "
+                "restore governance."
             )
         raise RuntimeError(
-            f"AxonLLM could not be embedded ({self._error or 'unknown error'}) and the "
-            "gateway requires it: routing governance and token cost tracking happen "
-            "in AxonLLM, so running without it would return 200s while enforcing "
-            "neither. Install AxonLLM (pip install -e /path/to/AxonLLM) or point "
-            "OSTIARI_AXON_ROOT at its checkout."
+            f"AxonLLM could not be embedded ({self._error or 'unknown error'}): routing "
+            "governance and token cost tracking happen in AxonLLM, so LLM calls return "
+            "200s while enforcing neither. Install AxonLLM "
+            "(pip install -e /path/to/AxonLLM) or point OSTIARI_AXON_ROOT at its "
+            "checkout."
         )
 
     def _ensure(self) -> None:

@@ -122,10 +122,10 @@ class TestClaudeCodeShape:
 class TestFallbackWhenAxonAbsent:
     def test_shim_uses_direct_path_when_axon_unavailable(self, monkeypatch):
         # With Axon disabled, the shim should hit the direct path (500 for no cred).
-        # ALLOW_NO_AXON opts in: without it the gateway refuses to start at all,
-        # which is the point of the requirement — see TestAxonIsRequired.
+        # delenv so an operator's OSTIARI_REQUIRE_AXON can't fail startup here —
+        # that refusal has its own test, see TestAxonIsRequired.
         monkeypatch.setenv("OSTIARI_DISABLE_AXON_ROUTER", "1")
-        monkeypatch.setenv("OSTIARI_ALLOW_NO_AXON", "1")
+        monkeypatch.delenv("OSTIARI_REQUIRE_AXON", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         c = _app()
         r = c.post("/v1/messages", headers={"X-Agent-Id": "claude-code"},

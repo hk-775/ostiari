@@ -29,10 +29,10 @@ def _disable_axon(monkeypatch):
     # so the fallback path under test actually runs. The Axon path has its own
     # test module (test_shim_axon.py).
     monkeypatch.setenv("OSTIARI_DISABLE_AXON_ROUTER", "1")
-    # AxonLLM is a required dependency at startup, so disabling it alone now
-    # refuses to boot. This opts in to the ungoverned path deliberately, which
-    # is exactly what this file exercises.
-    monkeypatch.setenv("OSTIARI_ALLOW_NO_AXON", "1")
+    # Startup warns about the missing governance and continues. delenv so an
+    # operator's OSTIARI_REQUIRE_AXON doesn't turn that warning into a refusal
+    # and fail this file for a reason it isn't testing.
+    monkeypatch.delenv("OSTIARI_REQUIRE_AXON", raising=False)
 
 
 def _app(llm: dict | None = None) -> TestClient:

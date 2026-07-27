@@ -1356,10 +1356,11 @@ Importing a Python package is like linking a library in C — the code becomes p
 ### What AxonLLM provides to the sidecar
 
 The "fallback" column is what a *mid-flight* AxonLLM failure degrades to for one
-call — it is **not** a supported way to run the gateway. AxonLLM is a required
-dependency: with `llm_gateway` enabled, the sidecar refuses to start without it,
-because the whole right-hand column is a silent downgrade of what Ostiari claims
-to enforce. See [axon-router.md](axon-router.md).
+call — it is **not** a supported way to run the gateway. The whole right-hand
+column is a silent downgrade of what Ostiari claims to enforce, so with
+`llm_gateway` enabled a sidecar that starts without AxonLLM warns about it, and
+`OSTIARI_REQUIRE_AXON=1` makes it refuse instead. See
+[axon-router.md](axon-router.md).
 
 | AxonLLM Component | What it does in the sidecar | Degraded (mid-flight failure) |
 |-------------------|---------------------------|---------------------------|
@@ -1581,20 +1582,25 @@ llm:
   max_tool_rounds: 10
 ```
 
-### AxonLLM is required (and what a mid-flight failure degrades to)
+### AxonLLM's absence is visible, not fatal (and what a mid-flight failure degrades to)
 
-AxonLLM is **not** optional. With `llm_gateway` enabled the sidecar refuses to
-start unless it embeds successfully, naming the failure and the fix. The reason is
-the table below: every entry in the right-hand column is a silent downgrade of
+AxonLLM is optional to install but load-bearing when missing. The reason is the
+table below: every entry in the right-hand column is a silent downgrade of
 something Ostiari claims to enforce, and the degraded path is good enough that
-traffic keeps flowing and `/health` keeps saying "ok". So the absence has to be
-fatal at boot rather than discovered later from a cost report that never filled in.
+traffic keeps flowing and `/health` keeps saying "ok". So a sidecar that starts
+without it logs a warning naming exactly what stopped applying, rather than
+letting the absence be discovered later from a cost report that never filled in.
+
+It warns rather than refuses because AxonLLM is a separate private repo and isn't
+on PyPI — a hard requirement makes it a deployment dependency of every sidecar, CI
+runner, and contributor checkout, including the ones that only ever proxy tools.
+`OSTIARI_REQUIRE_AXON=1` restores the refusal and **is the right setting in
+production**, where silently ungoverned LLM traffic is not an acceptable
+degradation.
 
 `GET /health` reports the router's state under `llm_router` (`embedded`, `root`,
 `governed`, `cost_tracking`, `tools`), because "the gateway is up" and "LLM calls
-are governed" are different facts. `OSTIARI_ALLOW_NO_AXON=1` downgrades the
-refusal to a warning, for running the sidecar's non-LLM surface (tool proxy,
-policy) without AxonLLM installed.
+are governed" are different facts.
 
 The right-hand column is therefore what **one call** falls back to when AxonLLM
 fails mid-flight — not a supported way to run:

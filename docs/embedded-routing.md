@@ -37,12 +37,15 @@ one of:
 - `AxonLLM TaskClassifier embedded — smart routing active`
 - `AxonLLM not importable (...) — smart routing disabled, falling back to rules/default`
 
-**This is a required install, not an optional one.** With `llm_gateway` enabled
-the gateway refuses to start unless AxonLLM embeds — routing governance and token
-cost tracking happen inside it, and the direct-provider fallback is good enough
-that a gateway without it serves traffic and reports healthy while enforcing
-neither. `OSTIARI_ALLOW_NO_AXON=1` downgrades the refusal to a warning for running
-the non-LLM surface. See [axon-router.md](axon-router.md).
+**Optional to install, but don't skip it in production.** Routing governance and
+token cost tracking happen inside AxonLLM, and the direct-provider fallback is
+good enough that a gateway without it serves traffic and reports healthy while
+enforcing neither. So with `llm_gateway` enabled, a gateway that starts without
+AxonLLM logs a warning naming what stopped applying, and `GET /health` reports
+`llm_router` for anything reading machine-side. Set `OSTIARI_REQUIRE_AXON=1` to
+refuse to start instead — the right setting for production, where silently
+ungoverned LLM traffic is not an acceptable degradation. See
+[axon-router.md](axon-router.md).
 
 The classifier line above is a *narrower* degradation: if the classifier alone
 fails to import while the router embeds fine, model selection falls back to

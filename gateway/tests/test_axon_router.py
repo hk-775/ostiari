@@ -1,11 +1,11 @@
 """Tests for AxonLLM embedded as Ostiari's LLM router.
 
-AxonLLM is a required runtime dependency — it owns routing governance and token
-cost tracking, so ``TestAxonIsRequired`` covers the gateway refusing to start
-without it. ``TestToolPassThrough`` covers tool specs reaching it rather than
-being routed around. The live routing tests need AxonLLM (src.gateway) importable
-AND its config present; they're skipped otherwise. Result normalization and the
-mid-flight fallback are tested without network.
+AxonLLM owns routing governance and token cost tracking, so ``TestAxonIsRequired``
+covers the gateway warning loudly when it starts without it — and refusing to
+start when ``OSTIARI_REQUIRE_AXON=1``. ``TestToolPassThrough`` covers tool specs
+reaching it rather than being routed around. The live routing tests need AxonLLM
+(src.gateway) importable AND its config present; they're skipped otherwise. Result
+normalization and the mid-flight fallback are tested without network.
 """
 
 from __future__ import annotations
@@ -75,12 +75,16 @@ class TestResultNormalization:
 
 
 class TestAxonIsRequired:
-    """AxonLLM is a required runtime dependency, not a nice-to-have.
+    """AxonLLM is optional to install but load-bearing when absent.
 
     The direct-provider fallback works well enough that a gateway with no
     AxonLLM serves traffic and reports healthy — which is exactly how it ran
-    unnoticed while no routing governance or token cost tracking applied. So the
-    gateway refuses to start instead of under-governing invisibly.
+    unnoticed while no routing governance or token cost tracking applied. That
+    invisibility is the defect, so the check stays and startup says so out loud;
+    what it does *not* do is refuse to boot, because AxonLLM is a separate
+    private repo and a hard requirement made it a deployment dependency of
+    gateways that never make an LLM call. ``OSTIARI_REQUIRE_AXON=1`` opts back
+    into refusing.
     """
 
     def test_require_raises_when_disabled(self, monkeypatch):
@@ -111,29 +115,41 @@ class TestAxonIsRequired:
         assert a.available is False
         assert "Error" in a.error or "error" in a.error.lower()
 
-    def test_gateway_refuses_to_start_without_axon(self, monkeypatch):
-        """The whole point: a misconfigured gateway fails loudly at boot."""
+    def test_gateway_starts_without_axon_but_warns(self, monkeypatch, caplog):
+        """Default: boot, and say plainly what is no longer being enforced.
+
+        A silent start is the failure mode this whole class exists for, so the
+        warning has to name the two things that stopped applying — an operator
+        reading "AxonLLM unavailable" alone has no reason to treat it as urgent.
+        """
+        import logging
+
         from ostiari_gateway.models import ModulesConfig, SidecarConfig
         from ostiari_gateway.server import create_app
 
         monkeypatch.setenv("OSTIARI_DISABLE_AXON_ROUTER", "1")
-        monkeypatch.delenv("OSTIARI_ALLOW_NO_AXON", raising=False)
+        monkeypatch.delenv("OSTIARI_REQUIRE_AXON", raising=False)
+        with caplog.at_level(logging.WARNING):
+            app = create_app(initial_config=SidecarConfig(
+                sidecar_id="ungoverned", modules=ModulesConfig(llm_gateway=True),
+                llm={"default_model": "claude-sonnet-4-6"}))
+        assert app is not None
+        warned = " ".join(r.getMessage() for r in caplog.records
+                          if r.levelno >= logging.WARNING)
+        assert "routing governance" in warned and "cost tracking" in warned
+        assert "OSTIARI_REQUIRE_AXON" in warned, "the warning must name its own off switch"
+
+    def test_require_axon_refuses_to_start(self, monkeypatch):
+        """Opt back in to failing loudly at boot — the production setting."""
+        from ostiari_gateway.models import ModulesConfig, SidecarConfig
+        from ostiari_gateway.server import create_app
+
+        monkeypatch.setenv("OSTIARI_DISABLE_AXON_ROUTER", "1")
+        monkeypatch.setenv("OSTIARI_REQUIRE_AXON", "1")
         with pytest.raises(RuntimeError, match="routing governance"):
             create_app(initial_config=SidecarConfig(
                 sidecar_id="needs-axon", modules=ModulesConfig(llm_gateway=True),
                 llm={"default_model": "claude-sonnet-4-6"}))
-
-    def test_allow_no_axon_downgrades_to_a_warning(self, monkeypatch):
-        """An operator can still run the non-LLM surface without AxonLLM."""
-        from ostiari_gateway.models import ModulesConfig, SidecarConfig
-        from ostiari_gateway.server import create_app
-
-        monkeypatch.setenv("OSTIARI_DISABLE_AXON_ROUTER", "1")
-        monkeypatch.setenv("OSTIARI_ALLOW_NO_AXON", "1")
-        app = create_app(initial_config=SidecarConfig(
-            sidecar_id="ungoverned", modules=ModulesConfig(llm_gateway=True),
-            llm={"default_model": "claude-sonnet-4-6"}))
-        assert app is not None
 
     def test_health_reports_the_ungoverned_state(self, monkeypatch):
         """Every request still 200s on the fallback, so /health has to say so."""
@@ -142,7 +158,7 @@ class TestAxonIsRequired:
         from starlette.testclient import TestClient
 
         monkeypatch.setenv("OSTIARI_DISABLE_AXON_ROUTER", "1")
-        monkeypatch.setenv("OSTIARI_ALLOW_NO_AXON", "1")
+        monkeypatch.delenv("OSTIARI_REQUIRE_AXON", raising=False)
         c = TestClient(create_app(initial_config=SidecarConfig(
             sidecar_id="ungoverned", modules=ModulesConfig(llm_gateway=True),
             llm={"default_model": "claude-sonnet-4-6"})))

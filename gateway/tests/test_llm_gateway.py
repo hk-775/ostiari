@@ -125,9 +125,10 @@ class TestLLMGatewayInvoke:
     def _disable_axon(self, monkeypatch):
         # These tests mock the direct provider path to exercise the agentic loop
         # deterministically; disable the AxonLLM router so that path runs.
-        # ALLOW_NO_AXON because it's a required dependency at startup now.
+        # Startup warns about the missing governance and continues; delenv keeps
+        # an operator's OSTIARI_REQUIRE_AXON from turning that into a refusal.
         monkeypatch.setenv("OSTIARI_DISABLE_AXON_ROUTER", "1")
-        monkeypatch.setenv("OSTIARI_ALLOW_NO_AXON", "1")
+        monkeypatch.delenv("OSTIARI_REQUIRE_AXON", raising=False)
 
     @pytest.fixture
     def client_with_mock_llm(self, httpserver):
@@ -324,9 +325,9 @@ class TestInvokeReportsCacheHit:
     @pytest.fixture(autouse=True)
     def _disable_axon(self, monkeypatch):
         # Exercise the direct provider path so _call_with_fallback is the seam.
-        # ALLOW_NO_AXON because it's a required dependency at startup now.
+        # delenv so an operator's OSTIARI_REQUIRE_AXON can't fail startup here.
         monkeypatch.setenv("OSTIARI_DISABLE_AXON_ROUTER", "1")
-        monkeypatch.setenv("OSTIARI_ALLOW_NO_AXON", "1")
+        monkeypatch.delenv("OSTIARI_REQUIRE_AXON", raising=False)
 
     @pytest.fixture
     def client(self, httpserver):

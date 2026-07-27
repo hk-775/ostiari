@@ -133,17 +133,27 @@ def _axon_health(module_registry: Any) -> dict[str, Any]:
             "cost_tracking": True, "tools": axon.supports_tools()}
 
 
-def _require_axon(module_registry: Any) -> None:
-    """Refuse to start the LLM gateway without AxonLLM embedded.
+def _check_axon(module_registry: Any) -> None:
+    """Warn — loudly — when the LLM gateway starts without AxonLLM embedded.
 
     AxonLLM is where routing governance and token cost tracking happen. Every
     caller keeps a direct-provider fallback for a mid-flight failure, and that
     fallback is good enough that a gateway with no AxonLLM at all serves traffic
-    and reports healthy — which is how it ran unnoticed while none of that
-    governance applied. So the dependency is checked once, loudly, at startup.
+    and reports healthy — which is how it once ran unnoticed while none of that
+    governance applied. That invisibility is the actual defect, so the check
+    stays; what changed is the consequence.
 
-    Escape hatch: OSTIARI_ALLOW_NO_AXON=1 downgrades this to a warning, for
-    running the gateway's non-LLM surface (tool proxy, policy) without AxonLLM.
+    This used to raise, refusing to start. AxonLLM is a separate private repo and
+    isn't on PyPI, so a hard requirement makes it a *deployment* dependency of
+    every gateway, CI runner, and contributor checkout — including the ones that
+    only ever touch the tool proxy and never make an LLM call. The failure also
+    landed at the worst possible moment: startup, after config was pushed.
+
+    So: warn instead. The warning names what is off (governance, cost tracking)
+    and how to fix it, ``/health`` reports ``llm_router`` for anything reading
+    machine-side, and an operator who wants the old behaviour sets
+    ``OSTIARI_REQUIRE_AXON=1`` — which is the right switch to set in production,
+    where silently ungoverned LLM traffic is not an acceptable degradation.
     """
     mod = module_registry.get("llm_gateway") if hasattr(module_registry, "get") else None
     axon = getattr(getattr(mod, "_executor", None), "_axon", None)
@@ -153,17 +163,18 @@ def _require_axon(module_registry: Any) -> None:
     try:
         axon.require()
     except RuntimeError as e:
-        if _os.environ.get("OSTIARI_ALLOW_NO_AXON", "").strip().lower() in (
+        if _os.environ.get("OSTIARI_REQUIRE_AXON", "").strip().lower() in (
             "1", "true", "yes", "on"
         ):
-            log.warning(
-                "%s Continuing because OSTIARI_ALLOW_NO_AXON is set — LLM calls "
-                "take the direct provider path with NO routing governance and NO "
-                "token cost tracking.", e,
-            )
-            return
-        raise
-    log.info("AxonLLM embedded and required — routing governance active (root=%s)", axon.root)
+            raise
+        log.warning(
+            "%s Continuing WITHOUT AxonLLM: LLM calls take the direct provider "
+            "path with NO routing governance and NO token cost tracking. "
+            "GET /health reports llm_router for the machine-readable version. "
+            "Set OSTIARI_REQUIRE_AXON=1 to refuse to start instead.", e,
+        )
+        return
+    log.info("AxonLLM embedded — routing governance active (root=%s)", axon.root)
 
 
 def _config_admin_key() -> str:
@@ -599,7 +610,7 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
         module_registry.activate(
             "llm_gateway", app, {"manager": manager, "llm_config": llm_config, "mcp_manager": mcp_manager, "trace_reporter": trace_reporter, "quota_enforcer": quota_enforcer, "agent_auth": agent_auth}
         )
-        _require_axon(module_registry)
+        _check_axon(module_registry)
 
     # ─── Tool Execution Endpoints ─────────────────────────────────────────
 
