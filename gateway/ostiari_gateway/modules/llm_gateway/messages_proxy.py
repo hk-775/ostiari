@@ -30,7 +30,7 @@ import httpx
 from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from ostiari_gateway.modules.llm_gateway import translate as T
+from ostiari_gateway.modules.llm_gateway import translate
 
 log = logging.getLogger("ostiari.sidecar.llm.messages")
 
@@ -172,9 +172,21 @@ class MessagesProxy:
         # It selects the model + provider, enforces model access, tracks cost,
         # and does health-aware fallback. We run it in single-response mode
         # (ensemble stays on /invoke) and translate the result back to Anthropic.
-        if self._axon is not None and self._axon.available:
+        #
+        # Tool-bearing calls route through it too. AxonLLM carries tool specs and
+        # translates them per provider; the ``supports_tools()`` check survives
+        # only as a version guard, since Ostiari doesn't pin an AxonLLM version and
+        # an older checkout would drop the caller's tools without saying so.
+        _wants_tools = bool(body.get("tools"))
+        if (self._axon is not None and self._axon.available
+                and not (_wants_tools and not self._axon.supports_tools())):
             return await self._forward_axon(request, body, requested_model, agent_id,
                                             session_id, framework, streaming, reservation_id)
+        if _wants_tools and self._axon is not None and self._axon.available:
+            log.warning("AxonLLM predates tool pass-through — using the direct provider "
+                        "path for %d tool(s); routing governance and cost tracking are "
+                        "bypassed for this call. Upgrade AxonLLM.",
+                        len(body.get("tools") or []))
 
         # ── Fallback: no AxonLLM — Ostiari's own ModelRouter + direct call ─
         model = self._route(agent_id, requested_model, flat, session_id)
@@ -205,11 +217,11 @@ class MessagesProxy:
     @staticmethod
     def _flatten(system: Any, messages: list[dict[str, Any]]) -> list[dict[str, str]]:
         flat: list[dict[str, str]] = []
-        sys_text = T.flatten_system(system)
+        sys_text = translate.flatten_system(system)
         if sys_text:
             flat.append({"role": "system", "content": sys_text})
         for m in messages:
-            flat.append({"role": m.get("role", "user"), "content": T.text_of(m.get("content", ""))})
+            flat.append({"role": m.get("role", "user"), "content": translate.text_of(m.get("content", ""))})
         return flat
 
     # ── Anthropic target: raw passthrough ────────────────────────────────
@@ -313,21 +325,13 @@ class MessagesProxy:
             return JSONResponse(status_code=200, content=anthropic_msg)
 
         def gen() -> Any:
-            for evt in T.anthropic_message_to_sse(anthropic_msg):
-                yield evt
+            yield from translate.anthropic_message_to_sse(anthropic_msg)
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
     def _axon_knows(self, model: str) -> bool:
         """Whether AxonLLM's registry recognizes a model name."""
-        if not model:
-            return False
-        try:
-            agent = getattr(self._axon, "_agent", None)
-            reg = getattr(getattr(agent, "router", None), "model_registry", None)
-            return bool(reg and model in reg.models)
-        except Exception:  # noqa: BLE001
-            return False
+        return self._axon.knows_model(model)
 
     # ── AxonLLM target: single routing authority ─────────────────────────
     async def _forward_axon(
@@ -351,14 +355,14 @@ class MessagesProxy:
         # expects OpenAI-shaped string content — translate first (this also folds
         # the system prompt in and maps tool round-trips), else it crashes with
         # "'list' object has no attribute 'lower'".
-        oai_messages = T.anthropic_to_openai_messages(body.get("system"), body.get("messages", []))
+        oai_messages = translate.anthropic_to_openai_messages(body.get("system"), body.get("messages", []))
         try:
             res = await self._axon.route(
                 messages=oai_messages,
                 model=axon_model,
                 max_tokens=int(body.get("max_tokens", getattr(self._config, "max_tokens", 4096))),
                 temperature=float(body.get("temperature", getattr(self._config, "temperature", 0.7))),
-                tools=T.anthropic_tools_to_openai(body.get("tools"))[0],
+                tools=translate.anthropic_tools_to_openai(body.get("tools"))[0],
                 smart=not axon_model,        # unknown/absent model → smart auto-select
                 ensemble=False,              # never on the interactive shim path
                 agent_id=agent_id,
@@ -391,8 +395,7 @@ class MessagesProxy:
             return JSONResponse(status_code=200, content=anthropic_msg)
 
         def gen() -> Any:
-            for evt in T.anthropic_message_to_sse(anthropic_msg):
-                yield evt
+            yield from translate.anthropic_message_to_sse(anthropic_msg)
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -414,12 +417,12 @@ class MessagesProxy:
             )
 
         # OpenAI / Azure — both use OpenAI-format chat completions
-        oai_messages = T.anthropic_to_openai_messages(system, messages)
-        oai_tools, name_map = T.anthropic_tools_to_openai(tools)
+        oai_messages = translate.anthropic_to_openai_messages(system, messages)
+        oai_tools, name_map = translate.anthropic_tools_to_openai(tools)
 
         def _run() -> dict[str, Any]:
             resp = self._openai_like_call(provider, model, oai_messages, oai_tools, max_tokens, temperature)
-            return T.openai_response_to_anthropic(resp, model, name_map)
+            return translate.openai_response_to_anthropic(resp, model, name_map)
 
         return await anyio.to_thread.run_sync(_run)
 
@@ -465,17 +468,17 @@ class MessagesProxy:
             role = m.get("role", "user")
             if role == "system":
                 continue
-            br_messages.append({"role": role, "content": [{"text": T.text_of(m.get("content", ""))}]})
+            br_messages.append({"role": role, "content": [{"text": translate.text_of(m.get("content", ""))}]})
 
         kwargs: dict[str, Any] = {
             "modelId": model_id, "messages": br_messages,
             "inferenceConfig": {"maxTokens": max_tokens, "temperature": temperature},
         }
-        sys_text = T.flatten_system(system)
+        sys_text = translate.flatten_system(system)
         if sys_text:
             kwargs["system"] = [{"text": sys_text}]
         resp = client.converse(**kwargs)
-        return T.bedrock_converse_to_anthropic(resp, model)
+        return translate.bedrock_converse_to_anthropic(resp, model)
 
     # ── tracing / accounting ─────────────────────────────────────────────
     async def _report(

@@ -10,9 +10,9 @@ from ostiari.anomaly.detector import AnomalyDetector
 from ostiari.gateway import ActionGateway
 from ostiari.guard import Guard
 from ostiari.models import (
-    OstiariConfig,
     Checkpoint,
     EvalContext,
+    OstiariConfig,
     Rule,
     TraceEntry,
 )

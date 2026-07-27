@@ -66,7 +66,11 @@ def explain(result: Any) -> DecisionExplanation:
     summary and UI lead with what mattered most.
     """
     action = getattr(result, "action", "")
-    tier = getattr(result, "original_tier", None) or getattr(result, "tier", "allow")
+    # `or` already falls through a missing/empty original_tier, but a duck-typed
+    # result can carry tier=None explicitly, which would reach DecisionExplanation
+    # as None where a str is declared. Coerce to the same "allow" default.
+    tier = str(getattr(result, "original_tier", None)
+               or getattr(result, "tier", None) or "allow")
     score = int(getattr(result, "score", 0) or 0)
 
     factors: list[Factor] = []

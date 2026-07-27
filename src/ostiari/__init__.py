@@ -9,7 +9,6 @@ from ostiari.breaker import CircuitBreaker
 from ostiari.checkpoint import CheckpointEngine
 from ostiari.config import ConfigLoader
 from ostiari.decorators import protect
-from ostiari.explain import DecisionExplanation, Factor, explain
 from ostiari.exceptions import (
     ActionBlockedError,
     AdapterNotInstalledError,
@@ -20,6 +19,7 @@ from ostiari.exceptions import (
     OstiariError,
     StorageError,
 )
+from ostiari.explain import DecisionExplanation, Factor, explain
 from ostiari.gateway import ActionGateway, SignalProvider
 from ostiari.guard import Guard
 from ostiari.health import HealthChecker

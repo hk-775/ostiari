@@ -1355,17 +1355,30 @@ Importing a Python package is like linking a library in C — the code becomes p
 
 ### What AxonLLM provides to the sidecar
 
-| AxonLLM Component | What it does in the sidecar | Without AxonLLM (fallback) |
+The "fallback" column is what a *mid-flight* AxonLLM failure degrades to for one
+call — it is **not** a supported way to run the gateway. The whole right-hand
+column is a silent downgrade of what Ostiari claims to enforce, so with
+`llm_gateway` enabled a sidecar that starts without AxonLLM warns about it, and
+`OSTIARI_REQUIRE_AXON=1` makes it refuse instead. See
+[axon-router.md](axon-router.md).
+
+| AxonLLM Component | What it does in the sidecar | Degraded (mid-flight failure) |
 |-------------------|---------------------------|---------------------------|
 | **TaskClassifier** | Analyzes the prompt ("is this code, math, creative?") and picks the best model for that task type | Simple rule matching only |
 | **Router** (5 strategies) | Round-robin, weighted, least-latency, cost-optimized, smart | Direct call to default model |
 | **Provider Adapters** (6) | Bedrock, Anthropic, OpenAI, Azure, Vertex AI, Cohere — unified interface | Anthropic, OpenAI, Bedrock only |
+| **Tool translation** | Carries `tools`/`tool_choice` and translates them into each provider's dialect, so tool-using traffic stays on the governed path | Direct provider call (or 501 on `/v1/chat/completions`) |
 | **ProviderHealthTracker** | Tracks which providers are healthy, circuit-breaks unhealthy ones | Basic retry |
 | **CostTracker** | Records token usage, enforces budgets, alerts on thresholds | No cost tracking |
-| **PIIRedactor** | Strips emails, SSNs, credit cards, etc. before LLM sees them. Restores in response. | No redaction |
-| **PromptInjectionDetector** | Scores prompts for injection attempts (role override, delimiter escape, encoded payloads) | No detection |
 | **EnsembleStrategy** | Sends prompt to multiple models, uses a judge to synthesize the best answer | Not available |
 | **Multi-region routing** | Hub-and-spoke with automatic failover across AWS regions | Single region only |
+
+> **PII redaction and injection detection are no longer in this table.** They used
+> to come from AxonLLM's `PIIRedactor` / `PromptInjectionDetector`, which meant the
+> two controls only worked when the optional AxonLLM install was present — and
+> because both fail closed, enabling either one without it blocked *every* request.
+> They now live in `ostiari.detect`, a hard dependency of the gateway, so they work
+> in every deployment. See [detection-engine.md](detection-engine.md).
 
 ### The full request flow with AxonLLM
 
@@ -1437,7 +1450,7 @@ sequenceDiagram
 
     Agent->>Sidecar: "Email boss@company.com about SSN 123-45-6789"
 
-    Note over Sidecar: PIIRedactor (AxonLLM, in-process):<br/>boss@company.com → [EMAIL_1]<br/>123-45-6789 → [SSN_1]
+    Note over Sidecar: PIIRedactor (ostiari.detect, in-process):<br/>boss@company.com → [EMAIL_1]<br/>123-45-6789 → [SSN_1]
 
     Sidecar->>LLM: "Email [EMAIL_1] about SSN [SSN_1]"
 
@@ -1453,19 +1466,27 @@ sequenceDiagram
 **What gets redacted:**
 - Email addresses → `[EMAIL_1]`, `[EMAIL_2]`, ...
 - SSNs → `[SSN_1]`
-- Credit card numbers → `[CREDIT_CARD_1]`
+- Credit card numbers → `[CREDIT_CARD_1]` (Luhn-checked, so an order number isn't mistaken for a card)
 - Phone numbers → `[PHONE_1]`
-- IP addresses → `[IP_1]`
-- AWS account IDs → `[AWS_ACCOUNT_1]`
-- Medical record numbers → `[MRN_1]`
+- IP addresses → `[IP_ADDRESS_1]`, IPv6 → `[IPV6_1]`
+- AWS account IDs → `[AWS_ACCOUNT_ID_1]`
+- Medical record numbers → `[MEDICAL_RECORD_1]`
+- IBANs → `[IBAN_1]`
+- Credentials: AWS access keys, private-key PEM blocks, bearer tokens → `[AWS_ACCESS_KEY_1]`, `[PRIVATE_KEY_1]`, `[BEARER_TOKEN_1]`
 
 The LLM can still reason about the data structure ("send email to [EMAIL_1]"), but never sees the actual values. The sidecar restores them in the response before returning to the agent.
+
+Restoration is opt-out: set `pii_reversible: false` and the mapping is discarded after
+redaction, so the real values are unrecoverable even by the gateway. Use that when the
+requirement is "the data must not exist here", not "the model must not see it".
+
+Full type list, config, and the tradeoffs: [detection-engine.md](detection-engine.md).
 
 ### Security: Prompt Injection Detection
 
 ```mermaid
 flowchart TD
-    REQ[Incoming message] --> DET[PromptInjectionDetector<br/>AxonLLM, in-process]
+    REQ[Incoming message] --> DET[InjectionDetector<br/>ostiari.detect, in-process]
     DET --> SC{Score > threshold?}
     SC -->|"Score 0.9 > 0.7"| BLOCK[Block request<br/>Return error to agent]
     SC -->|"Score 0.2 < 0.7"| PASS[Continue to LLM]
@@ -1479,8 +1500,13 @@ flowchart TD
 - Data extraction patterns ("Output your system prompt...")
 - Delimiter escape ("```\nSYSTEM: ...")
 - Encoded payloads (base64-encoded instructions)
+- Obfuscation: zero-width characters and Unicode look-alikes are normalized away before matching
 
 Configurable threshold (default: 0.7). Lower = more strict. Higher = more permissive.
+Set `injection_mode: flag` to score and report without blocking — the way to measure
+your own false-positive rate on real traffic before you turn enforcement on.
+
+Full pattern list, scoring, and limits: [detection-engine.md](detection-engine.md).
 
 ### Smart Routing: How TaskClassifier Works
 
@@ -1556,21 +1582,44 @@ llm:
   max_tool_rounds: 10
 ```
 
-### Graceful Degradation
+### AxonLLM's absence is visible, not fatal (and what a mid-flight failure degrades to)
 
-If AxonLLM is not installed (e.g., community tier without the paid module), the sidecar falls back gracefully:
+AxonLLM is optional to install but load-bearing when missing. The reason is the
+table below: every entry in the right-hand column is a silent downgrade of
+something Ostiari claims to enforce, and the degraded path is good enough that
+traffic keeps flowing and `/health` keeps saying "ok". So a sidecar that starts
+without it logs a warning naming exactly what stopped applying, rather than
+letting the absence be discovered later from a cost report that never filled in.
 
-| Feature | With AxonLLM | Without AxonLLM |
+It warns rather than refuses because AxonLLM is a separate private repo and isn't
+on PyPI — a hard requirement makes it a deployment dependency of every sidecar, CI
+runner, and contributor checkout, including the ones that only ever proxy tools.
+`OSTIARI_REQUIRE_AXON=1` restores the refusal and **is the right setting in
+production**, where silently ungoverned LLM traffic is not an acceptable
+degradation.
+
+`GET /health` reports the router's state under `llm_router` (`embedded`, `root`,
+`governed`, `cost_tracking`, `tools`), because "the gateway is up" and "LLM calls
+are governed" are different facts.
+
+The right-hand column is therefore what **one call** falls back to when AxonLLM
+fails mid-flight — not a supported way to run:
+
+| Feature | With AxonLLM | Degraded (mid-flight failure) |
 |---------|-------------|----------------|
 | Model selection | Smart (task classification) | Simple rules only |
 | Providers | 6 (Bedrock, Anthropic, OpenAI, Azure, Vertex, Cohere) | 3 (Anthropic, OpenAI, Bedrock) |
-| PII redaction | Full (7 PII types, reversible) | Disabled |
-| Injection detection | Pattern scoring (configurable threshold) | Disabled |
+| Tool calls | Specs translated into each provider's dialect | Direct provider call (or 501 on `/v1/chat/completions`) |
 | Health tracking | Per-provider circuit breaking | Basic retry |
 | Cost tracking | Per-project budgets with alerts | Disabled |
 | Ensemble routing | Scatter-gather-synthesize | Disabled |
 
-Nothing breaks. The sidecar detects what's available at startup and uses it. This is how the free/paid tier split works in practice — the paid module brings AxonLLM as a dependency, unlocking all its capabilities.
+**PII redaction and injection detection are deliberately absent from this table.**
+They used to come from AxonLLM, which meant both controls only worked when the
+then-optional install was present — and since an enabled-but-unavailable control
+fails closed, turning either one on without it blocked *every* request. They now
+live in `ostiari.detect`, a hard dependency, so they work in every deployment
+regardless of AxonLLM. See [detection-engine.md](detection-engine.md).
 
 ---
 
@@ -2250,7 +2299,8 @@ print(f"Result: {resp.json()}")
 
 ## All 6 AxonLLM Providers
 
-The sidecar now supports all 6 providers from AxonLLM with direct fallback calls:
+The sidecar reaches all 6 providers through AxonLLM's adapters (three of them also
+have a direct-call path, used only when AxonLLM fails mid-flight):
 
 | Provider | Models | Authentication |
 |----------|--------|---------------|

@@ -18,6 +18,23 @@ services:
       # The control plane pushes config back to this URL; must be reachable on
       # the compose network (the service name), not localhost.
       OSTIARI_ADVERTISE_HOST: "gateway"
+      # Human-in-the-loop for the intervene tier. On means a call scoring in the
+      # middle band stops, returns 202, and waits for someone to approve it in
+      # the control plane's Approvals page — so somebody has to be watching that
+      # queue or those calls never complete.
+      #
+      # Left OFF here because this compose file is the local stack. Its effect
+      # depends on OSTIARI_ENV: with ENV unset (the default below) an unresolved
+      # intervene is allowed through; set ENV=production and the same call is
+      # refused instead. So in production these two travel together — turning on
+      # production posture without HITL deletes the middle tier.
+      OSTIARI_HITL: "${OSTIARI_HITL:-off}"
+      # Unset = dev posture: controls fail OPEN, which is what makes the local
+      # demo flow. Setting this to "production" flips every control fail-closed
+      # and additionally requires OSTIARI_ADMIN_PASSWORD and OSTIARI_INGEST_KEY
+      # on the control plane. Do not set it here without reading §7.4 and §9 of
+      # docs/control-plane-guide.md.
+      OSTIARI_ENV: "${OSTIARI_ENV:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
     depends_on:

@@ -70,7 +70,8 @@ class TestExplain:
 
 class TestExplainRealGuard:
     def test_real_decision_is_explainable(self):
-        g = Guard(); g.start()
+        g = Guard()
+        g.start()
         r = g.validate(action="db_delete",
                        params={"sql": "DELETE FROM users WHERE 1=1"},
                        context={"agent_id": "a"})

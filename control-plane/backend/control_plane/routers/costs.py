@@ -7,9 +7,11 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
 from control_plane.models.database import UsageRecord
 from control_plane.models.schemas import CostSummary, UsageRecordCreate, UsageRecordResponse
+from control_plane.models.scoping import org_of_gateway, scoped, stamp
 
 router = APIRouter(prefix="/api/costs", tags=["costs"])
 
@@ -51,6 +53,10 @@ async def record_usage(body: UsageRecordCreate, db: AsyncSession = Depends(get_d
         cost_usd=cost,
         action=body.action,
     )
+    # Without this the column default silently files EVERY tenant's usage under
+    # the "default" org, so a real tenant's ledger reads empty while its spend
+    # piles up in someone else's.
+    stamp(record, await org_of_gateway(db, body.gateway_id))
     db.add(record)
     # Broker pilot: draw the consumed tokens down against the provider pool, at
     # our bulk cost (retail x (1 - discount)). Best-effort; no-op if unprovisioned.
@@ -77,6 +83,7 @@ async def _broker_drawdown(db, *, model: str, tokens: int, retail_cost: float) -
 async def record_usage_batch(records: list[UsageRecordCreate], db: AsyncSession = Depends(get_db)):
     """Record a batch of usage events (for efficiency)."""
     created = 0
+    org_cache: dict[str, str] = {}  # one gateway lookup per batch, not per record
     for body in records:
         cost = body.cost_usd
         if cost == 0.0 and body.total_tokens > 0:
@@ -91,6 +98,9 @@ async def record_usage_batch(records: list[UsageRecordCreate], db: AsyncSession 
             cost_usd=cost,
             action=body.action,
         )
+        if body.gateway_id not in org_cache:
+            org_cache[body.gateway_id] = await org_of_gateway(db, body.gateway_id)
+        stamp(record, org_cache[body.gateway_id])
         db.add(record)
         created += 1
     await db.commit()
@@ -102,11 +112,16 @@ async def get_cost_summary(
     period_days: int = Query(default=7, le=90),
     gateway_id: str | None = None,
     db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
 ):
-    """Get cost summary with breakdowns by model, gateway, agent, and day."""
+    """Get cost summary with breakdowns by model, gateway, agent, and day.
+
+    Scoped to the caller's org: unscoped, the by_gateway/by_agent breakdowns
+    enumerate every tenant's gateway names, agent names, and dollar spend.
+    """
     since = datetime.now(timezone.utc) - timedelta(days=period_days)
 
-    query = select(UsageRecord).where(UsageRecord.timestamp >= since)
+    query = scoped(select(UsageRecord).where(UsageRecord.timestamp >= since), UsageRecord, org)
     if gateway_id:
         query = query.where(UsageRecord.gateway_id == gateway_id)
 
@@ -156,9 +171,13 @@ async def list_usage_records(
     model: str | None = None,
     limit: int = Query(default=100, le=1000),
     db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
 ):
-    """List individual usage records."""
-    query = select(UsageRecord).order_by(UsageRecord.timestamp.desc()).limit(limit)
+    """List individual usage records (caller's org only)."""
+    query = scoped(
+        select(UsageRecord).order_by(UsageRecord.timestamp.desc()).limit(limit),
+        UsageRecord, org,
+    )
     if gateway_id:
         query = query.where(UsageRecord.gateway_id == gateway_id)
     if model:

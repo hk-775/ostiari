@@ -85,9 +85,14 @@ def seeded_traces(app_and_db, monkeypatch):
     monkeypatch.setenv("OSTIARI_DISCOVERY_MOCK", "1")
     from control_plane.routers import agents as agents_mod
     from control_plane.routers.traces import DEFAULT_ORG, _recent_traces
-    saved = dict(agents_mod._agents)   # snapshot (conftest may have cleared it)
+    # Deep-copy the snapshot: _agents is org -> name -> config, so a shallow
+    # dict() would share the inner per-org dicts and the teardown restore would
+    # not undo writes made during the test.
+    saved = {org: dict(byname) for org, byname in agents_mod._agents.items()}
     # Ensure a KNOWN agent exists so we can assert governed vs. discovered.
-    agents_mod._agents["research-agent"] = agents_mod.AgentConfig(
+    # Must be indexed [org][name] — writing to the outer dict puts an AgentConfig
+    # where a per-org dict belongs and the agent is invisible to every reader.
+    agents_mod._agents[DEFAULT_ORG]["research-agent"] = agents_mod.AgentConfig(
         name="research-agent", framework="openai", gateway_id="crm-agent",
     )
     _recent_traces.clear()
@@ -136,3 +141,84 @@ class TestDiscoveryRouter:
     async def test_onboard_duplicate_409(self, client):
         r = await client.post("/api/discovery/onboard", json={"agent_id": "research-agent"})
         assert r.status_code == 409
+
+    async def test_onboarded_agent_appears_in_the_agents_registry(self, client):
+        """Onboarding must write [org][agent_id]. Writing to the outer org-keyed
+        dict put an AgentConfig where a per-org dict belongs: the agent was
+        invisible to /api/agents and the bogus key then looked like an org."""
+        await client.post("/api/discovery/onboard",
+                          json={"agent_id": "rogue-scraper", "gateway_id": "crm-agent",
+                                "framework": "langchain"})
+        listed = (await client.get("/api/agents")).json()
+        names = {a["name"] for a in listed}
+        assert "rogue-scraper" in names
+        assert "research-agent" in names   # the pre-existing agent survived the write
+
+    async def test_governed_status_requires_reading_agent_names_not_org_names(self, client):
+        """`_agents` is org -> name -> config. Taking `.keys()` off the outer dict
+        yields ORG names, so every genuinely-registered agent misses the
+        seen-vs-known match and gets reported as shadow AI."""
+        d = (await client.get("/api/discovery/agents")).json()
+        ids = {a["agent_id"]: a for a in d["agents"]}
+        assert ids["research-agent"]["registered"] is True
+        assert "default" not in ids   # an org name must never appear as an agent
+
+
+class TestDiscoveryOrgIsolation:
+    """One tenant's Discovered view must not name another tenant's agents or
+    gateways — the trace buffer is per-org and the collector has to honor that."""
+
+    @pytest.fixture
+    def two_org_traces(self, app_and_db, monkeypatch):
+        # Mock cloud sightings off: they're org-agnostic seeds and would blur
+        # the isolation assertion.
+        monkeypatch.delenv("OSTIARI_DISCOVERY_MOCK", raising=False)
+        from control_plane.routers.traces import _recent_traces
+        _recent_traces.clear()
+        _recent_traces["org-a"].append(
+            {"agent_id": "a-only-agent", "gateway_id": "gw-a", "action": "web_search", "tier": "allow"})
+        _recent_traces["org-b"].append(
+            {"agent_id": "b-only-agent", "gateway_id": "gw-b", "action": "web_search", "tier": "allow"})
+        yield
+        _recent_traces.clear()
+
+    @pytest.mark.usefixtures("two_org_traces")
+    async def test_each_org_sees_only_its_own_sightings(self, client):
+        from control_plane.auth.service import create_access_token
+
+        def hdr(org):
+            tok = create_access_token(user_id=1, email=f"{org}@t.io", role="admin", org=org)
+            return {"Authorization": f"Bearer {tok}"}
+
+        a = (await client.get("/api/discovery/agents", headers=hdr("org-a"))).json()
+        b = (await client.get("/api/discovery/agents", headers=hdr("org-b"))).json()
+        a_ids = {x["agent_id"] for x in a["agents"]}
+        b_ids = {x["agent_id"] for x in b["agents"]}
+        assert a_ids == {"a-only-agent"}
+        assert b_ids == {"b-only-agent"}
+        # Gateway names leak too, not just agent ids.
+        assert a["agents"][0]["gateways"] == ["gw-a"]
+
+    @pytest.mark.usefixtures("two_org_traces")
+    async def test_onboarding_in_one_org_does_not_govern_the_other(self, client):
+        from control_plane.auth.service import create_access_token
+        from control_plane.routers import agents as agents_mod
+
+        saved = {org: dict(byname) for org, byname in agents_mod._agents.items()}
+        try:
+            def hdr(org):
+                tok = create_access_token(user_id=1, email=f"{org}@t.io", role="admin", org=org)
+                return {"Authorization": f"Bearer {tok}"}
+
+            r = await client.post("/api/discovery/onboard", headers=hdr("org-a"),
+                                  json={"agent_id": "a-only-agent", "gateway_id": "gw-a"})
+            assert r.status_code == 200
+            # Same agent id in another org is still un-onboarded → no 409, and
+            # org-a's registration must not make it "governed" for org-b.
+            b = (await client.get("/api/discovery/agents", headers=hdr("org-b"))).json()
+            assert all(not x["registered"] for x in b["agents"])
+            assert "a-only-agent" not in {a["name"] for a in
+                                         (await client.get("/api/agents", headers=hdr("org-b"))).json()}
+        finally:
+            agents_mod._agents.clear()
+            agents_mod._agents.update(saved)

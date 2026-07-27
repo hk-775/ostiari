@@ -45,5 +45,14 @@ Returns a standard OpenAI **ChatCompletion** (or an OpenAI **SSE stream** —
 ## Notes / limitations
 
 - Streaming is buffered-then-chunked (correct OpenAI SSE events, not token-by-token from upstream) — same tradeoff as the shim's cross-provider path.
-- Tool calls pass through in OpenAI `tool_calls` format; Codex runs them in its own loop.
-- Requires the embedded AxonLLM router (`src.gateway`); returns 503 if unavailable.
+- Tool calls route **through** AxonLLM, which translates the specs into the target
+  provider's dialect and translates the call back into OpenAI `tool_calls`; Codex
+  runs the tools in its own loop. Since the wire format here is already OpenAI's,
+  a call that lands on an OpenAI-style provider is a pass-through — one that lands
+  on Bedrock, Anthropic, Gemini, or Cohere is translated. See
+  [axon-router.md](axon-router.md#tool-calls-route-through-axonllm).
+- Requires the embedded AxonLLM router (`src.gateway`) — the gateway won't start
+  without it, and this endpoint returns 503 if the router goes down mid-flight.
+  Unlike `/invoke` and `/v1/messages` it has **no** direct-provider fallback, so a
+  tool-bearing call against an AxonLLM too old to carry tool specs returns **501**
+  rather than a fluent answer from a model that was never told the tools exist.

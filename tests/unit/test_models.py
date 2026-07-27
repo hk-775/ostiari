@@ -6,11 +6,11 @@ import pytest
 from pydantic import ValidationError
 
 from ostiari.models import (
-    OstiariConfig,
     AnomalySignal,
     BreakerConfig,
     BreakerState,
     MetricType,
+    OstiariConfig,
     RetentionPolicy,
     RiskSignal,
     ThresholdConfig,

@@ -115,6 +115,22 @@ def seed_models():
         ModelConfig(name="mistral-large", description="Mistral Large", routing_strategy="round-robin",
                     providers=[ProviderMapping(provider="bedrock", model_id="mistral.mistral-large-2411-v1:0")],
                     input_cost_per_1k=0.002, output_cost_per_1k=0.006, max_tokens=8192, supports_tools=True, category="general"),
+        # xAI (Grok) and Together — both OpenAI-compatible, credentialed from
+        # XAI_API_KEY / TOGETHER_API_KEY. Model ids match AxonLLM's adapters so
+        # the router can actually dispatch these, not just display them.
+        ModelConfig(name="grok-3", description="Grok 3 — xAI flagship", routing_strategy="round-robin",
+                    providers=[ProviderMapping(provider="xai", model_id="grok-3")],
+                    input_cost_per_1k=0.003, output_cost_per_1k=0.015, max_tokens=8192, supports_tools=True, category="general"),
+        ModelConfig(name="grok-3-mini", description="Grok 3 Mini — fast, cheap", routing_strategy="round-robin",
+                    providers=[ProviderMapping(provider="xai", model_id="grok-3-mini")],
+                    input_cost_per_1k=0.0003, output_cost_per_1k=0.0005, max_tokens=8192, supports_tools=True, category="speed"),
+        ModelConfig(name="llama-3.3-70b", description="Llama 3.3 70B Turbo — Together", routing_strategy="round-robin",
+                    providers=[ProviderMapping(provider="together", model_id="meta-llama/Llama-3.3-70B-Instruct-Turbo")],
+                    input_cost_per_1k=0.00088, output_cost_per_1k=0.00088, max_tokens=8192, supports_tools=True, category="general"),
+        ModelConfig(name="deepseek-r1-together", description="DeepSeek R1 — reasoning, via Together",
+                    routing_strategy="round-robin",
+                    providers=[ProviderMapping(provider="together", model_id="deepseek-ai/DeepSeek-R1")],
+                    input_cost_per_1k=0.003, output_cost_per_1k=0.007, max_tokens=8192, supports_tools=False, category="reasoning"),
     ]
     for m in models:
         _models[DEFAULT_ORG][m.name] = m

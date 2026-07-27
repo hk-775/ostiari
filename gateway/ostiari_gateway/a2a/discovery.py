@@ -25,10 +25,7 @@ async def fetch_agent_card(
         auth_token: Optional bearer token for authenticated discovery.
     """
     base = url.rstrip("/")
-    if not base.endswith(WELL_KNOWN_PATH):
-        discovery_url = base + WELL_KNOWN_PATH
-    else:
-        discovery_url = base
+    discovery_url = base if base.endswith(WELL_KNOWN_PATH) else base + WELL_KNOWN_PATH
 
     # SSRF guard: the agent URL is request-supplied (and A2A cards can even
     # redeclare their own url), so validate before fetching and disable redirects.

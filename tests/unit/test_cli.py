@@ -124,9 +124,14 @@ class TestTui:
 
 class TestDashboard:
     def test_dashboard_missing_dep(self, runner):
-        with patch("builtins.__import__", side_effect=ImportError("no fastapi")):
+        # Blank the specific modules, as TestTui does — patching builtins.__import__
+        # globally also breaks click's own lazy imports, so the ImportError fired
+        # inside runner.invoke() before the command ever ran and the test failed
+        # regardless of what `dashboard` does.
+        with patch.dict("sys.modules", {"uvicorn": None, "ostiari.dashboard.app": None}):
             result = runner.invoke(main, ["dashboard"])
-            assert result.exit_code in (0, 1)
+            assert result.exit_code == 1
+            assert "pip install ostiari[dashboard]" in result.output
 
 
 class TestReport:
@@ -209,7 +214,9 @@ class TestComplianceReport:
         resp.raise_for_status.return_value = None
         resp.json.return_value = report
         client.get.return_value = resp
-        cm = MagicMock(); cm.__enter__.return_value = client; cm.__exit__.return_value = False
+        cm = MagicMock()
+        cm.__enter__.return_value = client
+        cm.__exit__.return_value = False
         return cm, client
 
     def test_report_summary_output(self, runner):
@@ -247,7 +254,9 @@ class TestComplianceReport:
     def test_report_unknown_framework(self, runner):
         client = MagicMock()
         client.get.return_value = MagicMock(status_code=400)
-        cm = MagicMock(); cm.__enter__.return_value = client; cm.__exit__.return_value = False
+        cm = MagicMock()
+        cm.__enter__.return_value = client
+        cm.__exit__.return_value = False
         with patch("httpx.Client", return_value=cm):
             result = runner.invoke(main, ["compliance", "report", "--framework", "bogus"])
         assert result.exit_code == 1
@@ -261,7 +270,9 @@ class TestMeteringCLI:
         resp.raise_for_status.return_value = None
         resp.json.return_value = summary
         client.get.return_value = resp
-        cm = MagicMock(); cm.__enter__.return_value = client; cm.__exit__.return_value = False
+        cm = MagicMock()
+        cm.__enter__.return_value = client
+        cm.__exit__.return_value = False
         return cm
 
     def test_metering_summary_output(self, runner):

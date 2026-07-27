@@ -14,6 +14,24 @@ from __future__ import annotations
 import os
 import time
 from collections import deque
+from collections.abc import Awaitable, Callable, MutableMapping
+from typing import Any, Protocol
+
+# Minimal ASGI signatures — spelled out here rather than depending on asgiref or
+# starlette.types, since this module is shared by both apps and must not pull in
+# a web framework of its own.
+Scope = MutableMapping[str, Any]
+Message = MutableMapping[str, Any]
+Receive = Callable[[], Awaitable[Message]]
+Send = Callable[[Message], Awaitable[None]]
+ASGIApp = Callable[[Scope, Receive, Send], Awaitable[None]]
+
+
+class _RateStore(Protocol):
+    """The one method RateLimitMiddleware needs from a shared store."""
+
+    def rate_allow(self, key: str, limit: int, window_s: float) -> bool: ...
+
 
 _DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024  # 10 MiB
 
@@ -34,11 +52,11 @@ class BodySizeLimitMiddleware:
     (handles missing/chunked length) by counting bytes as they pass through.
     """
 
-    def __init__(self, app, max_bytes: int | None = None) -> None:
+    def __init__(self, app: ASGIApp, max_bytes: int | None = None) -> None:
         self.app = app
         self._max = max_bytes or max_body_bytes()
 
-    async def __call__(self, scope, receive, send):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
@@ -59,7 +77,7 @@ class BodySizeLimitMiddleware:
             message = await receive()
             if message["type"] == "http.disconnect":
                 # Nothing downstream can run; hand the disconnect through.
-                async def _disconnected():
+                async def _disconnected() -> Message:
                     return {"type": "http.disconnect"}
                 await self.app(scope, _disconnected, send)
                 return
@@ -75,7 +93,7 @@ class BodySizeLimitMiddleware:
         # make a StreamingResponse think the client vanished and abort the stream.
         replayed = False
 
-        async def replay_receive():
+        async def replay_receive() -> Message:
             nonlocal replayed
             if not replayed:
                 replayed = True
@@ -85,7 +103,7 @@ class BodySizeLimitMiddleware:
         await self.app(scope, replay_receive, send)
 
 
-async def _send_413(send, max_bytes: int) -> None:
+async def _send_413(send: Send, max_bytes: int) -> None:
     import json as _json
     payload = _json.dumps({"detail": f"request body exceeds limit ({max_bytes} bytes)"}).encode()
     await send({"type": "http.response.start", "status": 413,
@@ -113,13 +131,15 @@ class RateLimitMiddleware:
     limit is per-process (so N replicas ⇒ N× the effective rate).
     """
 
-    def __init__(self, app, rpm: int | None = None, store=None) -> None:
+    def __init__(
+        self, app: ASGIApp, rpm: int | None = None, store: _RateStore | None = None
+    ) -> None:
         self.app = app
         self._rpm = rpm if rpm is not None else rate_limit_rpm()
         self._hits: dict[str, deque[float]] = {}
         self._store = store
 
-    async def __call__(self, scope, receive, send):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http" or self._rpm <= 0:
             await self.app(scope, receive, send)
             return

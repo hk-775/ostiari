@@ -125,7 +125,10 @@ class TestLLMGatewayInvoke:
     def _disable_axon(self, monkeypatch):
         # These tests mock the direct provider path to exercise the agentic loop
         # deterministically; disable the AxonLLM router so that path runs.
+        # Startup warns about the missing governance and continues; delenv keeps
+        # an operator's OSTIARI_REQUIRE_AXON from turning that into a refusal.
         monkeypatch.setenv("OSTIARI_DISABLE_AXON_ROUTER", "1")
+        monkeypatch.delenv("OSTIARI_REQUIRE_AXON", raising=False)
 
     @pytest.fixture
     def client_with_mock_llm(self, httpserver):
@@ -252,3 +255,181 @@ class TestLLMGatewayInvoke:
             assert data["response"] == "I can't do that due to policy restrictions."
             assert len(data["blocked_actions"]) == 1
             assert data["blocked_actions"][0]["action"] == "dangerous_action"
+
+
+class TestInvokeBadRequests:
+    """A malformed or wrong-shaped body is the CALLER's error.
+
+    Both used to escape as unhandled exceptions: `/invoke` parses the body by
+    hand rather than declaring a typed parameter, so FastAPI's own 422 handler
+    never sees it and the client got a 500 with a stack trace in the gateway log
+    — indistinguishable from a real gateway fault, and with nothing actionable
+    in the response.
+    """
+
+    @pytest.fixture
+    def client(self):
+        from ostiari_gateway.server import create_app
+
+        config = SidecarConfig(
+            sidecar_id="test-badreq",
+            modules=ModulesConfig(llm_gateway=True),
+            llm={"default_model": "claude-sonnet-4-6"},
+        )
+        return TestClient(create_app(initial_config=config))
+
+    def test_malformed_json_is_400(self, client):
+        resp = client.post("/invoke", content=b"{not json",
+                           headers={"Content-Type": "application/json"})
+        assert resp.status_code == 400
+        assert "Malformed JSON" in resp.json()["error"]
+
+    def test_non_object_body_is_400(self, client):
+        resp = client.post("/invoke", json="just a string")
+        assert resp.status_code == 400
+
+    def test_wrong_field_name_is_422_naming_the_field(self, client):
+        """The real-world case: a client sends `prompt` instead of `messages`."""
+        resp = client.post("/invoke", json={"prompt": "hello"})
+        assert resp.status_code == 422
+        body = resp.json()
+        # The response must say WHICH field is wrong, or the caller is guessing.
+        assert "messages" in str(body["detail"])
+
+    def test_empty_messages_is_422(self, client):
+        # InvokeRequest declares min_length=1 on messages.
+        resp = client.post("/invoke", json={"messages": []})
+        assert resp.status_code == 422
+
+    def test_validation_detail_omits_the_input_and_docs_url(self, client):
+        """Echoing the rejected input back can leak whatever the caller sent
+        (prompts, credentials pasted into a field) into logs and error surfaces."""
+        resp = client.post("/invoke", json={"prompt": "sk-secret-value-do-not-echo"})
+        raw = resp.text
+        assert "sk-secret-value-do-not-echo" not in raw
+        assert "errors.pydantic.dev" not in raw
+
+
+class TestInvokeReportsCacheHit:
+    """The response's `cache_hit` must agree with /cache/stats.
+
+    A cached plan always HAS tool calls, so round 0 executes them and the loop
+    can only return from round 1+. The old flag was
+    `cached_plan is not None and round_num == 0 and total_tokens == 0`, computed
+    from a variable that round 0 had already reset to False — so both the
+    `round_num == 0` and `total_tokens == 0` terms were unreachable on exactly
+    the path a cache hit takes. `/cache/stats` counted the hit and the token
+    count dropped, while the caller was told cache_hit=false.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _disable_axon(self, monkeypatch):
+        # Exercise the direct provider path so _call_with_fallback is the seam.
+        # delenv so an operator's OSTIARI_REQUIRE_AXON can't fail startup here.
+        monkeypatch.setenv("OSTIARI_DISABLE_AXON_ROUTER", "1")
+        monkeypatch.delenv("OSTIARI_REQUIRE_AXON", raising=False)
+
+    @pytest.fixture
+    def client(self, httpserver):
+        from ostiari_gateway.server import create_app
+
+        httpserver.expect_request("/send", method="POST").respond_with_json({"id": "m-1"})
+        config = SidecarConfig(
+            sidecar_id="test-cache",
+            modules=ModulesConfig(llm_gateway=True),
+            llm={"default_model": "claude-sonnet-4-6", "max_tool_rounds": 3},
+            tools=[ToolDefinition(name="send_email", endpoint=httpserver.url_for("/send"),
+                                  description="Send an email")],
+        )
+        return TestClient(create_app(initial_config=config))
+
+    @staticmethod
+    def _tool_then_text():
+        """LLM stub: ask for a tool, then answer once results come back.
+
+        Keyed on conversation state, not a call counter — a cache hit skips
+        round 0's LLM call, so counter parity shifts and an alternating stub
+        would hand out a second tool call on the follow-up round.
+        """
+        from ostiari_gateway.modules.llm_gateway.providers import LLMResponse, ToolCall
+
+        calls = [0]
+
+        def mock_call(primary, fallback_chain, messages, tools, max_tokens=None, **kw):
+            calls[0] += 1
+            has_results = any(
+                isinstance(m.get("content"), list)
+                and any(b.get("type") == "tool_result" for b in m["content"])
+                for m in messages
+            )
+            if has_results:
+                return LLMResponse(content="Sent.", tokens_used=50, model="claude-sonnet-4-6")
+            return LLMResponse(
+                content="", tokens_used=100, model="claude-sonnet-4-6",
+                tool_calls=[ToolCall(id="tc-1", name="send_email",
+                                     arguments={"to": "a@b.com"})])
+
+        return mock_call, calls
+
+    def _invoke(self, client, session="s-1"):
+        return client.post(
+            "/invoke",
+            json={"messages": [{"role": "user", "content": "Email a@b.com"}]},
+            headers={"X-Agent-Id": "cache-agent", "X-Session-Id": session},
+        ).json()
+
+    def test_second_identical_call_reports_the_hit(self, client):
+        mock_call, calls = self._tool_then_text()
+        target = "ostiari_gateway.modules.llm_gateway.executor.AgenticExecutor._call_with_fallback"
+        with patch(target, side_effect=mock_call):
+            first = self._invoke(client)
+            second = self._invoke(client)
+
+        assert first["cache_hit"] is False, "nothing cached yet on the first call"
+        assert second["cache_hit"] is True, "plan was reused but the caller wasn't told"
+        # The reported flag must not contradict the counter behind /cache/stats.
+        assert client.get("/cache/stats").json()["hits"] == 1
+        # 3 LLM calls, not 4: the second call skipped round 0 entirely.
+        assert calls[0] == 3
+        assert second["total_tokens"] < first["total_tokens"]
+
+    def test_missing_session_id_never_caches(self, client):
+        """Both get() and put() no-op on an empty session_id, so a caller that
+        omits X-Session-Id can never get a hit — the reason repeated identical
+        curls all reported cache_hit=false."""
+        mock_call, _ = self._tool_then_text()
+        target = "ostiari_gateway.modules.llm_gateway.executor.AgenticExecutor._call_with_fallback"
+        with patch(target, side_effect=mock_call):
+            for _ in range(2):
+                body = client.post(
+                    "/invoke",
+                    json={"messages": [{"role": "user", "content": "Email a@b.com"}]},
+                    headers={"X-Agent-Id": "cache-agent"},  # no X-Session-Id
+                ).json()
+                assert body["cache_hit"] is False
+
+        stats = client.get("/cache/stats").json()
+        assert stats["entries"] == 0 and stats["hits"] == 0
+
+    def test_a_different_session_is_a_miss(self, client):
+        """The key is per-agent, per-session — a new session must not inherit."""
+        mock_call, _ = self._tool_then_text()
+        target = "ostiari_gateway.modules.llm_gateway.executor.AgenticExecutor._call_with_fallback"
+        with patch(target, side_effect=mock_call):
+            self._invoke(client, session="s-1")
+            other = self._invoke(client, session="s-2")
+        assert other["cache_hit"] is False
+
+    def test_cache_hit_still_reruns_tools_and_answers(self, client):
+        """A reported hit must not mean a truncated result: the cached plan's
+        tools still execute and round 1 still produces the final text."""
+        mock_call, _ = self._tool_then_text()
+        target = "ostiari_gateway.modules.llm_gateway.executor.AgenticExecutor._call_with_fallback"
+        with patch(target, side_effect=mock_call):
+            self._invoke(client)
+            second = self._invoke(client)
+
+        assert second["cache_hit"] is True
+        assert second["response"] == "Sent."
+        assert [tc["name"] for tc in second["tool_calls"]] == ["send_email"]
+        assert second["rounds"] == 2
