@@ -10,6 +10,19 @@ data:
   # Control plane pushes config here. The agent-with-ostiari Service (below)
   # exposes port 8421, so advertise that Service DNS name.
   OSTIARI_ADVERTISE_HOST: "agent-with-ostiari"
+  # Fail-closed posture. Also requires OSTIARI_ADMIN_PASSWORD and
+  # OSTIARI_INGEST_KEY on the control plane.
+  OSTIARI_ENV: "production"
+  # Human-in-the-loop for the *intervene* tier: 202 instead of executing, a human
+  # decides in the Approvals page, caller re-submits with X-Approval-Id. On
+  # because production is fail-closed, where an unresolvable intervene is REFUSED
+  # rather than allowed — off would collapse three tiers to two.
+  #
+  # Sidecar-specific caveat: the agent container talks to the gateway over
+  # localhost, so it gets the 202 directly. Make sure the agent treats a 202 as
+  # "pending, retry with X-Approval-Id" and not as a failed call — an in-process
+  # agent loop that only checks for 200 will look like it silently lost the call.
+  OSTIARI_HITL: "on"
 ---
 apiVersion: v1
 kind: Pod

@@ -34,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   IPv6/MRN/openapi edge cases, plus gateway and control-plane regression tests.
 - Gateway tests for the AxonLLM requirement, the `/health` router report, and tool
   specs reaching AxonLLM on all three endpoints.
-- `gateway/tests/test_hitl.py` gained 9 tests pinning the production/HITL interaction:
+- `gateway/tests/test_hitl.py` gained 8 tests pinning the production/HITL interaction:
   a fail-closed intervene queues rather than 403s, the approve and deny loops complete,
   the explanation survives the raise, and the three non-bypass properties (genuine
   block, HITL off, shadow mode) each stay blocked.
@@ -148,6 +148,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   type-errored on every check it exists to perform.
 
 ### Changed
+- **The deploy manifests now ship `OSTIARI_ENV=production` with `OSTIARI_HITL=on`.**
+  Helm (`gateway.env` / `gateway.hitl` values), both Kubernetes manifests, and the ECS
+  task definition set them together, because in a fail-closed deployment they are not
+  independent knobs: production refuses an intervene nobody can resolve, so HITL off is
+  what makes the middle tier disappear. Shipping production without it hands operators
+  a wall of 403s and an empty Approvals page. Both stay values/ConfigMap keys, so either
+  can be turned off deliberately rather than by omission. `docker-compose.yml` passes
+  both through from the environment (`OSTIARI_HITL:-off`, `OSTIARI_ENV` unset) — it is
+  the local stack, where fail-open is the intended demo posture.
+- HITL is not free, and `deploy/README.md` now says so beside the variables: a mid-band
+  call answers **202** and does not execute, so someone has to staff the queue and
+  callers have to re-submit with `X-Approval-Id`. Tune thresholds until the intervene
+  band is rare (validate in `shadow` mode) before turning it on. That README also gained
+  the ten production-relevant env vars it omitted entirely — the four the control plane
+  now *requires* in production, and the two gateway controls
+  (`OSTIARI_CONFIG_ADMIN_KEY`, `OSTIARI_GATEWAY_AUTH`) that stay fail-open unless set.
 - `mypy --strict src/` is clean (was 20 errors); `ruff check src/ gateway/` is clean
   (was 49). Two ruff suggestions are deliberately declined with rationale in-comment:
   negating the fail-open default would make the codebase's most safety-critical branch
