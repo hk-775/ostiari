@@ -8,16 +8,18 @@ Set DATABASE_URL environment variable:
 """
 
 import os
-from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-_DB_DIR = Path(__file__).parent.parent.parent / "data"
-_DB_DIR.mkdir(exist_ok=True)
-_DEFAULT_DB = f"sqlite+aiosqlite:///{_DB_DIR / 'control_plane.db'}"
+from control_plane.env import default_sqlite_url
 
-DATABASE_URL = os.environ.get("DATABASE_URL", _DEFAULT_DB)
+# Resolved lazily: default_sqlite_url() is only called when DATABASE_URL is unset,
+# so importing this module in a container (where DATABASE_URL is always set) does
+# not touch the filesystem. It used to mkdir unconditionally at import time, which
+# a read-only root filesystem refuses — and at *import* time, so it raised before
+# any application code ran and the container never answered a probe.
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip() or default_sqlite_url()
 
 _is_postgres = DATABASE_URL.startswith("postgresql")
 

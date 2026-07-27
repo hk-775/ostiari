@@ -18,10 +18,45 @@ RUN npm run build
 FROM nginx:alpine
 COPY --from=build /app/dist /usr/share/nginx/html
 # SPA routing: serve index.html for unknown paths so client-side routes work.
+#
+# Listens on IPv6 as well as IPv4 explicitly. Upstream's entrypoint normally adds
+# the IPv6 line at boot, but it can't rewrite conf.d on a read-only root
+# filesystem — and then `localhost` inside the container resolves to ::1, so the
+# container healthcheck (`wget http://localhost:9000/`) gets connection-refused
+# while the site itself serves fine over IPv4. That reads as a broken app when
+# only the probe is broken. Declaring both here removes the dependency on that
+# script entirely.
 RUN printf 'server {\n\
   listen 9000;\n\
+  listen [::]:9000;\n\
   root /usr/share/nginx/html;\n\
   location / { try_files $uri $uri/ /index.html; }\n\
 }\n' > /etc/nginx/conf.d/default.conf
+
+# Run as the image's own non-root nginx user (uid 101) rather than root.
+#
+# Upstream nginx:alpine starts its master as root and only drops workers to
+# `nginx`, so the master keeps root for the lifetime of the container. Several
+# things have to change for the master itself to run unprivileged:
+#
+#   1. The pid file. Default is /var/run/nginx.pid, a root-owned dir.
+#   2. The five temp dirs nginx mkdir()s on startup under /var/cache/nginx. It
+#      fails hard ([emerg] mkdir ... Permission denied, exit 1) if it can't
+#      create them.
+#   3. The `user nginx;` directive, which is meaningless without root and logs a
+#      warning on every boot.
+#
+# All of (1) and (2) are pointed at /tmp, so a read-only root filesystem needs
+# exactly ONE writable mount instead of two. That matters because an emptyDir
+# mounted over /var/cache/nginx would mask anything pre-created here and arrive
+# root-owned — unwritable to uid 101 unless fsGroup happens to match, which it
+# does not in the control-plane pod (fsGroup 10001, nginx gid 101).
+#
+# The listen port (9000) is already above 1024, so binding needs no capability.
+RUN sed -i -e '/^user /d' -e 's#^pid .*#pid /tmp/nginx.pid;#' /etc/nginx/nginx.conf \
+    && sed -i '/^http {/a\    client_body_temp_path /tmp/client_temp;\n    proxy_temp_path /tmp/proxy_temp;\n    fastcgi_temp_path /tmp/fastcgi_temp;\n    uwsgi_temp_path /tmp/uwsgi_temp;\n    scgi_temp_path /tmp/scgi_temp;' /etc/nginx/nginx.conf \
+    && chown -R 101:101 /etc/nginx/conf.d
+
+USER 101:101
 EXPOSE 9000
 CMD ["nginx", "-g", "daemon off;"]
