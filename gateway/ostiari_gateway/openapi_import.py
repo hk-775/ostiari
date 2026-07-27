@@ -11,7 +11,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ostiari.openapi_import import OpenAPIError, fetch_spec_text, is_url, parse_spec
-
 from ostiari_gateway.models import ToolDefinition
 
 __all__ = ["OpenAPIError", "GeneratedTool", "generate_tools", "import_openapi"]

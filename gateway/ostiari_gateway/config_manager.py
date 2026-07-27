@@ -101,13 +101,15 @@ class ConfigManager:
         if not policy_data:
             return
 
-        # Write to temp file for Guard to consume
+        # Write to temp file for Guard to consume. delete=False because the file
+        # must outlive the handle — Guard reads it by path, and it's rewritten in
+        # place on every config push. The `with` only scopes the handle, not the
+        # file's lifetime.
         if self._policy_file is None:
-            f = tempfile.NamedTemporaryFile(
+            with tempfile.NamedTemporaryFile(
                 mode="w", suffix=".yaml", prefix="ostiari_policy_", delete=False
-            )
-            self._policy_file = Path(f.name)
-            f.close()
+            ) as f:
+                self._policy_file = Path(f.name)
 
         self._policy_file.write_text(yaml.dump(policy_data))
 

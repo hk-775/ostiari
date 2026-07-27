@@ -22,7 +22,6 @@ def _store():
     if not _URL:
         pytest.skip("set OSTIARI_TEST_REDIS_URL to run shared-store tests")
     import redis
-
     from ostiari_gateway.shared_store import SharedStore
     try:
         client = redis.Redis.from_url(_URL, socket_connect_timeout=2.0)

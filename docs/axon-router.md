@@ -26,7 +26,8 @@ shim — AxonLLM is the single routing authority across the gateway. Each model
 call goes through `AxonRouter` when available; otherwise the direct provider
 path runs (graceful fallback).
 
-- **`/invoke`** — full delegate, all modes (fallback / smart / ensemble).
+- **`/invoke`** — full delegate, all modes (fallback / smart / ensemble) — except
+  rounds that carry tool specs, which go direct to the provider (below).
 - **`/v1/messages` shim** — routes through AxonLLM in **single-response mode
   (ensemble disabled)**, since Claude Code needs exactly one Anthropic response
   per call to drive its tool loop. AxonLLM's OpenAI-shaped result is translated
@@ -36,13 +37,39 @@ path runs (graceful fallback).
   gives the shim AxonLLM's cost tracking, model access control, and
   health-aware fallback.
 
-### Model names on the shim
+### Model names
 
 AxonLLM selects from its own registry (e.g. `claude-sonnet`), which does not use
-Anthropic's dated IDs (`claude-sonnet-4-6`). When Claude Code sends a concrete
-model the shim checks AxonLLM's registry: if known, it's honored; if not, the
-shim **smart-routes** so AxonLLM picks a model it can actually serve. The
-client's requested model is advisory once AxonLLM is the authority.
+Anthropic's dated IDs (`claude-sonnet-4-6`). When a caller sends a concrete model,
+`AxonRouter.knows_model()` checks AxonLLM's registry: if known, it's honored; if not,
+the call **smart-routes** so AxonLLM picks a model it can actually serve. The client's
+requested model is advisory once AxonLLM is the authority.
+
+Both `/invoke` and the shim apply this guard. `/invoke` previously passed a configured
+default straight through, which 404'd inside AxonLLM whenever that default was a dated
+ID its registry didn't carry.
+
+### Tool calls bypass AxonLLM
+
+AxonLLM has **no tool-calling pass-through**: `ChatCompletionRequest` has no `tools`
+field, so a `tools` key in the request dict is dropped without error. The model is
+simply never told any tools exist and answers confidently that it has no database
+access — a response that looks successful and isn't.
+
+So an agentic round carrying tool specs goes **direct to the provider**, and
+`AxonRouter.route()` raises rather than silently dropping them. `supports_tools()`
+probes the dataclass for the field instead of hardcoding `False`, so this reverts to
+AxonLLM routing on its own once AxonLLM gains the field.
+
+The practical consequence: tool-using `/invoke` traffic doesn't get AxonLLM's smart
+routing or ensemble today. Tool-free traffic and the shim still do.
+
+### Errors are not silent
+
+AxonLLM signals failure by *returning* `{"error": …, "status_code": …}` rather than
+raising. Such a payload has no `choices`, so parsing it optimistically yielded
+`content=""` with 0 tokens — an empty HTTP 200 that read as a successful call.
+`_to_result` now raises on it, so the caller falls back to the direct provider path.
 
 ## Routing modes (opt-in via `/invoke` context)
 

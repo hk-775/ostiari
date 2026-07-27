@@ -235,6 +235,8 @@ docs/                 # architecture + the control plane guide
 - [`docs/control-plane-guide.md`](docs/control-plane-guide.md) — complete
   control-plane tour (novice-friendly, with diagrams, best practices, pitfalls)
 - [`docs/gateway-architecture.md`](docs/gateway-architecture.md) — gateway internals
+- [`docs/detection-engine.md`](docs/detection-engine.md) — PII redaction and
+  prompt-injection detection: config, what's detected, and what it can't catch
 - [`deploy/README.md`](deploy/README.md) — deployment reference
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to contribute
 

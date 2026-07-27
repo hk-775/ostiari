@@ -133,7 +133,7 @@ def import_openapi(
     Each REST operation becomes an Ostiari tool that inherits the full gate
     chain. SPEC may be an http(s) URL, a local file path, or literal JSON/YAML.
     """
-    import os
+    from pathlib import Path
 
     import httpx
 
@@ -145,8 +145,8 @@ def import_openapi(
     }
     if re.match(r"^https?://", spec.strip()):
         payload["source"] = spec.strip()
-    elif os.path.isfile(spec):
-        payload["source"] = open(spec, encoding="utf-8").read()
+    elif Path(spec).is_file():
+        payload["source"] = Path(spec).read_text(encoding="utf-8")
     else:
         payload["source"] = spec
 
@@ -495,7 +495,8 @@ def wallet() -> None:
     """Agent wallets — x402 balances, funding, and spend (pay-per-tool-call)."""
 
 
-def _wallet_client(control_plane: str):
+def _wallet_client(control_plane: str) -> tuple[Any, str]:
+    """Return (httpx module, normalized base URL) — httpx is an optional extra."""
     try:
         import httpx
     except ImportError:

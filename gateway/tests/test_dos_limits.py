@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 from ostiari_gateway.models import ModulesConfig, SidecarConfig
 from starlette.testclient import TestClient
 
