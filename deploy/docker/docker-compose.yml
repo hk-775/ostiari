@@ -70,13 +70,17 @@ services:
       # SQLite on a persisted volume by default. For production point this at
       # Postgres: postgresql+asyncpg://user:pass@host:5432/ostiari
       DATABASE_URL: "sqlite+aiosqlite:////data/control_plane.db"
+      # Everything writable (SQLite db + state.json) lives here, on the volume.
+      # DATABASE_URL above only covers the db; without this, state.json stays in
+      # the root-owned app dir and shutdown loses every persisted store.
+      OSTIARI_DATA_DIR: "/data"
     volumes:
       - control-plane-data:/data
-    # Runs as uid 10001. No read_only here, unlike the gateway: this app writes
-    # two paths derived from __file__ that land beside the installed package
-    # (database._DB_DIR at import, persistence.STATE_FILE on every gateway
-    # registration). The image pre-creates and chowns both; making / immutable
-    # needs those relocated in code first.
+    # Runs as uid 10001 with an immutable root filesystem. The volume above is the
+    # only writable path it needs — /tmp is not mounted, because nothing in this
+    # container writes there. Adding read_only without OSTIARI_DATA_DIR pointing
+    # off the root would fail at import, before the app starts.
+    read_only: true
     cap_drop:
       - ALL
     security_opt:

@@ -13,24 +13,20 @@ from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+# default_sqlite_url is the app's own default, shared rather than duplicated: this
+# file and control_plane.database both call it, so `alembic upgrade head` with no
+# DATABASE_URL cannot migrate a different file than the app opens. Importing
+# control_plane.env is safe — unlike control_plane.database, it creates no engine
+# (which would bind to a migration run's scratch DATABASE_URL and leak into the
+# engine the app reuses) and performs no import-time filesystem write.
+from control_plane.env import default_sqlite_url
 from control_plane.models.database import Base
 
 # Register the auth tables (users/sessions) on Base.metadata, mirroring app.py.
 import control_plane.auth.models  # noqa: F401,E402
 
-# Resolve the URL FRESH from the environment. We intentionally do NOT import
-# control_plane.database here: doing so would bind that module's global `engine`
-# to whatever DATABASE_URL is set during a migration run (e.g. a test's scratch
-# DB), leaking into the app engine other code reuses. Mirror its default path
-# instead.
-from pathlib import Path
-
-# control_plane/database.py resolves this as <repo>/control-plane/data — three
-# levels up from control_plane/database.py. This file sits one level deeper
-# (alembic/env.py), so it needs three .parent hops to land on the same dir.
-_DB_DIR = Path(__file__).resolve().parent.parent.parent / "data"
-_DEFAULT_URL = f"sqlite+aiosqlite:///{_DB_DIR / 'control_plane.db'}"
-DATABASE_URL = os.environ.get("DATABASE_URL", _DEFAULT_URL)
+# Resolve the URL FRESH from the environment on every migration run.
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip() or default_sqlite_url()
 
 config = context.config
 if config.config_file_name is not None:

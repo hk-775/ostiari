@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import tempfile
+from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
@@ -57,33 +58,128 @@ def test_upgrade_head_creates_org_schema():
 
 
 def test_default_db_path_matches_the_app():
-    """env.py must resolve the same default DB as control_plane.database.
+    """alembic and the app must resolve the same default DB.
 
-    Both duplicate the path by hand (env.py deliberately avoids importing
-    database.py — see the comment there). When they drift, `alembic upgrade head`
-    with no DATABASE_URL silently migrates a *different* file than the app opens:
-    the migration reports success while the app still fails on the missing
-    column. Every other test here sets DATABASE_URL, so only this one covers it.
+    When they drift, `alembic upgrade head` with no DATABASE_URL silently migrates
+    a *different* file than the app opens: the migration reports success while the
+    app still fails on the missing column. Every other test here sets DATABASE_URL,
+    so only this one covers it.
+
+    Both now call control_plane.env.default_sqlite_url() instead of each deriving
+    the path from its own __file__ (they previously disagreed by one directory
+    level). This asserts the single source stays single: a hand-rolled default
+    reintroduced in either file fails here.
     """
-    import re
-    from pathlib import Path
-
     backend = Path(__file__).resolve().parent.parent
-
-    def default_dir(src: Path, marker: str) -> Path:
-        line = next(
-            ln for ln in src.read_text().splitlines() if ln.startswith(marker)
+    for src in (backend / "alembic" / "env.py", backend / "control_plane" / "database.py"):
+        text = src.read_text()
+        assert "default_sqlite_url()" in text, (
+            f"{src.name} no longer derives its default DB from control_plane.env — "
+            "migrations and the app can now target different files"
         )
-        # Each `.parent` on Path(__file__) is one ".." from the file itself.
-        hops = len(re.findall(r"\.parent", line))
-        return src.joinpath(*[".."] * hops, "data").resolve()
+        # The interpolation form is what building one by hand looks like; the bare
+        # scheme also appears in prose (database.py's docstring documents it).
+        assert "sqlite+aiosqlite:///{" not in text, (
+            f"{src.name} builds a SQLite URL by hand again; use "
+            "control_plane.env.default_sqlite_url()"
+        )
 
-    env_dir = default_dir(backend / "alembic" / "env.py", "_DB_DIR")
-    app_dir = default_dir(backend / "control_plane" / "database.py", "_DB_DIR")
-    assert env_dir == app_dir, (
-        f"alembic env.py resolves {env_dir} but the app uses {app_dir} — "
-        "migrations would target the wrong database"
+
+def test_default_sqlite_url_honors_data_dir(tmp_path, monkeypatch):
+    """OSTIARI_DATA_DIR relocates the default DB — the read-only-rootfs lever."""
+    from control_plane.env import data_dir, default_sqlite_url
+
+    target = tmp_path / "nested" / "data"
+    monkeypatch.setenv("OSTIARI_DATA_DIR", str(target))
+    assert data_dir() == target
+    url = default_sqlite_url()
+    assert url == f"sqlite+aiosqlite:///{target / 'control_plane.db'}"
+    # Creates the dir (including parents) so SQLite can open the file there.
+    assert target.is_dir()
+
+
+def test_state_file_and_database_share_one_dir(tmp_path, monkeypatch):
+    """state.json must sit beside the database, under OSTIARI_DATA_DIR.
+
+    These two were derived from __file__ independently, with a different number of
+    .parent hops, so they landed one directory level apart. In the container that
+    split was the whole bug: the deploy image only redirects the *database* (via
+    DATABASE_URL), so state.json kept resolving relative to the package — a
+    root-owned directory the non-root runtime user cannot create. save_state then
+    raised PermissionError during lifespan shutdown, which uvicorn reports as
+    "Application shutdown failed" *after* the container has already served traffic:
+    every restart silently discarded the persisted quotas/experiments/models.
+    """
+    import subprocess
+    import sys
+
+    backend = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    target = tmp_path / "shared"
+    r = subprocess.run(
+        [sys.executable, "-c",
+         "from control_plane.persistence import STATE_FILE;"
+         "from control_plane.database import DATABASE_URL;"
+         "print(STATE_FILE); print(DATABASE_URL)"],
+        capture_output=True, text=True,
+        env={**os.environ, "PYTHONPATH": backend, "PYTHONDONTWRITEBYTECODE": "1",
+             "OSTIARI_DATA_DIR": str(target), "DATABASE_URL": ""},
     )
+    assert r.returncode == 0, r.stderr
+    state_file, db_url = r.stdout.split()
+    assert Path(state_file) == target / "state.json"
+    assert db_url.endswith(str(target / "control_plane.db"))
+    assert Path(state_file).parent == target, (
+        "state.json escaped the data dir; in a container it lands in a root-owned "
+        "directory and shutdown loses all in-memory state"
+    )
+
+
+def test_importing_database_writes_nothing(tmp_path):
+    """With DATABASE_URL set, importing the app must not write to disk at all.
+
+    This is what readOnlyRootFilesystem depends on. database.py used to mkdir
+    unconditionally at import time, resolved from __file__ — inside site-packages
+    in a container, unwritable to a non-root user, and raising before any
+    application code ran.
+
+    Audits syscalls rather than checking whether one expected path appeared: the
+    old code ignored OSTIARI_DATA_DIR and pointed at a directory that already
+    exists in a dev checkout, so a path-existence check passes even while the
+    container is broken. An audit hook sees the mkdir either way.
+    """
+    import subprocess
+    import sys
+
+    backend = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    probe = """
+import sys
+writes = []
+def hook(event, args):
+    if event == "os.mkdir":
+        writes.append("mkdir %s" % (args[0],))
+    elif event == "open" and len(args) > 1 and args[1] and set(args[1]) & set("wxa+"):
+        writes.append("open %s mode=%s" % (args[0], args[1]))
+sys.addaudithook(hook)
+import control_plane.database   # noqa
+import control_plane.persistence  # noqa
+if writes:
+    sys.stderr.write("import wrote to disk:\\n  " + "\\n  ".join(writes) + "\\n")
+    raise SystemExit(1)
+"""
+    # A subprocess, because these modules are already imported in this process.
+    # PYTHONDONTWRITEBYTECODE keeps __pycache__ writes out of the audit trail.
+    r = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True, text=True,
+        env={
+            **os.environ,
+            "PYTHONPATH": backend,
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "OSTIARI_DATA_DIR": str(tmp_path / "unused"),
+            "DATABASE_URL": f"sqlite+aiosqlite:///{tmp_path / 'x.db'}",
+        },
+    )
+    assert r.returncode == 0, r.stderr
 
 
 def test_downgrade_base_is_reversible():

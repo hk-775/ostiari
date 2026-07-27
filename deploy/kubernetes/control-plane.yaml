@@ -42,16 +42,23 @@ spec:
       containers:
         - name: backend
           image: ostiari-control-plane:latest
-          # No readOnlyRootFilesystem here, unlike the gateway. This app writes
-          # two paths derived from __file__ that land next to the installed
-          # package: database._DB_DIR (at import time) and persistence.STATE_FILE
-          # (on every gateway registration). The image pre-creates and chowns
-          # both. Making / read-only would need those relocated into the app
-          # first — worth doing, but it's a code change, not a manifest one.
+          # Immutable root filesystem: everything this app writes (the SQLite
+          # database and persistence.STATE_FILE, flushed on shutdown) is under
+          # /data, redirected there by OSTIARI_DATA_DIR below. The PVC is the only
+          # writable mount it needs — no /tmp, since nothing here writes one.
+          #
+          # OSTIARI_DATA_DIR is load-bearing for this flag, not cosmetic: without
+          # it those paths resolve from __file__ into the app directory (/app,
+          # root-owned), and the database one fails at *import* time — the
+          # container crash-loops before serving anything. Setting only
+          # DATABASE_URL is the subtler trap: it redirects the database but not
+          # state.json, and that failure surfaces only at shutdown, after the pod
+          # has been serving traffic, silently losing all persisted state.
           securityContext:
             runAsUser: 10001
             runAsGroup: 10001
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
           ports:
@@ -62,6 +69,8 @@ spec:
             # postgresql+asyncpg://user:pass@host:5432/ostiari
             - name: DATABASE_URL
               value: "sqlite+aiosqlite:////data/control_plane.db"
+            - name: OSTIARI_DATA_DIR
+              value: "/data"
           volumeMounts:
             - name: data
               mountPath: /data

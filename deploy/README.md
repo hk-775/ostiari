@@ -117,7 +117,8 @@ sam deploy --guided
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | SQLite in `data/` | `sqlite+aiosqlite:///…` (dev) or `postgresql+asyncpg://user:pass@host:5432/ostiari` (prod) |
+| `DATABASE_URL` | SQLite in `OSTIARI_DATA_DIR` | `sqlite+aiosqlite:///…` (dev) or `postgresql+asyncpg://user:pass@host:5432/ostiari` (prod) |
+| `OSTIARI_DATA_DIR` | `control-plane/data` | Directory for writable runtime state: the default SQLite database and `state.json`. Set to a mounted path (`/data` in the images here) so nothing is written into the app directory — required for `readOnlyRootFilesystem`, and required for `state.json` to survive a restart at all. |
 | `OSTIARI_NO_DEMO` | _(unset)_ | Set to `1` to start with an empty control plane (no seeded demo data) |
 | `OSTIARI_CORS_ORIGINS` | _(all, no creds)_ | Comma-separated allowed origins (enables credentialed CORS) |
 | `OSTIARI_REQUIRE_AUTH` | _(unset)_ | Set to require API authentication |
@@ -150,24 +151,38 @@ For ECS, store secrets in AWS Secrets Manager and reference them in the task def
   `allowPrivilegeEscalation: false`, all capabilities dropped, and
   `seccompProfile: RuntimeDefault`.
 
-  The **gateway** and **frontend** additionally run with a **read-only root
-  filesystem**, so a compromised container cannot rewrite its own code or install
-  anything. Each needs exactly one writable mount at `/tmp`:
-  - the gateway renders pushed policies to a tempfile there
+  All three also run with a **read-only root filesystem**, so a compromised
+  container cannot rewrite its own code or install anything. Each declares exactly
+  one writable mount:
+  - **gateway** → `/tmp`, where it renders pushed policies to a tempfile
     (`config_manager._policy_file`);
-  - nginx keeps its pid file and all five temp dirs there.
+  - **frontend** → `/tmp`, where nginx keeps its pid file and all five temp dirs;
+  - **control-plane backend** → `/data` (the PVC / named volume), holding the
+    SQLite database and `persistence.STATE_FILE`.
 
-  Removing that mount is a **delayed** failure, not a startup one: the gateway
-  goes Ready, passes its health check, and then 500s on the first policy push.
+  Note that removing a writable mount fails at three different *times*, which
+  mislead differently:
+  - Dropping the gateway's `/tmp` fails **late**: it goes Ready, passes its health
+    check, and then 500s on the first policy push.
+  - Dropping the backend's `OSTIARI_DATA_DIR` fails **at import**, before the app
+    exists, so it crash-loops with a traceback and never answers a probe.
+  - Getting the backend's data dir only *half* right fails **at shutdown**, which is
+    the worst of the three — see below.
+- **`OSTIARI_DATA_DIR` is what makes the backend's read-only root possible.** Unset,
+  both writable paths are derived from `__file__` and resolve relative to the app
+  directory (`/app` in the image), which is root-owned and uncreatable by the
+  non-root user. Setting it (the image defaults to `/data`) moves both onto the
+  mounted volume.
 
-  The **control-plane backend** is deliberately *not* read-only. It writes two
-  paths derived from `__file__` that land beside the installed package —
-  `database._DB_DIR` (at import time, so it raises before any code runs) and
-  `persistence.STATE_FILE` (on every gateway registration). The image pre-creates
-  and chowns both. Making it immutable requires relocating those into `/data`
-  first, which is a code change rather than a manifest one.
+  It also fixes a real bug that predates the read-only work. The database and
+  `state.json` resolved to *different* directories, one level apart, so
+  `DATABASE_URL` — which only redirects the database — left `state.json` behind in
+  `/app/data`. `save_state` then raised `PermissionError` in the lifespan shutdown
+  hook, which uvicorn logs as `Application shutdown failed` *after* the container
+  has already served traffic normally: every restart silently discarded the
+  persisted quotas, experiments, models, and provider config.
 
-  On ECS the writable mount is a plain empty `volumes` entry, **not**
+  On ECS the gateway's writable mount is a plain empty `volumes` entry, **not**
   `linuxParameters.tmpfs` — tmpfs is unsupported on the Fargate launch type this
   task family declares, and a task definition using it fails to launch.
 - **Database**: The control plane uses SQLite for dev. For production, configure PostgreSQL via RDS.
