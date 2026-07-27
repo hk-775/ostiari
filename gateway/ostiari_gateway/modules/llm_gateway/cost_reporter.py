@@ -55,7 +55,9 @@ class CostReporter:
             self._quota_enforcer.record_spend(cost_usd)
 
         self._buffer.append({
-            "sidecar_id": self._sidecar_id,
+            # The control plane's UsageRecordCreate names this gateway_id; sending
+            # sidecar_id (the gateway's internal name for itself) 422s the batch.
+            "gateway_id": self._sidecar_id,
             "agent_id": agent_id,
             "model": model,
             "input_tokens": input_tokens,

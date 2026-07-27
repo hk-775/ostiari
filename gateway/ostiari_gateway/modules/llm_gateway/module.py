@@ -5,6 +5,7 @@ from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
 from ostiari_gateway.modules.llm_gateway.executor import AgenticExecutor
 from ostiari_gateway.modules.llm_gateway.messages_proxy import MessagesProxy
@@ -95,7 +96,17 @@ class LLMGatewayModule:
                     content={"error": "LLM Gateway not initialized"},
                 )
 
-            body = await request.json()
+            # Client error, not server error: an unparseable body used to escape
+            # as an unhandled exception (500 + a stack trace in the log), which
+            # reads like a gateway fault and tells the caller nothing.
+            try:
+                body = await request.json()
+            except Exception:  # noqa: BLE001 — any decode failure is a bad request
+                return JSONResponse(status_code=400, content={"error": "Malformed JSON body"})
+            if not isinstance(body, dict):
+                return JSONResponse(status_code=400,
+                                    content={"error": "Body must be a JSON object"})
+
             agent_id = request.headers.get("X-Agent-Id", "unknown")
             framework = request.headers.get("X-Framework", "unknown")
             session_id = request.headers.get("X-Session-Id", "")
@@ -111,7 +122,19 @@ class LLMGatewayModule:
                         content={"blocked": True, "reason": auth_reason, "limit_type": "agent_authorization"},
                     )
 
-            req = InvokeRequest(**body)
+            # Schema violations (e.g. a client sending "prompt" instead of
+            # "messages") are the caller's error too. FastAPI's own 422 handler
+            # never sees this because the body is parsed by hand rather than
+            # declared as a typed parameter, so validate explicitly.
+            try:
+                req = InvokeRequest(**body)
+            except ValidationError as e:
+                return JSONResponse(status_code=422, content={
+                    "error": "Invalid request body",
+                    "detail": e.errors(include_url=False, include_context=False,
+                                       include_input=False),
+                })
+
             req.context.update({
                 "agent_id": agent_id, "framework": framework,
                 "session_id": session_id, "plan": plan, "step": step,

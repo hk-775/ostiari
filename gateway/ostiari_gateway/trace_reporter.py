@@ -82,6 +82,10 @@ class TraceReporter:
             # hang off. Stamped at the gateway so it's end-to-end consistent.
             "trace_id": uuid.uuid4().hex,
             "sidecar_id": self._sidecar_id,
+            # Same value under the name consumers actually read (the trace
+            # viewer's Gateway column, delegation reports). Sending only
+            # sidecar_id left that column blank for every live trace.
+            "gateway_id": self._sidecar_id,
             "action": action,
             "tier": tier,
             "score": score,

@@ -8,9 +8,19 @@ import uuid
 from collections import OrderedDict, defaultdict, deque
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.auth.dependencies import get_current_org
+from control_plane.database import get_db
 
 log = logging.getLogger("control_plane.traces")
 
@@ -71,9 +81,23 @@ _session_parents: dict[str, OrderedDict[str, str]] = defaultdict(OrderedDict)
 _SESSION_PARENTS_MAX = 2000
 
 
-def _event_org(event: dict[str, Any]) -> str:
-    """The org a trace event belongs to (gateway includes it; defaults to 'default')."""
-    return (event.get("org_id") or DEFAULT_ORG)
+async def _event_org(db: AsyncSession, event: dict[str, Any]) -> str:
+    """The org a trace event belongs to, derived from the reporting gateway.
+
+    Gateways post traces with no user token, so there is no caller org to scope
+    by — and the event body must NOT be believed either: trusting `org_id` let
+    any ingest caller file a trace into an arbitrary tenant's buffer, which is
+    read back by /recent, the WebSocket fan-out, compliance, ROI, trust scoring,
+    and discovery. Reading the `gateways` row is the only trustworthy source,
+    matching costs/payments/approvals ingest.
+
+    The gateway identifies itself as `sidecar_id` (its registered gateway id);
+    `gateway_id` is accepted as an alias for events shaped by other producers.
+    """
+    from control_plane.models.scoping import org_of_gateway
+
+    gw_id = event.get("sidecar_id") or event.get("gateway_id") or ""
+    return await org_of_gateway(db, gw_id)
 
 
 def recent_traces_for(org: str = DEFAULT_ORG) -> list[dict[str, Any]]:
@@ -316,7 +340,7 @@ def seed_traces() -> None:
 
 
 @router.post("/api/traces/ingest")
-async def ingest_trace(request: Request) -> Any:
+async def ingest_trace(request: Request, db: AsyncSession = Depends(get_db)) -> Any:
     """Receive a trace event from a gateway and broadcast to WebSocket clients.
 
     Idempotent on ``trace_id``: a re-POSTed trace (gateway retry) updates the
@@ -329,9 +353,19 @@ async def ingest_trace(request: Request) -> Any:
     if not event.get("trace_id"):
         event["trace_id"] = uuid.uuid4().hex
 
-    # The org this event belongs to (gateway includes org_id; defaults to
-    # "default"). All storage + fan-out below is confined to this org.
-    org = _event_org(event)
+    # The org this event belongs to, derived from the reporting gateway — never
+    # from the payload. All storage + fan-out below is confined to this org.
+    org = await _event_org(db, event)
+    # An ingest caller cannot choose its own tenant: drop any org_id it sent so
+    # the forged value can't survive into the stored event and mislead readers.
+    event["org_id"] = org
+
+    # The reporter sends `sidecar_id`; consumers (LiveTraces.tsx, delegation
+    # reports) read `gateway_id`. Without this the column showed empty for every
+    # live trace while the demo-seeded ones — which set both — looked fine.
+    if not event.get("gateway_id") and event.get("sidecar_id"):
+        event["gateway_id"] = event["sidecar_id"]
+
     buf = _recent_traces[org]
 
     # Assign the session parent span (parent_trace_id) so a prompt's sub-calls nest.

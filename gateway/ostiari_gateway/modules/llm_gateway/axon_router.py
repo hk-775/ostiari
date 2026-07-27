@@ -90,6 +90,42 @@ class AxonRouter:
             self._available = False
             log.warning("AxonLLM router unavailable (%s) — falling back to direct provider calls", e)
 
+    def knows_model(self, model: str) -> bool:
+        """Whether AxonLLM's registry recognizes this model name.
+
+        AxonLLM's registry uses undated names ("claude-sonnet"), not Anthropic's
+        dated IDs ("claude-sonnet-4-6"), so asking it to honor a configured
+        default verbatim 404s. Callers pass an unknown name as smart-route
+        instead, letting AxonLLM pick a model it can actually serve.
+        """
+        if not model:
+            return False
+        try:
+            reg = getattr(getattr(self._agent, "router", None), "model_registry", None)
+            return bool(reg and model in reg.models)
+        except Exception:  # noqa: BLE001
+            return False
+
+    def supports_tools(self) -> bool:
+        """Whether AxonLLM can carry tool specs through to the provider.
+
+        It cannot: ``src.gateway.models.ChatCompletionRequest`` has no ``tools``
+        field and ``GatewayAgent._parse_request`` reads only the fields it does
+        have, so a ``tools`` key in the request dict is dropped on the floor —
+        no error, just a model that was never told any tools exist. AxonLLM's own
+        PRD lists tool-use pass-through as an open question, not a feature.
+
+        Probed off the dataclass rather than hardcoded so this flips to True on
+        its own once AxonLLM gains the field.
+        """
+        try:
+            import dataclasses
+
+            from src.gateway.models import ChatCompletionRequest
+            return any(f.name == "tools" for f in dataclasses.fields(ChatCompletionRequest))
+        except Exception:  # noqa: BLE001
+            return False
+
     async def route(
         self,
         messages: list[dict[str, Any]],
@@ -108,10 +144,21 @@ class AxonRouter:
 
         ``ensemble`` may be True (default preset), a preset name, or False.
         ``smart`` requests task-classification routing. Otherwise ``model`` is used.
+
+        Raises if ``tools`` is set but AxonLLM can't carry them — routing the call
+        anyway would return a confident tool-free answer ("I don't have access to
+        a database") that reads like a successful response. Callers must check
+        ``supports_tools()`` first and take their direct-provider path instead.
         """
         self._ensure()
         if not self._available or self._agent is None:
             raise RuntimeError("AxonLLM router not available")
+
+        if tools and not self.supports_tools():
+            raise RuntimeError(
+                f"AxonLLM cannot carry tool specs ({len(tools)} requested) — "
+                "it would silently drop them and answer as if no tools existed"
+            )
 
         # AxonLLM takes OpenAI-shaped messages; fold any Anthropic system prompt in.
         msgs: list[dict[str, Any]] = []
@@ -175,6 +222,15 @@ def _flatten_blocks(system: Any) -> str:
 
 
 def _to_result(out: dict[str, Any]) -> AxonResult:
+    # AxonLLM signals failure by returning an {"error": ...} dict, not by raising
+    # (e.g. an unknown model id → {"error": {...}, "status_code": 404}). Such a
+    # payload has no "choices", so parsing it optimistically yields content="" and
+    # 0 tokens — an empty HTTP 200 that looks like a successful call. Raise instead
+    # so callers fall back to the direct provider path.
+    if "choices" not in out and (err := out.get("error")):
+        detail = err.get("message") or err.get("type") if isinstance(err, dict) else err
+        raise RuntimeError(f"AxonLLM error: {detail} (status {out.get('status_code', '?')})")
+
     choices = out.get("choices") or [{}]
     msg = (choices[0] or {}).get("message", {}) if choices else {}
     content = msg.get("content") or ""

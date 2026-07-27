@@ -30,3 +30,50 @@ class TestLLMResponseSplit:
         real = q.calculate_cost("claude-sonnet-4-6", 100, 900)      # output-heavy
         estimate = q.calculate_cost("claude-sonnet-4-6", 500, 500)  # the old 50/50
         assert real > estimate                       # 50/50 under-billed this call
+
+
+class TestCostReportPayload:
+    """The reported record must satisfy the control plane's UsageRecordCreate.
+
+    The gateway calls its own identity sidecar_id, but /api/costs/record/batch
+    requires gateway_id — sending the wrong key 422s the whole batch and the
+    reporter swallows it at debug level, so LLM spend silently never lands.
+    """
+
+    async def _buffer_one(self):
+        from ostiari_gateway.modules.llm_gateway.cost_reporter import CostReporter
+
+        reporter = CostReporter(control_plane_url="http://cp.invalid", sidecar_id="crm-agent")
+        await reporter.report(
+            model="claude-sonnet-4-6", input_tokens=100, output_tokens=50,
+            total_tokens=150, agent_id="planner-bot", action="llm.invoke",
+        )
+        return reporter._buffer[0]
+
+    async def test_record_uses_gateway_id_not_sidecar_id(self):
+        record = await self._buffer_one()
+        assert record["gateway_id"] == "crm-agent"
+        assert "sidecar_id" not in record
+
+    async def test_record_validates_against_control_plane_schema(self):
+        # Import the real schema so the two sides can't drift again unnoticed.
+        import pathlib
+        import sys
+
+        backend = pathlib.Path(__file__).resolve().parents[2] / "control-plane" / "backend"
+        if not (backend / "control_plane").is_dir():
+            import pytest
+            pytest.skip("control-plane backend not present")
+        sys.path.insert(0, str(backend))
+        try:
+            from control_plane.models.schemas import UsageRecordCreate
+        except ImportError:
+            import pytest
+            pytest.skip("control_plane not importable")
+        finally:
+            sys.path.remove(str(backend))
+
+        parsed = UsageRecordCreate(**await self._buffer_one())
+        assert parsed.gateway_id == "crm-agent"
+        assert parsed.agent_id == "planner-bot"
+        assert parsed.total_tokens == 150

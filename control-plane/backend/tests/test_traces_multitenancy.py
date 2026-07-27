@@ -3,10 +3,16 @@
 This is the fix for the cross-tenant leak where every org's traces were
 broadcast to every connected viewer. We verify:
 - an ingested event lands only in its own org's buffer,
-- an event with no org_id defaults to "default" (back-compat),
+- an event from an unknown gateway defaults to "default" (back-compat),
 - the WebSocket fan-out only targets the event's org (verified with fake
   sockets, since the ASGI test client doesn't do real WebSockets),
 - the /recent read endpoint is org-scoped.
+
+The owning org comes from the REPORTING GATEWAY's row, not the event body —
+a trace arrives with no user token, and believing a payload's `org_id` would
+let any ingest caller plant traces in another tenant's buffer. So each test
+registers its gateways under an org and reports as that gateway; see
+TestTraceIngestIsolation in test_multitenancy.py for the isolation proof.
 """
 
 from __future__ import annotations
@@ -25,22 +31,37 @@ class _FakeWS:
         self.received.append(data)
 
 
+def _hdr(org):
+    from control_plane.auth.service import create_access_token
+    tok = create_access_token(user_id=1, email=f"{org}@t.io", role="admin", org=org)
+    return {"Authorization": f"Bearer {tok}"}
+
+
+async def _seed_gateways(client):
+    """Register one gateway per org — the source of truth for trace ownership."""
+    for gw, org in [("gw-a", "org-a"), ("gw-b", "org-b")]:
+        await client.post("/api/gateways", headers=_hdr(org),
+                          json={"id": gw, "name": gw, "endpoint": f"http://{gw}:8421",
+                                "description": ""})
+
+
 class TestIngestScoping:
     async def test_event_lands_in_its_own_org_buffer(self, client):
         from control_plane.routers import traces
+        await _seed_gateways(client)
         traces._recent_traces.clear()
         await client.post("/api/traces/ingest", json={
-            "trace_id": "t-a", "org_id": "org-a", "action": "x", "tier": "allow",
+            "trace_id": "t-a", "sidecar_id": "gw-a", "action": "x", "tier": "allow",
         })
         await client.post("/api/traces/ingest", json={
-            "trace_id": "t-b", "org_id": "org-b", "action": "y", "tier": "allow",
+            "trace_id": "t-b", "sidecar_id": "gw-b", "action": "y", "tier": "allow",
         })
         a_ids = [t["trace_id"] for t in traces._recent_traces["org-a"]]
         b_ids = [t["trace_id"] for t in traces._recent_traces["org-b"]]
         assert a_ids == ["t-a"]
         assert b_ids == ["t-b"]
 
-    async def test_event_without_org_defaults_to_default(self, client):
+    async def test_event_from_unknown_gateway_defaults_to_default(self, client):
         from control_plane.routers import traces
         traces._recent_traces.clear()
         await client.post("/api/traces/ingest", json={
@@ -50,6 +71,7 @@ class TestIngestScoping:
 
     async def test_broadcast_only_reaches_same_org_sockets(self, client):
         from control_plane.routers import traces
+        await _seed_gateways(client)
         traces._recent_traces.clear()
         traces._ws_clients.clear()
         sock_a, sock_b = _FakeWS(), _FakeWS()
@@ -57,7 +79,7 @@ class TestIngestScoping:
         traces._ws_clients["org-b"].add(sock_b)
 
         await client.post("/api/traces/ingest", json={
-            "trace_id": "leak-check", "org_id": "org-a", "action": "x", "tier": "allow",
+            "trace_id": "leak-check", "sidecar_id": "gw-a", "action": "x", "tier": "allow",
         })
         # Only org-a's socket should have received the event — no cross-tenant leak.
         assert [e["trace_id"] for e in sock_a.received] == ["leak-check"]
@@ -66,19 +88,15 @@ class TestIngestScoping:
 
 class TestRecentReadScoping:
     async def test_recent_is_org_scoped(self, client):
-        from control_plane.auth.service import create_access_token
         from control_plane.routers import traces
+        await _seed_gateways(client)
         traces._recent_traces.clear()
-        for tid, org in [("r-a", "org-a"), ("r-b", "org-b")]:
+        for tid, gw in [("r-a", "gw-a"), ("r-b", "gw-b")]:
             await client.post("/api/traces/ingest", json={
-                "trace_id": tid, "org_id": org, "action": "x", "tier": "allow",
+                "trace_id": tid, "sidecar_id": gw, "action": "x", "tier": "allow",
             })
 
-        def hdr(org):
-            t = create_access_token(user_id=1, email=f"{org}@t.io", role="admin", org=org)
-            return {"Authorization": f"Bearer {t}"}
-
-        a = (await client.get("/api/traces/recent", headers=hdr("org-a"))).json()
-        b = (await client.get("/api/traces/recent", headers=hdr("org-b"))).json()
+        a = (await client.get("/api/traces/recent", headers=_hdr("org-a"))).json()
+        b = (await client.get("/api/traces/recent", headers=_hdr("org-b"))).json()
         assert [t["trace_id"] for t in a["traces"]] == ["r-a"]
         assert [t["trace_id"] for t in b["traces"]] == ["r-b"]

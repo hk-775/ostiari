@@ -18,33 +18,60 @@ CONTROL_PLANE = "http://localhost:8400"
 GATEWAY_ID = "crm-agent"
 DEMO_TOOLS = "http://localhost:9300"
 
+def _schema(*required: str, **optional: str) -> dict:
+    """A JSON Schema for a flat string-parameter tool.
+
+    Every tool needs one: an LLM driving the agentic loop only learns a tool's
+    parameters from its schema. With none, the tool is advertised as taking no
+    arguments and the model can't produce a usable call — the args named in the
+    description are prose it has no contract for.
+    """
+    props = {name: {"type": "string", "description": desc}
+             for name, desc in ((r, "") for r in required)}
+    props.update({name: {"type": "string", "description": desc}
+                  for name, desc in optional.items()})
+    return {"type": "object", "properties": props, "required": list(required)}
+
+
 TOOLS = [
     {"name": "web_search", "endpoint": f"{DEMO_TOOLS}/web_search", "method": "POST",
-     "description": "Search the web for information on a topic. Args: query (string)."},
+     "description": "Search the web for information on a topic.",
+     "schema_json": _schema("query")},
     {"name": "db_query", "endpoint": f"{DEMO_TOOLS}/db_query", "method": "POST",
-     "description": "Run a read-only SQL query against the app database. Args: sql (string)."},
+     "description": "Run a read-only SQL query against the app database.",
+     "schema_json": _schema("sql")},
     {"name": "send_email", "endpoint": f"{DEMO_TOOLS}/send_email", "method": "POST",
-     "description": "Send an email. Args: to (string), subject (string), body (string)."},
+     "description": "Send an email.",
+     "schema_json": _schema("to", "subject", "body")},
     {"name": "github.list_repos", "endpoint": f"{DEMO_TOOLS}/github.list_repos", "method": "POST",
-     "description": "List the user's GitHub repositories. No required args."},
+     "description": "List the user's GitHub repositories.",
+     "schema_json": _schema()},
     {"name": "github.search_code", "endpoint": f"{DEMO_TOOLS}/github.search_code", "method": "POST",
-     "description": "Search code across GitHub repositories. Args: query (string)."},
+     "description": "Search code across GitHub repositories.",
+     "schema_json": _schema("query")},
     {"name": "github.create_issue", "endpoint": f"{DEMO_TOOLS}/github.create_issue", "method": "POST",
-     "description": "Open a GitHub issue. Args: repo (string), title (string), body (string)."},
+     "description": "Open a GitHub issue.",
+     "schema_json": _schema("repo", "title", "body")},
     {"name": "drawio.list_diagrams", "endpoint": f"{DEMO_TOOLS}/drawio.list_diagrams", "method": "POST",
-     "description": "List draw.io diagrams. No required args."},
+     "description": "List draw.io diagrams.",
+     "schema_json": _schema()},
     {"name": "drawio.create_diagram", "endpoint": f"{DEMO_TOOLS}/drawio.create_diagram", "method": "POST",
-     "description": "Create a draw.io diagram. Args: name (string)."},
+     "description": "Create a draw.io diagram.",
+     "schema_json": _schema("name")},
     {"name": "drawio.add_shape", "endpoint": f"{DEMO_TOOLS}/drawio.add_shape", "method": "POST",
-     "description": "Add a shape to a diagram. Args: diagram_id (string), shape (string), label (string)."},
+     "description": "Add a shape to a diagram.",
+     "schema_json": _schema("diagram_id", "shape", "label")},
     # Destructive tools — registered so the Scenarios demo exercises the policy
     # guard (the block-destructive policy blocks these before they run).
     {"name": "db_delete", "endpoint": f"{DEMO_TOOLS}/db_delete", "method": "POST",
-     "description": "Delete rows from a database table. Args: table (string)."},
+     "description": "Delete rows from a database table.",
+     "schema_json": _schema("table")},
     {"name": "github.delete_repo", "endpoint": f"{DEMO_TOOLS}/github.delete_repo", "method": "POST",
-     "description": "Delete a GitHub repository. Args: repo (string)."},
+     "description": "Delete a GitHub repository.",
+     "schema_json": _schema("repo")},
     {"name": "drawio.delete_diagram", "endpoint": f"{DEMO_TOOLS}/drawio.delete_diagram", "method": "POST",
-     "description": "Delete a draw.io diagram. Args: id (string)."},
+     "description": "Delete a draw.io diagram.",
+     "schema_json": _schema("id")},
 ]
 
 # Block patterns for the crm-agent demo. fnmatch-style; must match the actual

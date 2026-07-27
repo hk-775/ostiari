@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
 from control_plane.models.database import UsageRecord
+from control_plane.models.scoping import scoped
 
 router = APIRouter(prefix="/api/experiments", tags=["experiments"])
 
@@ -91,11 +92,16 @@ async def get_experiment_results(
         raise HTTPException(status_code=404, detail="Experiment not found")
 
     since = datetime.now(timezone.utc) - timedelta(days=period_days)
+    # The experiment is already org-keyed, so its gateway_id belongs to this org;
+    # scope the usage query too rather than relying on that indirection.
     result = await db.execute(
-        select(UsageRecord).where(
-            UsageRecord.timestamp >= since,
-            UsageRecord.gateway_id == exp.gateway_id,
-            UsageRecord.model.in_([exp.model_a, exp.model_b]),
+        scoped(
+            select(UsageRecord).where(
+                UsageRecord.timestamp >= since,
+                UsageRecord.gateway_id == exp.gateway_id,
+                UsageRecord.model.in_([exp.model_a, exp.model_b]),
+            ),
+            UsageRecord, org,
         )
     )
     records = result.scalars().all()

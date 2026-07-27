@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
 from control_plane.models.database import Gateway, PaymentRecord, Wallet
-from control_plane.models.scoping import get_scoped, scoped, stamp
+from control_plane.models.scoping import get_scoped, org_of_gateway, scoped, stamp
 
 router = APIRouter(prefix="/api/payments", tags=["payments"])
 
@@ -81,8 +81,7 @@ async def ingest_payment(body: PaymentIngest, db: AsyncSession = Depends(get_db)
     """
     # Unauthenticated gateway path — org comes from the reporting gateway's row
     # (default when the gateway is unknown/empty), not a user token.
-    gw = await db.get(Gateway, body.gateway_id) if body.gateway_id else None
-    rec_org = (gw.org_id if gw else None) or "default"
+    rec_org = await org_of_gateway(db, body.gateway_id)
     db.add(PaymentRecord(
         agent_id=body.agent_id, gateway_id=body.gateway_id, action=body.action,
         amount_usdc=body.amount_usdc, settled=body.settled, tx_hash=body.tx_hash,

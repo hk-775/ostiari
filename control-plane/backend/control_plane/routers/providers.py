@@ -206,6 +206,28 @@ _KNOWN_MODELS: dict[str, list[str]] = {
         "command-r-plus",
         "command-r",
     ],
+    "xai": [
+        "grok-3",
+        "grok-3-mini",
+        "grok-2-vision-1212",
+    ],
+    "together": [
+        "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+        "deepseek-ai/DeepSeek-R1",
+        "Qwen/Qwen2.5-72B-Instruct-Turbo",
+        "mistralai/Mistral-Small-24B-Instruct-2501",
+    ],
+}
+
+# Providers that speak the OpenAI wire format, so connectivity is one shared
+# probe against /v1/chat/completions. Base URLs and probe models mirror
+# AxonLLM's provider_config/adapters — the router is what ultimately calls
+# these, so a divergence here would "pass" a key that can't actually route.
+_OPENAI_COMPATIBLE: dict[str, dict[str, str]] = {
+    "xai": {"base_url": "https://api.x.ai", "probe_model": "grok-3-mini"},
+    "together": {"base_url": "https://api.together.xyz",
+                 "probe_model": "meta-llama/Llama-3.3-70B-Instruct-Turbo"},
 }
 
 # ---------------------------------------------------------------------------
@@ -440,6 +462,33 @@ async def test_provider(name: str, _user=_admin_dep, org: str = Depends(get_curr
                 if resp.status_code == 401:
                     success = False
                     error_msg = "Invalid API key"
+
+            elif name in _OPENAI_COMPATIBLE:
+                # xAI and Together both speak the OpenAI wire format, so one
+                # branch covers them (and any future OpenAI-compatible provider)
+                # rather than two near-copies of the /v1/chat/completions probe.
+                # Base URLs and probe models match AxonLLM's adapters so a key
+                # that tests OK here is one the router can actually route to.
+                spec = _OPENAI_COMPATIBLE[name]
+                base = rec.api_base_url or spec["base_url"]
+                resp = await client.post(
+                    f"{base}/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": spec["probe_model"],
+                        "max_tokens": 1,
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                )
+                success = resp.status_code < 500
+                if resp.status_code in (401, 403):
+                    success = False
+                    error_msg = "Invalid API key"
+                elif resp.status_code >= 500:
+                    error_msg = f"Server error: {resp.status_code}"
 
             else:
                 error_msg = f"Unknown provider type: {name}"
