@@ -8,7 +8,18 @@ class OstiariError(Exception):
 
 
 class ActionBlockedError(OstiariError):
-    """Raised when an action is blocked by the evaluation pipeline."""
+    """Raised when an action is blocked by the evaluation pipeline.
+
+    ``original_tier`` is the tier the action actually *scored*, before
+    fail-closed handling. A blocked action normally scored "block", but an
+    ``intervene`` with no resolver collapses to a block when ``fail_open`` is
+    off — and the two are not the same decision. "This is forbidden" and "a
+    human needs to look at this, and no human was reachable" call for different
+    responses from a caller that *can* reach a human (the gateway's HITL gate
+    pauses for approval instead of refusing outright), so the distinction has to
+    survive the raise. ``signals`` rides along for the same reason: an
+    explanation of *why* is what the approver reads.
+    """
 
     def __init__(
         self,
@@ -17,12 +28,16 @@ class ActionBlockedError(OstiariError):
         score: int,
         rule_id: str | None,
         reason: str,
+        original_tier: str = "block",
+        signals: list[object] | None = None,
     ) -> None:
         self.action = action
         self.params = params
         self.score = score
         self.rule_id = rule_id
         self.reason = reason
+        self.original_tier = original_tier
+        self.signals = signals or []
         super().__init__(f"Action '{action}' blocked (score: {score}). Reason: {reason}")
 
 

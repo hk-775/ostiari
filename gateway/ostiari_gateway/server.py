@@ -2,6 +2,7 @@
 
 import logging
 import os as _os
+import uuid as _uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -12,6 +13,7 @@ from opentelemetry import trace
 
 from ostiari.exceptions import ActionBlockedError
 from ostiari.explain import explain as _explain
+from ostiari.models import RiskSignal, ValidationResult
 from ostiari_gateway.config_manager import ConfigManager
 from ostiari_gateway.models import PolicyConfig, SidecarConfig, ToolDefinition
 from ostiari_gateway.telemetry import (
@@ -237,6 +239,38 @@ def _authenticate_agent(request: Request, agent_id: str) -> JSONResponse | None:
 def _hitl_enabled() -> bool:
     """Human-in-the-loop enforcement for the intervene tier (off by default)."""
     return _os.environ.get("OSTIARI_HITL", "off").lower() in ("1", "true", "yes", "on")
+
+
+def _deferrable_intervention(e: ActionBlockedError, *, shadow: bool) -> ValidationResult | None:
+    """Recover the intervene decision from a fail-closed block, if that's what it was.
+
+    A fail-closed Guard has no way to resolve an intervene in-process, so it
+    collapses it to a block and raises. That is the right answer for a library
+    caller with no human to ask — but the sidecar *does* have one: the control
+    plane's approvals queue. Without this, production (fail-closed by default)
+    silently deletes the intervene tier: every scored-intervene call 403s and the
+    Approvals page stays empty no matter what ``OSTIARI_HITL`` says.
+
+    Returns a ValidationResult carrying the tier as *scored* so the HITL gate
+    below can treat it exactly like any other intervene, or None when the block
+    must stand: a real block (policy deny, over the block threshold), HITL off
+    (nobody to defer *to*), or shadow mode — shadow never enforces and its
+    short-circuit runs ahead of the approval gate, so there is no decision to
+    defer, only one to record.
+    """
+    if shadow or not (_hitl_enabled() and e.original_tier == "intervene"):
+        return None
+    return ValidationResult(
+        tier="intervene",
+        original_tier="intervene",
+        score=e.score,
+        signals=[s for s in e.signals if isinstance(s, RiskSignal)],
+        trace_id=str(_uuid.uuid4()),
+        action=e.action,
+        params=e.params,
+        duration_ms=0.0,
+        rule_triggered=e.rule_id,
+    )
 
 
 async def _check_approval(control_plane_url: str, approval_id: str) -> str | None:
@@ -726,30 +760,41 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
             _raw = getattr(result, "original_tier", result.tier)
             cross_agent.record_outcome(agent_id, risky=_raw in ("intervene", "block"))
         except ActionBlockedError as e:
-            record_validate_result(validate_span, "block", e.score, blocked=True)
-            cross_agent.record_outcome(agent_id, risky=True)
-            await trace_reporter.report(
-                action=action, tier="block", score=e.score, duration_ms=0,
-                agent_id=agent_id, framework=framework, is_mcp=is_mcp_tool,
-                blocked_reason=e.reason,
-                endpoint=tool.endpoint if tool else "mcp://" if is_mcp_tool else "",
-                session_id=session_id, plan=plan, step=step, params=params,
-                shadow=shadow, would_block=shadow,
-            )
-            if not shadow:
-                return JSONResponse(
-                    status_code=403,
-                    content={
-                        "blocked": True,
-                        "action": action,
-                        "score": e.score,
-                        "reason": e.reason,
-                        "rule_id": e.rule_id,
-                    },
+            # A fail-closed Guard raises for an unresolved intervene too. If HITL
+            # is on we have a human to ask, so rebuild the intervene and fall
+            # through to the approval gate instead of refusing outright.
+            deferred = _deferrable_intervention(e, shadow=shadow)
+            if deferred is None:
+                record_validate_result(validate_span, "block", e.score, blocked=True)
+                cross_agent.record_outcome(agent_id, risky=True)
+                await trace_reporter.report(
+                    action=action, tier="block", score=e.score, duration_ms=0,
+                    agent_id=agent_id, framework=framework, is_mcp=is_mcp_tool,
+                    blocked_reason=e.reason,
+                    endpoint=tool.endpoint if tool else "mcp://" if is_mcp_tool else "",
+                    session_id=session_id, plan=plan, step=step, params=params,
+                    shadow=shadow, would_block=shadow,
                 )
-            # Shadow mode: policy WOULD block, but we let it proceed to a mocked
-            # execution so the caller sees a realistic (side-effect-free) response.
-            return _shadow_response(action, "policy", e.reason, score=e.score, rule_id=e.rule_id)
+                if not shadow:
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "blocked": True,
+                            "action": action,
+                            "score": e.score,
+                            "reason": e.reason,
+                            "rule_id": e.rule_id,
+                        },
+                    )
+                # Shadow mode: policy WOULD block, but we let it proceed to a
+                # mocked execution so the caller sees a realistic
+                # (side-effect-free) response.
+                return _shadow_response(
+                    action, "policy", e.reason, score=e.score, rule_id=e.rule_id
+                )
+            record_validate_result(validate_span, "intervene", e.score, blocked=False)
+            cross_agent.record_outcome(agent_id, risky=True)
+            result = deferred
 
         # Shadow mode: the call is ALLOWED, but we never run the real tool
         # (no real emails, DB writes, downstream agent calls). Return a
@@ -778,8 +823,9 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
         # otherwise we create a pending approval and return 202 (the agent
         # re-submits with the id once a human approves in the dashboard).
         # Use the gateway's RAW tier: the Guard may collapse an intervene to
-        # allow/block internally (fail_open / callback), but original_tier still
-        # reports it so the sidecar's HITL gate can act on it.
+        # allow/block internally (fail_open / callback / fail-closed raise), but
+        # original_tier still reports it so the sidecar's HITL gate can act on
+        # it — including when it arrived here as an ActionBlockedError above.
         raw_tier = getattr(result, "original_tier", result.tier)
         if _hitl_enabled() and raw_tier == "intervene":
             # trace_reporter holds the live CP URL (set at startup); manager.config
@@ -1049,13 +1095,19 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
                 "action": action,
                 "score": result.score,
                 "tier": result.tier,
+                "original_tier": result.original_tier,
             }
         except ActionBlockedError as e:
+            # `tier` is the enforced decision (not allowed, whatever the reason);
+            # `original_tier` is what it scored. They differ for a fail-closed
+            # intervene, and a caller deciding whether to route this to a human
+            # needs the second one.
             return {
                 "allowed": False,
                 "action": action,
                 "score": e.score,
                 "tier": "block",
+                "original_tier": e.original_tier,
                 "reason": e.reason,
                 "rule_id": e.rule_id,
             }
