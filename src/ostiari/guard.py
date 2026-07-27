@@ -236,6 +236,11 @@ class Guard:
                 score=gateway_decision.score,
                 rule_id=gateway_decision.rule_triggered,
                 reason="Risk score exceeded block threshold",
+                # The tier as *scored*, which is not always "block": a fail-closed
+                # intervene lands here too. A caller that can reach a human needs
+                # to tell those apart (see ActionBlockedError).
+                original_tier=gateway_decision.tier,
+                signals=list(gateway_decision.signals),
             )
 
         if probing and self._breaker is not None:
