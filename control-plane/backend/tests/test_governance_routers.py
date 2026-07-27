@@ -112,6 +112,125 @@ class TestProviders:
         assert (await client.get("/api/providers/ghost/key", headers=admin_headers)).status_code == 404
 
 
+class TestOpenAICompatibleProviders:
+    """xAI and Together are OpenAI-compatible and share one /test branch.
+
+    Before wiring, both fell through to `else: Unknown provider type`, so a
+    configured key could never verify — the reason register_demo_providers.py
+    used to skip them. These tests stub the outbound call: the contract under
+    test is the branch's request shape and status mapping, not the vendor's API.
+    """
+
+    @pytest.fixture
+    def captured(self, monkeypatch):
+        """Capture the provider module's outbound probe and control its response.
+
+        Patches the AsyncClient the router itself constructs, NOT httpx globally —
+        the ASGI test client is also an httpx.AsyncClient, so a global patch
+        swallows the inbound request and `calls` records that instead.
+        """
+        import httpx as _httpx
+        from control_plane.routers import providers as _mod
+
+        calls: list[dict] = []
+        state = {"status": 200}
+
+        class _FakeClient:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def post(self, url, headers=None, json=None, **kw):
+                calls.append({"url": url, "headers": headers or {}, "json": json or {}})
+                return _httpx.Response(state["status"], json={"ok": True})
+
+        monkeypatch.setattr(_mod.httpx, "AsyncClient", _FakeClient)
+        return calls, state
+
+    @pytest.mark.parametrize(
+        ("name", "host", "model"),
+        [("xai", "https://api.x.ai", "grok-3-mini"),
+         ("together", "https://api.together.xyz", "meta-llama/Llama-3.3-70B-Instruct-Turbo")],
+    )
+    async def test_probe_targets_the_right_endpoint(self, client, admin_headers, captured,
+                                                   name, host, model):
+        calls, _ = captured
+        await client.post("/api/providers", json={"name": name, "api_key": "sk-live"},
+                          headers=admin_headers)
+        r = await client.post(f"/api/providers/{name}/test", headers=admin_headers)
+        assert r.status_code == 200, r.text
+        assert r.json()["success"] is True
+        # Endpoint, auth scheme and probe model must match what AxonLLM routes
+        # to — a divergence would pass a key the router can't actually use.
+        assert calls[-1]["url"] == f"{host}/v1/chat/completions"
+        assert calls[-1]["headers"]["Authorization"] == "Bearer sk-live"
+        assert calls[-1]["json"]["model"] == model
+
+    @pytest.mark.parametrize("name", ["xai", "together"])
+    async def test_no_longer_unknown_provider_type(self, client, admin_headers, captured, name):
+        await client.post("/api/providers", json={"name": name, "api_key": "k"},
+                          headers=admin_headers)
+        body = (await client.post(f"/api/providers/{name}/test", headers=admin_headers)).json()
+        assert "Unknown provider type" not in str(body.get("error", ""))
+
+    @pytest.mark.parametrize("code", [401, 403])
+    async def test_rejected_key_reports_invalid(self, client, admin_headers, captured, code):
+        """403 matters here: xAI returns it for a key with no credit, which a
+        `401-only` check would have reported as a healthy provider."""
+        _, state = captured
+        state["status"] = code
+        await client.post("/api/providers", json={"name": "xai", "api_key": "bad"},
+                          headers=admin_headers)
+        body = (await client.post("/api/providers/xai/test", headers=admin_headers)).json()
+        assert body["success"] is False
+        assert body["error"] == "Invalid API key"
+
+    async def test_server_error_is_not_reported_as_connected(self, client, admin_headers, captured):
+        _, state = captured
+        state["status"] = 503
+        await client.post("/api/providers", json={"name": "together", "api_key": "k"},
+                          headers=admin_headers)
+        body = (await client.post("/api/providers/together/test", headers=admin_headers)).json()
+        assert body["success"] is False
+
+    async def test_custom_base_url_overrides_the_default(self, client, admin_headers, captured):
+        calls, _ = captured
+        await client.post("/api/providers", json={"name": "xai", "api_key": "k",
+                                                 "api_base_url": "http://proxy.internal"},
+                          headers=admin_headers)
+        await client.post("/api/providers/xai/test", headers=admin_headers)
+        assert calls[-1]["url"] == "http://proxy.internal/v1/chat/completions"
+
+    @pytest.mark.parametrize("name", ["xai", "together"])
+    async def test_models_are_advertised(self, client, admin_headers, captured, name):
+        await client.post("/api/providers", json={"name": name, "api_key": "k"},
+                          headers=admin_headers)
+        await client.post(f"/api/providers/{name}/test", headers=admin_headers)
+        listed = (await client.get("/api/providers", headers=admin_headers)).json()
+        rec = next(p for p in listed if p["name"] == name)
+        assert rec["models_available"], "a connected provider must advertise its models"
+
+    @pytest.mark.parametrize(
+        ("model", "provider"),
+        [("grok-3", "xai"), ("grok-3-mini", "xai"),
+         ("llama-3.3-70b", "together"), ("deepseek-r1-together", "together")],
+    )
+    async def test_registry_has_routable_models(self, client, model, provider):
+        """A provider with no models in the registry is display-only — the
+        router needs an entry mapping a model name to that provider."""
+        from control_plane.routers.model_config import seed_models
+        seed_models()  # conftest clears _models between tests
+        models = (await client.get("/api/models")).json()
+        entry = next((m for m in models if m["name"] == model), None)
+        assert entry is not None, f"{model} missing from the model registry"
+        assert provider in [p["provider"] for p in entry["providers"]]
+
+
 # ─── Traces (in-memory) ──────────────────────────────────────────────────────
 
 class TestTraces:

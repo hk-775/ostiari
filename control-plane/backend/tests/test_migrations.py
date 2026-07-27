@@ -56,6 +56,36 @@ def test_upgrade_head_creates_org_schema():
             _restore_env(prev)
 
 
+def test_default_db_path_matches_the_app():
+    """env.py must resolve the same default DB as control_plane.database.
+
+    Both duplicate the path by hand (env.py deliberately avoids importing
+    database.py — see the comment there). When they drift, `alembic upgrade head`
+    with no DATABASE_URL silently migrates a *different* file than the app opens:
+    the migration reports success while the app still fails on the missing
+    column. Every other test here sets DATABASE_URL, so only this one covers it.
+    """
+    import re
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parent.parent
+
+    def default_dir(src: Path, marker: str) -> Path:
+        line = next(
+            ln for ln in src.read_text().splitlines() if ln.startswith(marker)
+        )
+        # Each `.parent` on Path(__file__) is one ".." from the file itself.
+        hops = len(re.findall(r"\.parent", line))
+        return src.joinpath(*[".."] * hops, "data").resolve()
+
+    env_dir = default_dir(backend / "alembic" / "env.py", "_DB_DIR")
+    app_dir = default_dir(backend / "control_plane" / "database.py", "_DB_DIR")
+    assert env_dir == app_dir, (
+        f"alembic env.py resolves {env_dir} but the app uses {app_dir} — "
+        "migrations would target the wrong database"
+    )
+
+
 def test_downgrade_base_is_reversible():
     prev = os.environ.get("DATABASE_URL")
     with tempfile.TemporaryDirectory() as d:

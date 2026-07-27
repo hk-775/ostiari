@@ -19,6 +19,7 @@ from control_plane import token_broker
 from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
 from control_plane.models.database import UsageRecord
+from control_plane.models.scoping import scoped
 
 router = APIRouter(prefix="/api/token-broker", tags=["token-broker"])
 
@@ -61,8 +62,11 @@ async def reset_config(org: str = Depends(get_current_org)):
 async def report(period_days: int = Query(default=30, le=365), db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
     """Broker economics over usage in the window: savings, cost, margin per model."""
     since = datetime.now(timezone.utc) - timedelta(days=period_days)
+    # Scope to the caller's org: this already reads THEIR broker config, so
+    # aggregating every tenant's usage against it reported one org's economics
+    # over another's spend.
     records = (await db.execute(
-        select(UsageRecord).where(UsageRecord.timestamp >= since)
+        scoped(select(UsageRecord).where(UsageRecord.timestamp >= since), UsageRecord, org)
     )).scalars().all()
 
     rep = token_broker.compute_broker(

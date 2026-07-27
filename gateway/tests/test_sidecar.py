@@ -138,6 +138,30 @@ class TestToolProxy:
         resp = configured_client.post("/tool/nonexistent", json={})
         assert resp.status_code == 404
 
+    def test_malformed_json_body_is_400(self, configured_client):
+        """A bad body is the caller's error, not a gateway fault. Unguarded, the
+        decode failure escaped as an unhandled exception on the gateway's hottest
+        path — a 500 plus a stack trace, where the agent needs an actionable 400."""
+        resp = configured_client.post("/tool/db_query", content=b"{not json",
+                                      headers={"Content-Type": "application/json"})
+        assert resp.status_code == 400
+        assert "Malformed JSON" in resp.json()["error"]
+
+    def test_non_object_body_is_400(self, configured_client):
+        # Tool params are keyword arguments; a bare scalar or list can't be one.
+        resp = configured_client.post("/tool/db_query", json="just a string")
+        assert resp.status_code == 400
+        resp = configured_client.post("/tool/db_query", json=["a", "b"])
+        assert resp.status_code == 400
+
+    def test_bad_body_is_rejected_before_the_tool_runs(self, configured_client):
+        """The 400 must come from the gateway, not from a tool that already ran
+        with garbage — rejecting after execution would be a side effect on an
+        invalid request."""
+        resp = configured_client.post("/tool/db_query", json=["not", "params"])
+        assert resp.status_code == 400
+        assert "result" not in resp.json()
+
     def test_validate_only(self, configured_client):
         resp = configured_client.post(
             "/validate", json={"action": "db_query", "params": {"sql": "SELECT 1"}}

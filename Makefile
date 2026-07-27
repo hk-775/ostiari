@@ -33,7 +33,7 @@ dev: ## Start backend + frontend + primary gateway (seeded demo data)
 	cd control-plane/backend && OSTIARI_DISCOVERY_MOCK=1 python main.py &
 	cd gateway && python demo_tools_server.py &
 	sleep 3 && cd gateway && $(LOAD_LLM_ENV) python -m ostiari_gateway.main --port 8421 --sidecar-id crm-agent --control-plane http://localhost:8400 --config llm-gateway-config.yaml &
-	sleep 6 && cd gateway && python register_demo_tools.py && python register_demo_mcp.py &
+	sleep 6 && cd gateway && python register_demo_tools.py && python register_demo_mcp.py && python register_demo_providers.py &
 	cd control-plane/frontend && npm run dev &
 
 # NOTE: sidecar IDs and ports MUST match the gateway records seeded in the
@@ -44,6 +44,9 @@ dev: ## Start backend + frontend + primary gateway (seeded demo data)
 # module + credentials) so the Sandbox chat's /invoke endpoint works, and
 # register_demo_tools.py points its tools at demo_tools_server.py (canned
 # web_search/db_query/github.* responses) so chat tool calls return real data.
+# register_demo_providers.py seeds the Providers page from $(LLM_ENV) — that
+# store is process-memory only, so it must re-run on every restart or the page
+# renders empty while /api/models advertises providers nothing is configured for.
 demo-full: ## Full demo — all gateways, A2A agent, control plane (seeded demo data)
 	cd control-plane/backend && OSTIARI_DISCOVERY_MOCK=1 python main.py &
 	cd gateway && python demo_tools_server.py &
@@ -52,7 +55,7 @@ demo-full: ## Full demo — all gateways, A2A agent, control plane (seeded demo 
 	sleep 3 && cd gateway && python -m ostiari_gateway.main --port 8424 --sidecar-id devops-agent --control-plane http://localhost:8400 &
 	sleep 3 && cd gateway && python -m ostiari_gateway.main --port 8425 --sidecar-id analytics-agent --control-plane http://localhost:8400 &
 	sleep 3 && cd gateway && python a2a_demo_server.py &
-	sleep 6 && cd gateway && python register_demo_tools.py && python register_fleet_tools.py && python register_demo_mcp.py && python register_demo_a2a.py && python register_demo_payments.py &
+	sleep 6 && cd gateway && python register_demo_tools.py && python register_fleet_tools.py && python register_demo_mcp.py && python register_demo_a2a.py && python register_demo_payments.py && python register_demo_providers.py &
 	cd control-plane/frontend && npm run dev &
 
 clean-start: ## Clean install — wipe demo data, start all components empty
