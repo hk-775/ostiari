@@ -9,3 +9,8 @@ data:
   OSTIARI_GATEWAY_ID: {{ .Values.gateway.id | quote }}
   OSTIARI_CONTROL_PLANE_URL: {{ .Values.gateway.controlPlaneUrl | quote }}
   OSTIARI_PORT: {{ .Values.gateway.port | quote }}
+  OSTIARI_ENV: {{ .Values.gateway.env | default "" | quote }}
+  # "on"/"off" rather than "true"/"false": the gateway parses this itself and
+  # accepts either, but YAML would render the bare boolean unquoted and k8s
+  # ConfigMap values must be strings.
+  OSTIARI_HITL: {{ ternary "on" "off" (.Values.gateway.hitl | default false) | quote }}

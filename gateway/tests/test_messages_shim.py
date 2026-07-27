@@ -18,7 +18,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 from ostiari_gateway.models import ModulesConfig, SidecarConfig
-from ostiari_gateway.modules.llm_gateway import translate as T
+from ostiari_gateway.modules.llm_gateway import translate
 from starlette.testclient import TestClient
 
 
@@ -29,6 +29,10 @@ def _disable_axon(monkeypatch):
     # so the fallback path under test actually runs. The Axon path has its own
     # test module (test_shim_axon.py).
     monkeypatch.setenv("OSTIARI_DISABLE_AXON_ROUTER", "1")
+    # Startup warns about the missing governance and continues. delenv so an
+    # operator's OSTIARI_REQUIRE_AXON doesn't turn that warning into a refusal
+    # and fail this file for a reason it isn't testing.
+    monkeypatch.delenv("OSTIARI_REQUIRE_AXON", raising=False)
 
 
 def _app(llm: dict | None = None) -> TestClient:
@@ -45,15 +49,15 @@ def _app(llm: dict | None = None) -> TestClient:
 
 class TestTranslate:
     def test_flatten_system_string_and_blocks(self):
-        assert T.flatten_system("hello") == "hello"
-        assert T.flatten_system([{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]) == "a\nb"
+        assert translate.flatten_system("hello") == "hello"
+        assert translate.flatten_system([{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]) == "a\nb"
 
     def test_text_of_blocks(self):
-        assert T.text_of("plain") == "plain"
-        assert T.text_of([{"type": "text", "text": "x"}, {"type": "tool_use", "name": "t"}]) == "x"
+        assert translate.text_of("plain") == "plain"
+        assert translate.text_of([{"type": "text", "text": "x"}, {"type": "tool_use", "name": "t"}]) == "x"
 
     def test_anthropic_to_openai_simple(self):
-        out = T.anthropic_to_openai_messages("sys", [{"role": "user", "content": "hi"}])
+        out = translate.anthropic_to_openai_messages("sys", [{"role": "user", "content": "hi"}])
         assert out[0] == {"role": "system", "content": "sys"}
         assert out[1] == {"role": "user", "content": "hi"}
 
@@ -69,7 +73,7 @@ class TestTranslate:
                 {"type": "tool_result", "tool_use_id": "tu_1", "content": "ok"},
             ]},
         ]
-        out = T.anthropic_to_openai_messages(None, messages)
+        out = translate.anthropic_to_openai_messages(None, messages)
         assistant = next(m for m in out if m["role"] == "assistant")
         assert assistant["tool_calls"][0]["function"]["name"] == "fs_delete"  # dot sanitized
         assert json.loads(assistant["tool_calls"][0]["function"]["arguments"]) == {"path": "/a"}
@@ -78,7 +82,7 @@ class TestTranslate:
 
     def test_tools_translation_and_name_map(self):
         tools = [{"name": "fs.delete", "description": "d", "input_schema": {"type": "object"}}]
-        oai, name_map = T.anthropic_tools_to_openai(tools)
+        oai, name_map = translate.anthropic_tools_to_openai(tools)
         assert oai[0]["function"]["name"] == "fs_delete"
         assert name_map["fs_delete"] == "fs.delete"
 
@@ -90,7 +94,7 @@ class TestTranslate:
                 finish_reason="stop")],
             usage=SimpleNamespace(prompt_tokens=10, completion_tokens=3),
         )
-        msg = T.openai_response_to_anthropic(resp, "gpt-4o")
+        msg = translate.openai_response_to_anthropic(resp, "gpt-4o")
         assert msg["type"] == "message" and msg["role"] == "assistant"
         assert msg["content"][0] == {"type": "text", "text": "hello"}
         assert msg["stop_reason"] == "end_turn"
@@ -106,7 +110,7 @@ class TestTranslate:
                 finish_reason="tool_calls")],
             usage=SimpleNamespace(prompt_tokens=5, completion_tokens=8),
         )
-        msg = T.openai_response_to_anthropic(resp, "gpt-4o", {"fs_delete": "fs.delete"})
+        msg = translate.openai_response_to_anthropic(resp, "gpt-4o", {"fs_delete": "fs.delete"})
         block = msg["content"][0]
         assert block["type"] == "tool_use" and block["name"] == "fs.delete"  # restored
         assert block["input"] == {"path": "/a"}
@@ -120,7 +124,7 @@ class TestSSE:
         msg = {"id": "m1", "type": "message", "role": "assistant", "model": "gpt-4o",
                "content": [{"type": "text", "text": "hi"}], "stop_reason": "end_turn",
                "stop_sequence": None, "usage": {"input_tokens": 4, "output_tokens": 2}}
-        events = list(T.anthropic_message_to_sse(msg))
+        events = list(translate.anthropic_message_to_sse(msg))
         joined = "".join(events)
         # Correct ordered event set that the Anthropic SDK expects
         for evt in ("message_start", "content_block_start", "content_block_delta",
@@ -134,7 +138,7 @@ class TestSSE:
                "content": [{"type": "tool_use", "id": "tu", "name": "fs.delete", "input": {"path": "/a"}}],
                "stop_reason": "tool_use", "stop_sequence": None,
                "usage": {"input_tokens": 1, "output_tokens": 1}}
-        joined = "".join(T.anthropic_message_to_sse(msg))
+        joined = "".join(translate.anthropic_message_to_sse(msg))
         assert "input_json_delta" in joined
         assert "tool_use" in joined
 

@@ -1,15 +1,19 @@
 """Generic sidecar server — validates and proxies tool calls to remote endpoints."""
 
 import logging
+import os as _os
+import uuid as _uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
+import httpx as _httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from opentelemetry import trace
 
 from ostiari.exceptions import ActionBlockedError
 from ostiari.explain import explain as _explain
+from ostiari.models import RiskSignal, ValidationResult
 from ostiari_gateway.config_manager import ConfigManager
 from ostiari_gateway.models import PolicyConfig, SidecarConfig, ToolDefinition
 from ostiari_gateway.telemetry import (
@@ -24,12 +28,6 @@ from ostiari_gateway.telemetry import (
 )
 
 log = logging.getLogger("ostiari.sidecar")
-
-
-import os as _os
-
-import httpx as _httpx
-
 
 _NON_SECRET_CRED_FIELDS = {
     "azure_endpoint", "azure_api_version", "bedrock_region",
@@ -116,6 +114,69 @@ def _check_production_posture() -> None:
     )
 
 
+def _axon_health(module_registry: Any) -> dict[str, Any]:
+    """AxonLLM's embedding state for /health.
+
+    Reported because "the gateway is up" and "LLM calls are governed" are
+    different facts: on the direct-provider fallback every request still
+    succeeds, so nothing else in this payload would reveal that routing
+    governance and cost tracking aren't running.
+    """
+    mod = module_registry.get("llm_gateway") if hasattr(module_registry, "get") else None
+    axon = getattr(getattr(mod, "_executor", None), "_axon", None)
+    if axon is None:
+        return {"embedded": False, "reason": "llm_gateway module not active"}
+    if not axon.available:
+        return {"embedded": False, "reason": axon.error,
+                "governed": False, "cost_tracking": False}
+    return {"embedded": True, "root": axon.root, "governed": True,
+            "cost_tracking": True, "tools": axon.supports_tools()}
+
+
+def _check_axon(module_registry: Any) -> None:
+    """Warn — loudly — when the LLM gateway starts without AxonLLM embedded.
+
+    AxonLLM is where routing governance and token cost tracking happen. Every
+    caller keeps a direct-provider fallback for a mid-flight failure, and that
+    fallback is good enough that a gateway with no AxonLLM at all serves traffic
+    and reports healthy — which is how it once ran unnoticed while none of that
+    governance applied. That invisibility is the actual defect, so the check
+    stays; what changed is the consequence.
+
+    This used to raise, refusing to start. AxonLLM is a separate private repo and
+    isn't on PyPI, so a hard requirement makes it a *deployment* dependency of
+    every gateway, CI runner, and contributor checkout — including the ones that
+    only ever touch the tool proxy and never make an LLM call. The failure also
+    landed at the worst possible moment: startup, after config was pushed.
+
+    So: warn instead. The warning names what is off (governance, cost tracking)
+    and how to fix it, ``/health`` reports ``llm_router`` for anything reading
+    machine-side, and an operator who wants the old behaviour sets
+    ``OSTIARI_REQUIRE_AXON=1`` — which is the right switch to set in production,
+    where silently ungoverned LLM traffic is not an acceptable degradation.
+    """
+    mod = module_registry.get("llm_gateway") if hasattr(module_registry, "get") else None
+    axon = getattr(getattr(mod, "_executor", None), "_axon", None)
+    if axon is None:
+        return
+
+    try:
+        axon.require()
+    except RuntimeError as e:
+        if _os.environ.get("OSTIARI_REQUIRE_AXON", "").strip().lower() in (
+            "1", "true", "yes", "on"
+        ):
+            raise
+        log.warning(
+            "%s Continuing WITHOUT AxonLLM: LLM calls take the direct provider "
+            "path with NO routing governance and NO token cost tracking. "
+            "GET /health reports llm_router for the machine-readable version. "
+            "Set OSTIARI_REQUIRE_AXON=1 to refuse to start instead.", e,
+        )
+        return
+    log.info("AxonLLM embedded — routing governance active (root=%s)", axon.root)
+
+
 def _config_admin_key() -> str:
     """Shared admin secret required to mutate/read gateway /config/* when set.
 
@@ -189,6 +250,38 @@ def _authenticate_agent(request: Request, agent_id: str) -> JSONResponse | None:
 def _hitl_enabled() -> bool:
     """Human-in-the-loop enforcement for the intervene tier (off by default)."""
     return _os.environ.get("OSTIARI_HITL", "off").lower() in ("1", "true", "yes", "on")
+
+
+def _deferrable_intervention(e: ActionBlockedError, *, shadow: bool) -> ValidationResult | None:
+    """Recover the intervene decision from a fail-closed block, if that's what it was.
+
+    A fail-closed Guard has no way to resolve an intervene in-process, so it
+    collapses it to a block and raises. That is the right answer for a library
+    caller with no human to ask — but the sidecar *does* have one: the control
+    plane's approvals queue. Without this, production (fail-closed by default)
+    silently deletes the intervene tier: every scored-intervene call 403s and the
+    Approvals page stays empty no matter what ``OSTIARI_HITL`` says.
+
+    Returns a ValidationResult carrying the tier as *scored* so the HITL gate
+    below can treat it exactly like any other intervene, or None when the block
+    must stand: a real block (policy deny, over the block threshold), HITL off
+    (nobody to defer *to*), or shadow mode — shadow never enforces and its
+    short-circuit runs ahead of the approval gate, so there is no decision to
+    defer, only one to record.
+    """
+    if shadow or not (_hitl_enabled() and e.original_tier == "intervene"):
+        return None
+    return ValidationResult(
+        tier="intervene",
+        original_tier="intervene",
+        score=e.score,
+        signals=[s for s in e.signals if isinstance(s, RiskSignal)],
+        trace_id=str(_uuid.uuid4()),
+        action=e.action,
+        params=e.params,
+        duration_ms=0.0,
+        rule_triggered=e.rule_id,
+    )
 
 
 async def _check_approval(control_plane_url: str, approval_id: str) -> str | None:
@@ -517,6 +610,7 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
         module_registry.activate(
             "llm_gateway", app, {"manager": manager, "llm_config": llm_config, "mcp_manager": mcp_manager, "trace_reporter": trace_reporter, "quota_enforcer": quota_enforcer, "agent_auth": agent_auth}
         )
+        _check_axon(module_registry)
 
     # ─── Tool Execution Endpoints ─────────────────────────────────────────
 
@@ -529,7 +623,17 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
         is reported with shadow=True and would_block set when enforce mode
         would have blocked the call.
         """
-        params: dict[str, Any] = await request.json()
+        # A bad body is the caller's error. Unguarded, the decode failure escaped
+        # as an unhandled exception — a 500 plus a stack trace on the gateway's
+        # hottest path, where the agent needs an actionable 400 instead.
+        try:
+            params: dict[str, Any] = await request.json()
+        except Exception:  # noqa: BLE001 — any decode failure is a bad request
+            return JSONResponse(status_code=400, content={"error": "Malformed JSON body"})
+        if not isinstance(params, dict):
+            return JSONResponse(status_code=400,
+                                content={"error": "Tool parameters must be a JSON object"})
+
         agent_id = request.headers.get("X-Agent-Id", "unknown")
         framework = request.headers.get("X-Framework", "unknown")
         session_id = request.headers.get("X-Session-Id", "")
@@ -667,30 +771,41 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
             _raw = getattr(result, "original_tier", result.tier)
             cross_agent.record_outcome(agent_id, risky=_raw in ("intervene", "block"))
         except ActionBlockedError as e:
-            record_validate_result(validate_span, "block", e.score, blocked=True)
-            cross_agent.record_outcome(agent_id, risky=True)
-            await trace_reporter.report(
-                action=action, tier="block", score=e.score, duration_ms=0,
-                agent_id=agent_id, framework=framework, is_mcp=is_mcp_tool,
-                blocked_reason=e.reason,
-                endpoint=tool.endpoint if tool else "mcp://" if is_mcp_tool else "",
-                session_id=session_id, plan=plan, step=step, params=params,
-                shadow=shadow, would_block=shadow,
-            )
-            if not shadow:
-                return JSONResponse(
-                    status_code=403,
-                    content={
-                        "blocked": True,
-                        "action": action,
-                        "score": e.score,
-                        "reason": e.reason,
-                        "rule_id": e.rule_id,
-                    },
+            # A fail-closed Guard raises for an unresolved intervene too. If HITL
+            # is on we have a human to ask, so rebuild the intervene and fall
+            # through to the approval gate instead of refusing outright.
+            deferred = _deferrable_intervention(e, shadow=shadow)
+            if deferred is None:
+                record_validate_result(validate_span, "block", e.score, blocked=True)
+                cross_agent.record_outcome(agent_id, risky=True)
+                await trace_reporter.report(
+                    action=action, tier="block", score=e.score, duration_ms=0,
+                    agent_id=agent_id, framework=framework, is_mcp=is_mcp_tool,
+                    blocked_reason=e.reason,
+                    endpoint=tool.endpoint if tool else "mcp://" if is_mcp_tool else "",
+                    session_id=session_id, plan=plan, step=step, params=params,
+                    shadow=shadow, would_block=shadow,
                 )
-            # Shadow mode: policy WOULD block, but we let it proceed to a mocked
-            # execution so the caller sees a realistic (side-effect-free) response.
-            return _shadow_response(action, "policy", e.reason, score=e.score, rule_id=e.rule_id)
+                if not shadow:
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "blocked": True,
+                            "action": action,
+                            "score": e.score,
+                            "reason": e.reason,
+                            "rule_id": e.rule_id,
+                        },
+                    )
+                # Shadow mode: policy WOULD block, but we let it proceed to a
+                # mocked execution so the caller sees a realistic
+                # (side-effect-free) response.
+                return _shadow_response(
+                    action, "policy", e.reason, score=e.score, rule_id=e.rule_id
+                )
+            record_validate_result(validate_span, "intervene", e.score, blocked=False)
+            cross_agent.record_outcome(agent_id, risky=True)
+            result = deferred
 
         # Shadow mode: the call is ALLOWED, but we never run the real tool
         # (no real emails, DB writes, downstream agent calls). Return a
@@ -719,8 +834,9 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
         # otherwise we create a pending approval and return 202 (the agent
         # re-submits with the id once a human approves in the dashboard).
         # Use the gateway's RAW tier: the Guard may collapse an intervene to
-        # allow/block internally (fail_open / callback), but original_tier still
-        # reports it so the sidecar's HITL gate can act on it.
+        # allow/block internally (fail_open / callback / fail-closed raise), but
+        # original_tier still reports it so the sidecar's HITL gate can act on
+        # it — including when it arrived here as an ActionBlockedError above.
         raw_tier = getattr(result, "original_tier", result.tier)
         if _hitl_enabled() and raw_tier == "intervene":
             # trace_reporter holds the live CP URL (set at startup); manager.config
@@ -990,13 +1106,19 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
                 "action": action,
                 "score": result.score,
                 "tier": result.tier,
+                "original_tier": result.original_tier,
             }
         except ActionBlockedError as e:
+            # `tier` is the enforced decision (not allowed, whatever the reason);
+            # `original_tier` is what it scored. They differ for a fail-closed
+            # intervene, and a caller deciding whether to route this to a human
+            # needs the second one.
             return {
                 "allowed": False,
                 "action": action,
                 "score": e.score,
                 "tier": "block",
+                "original_tier": e.original_tier,
                 "reason": e.reason,
                 "rule_id": e.rule_id,
             }
@@ -1365,6 +1487,7 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
             "modules_available": module_registry.get_available(),
             "quota": quota_enforcer.get_status(),
             "agent_auth": agent_auth.get_status(),
+            "llm_router": _axon_health(module_registry),
         }
 
     @app.get("/modules")

@@ -21,7 +21,7 @@ from typing import Any
 from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from ostiari_gateway.modules.llm_gateway import translate as T
+from ostiari_gateway.modules.llm_gateway import translate
 
 log = logging.getLogger("ostiari.sidecar.llm.chat")
 
@@ -92,7 +92,7 @@ class ChatProxy:
 
         # ── Gate 2: security (injection/PII), fail-closed ───────────────────
         if self._security is not None:
-            flat = [{"role": m.get("role", "user"), "content": T.text_of(m.get("content", ""))}
+            flat = [{"role": m.get("role", "user"), "content": translate.text_of(m.get("content", ""))}
                     for m in messages]
             _, meta = self._security.process_messages(flat)
             if meta.get("blocked") or meta.get("pii_redacted"):
@@ -124,6 +124,21 @@ class ChatProxy:
         # ── Route via AxonLLM (single-response; no ensemble on the shim) ────
         if self._axon is None or not self._axon.available:
             return _err(503, "LLM router unavailable", "api_error")
+
+        # AxonLLM carries tool specs now, so this is a version guard rather than a
+        # standing limitation: an AxonLLM predating tool pass-through would drop
+        # them and answer fluently as if no tools existed. Unlike the /v1/messages
+        # shim, this path has no direct-provider fallback to hand the call to — so
+        # refuse rather than return that answer. Codex surfaces a 501 to the user.
+        if body.get("tools") and not self._axon.supports_tools():
+            if self._quota is not None:
+                self._quota.release_reservation(reservation_id)
+            await self._report(agent_id, framework, session_id, requested_model,
+                               tier="block", reason="tool calling unsupported by router",
+                               limit_type="router")
+            return _err(501, "Tool calling is not supported on this endpoint: the "
+                             "configured LLM router cannot forward tool definitions.",
+                        "api_error")
 
         axon_model = requested_model if self._axon_knows(requested_model) else ""
         try:
@@ -157,8 +172,7 @@ class ChatProxy:
             return JSONResponse(status_code=200, content=completion)
 
         def gen() -> Any:
-            for chunk in _openai_sse(completion):
-                yield chunk
+            yield from _openai_sse(completion)
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 

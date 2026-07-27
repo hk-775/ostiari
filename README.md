@@ -67,14 +67,21 @@ Every tool call runs through this pipeline. Each control-plane feature either
   2. AUTH        may this agent use this tool?             → per-agent auth
   3. QUOTA       hit its rate / budget cap?                → Quotas
   4. RISK        score 0-100 → allow / intervene / block   → Policies
-  5. PAYMENT     does it cost money? can the wallet pay?   → Payments (x402)
-  6. EXECUTE     forward to the real tool; meter usage     → Metering / Token Broker
-  7. TRACE       record it → report to the control plane   → Live Traces / Audit / ROI
+  5. APPROVAL    scored intervene? pause for a human (202) → Approvals (HITL)
+  6. PAYMENT     does it cost money? can the wallet pay?   → Payments (x402)
+  7. EXECUTE     forward to the real tool; meter usage     → Metering / Token Broker
+  8. TRACE       record it → report to the control plane   → Live Traces / Audit / ROI
 ```
 
 A gateway can run in **shadow** mode — every gate still evaluates and records
 what it *would* have done, but nothing is blocked and no side effect runs. Try
 before you enforce.
+
+Gate 5 is opt-in (`OSTIARI_HITL=on`) and is what makes *intervene* a real tier
+rather than a label: the gateway answers **202** with an approval id, a human
+decides in the dashboard, and the caller re-submits with `X-Approval-Id`. Leave it
+off and the tier is advisory in dev — but *refused* in production, which is
+fail-closed. See the [control-plane guide](docs/control-plane-guide.md) §7.4.
 
 ## What the control plane gives you
 
@@ -107,13 +114,25 @@ guard.configure("policy.yaml")
 guard.start()
 
 result = guard.validate(action="email.send", params={"to": "user@example.com"})
-if result.tier == "allow":
-    send_email(result.params)
-elif result.tier == "intervene":
+
+# `tier` is the decision as *enforced*; `original_tier` is what the call actually
+# scored. They differ for intervene, because the Guard has to resolve that tier
+# in-process one way or the other before it can return — so `tier` is only ever
+# "allow" or "block" and you check `original_tier` to find the gray cases.
+if result.original_tier == "intervene":
     if get_approval(result):        # medium risk — ask a human
         send_email(result.params)
-# tier == "block" raises ActionBlockedError from guard.validate()
+elif result.tier == "allow":
+    send_email(result.params)
+# A blocked call raises ActionBlockedError instead of returning. With
+# fail_open=False that includes an unresolved intervene — the exception's
+# `original_tier` tells you which it was, so you can escalate rather than refuse.
 ```
+
+Register an intervention callback (`guard.gateway.set_intervention_callback(...)`)
+and the Guard resolves the tier itself — but it *blocks* waiting for the answer, so
+for an asynchronous human queue prefer the gateway's HITL gate, which returns 202
+and lets the caller re-submit.
 
 Or protect a function inline:
 
@@ -235,6 +254,8 @@ docs/                 # architecture + the control plane guide
 - [`docs/control-plane-guide.md`](docs/control-plane-guide.md) — complete
   control-plane tour (novice-friendly, with diagrams, best practices, pitfalls)
 - [`docs/gateway-architecture.md`](docs/gateway-architecture.md) — gateway internals
+- [`docs/detection-engine.md`](docs/detection-engine.md) — PII redaction and
+  prompt-injection detection: config, what's detected, and what it can't catch
 - [`deploy/README.md`](deploy/README.md) — deployment reference
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to contribute
 

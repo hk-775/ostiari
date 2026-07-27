@@ -298,8 +298,8 @@ class LLMProvider:
     def _call_anthropic(self, model, messages, tools, max_tokens, temperature) -> LLMResponse:
         try:
             import anthropic
-        except ImportError:
-            raise ImportError("anthropic package required: pip install anthropic")
+        except ImportError as e:
+            raise ImportError("anthropic package required: pip install anthropic") from e
 
         client = anthropic.Anthropic(api_key=self._credentials.anthropic)
 
@@ -354,8 +354,8 @@ class LLMProvider:
     def _call_openai(self, model, messages, tools, max_tokens, temperature) -> LLMResponse:
         try:
             import openai
-        except ImportError:
-            raise ImportError("openai package required: pip install openai")
+        except ImportError as e:
+            raise ImportError("openai package required: pip install openai") from e
 
         client = openai.OpenAI(api_key=self._credentials.openai)
 
@@ -400,8 +400,8 @@ class LLMProvider:
     def _call_bedrock(self, model, messages, tools, max_tokens, temperature) -> LLMResponse:
         try:
             import boto3
-        except ImportError:
-            raise ImportError("boto3 required: pip install boto3")
+        except ImportError as e:
+            raise ImportError("boto3 required: pip install boto3") from e
 
         client = boto3.client("bedrock-runtime", region_name=self._credentials.bedrock_region)
         model_id = model.removeprefix("bedrock/")
@@ -444,8 +444,8 @@ class LLMProvider:
         """Call Azure OpenAI — same format as OpenAI but different endpoint."""
         try:
             import openai
-        except ImportError:
-            raise ImportError("openai package required: pip install openai")
+        except ImportError as e:
+            raise ImportError("openai package required: pip install openai") from e
 
         client = openai.AzureOpenAI(
             azure_endpoint=self._credentials.azure_endpoint,
@@ -481,8 +481,8 @@ class LLMProvider:
         """Call Cohere's Command model."""
         try:
             import cohere
-        except ImportError:
-            raise ImportError("cohere package required: pip install cohere")
+        except ImportError as e:
+            raise ImportError("cohere package required: pip install cohere") from e
 
         client = cohere.ClientV2(api_key=self._credentials.cohere_api_key)
         model_name = model.removeprefix("cohere/")
@@ -519,8 +519,8 @@ class LLMProvider:
         """Call Google Vertex AI (Gemini models)."""
         try:
             import google.generativeai as genai
-        except ImportError:
-            raise ImportError("google-generativeai required: pip install google-generativeai")
+        except ImportError as e:
+            raise ImportError("google-generativeai required: pip install google-generativeai") from e
 
         model_name = model.removeprefix("vertex/")
         genai_model = genai.GenerativeModel(model_name)

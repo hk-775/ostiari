@@ -25,7 +25,10 @@ import control_plane.auth.models  # noqa: F401,E402
 # instead.
 from pathlib import Path
 
-_DB_DIR = Path(__file__).resolve().parent.parent / "data"
+# control_plane/database.py resolves this as <repo>/control-plane/data — three
+# levels up from control_plane/database.py. This file sits one level deeper
+# (alembic/env.py), so it needs three .parent hops to land on the same dir.
+_DB_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 _DEFAULT_URL = f"sqlite+aiosqlite:///{_DB_DIR / 'control_plane.db'}"
 DATABASE_URL = os.environ.get("DATABASE_URL", _DEFAULT_URL)
 

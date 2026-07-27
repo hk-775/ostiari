@@ -52,6 +52,16 @@ jobs:
           python -c "from ostiari_gateway.cross_agent import CrossAgentPolicy; print('CrossAgent OK')"
           python -c "from ostiari_gateway.a2a import A2AManager; print('A2A OK')"
 
+      # AxonLLM is deliberately NOT installed here. It owns routing governance and
+      # token cost tracking, but it is a separate private repo and not on PyPI, so
+      # cloning it would make CI depend on an AXONLLM_TOKEN secret — and the
+      # gateway only warns when it's absent, so the suite runs green without it.
+      #
+      # What this means: the tests below cover Ostiari's own governance (auth,
+      # injection, quota, HITL, tool proxy) and the direct-provider fallback path.
+      # They do NOT cover live AxonLLM routing — TestLiveRouting and the
+      # @requires_axon version guard self-skip here. Run the gateway suite locally
+      # against a real AxonLLM checkout before trusting the routing surface.
       - name: Test (gateway suite)
         working-directory: gateway
         run: PYTHONPATH=. pytest tests/ -v --tb=short

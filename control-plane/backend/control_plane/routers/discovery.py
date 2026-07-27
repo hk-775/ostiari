@@ -10,10 +10,11 @@ lever-dependent step (see docs/internal/agent-discovery-plan.md).
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from control_plane import discovery
+from control_plane.auth.dependencies import get_current_org
 from control_plane.discovery_collectors import default_collectors
 
 router = APIRouter(prefix="/api/discovery", tags=["discovery"])
@@ -25,15 +26,21 @@ class OnboardRequest(BaseModel):
     framework: str = "other"
 
 
-def _known_agent_ids() -> list[str]:
+def _known_agent_ids(org: str) -> list[str]:
+    """Registered agent names in one org.
+
+    `_agents` is org-keyed (org -> name -> config). Reading `.keys()` off the
+    outer dict yields ORG names, so every genuinely-registered agent fails the
+    seen-vs-known match and gets reported as shadow AI.
+    """
     from control_plane.routers.agents import _agents
-    return list(_agents.keys())
+    return list(_agents[org].keys())
 
 
 @router.get("/agents")
-async def discovered_agents():
+async def discovered_agents(org: str = Depends(get_current_org)):
     """Reconcile seen-vs-known across all collectors. Shadow AI listed first."""
-    results = discovery.reconcile(default_collectors(), _known_agent_ids())
+    results = discovery.reconcile(default_collectors(org), _known_agent_ids(org))
     counts = {"discovered": 0, "governed": 0, "governed_unseen": 0}
     for d in results:
         counts[d.status] = counts.get(d.status, 0) + 1
@@ -43,7 +50,7 @@ async def discovered_agents():
             "shadow": counts["discovered"],       # seen, not governed
             "governed": counts["governed"],
             "stale": counts["governed_unseen"],   # governed, not seen
-            "sources": [c.source for c in default_collectors()],
+            "sources": [c.source for c in default_collectors(org)],
         },
         "agents": [
             {
@@ -58,7 +65,7 @@ async def discovered_agents():
 
 
 @router.post("/onboard")
-async def onboard(body: OnboardRequest):
+async def onboard(body: OnboardRequest, org: str = Depends(get_current_org)):
     """Register a discovered agent → it becomes 'governed' on the next reconcile.
 
     Note: this records the agent and its intended gateway. It does not reroute
@@ -68,10 +75,14 @@ async def onboard(body: OnboardRequest):
     """
     from control_plane.routers.agents import AgentConfig, _agents
 
-    if body.agent_id in _agents:
+    # Index by [org][agent_id]. Writing to the outer dict put an AgentConfig
+    # where a per-org dict belongs, which both corrupted the registry (that key
+    # then looks like an org whose .values() aren't agents) and meant the
+    # onboarded agent never showed up in list_agents.
+    if body.agent_id in _agents[org]:
         raise HTTPException(status_code=409, detail=f"Agent '{body.agent_id}' already registered")
 
-    _agents[body.agent_id] = AgentConfig(
+    _agents[org][body.agent_id] = AgentConfig(
         name=body.agent_id,
         framework=body.framework or "other",
         gateway_id=body.gateway_id,

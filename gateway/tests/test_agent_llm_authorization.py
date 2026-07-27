@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import pytest
 from ostiari_gateway.agent_auth import AgentAuthPolicy
 from ostiari_gateway.models import ModulesConfig, SidecarConfig
 from ostiari_gateway.modules.llm_gateway.axon_router import AxonResult

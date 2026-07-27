@@ -187,10 +187,16 @@ class AgenticExecutor:
         cache_key_intent = request.intent_template if use_template else (request.messages[-1].get("content", "") if request.messages else "")
         _ = request.messages[-1].get("content", "") if request.messages else ""
         cached_plan = self._intent_cache.get(agent_id, session_id, cache_key_intent)
-        cache_hit = cached_plan is not None
+        # Two distinct facts, previously conflated into one mutated `cache_hit`:
+        # `served_from_cache` is what the caller is told (set once, never reassigned),
+        # `use_cached_plan` is loop control and is cleared after round 0 so later
+        # rounds still call the LLM. Sharing one variable meant the reported value
+        # was always the post-reset False — see the returns below.
+        served_from_cache = cached_plan is not None
+        use_cached_plan = served_from_cache
 
         for round_num in range(self._config.max_tool_rounds):
-            if cache_hit and round_num == 0 and cached_plan:
+            if use_cached_plan and round_num == 0 and cached_plan:
                 # CACHE HIT: reuse the tool plan from last time (skip LLM call entirely)
                 # If template mode: substitute variables into cached plan arguments
                 resolved_calls = cached_plan.resolve_with_variables(request.intent_variables) if use_template else cached_plan.tool_calls
@@ -202,7 +208,7 @@ class AgenticExecutor:
                     model=cached_plan.model_used,
                 )
                 model_used = cached_plan.model_used
-                cache_hit = False  # only use cache for first round
+                use_cached_plan = False  # only use cache for first round
             else:
                 # CACHE MISS or subsequent rounds: call LLM (AxonLLM router if
                 # available, else direct provider fallback).
@@ -263,7 +269,7 @@ class AgenticExecutor:
                     blocked_actions=blocked_actions,
                     total_tokens=total_tokens,
                     rounds=round_num + 1,
-                    cache_hit=cached_plan is not None and round_num == 0 and total_tokens == 0,
+                    cache_hit=served_from_cache,
                 )
 
             # Process tool calls
@@ -386,6 +392,7 @@ class AgenticExecutor:
             blocked_actions=blocked_actions,
             total_tokens=total_tokens,
             rounds=self._config.max_tool_rounds,
+            cache_hit=served_from_cache,
         )
 
     async def _call_llm(
@@ -405,15 +412,33 @@ class AgenticExecutor:
         """
         context = context or {}
         effective_max_tokens = max_tokens or self._config.max_tokens
-        if self._axon.available:
+        # Tool-bearing rounds route through AxonLLM like everything else — it
+        # translates tool specs into each provider's dialect. The supports_tools()
+        # check is a version guard (Ostiari doesn't pin an AxonLLM version): an
+        # older checkout drops the specs and returns a fluent tool-free answer —
+        # the model denies having any tools — which looks like success and isn't.
+        route_via_axon = self._axon.available and not (tools and not self._axon.supports_tools())
+        if tools and self._axon.available and not route_via_axon:
+            log.warning(
+                "AxonLLM predates tool pass-through — calling the provider directly "
+                "for %d tool(s); routing governance and cost tracking are bypassed "
+                "for this call. Upgrade AxonLLM.", len(tools),
+            )
+        if route_via_axon:
+            # Only pass the model through if AxonLLM's registry knows it; its names
+            # are undated ("claude-sonnet") while ours are dated
+            # ("claude-sonnet-4-6"), so a verbatim pass 404s. Unknown → smart-route
+            # and let AxonLLM pick something it can serve. Mirrors the shim's
+            # _axon_knows guard, which /invoke previously lacked.
+            axon_model = primary if self._axon.knows_model(primary) else ""
             try:
                 res = await self._axon.route(
                     messages=messages,
-                    model=primary,
+                    model=axon_model,
                     max_tokens=effective_max_tokens,
                     temperature=self._config.temperature,
                     tools=tools,
-                    smart=bool(context.get("smart_routing")),
+                    smart=bool(context.get("smart_routing")) or not axon_model,
                     ensemble=context.get("ensemble", False),
                     agent_id=str(context.get("agent_id", "")),
                     session_id=str(context.get("session_id", "")),
@@ -471,12 +496,15 @@ class AgenticExecutor:
         """Build tool specifications from registered tools (HTTP + MCP)."""
         specs = []
 
-        # HTTP tools
+        empty_schema = {"type": "object", "properties": {}}
+
+        # HTTP tools. Honor the registered parameter schema when there is one —
+        # hardcoding an empty one advertised every tool as taking no arguments.
         for t in self._manager.tool_proxy.list_tools():
             specs.append({
                 "name": t["name"],
                 "description": t.get("description", ""),
-                "schema": {"type": "object", "properties": {}},
+                "schema": t.get("schema") or empty_schema,
             })
 
         # MCP tools
@@ -485,16 +513,16 @@ class AgenticExecutor:
                 specs.append({
                     "name": t["name"],
                     "description": t.get("description", ""),
-                    "schema": t.get("input_schema", {"type": "object", "properties": {}}),
+                    "schema": t.get("input_schema") or empty_schema,
                 })
 
-        if not specs:
-            return None
-
+        # Filter BEFORE the empty check: a filter that matches nothing must yield
+        # None (no tools offered), not fall through to an empty list the provider
+        # rejects.
         if tool_filter:
             specs = [s for s in specs if s["name"] in tool_filter]
 
-        return specs
+        return specs or None
 
     def _append_tool_results(
         self,

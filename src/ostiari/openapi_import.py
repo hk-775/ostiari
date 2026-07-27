@@ -38,9 +38,15 @@ def _load(spec: str | dict[str, Any]) -> dict[str, Any]:
     if not text:
         raise OpenAPIError("Empty spec")
     try:
-        return json.loads(text)
+        parsed = json.loads(text)
     except Exception:
-        pass
+        parsed = None
+    if isinstance(parsed, dict):
+        return parsed
+    # A spec that parsed as JSON but isn't an object (a list, a bare string)
+    # falls through: YAML is a superset of JSON, so the branch below re-parses
+    # it and raises the accurate "did not parse to an object" instead of
+    # returning a non-dict from a function that promises one.
     try:
         import yaml
 
@@ -157,11 +163,22 @@ def _request_body_schema(spec: dict[str, Any], operation: dict[str, Any]) -> dic
     content = rb.get("content", {})
     for media in ("application/json", "application/*+json"):
         if media in content:
-            return _deref(spec, content[media].get("schema", {}))
+            return _as_schema(_deref(spec, content[media].get("schema", {})))
     for mt in content.values():
         if isinstance(mt, dict) and "schema" in mt:
-            return _deref(spec, mt["schema"])
+            return _as_schema(_deref(spec, mt["schema"]))
     return None
+
+
+def _as_schema(node: Any) -> dict[str, Any] | None:
+    """Keep a dereferenced schema only if it's an object.
+
+    ``_deref`` passes non-dicts through untouched, and a spec is free to write
+    ``schema: true`` (valid JSON Schema) or a bare list. _build_schema indexes
+    into whatever it gets, so anything that isn't a dict has to become None here
+    rather than crash the whole import on one malformed operation.
+    """
+    return node if isinstance(node, dict) else None
 
 
 def parse_spec(

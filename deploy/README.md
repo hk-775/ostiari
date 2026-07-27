@@ -102,6 +102,12 @@ sam deploy --guided
 | `OSTIARI_CONTROL_PLANE_URL` | _(none)_ | Control plane backend URL (enables register/heartbeat) |
 | `OSTIARI_PORT` | `8421` | Gateway listen port |
 | `OSTIARI_ADVERTISE_HOST` | _(bind host)_ | Host the control plane pushes config back to. Set this to the gateway's network-reachable name (compose service, k8s Service DNS, ECS service). Without it, config pushes may not reach the gateway. |
+| `OSTIARI_ENV` | _(unset = dev)_ | `production` flips every gateway control **fail-closed**. Unset, controls fail open (the demo posture). See "Production Notes". |
+| `OSTIARI_HITL` | `off` | `on` enables human-in-the-loop for the *intervene* tier: a mid-band call returns **202** with an approval id instead of executing, and the caller re-submits with `X-Approval-Id` once a human approves. **Set this in production** — see below. |
+| `OSTIARI_STRICT` | _(unset)_ | With `OSTIARI_ENV=production`, makes the startup fail-open warning **fatal** instead of a log line. |
+| `OSTIARI_REQUIRE_AXON` | _(unset)_ | Refuse to start when AxonLLM can't embed. Unset, the gateway warns and serves LLM traffic with **no routing governance and no token cost tracking** (`GET /health` → `llm_router` reports it). Not shipped on in the manifests here — AxonLLM is a separate private repo, so a gateway that only proxies tools shouldn't need it installed. Set it if you route LLM calls. |
+| `OSTIARI_CONFIG_ADMIN_KEY` | _(none)_ | Required in production: without it `/config/*` (mode, tools, policy, quota, payments) is **unauthenticated**. |
+| `OSTIARI_GATEWAY_AUTH` | `off` | Set `required` in production: otherwise `X-Agent-Id` is trusted with no token, so any caller can impersonate any agent. |
 | `REDIS_ENDPOINT` | _(none)_ | Redis host for distributed state |
 | `REDIS_PORT` | `6379` | Redis port |
 | `ANTHROPIC_API_KEY` | _(none)_ | Anthropic API key for LLM routing |
@@ -115,6 +121,11 @@ sam deploy --guided
 | `OSTIARI_NO_DEMO` | _(unset)_ | Set to `1` to start with an empty control plane (no seeded demo data) |
 | `OSTIARI_CORS_ORIGINS` | _(all, no creds)_ | Comma-separated allowed origins (enables credentialed CORS) |
 | `OSTIARI_REQUIRE_AUTH` | _(unset)_ | Set to require API authentication |
+| `OSTIARI_ENV` | _(unset = dev)_ | `production` makes the four variables below **required** — the control plane refuses to start without them, rather than seeding a default admin. |
+| `OSTIARI_ADMIN_PASSWORD` | _(dev seed)_ | **Required in production.** Without it the control plane refuses to seed an admin at all. |
+| `OSTIARI_JWT_SECRET` | _(dev default)_ | **Required in production**, ≥32 chars. Startup fails otherwise. |
+| `OSTIARI_INGEST_KEY` | _(none)_ | **Required in production** on the control plane *and every gateway* — otherwise anyone reaching `/api/traces/ingest` can forge traces into your compliance and billing data. |
+| `OSTIARI_ENCRYPTION_KEY` | _(ephemeral)_ | Encrypts stored provider API keys. Unset, a new key is minted per process — stored keys become unreadable after restart. |
 
 ## Secrets Management
 
@@ -132,6 +143,36 @@ For ECS, store secrets in AWS Secrets Manager and reference them in the task def
 
 - **Database**: The control plane uses SQLite for dev. For production, configure PostgreSQL via RDS.
 - **TLS**: Terminate TLS at the load balancer or ingress controller, not at the gateway.
+- **`OSTIARI_ENV=production` and `OSTIARI_HITL` travel together.** Production is
+  fail-closed, which changes what the *middle* risk tier means. Ostiari scores each
+  call 0–100 into allow / **intervene** / block; intervene means "a human should
+  look at this." In dev (fail-open) an unresolved intervene is *allowed through*.
+  In production the same call is **refused** — unless HITL is on, in which case it
+  is deferred to the control plane's Approvals queue instead. So
+  `OSTIARI_ENV=production` with `OSTIARI_HITL=off` silently collapses three tiers
+  to two: every intervene becomes a 403 and the Approvals page stays empty. The
+  Helm chart, k8s manifests, and ECS task definition here all ship
+  `OSTIARI_HITL=on` for that reason.
+- **HITL has an operational cost — budget for it before you deploy.** With it on, a
+  mid-band call does not execute: the gateway answers **202** with an approval id
+  and waits. Two things must be true or traffic stalls:
+  1. **Someone staffs the queue.** An unattended queue means those calls never
+     complete; a queue too large to read gets rubber-stamped, which is worse than
+     not having one. Tune thresholds so the intervene band is *rare* first —
+     validate with a gateway in `shadow` mode and read the Shadow Report.
+  2. **Callers handle 202.** The gateway does not hold a thread open waiting for a
+     human. The *caller* must re-submit the same request with an
+     `X-Approval-Id: <id>` header once approved. An agent framework that treats
+     any non-200 as failure will look like it silently lost the call.
+
+  Full walkthrough: [`docs/control-plane-guide.md`](../docs/control-plane-guide.md) §7.4.
+- **Close the remaining fail-open controls.** `OSTIARI_ENV=production` warns at
+  startup about each control still left open but starts anyway. At minimum set
+  `OSTIARI_CONFIG_ADMIN_KEY` (else `/config/*` is unauthenticated — anyone reaching
+  the port can rewrite your policy or flip enforcement to shadow) and
+  `OSTIARI_GATEWAY_AUTH=required` (else `X-Agent-Id` is trusted with no token, so
+  any caller can impersonate any agent). Set `OSTIARI_STRICT=1` to make that
+  warning fatal rather than a log line someone scrolls past.
 - **Scaling & fleet-wide limits**: Enforcement state — the rate limiter,
   quota/budget counters, and payment wallets — is **in-process by default**, so
   a horizontally-scaled fleet enforces limits **per replica** (N instances ⇒ N×

@@ -102,6 +102,35 @@ def test_errors():
         parse_spec("not valid: [")
 
 
+@pytest.mark.parametrize("text", ["[1, 2, 3]", '"just a string"', "42", "true"])
+def test_valid_json_that_is_not_an_object_is_rejected(text):
+    """A spec must be an object, and saying so here beats failing downstream.
+
+    These all parse as JSON, so an unchecked json.loads returned a list/str/int
+    from a function that promises a dict — the failure then surfaced somewhere
+    unrelated with a confusing message.
+    """
+    with pytest.raises(OpenAPIError, match="did not parse to an object"):
+        parse_spec(text)
+
+
+@pytest.mark.parametrize("schema", [True, ["a", "b"], "string"])
+def test_non_object_body_schema_is_ignored_not_fatal(schema):
+    """`schema: true` is valid JSON Schema, and one odd operation must not
+    take down the whole import — the tool is generated without body params."""
+    spec = {
+        "openapi": "3.0.0",
+        "paths": {"/x": {"post": {
+            "operationId": "odd",
+            "requestBody": {"content": {"application/json": {"schema": schema}}},
+        }}},
+    }
+    tool = parse_spec(spec)[0]
+    assert tool["name"] == "odd"
+    assert tool["schema"]["properties"] == {}
+    assert "required" not in tool["schema"]
+
+
 def test_is_url():
     assert is_url("https://x.com/spec.json")
     assert not is_url("/local/file.yaml")

@@ -7,9 +7,20 @@ fallback, cost tracking, smart routing, and ensemble; Ostiari owns everything
 around it.
 
 ``build_gateway_agent()`` (AxonLLM's own bootstrap) wires the whole router graph
-standalone — no AWS/Dynamo required (persistence auto-disables). If AxonLLM isn't
-installed, ``AxonRouter.available`` is False and the caller falls back to its own
-direct provider calls.
+standalone — no AWS/Dynamo required (persistence auto-disables).
+
+AxonLLM is an **optional** runtime dependency, but a load-bearing one: it is where
+routing governance and token cost tracking happen, so a gateway that quietly runs
+without it enforces less than it claims to while still returning 200s. It is a
+separate private repo and not on PyPI, so requiring it made it a deployment
+dependency of every gateway, CI runner, and contributor checkout — including the
+ones that only ever proxy tools. So ``require()`` is called at startup to *warn*,
+naming what is off, and ``/health`` reports ``llm_router`` for anything reading
+machine-side. ``OSTIARI_REQUIRE_AXON=1`` restores refuse-to-boot, which is the
+right setting in production. The direct-provider fallback in each caller remains
+for a *mid-flight* failure (one call, logged), and
+``OSTIARI_DISABLE_AXON_ROUTER=1`` remains for tests and for deliberately
+exercising that path.
 
 Routing modes are selected by the request/context, matching AxonLLM's contract:
   - ensemble:  model == "ensemble" | "ensemble:<preset>", or context["ensemble"]=True
@@ -48,12 +59,64 @@ class AxonRouter:
         self._agent: Any = None
         self._built = False
         self._available = False
+        self._error: str = ""
+        self._root: str | None = None
+        self._disabled = False
 
     @property
     def available(self) -> bool:
         """Whether AxonLLM's router could be built (lazy on first use)."""
         self._ensure()
         return self._available
+
+    @property
+    def error(self) -> str:
+        """Why the router is unavailable, or "" when it's up.
+
+        Retained so startup and /health can say what actually went wrong instead
+        of "unavailable" — the failure modes (not installed, config dir missing,
+        bootstrap raised) need different fixes.
+        """
+        self._ensure()
+        return self._error
+
+    @property
+    def root(self) -> str | None:
+        """The AxonLLM checkout this router loaded, for startup/health output."""
+        self._ensure()
+        return self._root
+
+    def require(self) -> None:
+        """Raise RuntimeError if AxonLLM is unavailable; return silently if not.
+
+        Routing governance and token cost tracking live in AxonLLM, so a gateway
+        running on the direct-provider fallback looks healthy and answers requests
+        while enforcing none of that — a silent downgrade of the guarantee Ostiari
+        exists to make.
+
+        The caller decides what to do about it. At startup ``_check_axon`` logs
+        this as a warning and continues, because AxonLLM is a separate private
+        repo and a hard requirement makes it a deployment dependency of every
+        gateway — including ones that never make an LLM call. Set
+        ``OSTIARI_REQUIRE_AXON=1`` to have that warning refuse to start instead.
+        """
+        self._ensure()
+        if self._available:
+            return
+        if self._disabled:
+            raise RuntimeError(
+                "AxonLLM routing is disabled (OSTIARI_DISABLE_AXON_ROUTER): routing "
+                "governance and token cost tracking happen in AxonLLM, so LLM calls "
+                "take the ungoverned direct-provider path. Unset the variable to "
+                "restore governance."
+            )
+        raise RuntimeError(
+            f"AxonLLM could not be embedded ({self._error or 'unknown error'}): routing "
+            "governance and token cost tracking happen in AxonLLM, so LLM calls return "
+            "200s while enforcing neither. Install AxonLLM "
+            "(pip install -e /path/to/AxonLLM) or point OSTIARI_AXON_ROOT at its "
+            "checkout."
+        )
 
     def _ensure(self) -> None:
         if self._built:
@@ -64,17 +127,20 @@ class AxonRouter:
         import os
         if os.environ.get("OSTIARI_DISABLE_AXON_ROUTER", "").lower() in ("1", "true", "yes"):
             self._available = False
+            self._disabled = True
+            self._error = "disabled via OSTIARI_DISABLE_AXON_ROUTER"
             log.info("AxonLLM router disabled via OSTIARI_DISABLE_AXON_ROUTER")
             return
 
         try:
-            import src.gateway  # noqa: F401  — locate the installed AxonLLM package
+            axon_root = _prepare_axon_path()
+            self._root = axon_root
+
             from src.gateway.bootstrap import build_gateway_agent
 
             # AxonLLM resolves its config files relative to cwd (its own CLI
             # chdir's to the repo root). Do the same transiently while building,
-            # deriving the root from the installed package, then restore cwd.
-            axon_root = _axon_root()
+            # then restore cwd.
             prev = os.getcwd()
             try:
                 if axon_root:
@@ -84,11 +150,52 @@ class AxonRouter:
                 os.chdir(prev)
 
             self._available = True
+            self._error = ""
             log.info("AxonLLM router embedded — GatewayAgent routing active (root=%s)", axon_root)
         except Exception as e:  # noqa: BLE001 — any failure => unavailable, degrade
             self._agent = None
             self._available = False
+            # Keep the class name: "No module named 'src'" and a config
+            # KeyError need different fixes, and the message alone hides which.
+            self._error = f"{type(e).__name__}: {e}"
             log.warning("AxonLLM router unavailable (%s) — falling back to direct provider calls", e)
+
+    def knows_model(self, model: str) -> bool:
+        """Whether AxonLLM's registry recognizes this model name.
+
+        AxonLLM's registry uses undated names ("claude-sonnet"), not Anthropic's
+        dated IDs ("claude-sonnet-4-6"), so asking it to honor a configured
+        default verbatim 404s. Callers pass an unknown name as smart-route
+        instead, letting AxonLLM pick a model it can actually serve.
+        """
+        if not model:
+            return False
+        try:
+            reg = getattr(getattr(self._agent, "router", None), "model_registry", None)
+            return bool(reg and model in reg.models)
+        except Exception:  # noqa: BLE001
+            return False
+
+    def supports_tools(self) -> bool:
+        """Whether AxonLLM can carry tool specs through to the provider.
+
+        Probed off the dataclass rather than hardcoded either way. AxonLLM used to
+        lack a ``tools`` field entirely, so a ``tools`` key was dropped on the
+        floor — no error, just a model that was never told any tools exist, which
+        answers confidently that it has no such capability. It carries them now,
+        translating into each provider's dialect.
+
+        Kept as a runtime probe because Ostiari doesn't pin an AxonLLM version: an
+        older checkout still returns False here and callers still degrade rather
+        than lose the caller's tools silently.
+        """
+        try:
+            import dataclasses
+
+            from src.gateway.models import ChatCompletionRequest
+            return any(f.name == "tools" for f in dataclasses.fields(ChatCompletionRequest))
+        except Exception:  # noqa: BLE001
+            return False
 
     async def route(
         self,
@@ -108,10 +215,22 @@ class AxonRouter:
 
         ``ensemble`` may be True (default preset), a preset name, or False.
         ``smart`` requests task-classification routing. Otherwise ``model`` is used.
+
+        ``tools`` are forwarded OpenAI-shaped; AxonLLM translates them into each
+        provider's dialect. Raises if an AxonLLM too old to carry them is loaded —
+        routing anyway would return a confident tool-free answer ("I don't have
+        access to a database") that reads like a successful response. Callers
+        check ``supports_tools()`` first so they can degrade deliberately.
         """
         self._ensure()
         if not self._available or self._agent is None:
             raise RuntimeError("AxonLLM router not available")
+
+        if tools and not self.supports_tools():
+            raise RuntimeError(
+                f"this AxonLLM cannot carry tool specs ({len(tools)} requested) — "
+                "it would silently drop them and answer as if no tools existed"
+            )
 
         # AxonLLM takes OpenAI-shaped messages; fold any Anthropic system prompt in.
         msgs: list[dict[str, Any]] = []
@@ -147,23 +266,59 @@ class AxonRouter:
         return _to_result(out)
 
 
+def _prepare_axon_path() -> str | None:
+    """Put AxonLLM's repo root on sys.path so ``src.gateway`` imports work.
+
+    AxonLLM's modules import each other as ``src.gateway.*``, but its editable
+    install puts ``<root>/src`` on sys.path — which makes ``gateway`` importable
+    and ``src.gateway`` not. So the root has to go on the path *before* importing,
+    rather than importing ``src.gateway`` in order to find the root, which can
+    never succeed. That ordering is why the router silently ran unavailable: every
+    call took the direct-provider fallback, with no AxonLLM cost tracking or
+    routing governance, and nothing looked wrong.
+
+    Returns the root, or None if AxonLLM couldn't be located. Idempotent, and
+    shared with ModelRouter's TaskClassifier import, which hit the same trap.
+    """
+    import sys
+
+    axon_root = _axon_root()
+    if axon_root and axon_root not in sys.path:
+        sys.path.insert(0, axon_root)
+    return axon_root
+
+
 def _axon_root() -> str | None:
     """Locate AxonLLM's repo root (which holds its ``config/`` dir).
 
-    Prefer an explicit override, else derive it from the installed
-    ``src.gateway`` package (…/<root>/src/gateway → <root>).
+    Prefer an explicit override, else derive it from the installed package.
+
+    Deliberately locates the package as ``gateway``, not ``src.gateway``: the
+    editable install exposes it under the former, and the latter is exactly what
+    isn't importable until this function's result is on sys.path. Importing
+    ``src.gateway`` here made the whole probe fail on a fresh install, which read
+    as "AxonLLM not installed" when it was.
     """
+    import importlib.util
     import os
+
     override = os.environ.get("OSTIARI_AXON_ROOT", "")
     if override and os.path.isdir(os.path.join(override, "config")):
         return override
-    try:
-        import src.gateway
-        root = os.path.dirname(os.path.dirname(os.path.dirname(src.gateway.__file__)))
+
+    # find_spec avoids importing the package (importing it as `gateway` would
+    # register a second copy of modules that also live under `src.gateway`).
+    for name in ("gateway", "src.gateway"):
+        try:
+            spec = importlib.util.find_spec(name)
+        except (ImportError, ValueError):
+            continue
+        if spec is None or not spec.origin:
+            continue
+        # …/<root>/src/gateway/__init__.py → <root>
+        root = os.path.dirname(os.path.dirname(os.path.dirname(spec.origin)))
         if os.path.isdir(os.path.join(root, "config")):
             return root
-    except Exception:  # noqa: BLE001
-        pass
     return None
 
 
@@ -175,6 +330,15 @@ def _flatten_blocks(system: Any) -> str:
 
 
 def _to_result(out: dict[str, Any]) -> AxonResult:
+    # AxonLLM signals failure by returning an {"error": ...} dict, not by raising
+    # (e.g. an unknown model id → {"error": {...}, "status_code": 404}). Such a
+    # payload has no "choices", so parsing it optimistically yields content="" and
+    # 0 tokens — an empty HTTP 200 that looks like a successful call. Raise instead
+    # so callers fall back to the direct provider path.
+    if "choices" not in out and (err := out.get("error")):
+        detail = err.get("message") or err.get("type") if isinstance(err, dict) else err
+        raise RuntimeError(f"AxonLLM error: {detail} (status {out.get('status_code', '?')})")
+
     choices = out.get("choices") or [{}]
     msg = (choices[0] or {}).get("message", {}) if choices else {}
     content = msg.get("content") or ""

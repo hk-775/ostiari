@@ -28,7 +28,11 @@ def _default_fail_open() -> bool:
         return False
     if explicit in ("true", "1", "yes", "on"):
         return True
-    if os.environ.get("OSTIARI_ENV", "").strip().lower() in ("production", "prod"):
+    # noqa: SIM103 — the negated one-liner ruff suggests reads as
+    # "return env not in production", a double negative on the single most
+    # safety-critical default in the codebase. Kept explicit so each branch maps
+    # 1:1 onto the precedence list in the docstring above.
+    if os.environ.get("OSTIARI_ENV", "").strip().lower() in ("production", "prod"):  # noqa: SIM103
         return False
     return True
 

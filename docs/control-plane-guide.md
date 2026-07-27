@@ -88,24 +88,39 @@ place. The control plane is what *configures* each of these gates.
    │  4. RISK         Score 0-100. allow / intervene / block?         │  ← Policies + risk engine
    │        │                                                         │
    │        ▼                                                         │
-   │  5. PAYMENT      Does this call cost money? Can the wallet pay?  │  ← Payments (x402)
+   │  5. APPROVAL     Scored *intervene*? Pause for a human (202).    │  ← Approvals (HITL)
+   │        │          Re-submit with X-Approval-Id once approved.    │
+   │        ▼                                                         │
+   │  6. PAYMENT      Does this call cost money? Can the wallet pay?  │  ← Payments (x402)
    │        │                                                         │
    │        ▼                                                         │
-   │  6. EXECUTE      Forward to the real tool (HTTP / MCP / agent).  │
+   │  7. EXECUTE      Forward to the real tool (HTTP / MCP / agent).  │
    │        │          Meter usage; draw down token pool.             │  ← Metering, Token Broker
    │        ▼                                                         │
-   │  7. TRACE        Record everything → report to control plane.    │  ← Live Traces, Audit, ROI
+   │  8. TRACE        Record everything → report to control plane.    │  ← Live Traces, Audit, ROI
    └────────────────────────────────────────────────────────────────┘
                 │
                 ▼
-   Result returns to the agent (or a "blocked" / "needs approval" response)
+   Result returns to the agent (or "blocked" / "needs approval" / a shadow mock)
 ```
 
-Two cross-cutting ideas that ride on top of this chain:
+LLM calls (not tool calls) run a parallel chain on the same gateway — agent
+authorization, injection/PII detection, quota, then routing through the embedded
+AxonLLM engine. See [gateway-architecture.md](gateway-architecture.md) and
+[axon-router.md](axon-router.md).
+
+Three cross-cutting ideas that ride on top of this chain:
 
 - **Shadow mode.** A gateway can run in *shadow* instead of *enforce*. In shadow,
   every gate still evaluates and records what it *would* have done — but nothing
   is ever blocked and no real side effect runs. It's "try before you enforce."
+- **Human-in-the-loop is opt-in.** Gate 5 only engages when the gateway runs with
+  `OSTIARI_HITL=on`. With it off the tier is advisory in dev — the score is
+  recorded and the call proceeds — but in production it is *refused*, because
+  production is fail-closed and an intervene nobody can resolve is not an allow.
+  Worth knowing before you conclude that "intervene" means "someone is checking."
+  The queue humans act in is the Approvals page (§7.4), which explains the
+  dev/production split in full.
 - **Everything is configured centrally.** You never edit a gateway directly. You
   change a policy / quota / price in the control plane and click **Push**; the
   control plane sends the new config to the gateway(s).
@@ -118,21 +133,41 @@ gates did** (Observe / Test).
 
 ## 3. The control plane, section by section
 
-The dashboard's left nav has six sections. They map to a natural lifecycle:
+The dashboard's left nav has six sections. **The nav is ordered for daily use —
+what you look at most is on top:**
+
+```
+  OBSERVE ─▶ CONTROL ─▶ MONETIZE ─▶ CONFIGURE ─▶ TEST ─▶ ADMIN
+  (watch)     (rules)   (charging)   (register)   (verify)  (admin-only)
+```
+
+- **Observe** — Dashboard, Live Traces, Shadow Report, **Approvals**, Costs,
+  Metering, Audit Log, Compliance, ROI.
+- **Control** — Models, Policies, Quotas, Agent Quotas.
+- **Monetize** — Payments, Token Broker.
+- **Configure** — **Discovery**, Agent Gateways, Agents, Tools, MCP Servers,
+  Protocol (A2A).
+- **Test** — Sandbox, Experiments, Architecture.
+- **Admin** — LLM Providers, Users. *(visible to admins only)*
+
+**But you'd set it up in almost the opposite order.** This guide follows the
+lifecycle, not the nav:
 
 ```
   CONFIGURE ─▶ CONTROL ─▶ MONETIZE ─▶ (agents run) ─▶ OBSERVE ─▶ TEST/tune
   (register)   (rules)    (charging)                  (watch)    (verify)
 ```
 
-1. **Configure** — register your gateways, agents, tools, and MCP servers.
-2. **Control** — set the rules: model access, policies, quotas, agent-to-agent.
-3. **Monetize** — charge for tool calls (x402) and broker LLM tokens.
-4. **Observe** — watch it happen: traces, costs, metering, compliance, ROI.
-5. **Test** — sandbox, A/B experiments, architecture view.
-6. **Admin** — LLM providers and users.
+So §4 is Configure, §5 is Control, §6 is Monetize, §7 is Observe, §8 is Test, and
+§9 is Admin — read top-to-bottom to stand a deployment up, and use the nav order
+once it's running.
 
-We'll take each in the order you'd actually use them.
+Two things worth knowing about the nav specifically:
+
+- **Protocol (A2A)** lives under *Configure* in the nav, but it's genuinely a
+  governance rule, so this guide covers it with the other rules in §5.4.
+- One page is routed but **absent from the nav**: **Token Efficiency**
+  (`/efficiency`), reachable only by typing the URL. See §7.9.
 
 ---
 
@@ -141,7 +176,38 @@ We'll take each in the order you'd actually use them.
 Before Ostiari can govern anything, it needs to know your world: which gateways
 are out there, which agents run behind them, what tools they can call.
 
-### 4.1 Agent Gateways (`/gateways`)
+### 4.1 Discovery (`/discovery`) — find the agents you didn't register
+
+**What it is:** the first page in the Configure section, and the answer to "what
+am I missing?" Ostiari correlates the agent identities it can *observe* — gateway
+traffic and cloud signals — against the agents you actually *registered*, and
+sorts every one into three buckets:
+
+| Status | Meaning |
+|---|---|
+| **Shadow — ungoverned** | seen in traffic, never registered. Nothing governs it. |
+| **Governed** | seen and registered. Working as intended. |
+| **Registered, unseen** | registered but no traffic. Stale? Decommissioned? |
+
+**Novice framing:** the airport analogy again — this is the sweep that finds
+people who got onto the concourse without passing a checkpoint. You cannot write
+a policy for an agent you don't know about, so this page comes *before* the
+registration pages, not after.
+
+Each shadow row shows the evidence (which gateways saw it, which signals) and an
+**Onboard** button that registers it against a gateway in one click — so the
+remediation path is on the same screen as the finding.
+
+**Best practice:** treat a non-zero shadow count as a work item, not a metric.
+Onboard or shut down each one. Then check "Registered, unseen" — a registered
+agent with no traffic is either dead config or an agent talking to a provider
+directly, around its gateway.
+
+**What to avoid:** reading this page cross-tenant. Shadow AI is computed as
+*seen minus known*, so an unscoped read reports another tenant's agents as your
+shadow AI. This was a real bug — see §10a.
+
+### 4.2 Agent Gateways (`/gateways`)
 
 **What it is:** the list of every gateway (sidecar) registered with the control
 plane. Each row is one deployed proxy — its ID, endpoint, health (last
@@ -171,7 +237,7 @@ work. This is the single most important operational habit.
 production. You will block a real workflow on day one and erode trust in the
 tool. Shadow first, always.
 
-### 4.2 Agents (`/agents`)
+### 4.3 Agents (`/agents`)
 
 **What it is:** the AI agents themselves — name, the framework they're built on
 (OpenAI, Anthropic, LangGraph, CrewAI, Strands, AutoGen, … or "Other"), and
@@ -185,9 +251,9 @@ framework tells the gateway which adapter to apply.
 
 **Best practice:** register every agent, even ones you think are low-risk.
 Unregistered agents are how "shadow AI" sneaks into an org — you can't govern
-what you don't know exists.
+what you don't know exists. Discovery (§4.1) is how you find the ones you missed.
 
-### 4.3 Tools (`/tools`)
+### 4.4 Tools (`/tools`)
 
 **What it is:** the tools each gateway can proxy — name, HTTP endpoint, method.
 When an agent calls `db_query`, the gateway looks up that tool here to know where
@@ -198,7 +264,7 @@ A tool that lists but 502s on call looks "configured" but does nothing — worse
 than not having it, because it *looks* healthy. (This was a real bug we fixed:
 demo gateways had tools pointing at dead endpoints.)
 
-### 4.4 MCP Servers (`/mcp-servers`)
+### 4.5 MCP Servers (`/mcp-servers`)
 
 **What it is:** MCP (Model Context Protocol) servers connected to a gateway. MCP
 is an open standard for exposing tools to agents. A gateway can connect to MCP
@@ -266,7 +332,9 @@ test your block patterns against the real action names.**
 - Keep an explicit `allow` list for the safe, high-volume tools so they never
   get caught by a broad block pattern.
 - Use `risk_adjust` for "grey area" tools (email, file write) rather than a hard
-  block — let them go to *intervene* (human approval) instead of failing.
+  block — let them go to *intervene* (human approval) instead of failing. In
+  production this only means "human approval" if HITL is on; otherwise the
+  fail-closed default turns the same score into a refusal (§7.4).
 - Write patterns against actual action names and verify in the Sandbox.
 
 **What to avoid:**
@@ -357,6 +425,47 @@ shadow before enabling.
 
 **What to avoid:** allowing `*` (any agent may delegate to any agent). That
 defeats the purpose — one compromised agent then reaches everything.
+
+### 5.5 PII redaction & prompt-injection detection — gateway config only
+
+**What it is:** two content controls that sit on the **LLM** path (not the tool
+path) — redacting personal data out of a prompt before it leaves the process, and
+scoring the prompt for prompt-injection attempts. They run on Ostiari's own
+detection engine, `ostiari.detect`: 12 PII types, 7 injection categories, and
+Unicode/zero-width obfuscation handling, with no external dependency.
+
+**Why it's in this section but has no page:** these are governance rules, so they
+belong beside policies and quotas conceptually — but **there is no control-plane
+UI for them.** You set them in the gateway's YAML under `llm:`, and the control
+plane neither displays nor pushes them:
+
+```yaml
+llm:
+  pii_redaction: true
+  pii_redact_types: [email, ssn, credit_card]   # omit for all types
+  pii_reversible: true                          # false = unrecoverable
+  injection_detection: true
+  injection_threshold: 0.7                      # lower is stricter
+  injection_mode: block                         # or "flag" to observe only
+```
+
+Both default to **off**. Full type tables and scoring in
+[detection-engine.md](detection-engine.md).
+
+**Best practice:** start with `injection_mode: flag`. It scores and reports in the
+response metadata without blocking — the same observe-before-enforce discipline as
+shadow mode, applied to content instead of actions. Read what it flags on real
+traffic, then switch to `block`.
+
+**What to avoid — the failure mode that makes this worth its own warning:** these
+controls are **fail-closed by design**. An enabled control that is unavailable or
+that raises **blocks the request**. That is the correct posture, and it is also how
+this feature was once completely broken: both detectors used to import from
+AxonLLM, which was an *optional* install, so on any machine without it, turning
+either switch on blocked **every** request — benign ones included. They now come
+from a hard dependency, so the import can't fail that way. Keep the property in
+mind anyway when you enable them: a broken detector means no traffic, not
+unchecked traffic.
 
 ---
 
@@ -483,23 +592,121 @@ The "try before you enforce" summary: for a gateway in shadow mode, what enforce
 mode *would* have blocked — counts, block rate, and the offending actions.
 **This is what you read before flipping a gateway to enforce.**
 
-### 7.4 Costs (`/costs`) and Metering (`/metering`)
+### 7.4 Approvals (`/approvals`) — where a human answers the *intervene* tier
+
+**What it is:** the review queue. Every other page in this guide describes rules
+being applied automatically; this is the one place a person is in the loop. When a
+call scores into the **intervene** band (§5.1), the gateway pauses it and files a
+pending approval here. The reviewer sees the agent, the action, the risk score,
+the *why* (the decision explanation), and the call's **raw parameters** — the
+actual SQL, the actual recipient list — then clicks **Approve** or **Deny**. A
+second panel, *Recent decisions*, shows the last 20 with who decided each.
+
+**Novice framing:** the airport analogy's secondary-screening desk. Most
+passengers walk through; a few get pulled aside, and a human looks in the bag and
+decides. Without this page the *intervene* tier is just a label on a chart — this
+is where it becomes an actual decision.
+
+**The mechanics (gate 5 in §2), because they surprise people:**
+
+```
+   agent calls a tool → risk score lands in "intervene"
+        │
+        ├─ OSTIARI_HITL off (the default) ─▶ dev:  recorded as intervene, CALL PROCEEDS
+        │                                    prod: 403, call refused
+        │
+        └─ OSTIARI_HITL on   (dev and production alike)
+                │
+                ▼
+           gateway returns HTTP 202  { "pending_approval": true, "approval_id": …,
+                                       "reason": …, "decision": {…} }
+           the tool has NOT run
+                │
+           a human approves/denies on this page
+                │
+           caller re-submits the SAME request with header  X-Approval-Id: <id>
+                │
+                ├─ approved ─▶ tool executes
+                └─ denied   ─▶ 403, tool never runs
+```
+
+Four consequences of that shape:
+
+1. **HITL is opt-in.** The gateway must run with `OSTIARI_HITL=on` (`1`/`true`/`yes`
+   also work). Off — the default — an intervene score is scored, explained, and
+   traced, but nothing pauses and this queue stays empty. If you expected approvals
+   and see none, check this first.
+2. **The gateway does not block a thread waiting.** It answers **202** immediately
+   and the *caller* is responsible for retrying with `X-Approval-Id` once the
+   approval clears. An agent framework that treats any non-2xx-body as a failure
+   will look like it "lost" the call — the 202 body carries the id and the reason
+   text explaining the resubmit.
+3. **Approval is per-call, not a standing grant.** The id authorizes that one
+   request. The next identical call scores again and pauses again.
+4. **The gate reads the *raw* tier.** The Guard can internally collapse an
+   intervene into allow or block (fail-open, a policy callback, or a fail-closed
+   raise), but the tier as *scored* is preserved and that's what HITL acts on. So a
+   call can appear as `allow` in one view and still land in this queue —
+   deliberately, because "ask a human" shouldn't be silently downgraded by a
+   fail-open path.
+
+**What HITL off means differs by environment,** and this is the one place the
+fail-open default is load-bearing. Dev is fail-open: an unresolved intervene
+becomes an *allow* and the call proceeds. Production is fail-closed (§9 / `OSTIARI_ENV`):
+the same call is **refused with 403**. Same score, same policy, opposite outcome —
+so a threshold tuned in dev, where the intervene band is effectively "log it,"
+becomes a wall of refusals on the day you set `OSTIARI_ENV=production`. Either turn
+HITL on so the band has somewhere to go, or move those actions out of the intervene
+band before you promote.
+
+With HITL **on**, production and the approvals queue compose: a fail-closed
+intervene is deferred to this queue rather than refused, so the 202 →
+`X-Approval-Id` loop above is the production path too. Three properties hold, and
+are worth re-checking after any change to the enforcement path — they're the line
+between an escalation and a bypass:
+
+- A **genuine** block still 403s and creates **no** approval. A policy `block:` or a
+  score over the block threshold is a decision, not a question; it has no business
+  in a review queue.
+- With HITL **off** in production, a fail-closed intervene stays a 403. There is
+  nobody to defer to, so nothing is deferred.
+- **Shadow mode** never queues. It doesn't enforce, and its short-circuit runs ahead
+  of this gate: an intervene there is an observation to record, not a call to pause.
+
+Before the fix that made this work, production silently deleted the middle tier:
+the fail-closed collapse raised before the approval gate was reachable, so every
+scored-intervene call 403'd and this page stayed empty no matter what
+`OSTIARI_HITL` said. If you are running an older gateway, that's the symptom.
+
+**Best practice:** turn HITL on only once your thresholds put *few* calls in the
+intervene band (§5.1's "over-blocking" warning applies double here — a queue
+nobody can keep up with gets rubber-stamped, which is worse than not having it).
+Make sure whoever staffs the queue can actually judge the parameters they're
+shown; if the reviewer can't read the SQL, the review is theater.
+
+**What to avoid:** exposing this queue across tenants. It holds raw tool
+parameters — the most sensitive payload in the system — plus the power to approve
+them. A flat, un-scoped store put one tenant's SQL in every other tenant's queue
+and let anyone decide it. Fixed, and covered in §10a; worth re-checking after any
+change to approval storage.
+
+### 7.5 Costs (`/costs`) and Metering (`/metering`)
 - **Costs** — dollar spend by model/agent/gateway (LLM token costs).
 - **Metering** — *governed-call counts* per agent/gateway/tool, with tiering
   (free / pro / enterprise). This is the billing lens: "Team X made 47,000
   governed calls this month." Metering counts; Costs prices.
 
-### 7.5 Audit Log (`/audit`)
+### 7.6 Audit Log (`/audit`)
 An immutable record of *administrative* actions (who changed which policy, when).
 Distinct from traces (which record agent behavior). This is your compliance and
 "who did that?" trail.
 
-### 7.6 Compliance (`/compliance`)
+### 7.7 Compliance (`/compliance`)
 Auto-generated regulator-shaped reports (EU AI Act first) mapping Ostiari's
 evidence — audit logs, traces, policies, human-oversight interventions — to
 specific requirements, scored green/yellow/red. One command → auditor-ready PDF.
 
-### 7.7 ROI / Savings (`/roi`)
+### 7.8 ROI / Savings (`/roi`)
 "We blocked N unsafe actions worth ~$X in prevented damage." **Honesty model:**
 the *counts and risk scores are measured*; the *dollar value per blocked action
 is your editable assumption*, risk-weighted so a barely-over-threshold block
@@ -509,6 +716,20 @@ because a defensible ROI figure is one the CIO's own assumptions produced.
 **Best practice for ROI:** set the incident costs to *your* org's real risk
 figures before showing anyone. A borrowed default ("$500k per DB delete") invites
 "where'd that come from?"; your own number survives the question.
+
+### 7.9 Token Efficiency (`/efficiency`) — routed, but not in the nav
+
+**What it is:** token usage, cost optimization, and prompt-quality insights. An
+**Overall Score** plus Avg Tokens/Request, Cost/Request, and Models Used, broken
+down into Token Efficiency / Cost Efficiency / Routing Diversity bars. It answers
+"are we spending tokens well?", where Costs (§7.5) answers "what did we spend?"
+
+**Read this before you use it:** the page is routed in the app but is **not listed
+in `NAV_SECTIONS`** — there is no link to it. You reach it by typing
+`/efficiency` in the address bar. So it is real and it works, but nobody will
+discover it on their own, and its numbers aren't part of anyone's routine. Either
+add it to the nav or treat it as a diagnostic you go to deliberately; don't assume
+a teammate has seen it.
 
 ---
 
@@ -538,11 +759,79 @@ their credentials/health. **Novice note:** "LLM Providers" (model vendors) are
 different from the agent *frameworks* on the Agents page. Providers supply the
 brains (models); frameworks are how the agent is built.
 
+**xAI (Grok) and Together** are first-class here: both speak the OpenAI wire format,
+so connectivity is one shared `/v1/chat/completions` probe rather than a near-copy per
+vendor. Their base URLs and probe models mirror AxonLLM's adapters deliberately — a
+divergence would let this page "pass" a key the router can't actually route with.
+Seeded models: `grok-3`, `grok-3-mini`, `llama-3.3-70b`, `deepseek-r1-together`.
+
+**This store is process memory, not a table.** It renders empty on a fresh control
+plane, and it does not survive a restart. `gateway/register_demo_providers.py` seeds it
+from the same env file the gateways load, so the page shows exactly the providers this
+machine can reach — run it after every control-plane restart (the `make dev` and
+`make demo-full` targets do). Keys are Fernet-encrypted at rest under
+`OSTIARI_ENCRYPTION_KEY`; unset, the control plane mints a transient key, so the
+stored keys die with the process regardless. Persisting this to a real table is
+outstanding work.
+
 ### 9.2 Users (`/users`)
-Control-plane accounts and roles (admin / operator / viewer). RBAC: viewers can
-watch but not change config. **Best practice:** most people are viewers; a small
-number are operators; admin is rare. The default `admin@ostiari.ai` / `admin`
-login is for first-run only — **change it immediately** in any real deployment.
+
+**What it is:** control-plane accounts and their roles. Three roles:
+
+| Role | Intent |
+|---|---|
+| **admin** | everything, including this page and LLM Providers |
+| **operator** — labelled **Editor** in the UI | change config; no user/provider admin |
+| **viewer** | read-only |
+
+**Naming caveat, because it will confuse you:** the *stored* value is `operator`
+(the backend's `_VALID_ROLES` is `admin`/`operator`/`viewer`, and the SSO group
+mapper accepts `operators`, `operator_group`, or `editor` and normalizes them all
+to `operator`). The **UI** labels that same role **Editor** — the dropdown on this
+page and the sidebar badge both say Editor. Same role, two names; the API is the
+one that counts.
+
+**What RBAC actually enforces today — read this before relying on it.** Role
+restriction is mostly a *frontend* affordance:
+
+- The sidebar hides the write sections (`Control`, `Configure`, `Test`) from a
+  viewer, and hides `Admin` from everyone but an admin. `/providers` and `/users`
+  are additionally wrapped in a `RequireAdmin` route guard.
+- **Server-side**, only three surfaces check the role, and they're the ones you'd
+  guess: provider *writes* and the key-reveal endpoint (`require_role("admin")` —
+  the key-free provider *list* is readable by anyone authenticated), the
+  user-management endpoints, and the Audit Log via its own inline admin/operator
+  check.
+- Everything else is **not role-checked**. The write routers for policies, quotas,
+  tools, gateways, agents, MCP servers, payments, and the token broker
+  authenticate the caller and scope them to an org, but never look at the role. A
+  viewer token `POST`ing to `/api/policies` gets **200** and the policy persists.
+
+Verified, not inferred — probing the live API with a genuine viewer token:
+
+| Request as a viewer | Result |
+|---|---|
+| `POST /api/policies` | **200**, policy created and persisted |
+| `POST /api/gateways` | **200** |
+| `POST /api/providers`, `DELETE /api/providers/{n}` | 403 |
+| `GET /api/auth/users`, `POST /api/auth/register` | 403 |
+| `GET /api/audit` | 403 |
+
+Treat viewer as "this person won't be shown the controls", not as "this person
+cannot change anything." If you need the stronger guarantee, the role checks
+belong on the write routers, not the nav.
+
+**The default admin credential.** In dev/demo the control plane seeds
+`admin@ostiari.ai` / `admin` on first login for convenience. In production
+(`OSTIARI_ENV=production`) it **refuses to seed at all** without an explicit
+password and raises `RuntimeError: OSTIARI_ADMIN_PASSWORD must be set in
+production` — so the well-known credential can't reach a real deployment by
+oversight. Set `OSTIARI_ADMIN_PASSWORD` (and optionally `OSTIARI_ADMIN_EMAIL`)
+before first boot.
+
+**Best practice:** most people are viewers; a small number are operators/editors;
+admin is rare. Keep the production admin password in a secret store, not an env
+file on the box.
 
 ---
 
@@ -576,25 +865,89 @@ change "isn't taking effect," check that you pushed.
 
 ---
 
+## 10a. Tenant scoping — which org sees what
+
+Every stored record carries an `org_id`, and read endpoints are scoped to the
+caller's org. Two things make this non-obvious, and both have bitten:
+
+**1. Gateways have no user token.** A gateway posting traces, usage, payments, or
+approvals authenticates as itself, not as a person — so there is no caller org to
+scope by. The org is derived from the **reporting gateway's row** (`org_of_gateway`),
+which is the only trustworthy source available on those paths.
+
+**2. The payload is not believed.** An ingest body naming its own `org_id` was
+previously honored, which let any caller that could reach `/api/traces/ingest` file a
+trace into an arbitrary tenant's buffer. That buffer is read back by `/recent`, the
+WebSocket fan-out, compliance, ROI, trust scoring, and discovery. Any `org_id` in the
+body is now overwritten with the gateway-derived value before storage.
+
+| Surface | How the org is decided |
+|---|---|
+| Trace / usage / payment / approval **ingest** | the reporting gateway's `gateways` row |
+| Everything a **human** reads | the caller's token (`get_current_org`) |
+| Approvals addressed **by id** | owner org of that approval; a tokened caller from another org gets 404 |
+
+An unknown or empty gateway falls back to the default org, so its records are still
+kept rather than silently dropped — the demo posture, consistent across ingest paths.
+
+**3. Who may ingest at all.** Deriving the org from the gateway row only helps if the
+caller *is* a gateway. Trace ingest authenticates machine callers with a shared secret,
+`OSTIARI_INGEST_KEY`, presented as an `X-Ingest-Key` header (constant-time compared) —
+not a user JWT, since a gateway has no user identity:
+
+| `OSTIARI_INGEST_KEY` | `OSTIARI_ENV` | Behavior |
+|---|---|---|
+| set | any | header must match, else **401** |
+| unset | dev/demo | **open** — anyone reachable may ingest |
+| unset | `production` | every ingest is **401**; the control plane will not accept anonymous traces |
+
+The production refusal exists because forged traces poison everything downstream —
+compliance reports, ROI, metering, billing. **Set this in any deployment that isn't
+your laptop**, and configure the matching key on every gateway.
+
+**Approvals are the subtle one.** The queue holds an agent's raw tool parameters —
+SQL, recipients, payloads — plus the reviewer's identity. A flat id-keyed store put
+one tenant's most sensitive call detail in every other tenant's review queue, and let
+anyone decide it. It's now keyed per org. The id-addressed routes stay reachable
+without a token because that's the gateway's own resume-check path; a caller that
+*does* present a token is held to its own org.
+
+**Discovery, too:** "shadow AI" is computed as seen-minus-known, so an unscoped read
+listed another tenant's agent ids and gateway names as *your* shadow AI.
+
+---
+
 ## 11. Golden-path operating checklist
 
 For a real deployment, in order:
 
-1. **Register** gateways, agents, tools, MCP servers (Configure).
-2. Start every gateway in **shadow** mode.
-3. Write **policies** (deny-by-default for destructive; explicit allow for safe;
+1. Set the production secrets **before first boot**: `OSTIARI_ADMIN_PASSWORD`
+   (the control plane refuses to seed an admin without it), `OSTIARI_JWT_SECRET`,
+   `OSTIARI_INGEST_KEY` (on the control plane *and* every gateway),
+   `OSTIARI_ENCRYPTION_KEY`.
+2. **Register** gateways, agents, tools, MCP servers (Configure).
+3. Start every gateway in **shadow** mode.
+4. Write **policies** (deny-by-default for destructive; explicit allow for safe;
    `risk_adjust` for grey areas). Test patterns in the **Sandbox**.
-4. Set **quotas** (per-agent daily budgets a bit above normal; a global backstop).
-5. For agent-to-agent systems, set the **delegation matrix** deny-by-default and
+5. Set **quotas** (per-agent daily budgets a bit above normal; a global backstop).
+6. For agent-to-agent systems, set the **delegation matrix** deny-by-default and
    a `max_chain_depth`.
-6. Let real traffic flow. Watch **Live Traces** and the **Shadow Report**.
-7. When the shadow report shows only true positives, flip that gateway to
+7. If you want content controls, enable detection with `injection_mode: flag`
+   first (§5.5), read what it flags, then switch to `block`.
+8. Let real traffic flow. Watch **Live Traces** and the **Shadow Report**.
+9. When the shadow report shows only true positives, flip that gateway to
    **enforce**.
-8. If monetizing: provision **wallets** with limits; set token **pool**
-   thresholds; **reconcile** each period.
-9. Review **ROI**, **Metering**, **Compliance** monthly. Keep the cost
-   assumptions honest.
-10. Rotate the default admin credential; make most users **viewers**.
+10. Check **Discovery** for shadow AI; onboard or shut down every ungoverned agent.
+11. Only once *intervene* is rare: turn on `OSTIARI_HITL` and staff the
+    **Approvals** queue. In production this is not really optional — with it off,
+    fail-closed turns every intervene into a 403 (§7.4). Either staff the queue or
+    make sure nothing scores into the band.
+12. If monetizing: provision **wallets** with limits; set token **pool**
+    thresholds; **reconcile** each period.
+13. Review **ROI**, **Metering**, **Compliance** monthly. Keep the cost
+    assumptions honest.
+14. Make most users **viewers** — and remember viewer is a UI restriction, not a
+    server-side one (§9.2).
 
 ## 12. Top pitfalls, collected
 
@@ -610,6 +963,12 @@ For a real deployment, in order:
 | Borrowed ROI cost numbers | "Where'd that come from?" | Use your org's real risk figures |
 | Broker discount with no contract | Margin is imaginary | Discount must be a signed agreement |
 | Never reconciling the token pool | Silent drift compounds | Reconcile every billing period |
+| Expecting approvals with HITL off | Intervene never pauses — and in production it's *refused* | `OSTIARI_HITL=on` (§7.4) |
+| Thresholds tuned in dev, promoted to prod | Dev's intervene band is "log it"; prod's is "refuse" | Turn HITL on, or empty the band first (§7.4) |
+| Caller ignores the 202 | Approved call never re-submitted, looks lost | Retry with `X-Approval-Id` |
+| Trusting viewer as a security boundary | Only the UI is restricted | Role-gate the write routers (§9.2) |
+| Enabling detection straight to `block` | Fail-closed + untuned = blocked traffic | `injection_mode: flag` first (§5.5) |
+| No `OSTIARI_INGEST_KEY` outside dev | Forged traces poison compliance/billing | Set it on CP and every gateway (§10a) |
 
 ---
 
@@ -617,10 +976,13 @@ For a real deployment, in order:
 
 Ostiari puts a **gateway** in front of every AI agent that intercepts each tool
 call and runs it through a chain of gates — delegation, authorization, quota,
-risk-scoring, payment — before letting it execute, then records everything. The
-**control plane** is the central dashboard where you configure those gates once
-and push them to every gateway, and where you watch the whole fleet: live
-traces, shadow reports, metering, compliance, ROI. Start every gateway in
-**shadow** mode, tune your policies against real traffic, then flip to
-**enforce** — that discipline, plus deny-by-default on destructive actions and
-cross-agent delegation, is 90% of operating it well.
+risk-scoring, human approval, payment — before letting it execute, then records
+everything. The **control plane** is the central dashboard where you configure
+those gates once and push them to every gateway, and where you watch the whole
+fleet: live traces, shadow reports, the approvals queue, metering, compliance,
+ROI. Start every gateway in **shadow** mode, tune your policies against real
+traffic, then flip to **enforce** — that discipline, plus deny-by-default on
+destructive actions and cross-agent delegation, is 90% of operating it well. Two
+things are opt-in and easy to assume you have: human-in-the-loop approvals
+(`OSTIARI_HITL`) and content detection (`pii_redaction` /
+`injection_detection`) are both **off by default**.

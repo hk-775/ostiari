@@ -7,13 +7,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ostiari.exceptions import ActionBlockedError, OstiariError, BreakerTrippedError
+from ostiari.exceptions import ActionBlockedError, BreakerTrippedError, OstiariError
 from ostiari.guard import Guard
 from ostiari.models import (
-    OstiariConfig,
     BreakerConfig,
     BreakerState,
     MetricType,
+    OstiariConfig,
     PolicyResult,
     RiskAdjustment,
     Rule,

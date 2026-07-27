@@ -39,10 +39,18 @@ def anyio_backend() -> str:
 
 def _reset_in_memory_state() -> None:
     """Clear module-level state used by in-memory routers between tests."""
-    from control_plane.routers import agent_routing, agents, model_config, providers, traces
+    from control_plane.routers import (
+        agent_routing,
+        agents,
+        approvals,
+        model_config,
+        providers,
+        traces,
+    )
 
     for mod, attr in (
         (agents, "_agents"),
+        (approvals, "_pending"),
         (agent_routing, "_policies"),
         (model_config, "_models"),
         (providers, "_providers"),

@@ -69,6 +69,15 @@ class ModuleRegistry:
         log.info("Deactivated module: %s", module_name)
         return True
 
+    def get(self, module_name: str) -> SidecarModule | None:
+        """The active module instance, or None if it isn't active.
+
+        Lets the server inspect a module's own state after activation (e.g.
+        whether the LLM gateway got AxonLLM embedded) without reaching through
+        the private dicts.
+        """
+        return self._active.get(module_name)
+
     def get_active(self) -> list[str]:
         return list(self._active.keys())
 

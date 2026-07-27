@@ -6,6 +6,19 @@ import pytest
 
 from control_plane.services.otlp_exporter import OTLPTraceExporter, _id_from
 
+# The exporter is an opt-in extra (`pip install -e ".[otlp]"`) and degrades to
+# disabled when the package is absent — so every test that asserts it ENABLES
+# needs the package present. Skip rather than fail: an install without the extra
+# is a supported configuration, and a hard failure there reads like a real bug.
+try:
+    import opentelemetry.exporter.otlp.proto.http.trace_exporter  # noqa: F401
+    _HAS_OTLP = True
+except ImportError:  # pragma: no cover — depends on install extras
+    _HAS_OTLP = False
+
+needs_otlp = pytest.mark.skipif(
+    not _HAS_OTLP, reason="requires the [otlp] extra (opentelemetry-exporter-otlp-proto-http)")
+
 
 def _event(**over):
     e = {
@@ -31,12 +44,14 @@ class TestEnableGate:
         e = OTLPTraceExporter()
         e.export_event(_event())  # must not raise
 
+    @needs_otlp
     def test_enabled_when_endpoint_set(self, monkeypatch):
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
         e = OTLPTraceExporter()
         assert e.enabled is True
 
 
+@needs_otlp
 class TestSpanMapping:
     def test_ids_and_parent(self, monkeypatch):
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")

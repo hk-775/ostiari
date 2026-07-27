@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 
 from control_plane.discovery import Sighting
+from control_plane.models.database import DEFAULT_ORG
 
 
 class TraceCollector:
@@ -36,13 +37,16 @@ class TraceCollector:
 
     source = "gateway-traces"
 
+    def __init__(self, org: str = DEFAULT_ORG) -> None:
+        self._org = org
+
     def collect(self) -> list[Sighting]:
-        # Discovery reads the default-org trace buffer (this collector is not
-        # org-scoped in the foundational slice; deferred with the discovery router).
+        # Read only the caller's org trace buffer: unscoped, one tenant's
+        # Discovered view listed another tenant's agent ids and gateway names.
         from control_plane.routers.traces import recent_traces_for
 
         agg: dict[str, dict] = {}
-        for t in recent_traces_for():
+        for t in recent_traces_for(self._org):
             aid = t.get("agent_id")
             if not aid or aid == "unknown":
                 continue
@@ -114,6 +118,6 @@ class CloudSignalCollector:
         ]
 
 
-def default_collectors() -> list:
-    """The collectors active in this deployment."""
-    return [TraceCollector(), CloudSignalCollector()]
+def default_collectors(org: str = DEFAULT_ORG) -> list:
+    """The collectors active in this deployment, scoped to one org."""
+    return [TraceCollector(org), CloudSignalCollector()]

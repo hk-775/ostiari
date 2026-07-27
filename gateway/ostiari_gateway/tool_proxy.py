@@ -40,6 +40,10 @@ class ToolProxy:
                 "method": t.method,
                 "description": t.description,
                 "timeout_seconds": t.timeout_seconds,
+                # The registered parameter schema. Omitting it left the agentic
+                # loop advertising every tool with empty properties, so the model
+                # could never supply arguments.
+                "schema": t.schema_,
             }
             for t in self._tools.values()
         ]
