@@ -40,9 +40,26 @@ spec:
       labels:
         app: ostiari-gateway
     spec:
+      # Enforced here as well as in the image. The Dockerfile's USER is a default
+      # a manifest can silently override, and `runAsNonRoot` is the only setting
+      # that makes the kubelet *refuse* to start a container that would run as
+      # uid 0 — so a future image rebuilt without USER fails loudly instead of
+      # quietly regaining root.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: gateway
           image: ostiari-gateway:latest
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8421
           envFrom:
@@ -84,6 +101,17 @@ spec:
             limits:
               cpu: "1"
               memory: 512Mi
+          # readOnlyRootFilesystem above makes / immutable, so the one path the
+          # gateway does write needs to be a volume: config pushes render the
+          # policy to a tempfile under /tmp (config_manager._policy_file). Without
+          # this the container starts fine and then fails on the first policy
+          # push, which is a worse failure than not booting.
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

@@ -25,7 +25,30 @@ RUN pip install --no-cache-dir . "aiosqlite>=0.19"
 
 # Persist SQLite here when no external DATABASE_URL (Postgres) is configured.
 ENV DATABASE_URL="sqlite+aiosqlite:////data/control_plane.db"
-RUN mkdir -p /data
+
+# Run as a non-root user. pip installed above as root, so site-packages stays
+# root-owned and unwritable to this user.
+#
+# /data must be chown'd, not just created: it holds the SQLite database and is a
+# mounted volume in compose/k8s, so the runtime user needs write access to the
+# directory itself (SQLite writes -wal/-shm siblings next to the .db, so a
+# writable file in a read-only dir is not enough).
+RUN useradd --system --create-home --uid 10001 --shell /usr/sbin/nologin ostiari \
+    && mkdir -p /data && chown 10001:10001 /data
+
+# control_plane.database does `_DB_DIR.mkdir()` at IMPORT time, and
+# control_plane.persistence writes STATE_FILE — both resolved from __file__, so
+# in this image they land beside the installed package rather than in /data.
+# Unwritable to a non-root user, and the database one raises on import, i.e.
+# before any code runs. Pre-create both as the runtime user so import succeeds.
+# The DATABASE_URL above means the SQLite file itself still lives in /data; these
+# are only the derived defaults the module computes eagerly.
+RUN mkdir -p /usr/local/lib/python3.12/data \
+             /usr/local/lib/python3.12/site-packages/data \
+    && chown 10001:10001 /usr/local/lib/python3.12/data \
+                         /usr/local/lib/python3.12/site-packages/data
+
+USER 10001:10001
 
 EXPOSE 8400
 

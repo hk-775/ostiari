@@ -31,6 +31,16 @@ metadata:
   labels:
     app: agent-with-ostiari
 spec:
+  # Applies to both containers in the pod. Your agent image must also be able to
+  # run as uid 10001 — if it can't, move this block down to the gateway container
+  # only rather than deleting it, so the sidecar stays unprivileged either way.
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
   containers:
     - name: agent
       image: your-agent-image:latest
@@ -43,6 +53,11 @@ spec:
 
     - name: ostiari-gateway
       image: ostiari-gateway:latest
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
       ports:
         - containerPort: 8421
           name: gateway
@@ -81,6 +96,16 @@ spec:
         limits:
           cpu: 500m
           memory: 256Mi
+      # readOnlyRootFilesystem makes / immutable, so the gateway's one write path
+      # needs a volume: config pushes render the policy to a tempfile under /tmp.
+      # Without this the container boots healthy and then 500s on the first
+      # policy push — verified, not theoretical.
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+  volumes:
+    - name: tmp
+      emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

@@ -23,6 +23,17 @@ RUN pip install --no-cache-dir ./gateway
 
 EXPOSE 8421
 
+# Run as a non-root user. Every pip install above has already happened as root,
+# so the site-packages tree stays root-owned and read-only to this user — which
+# is the point: a compromised gateway can't rewrite its own code or install
+# anything.
+#
+# 8421 is above 1024, so no capability is needed to bind it. Nothing here writes
+# to the image: the only runtime write is the rendered policy file, which goes to
+# a tempfile under /tmp (see config_manager._policy_file).
+RUN useradd --system --create-home --uid 10001 --shell /usr/sbin/nologin ostiari
+USER 10001:10001
+
 # Config is driven by env vars (OSTIARI_GATEWAY_ID / OSTIARI_CONTROL_PLANE_URL /
 # OSTIARI_PORT), so no CLI flags are needed here.
 ENTRYPOINT ["ostiari-gateway"]

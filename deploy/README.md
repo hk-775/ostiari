@@ -141,6 +141,35 @@ For ECS, store secrets in AWS Secrets Manager and reference them in the task def
 
 ## Production Notes
 
+- **Containers run as non-root.** All three images set a `USER` (gateway and
+  control plane `10001`, frontend `101` — nginx's own uid), and every manifest here
+  re-asserts it. Both layers matter: a Dockerfile `USER` is only a default that a
+  manifest can override, while Kubernetes `runAsNonRoot: true` makes the kubelet
+  *refuse* to start a container that would run as uid 0 — so an image rebuilt
+  without `USER` fails loudly instead of quietly regaining root. Alongside it:
+  `allowPrivilegeEscalation: false`, all capabilities dropped, and
+  `seccompProfile: RuntimeDefault`.
+
+  The **gateway** and **frontend** additionally run with a **read-only root
+  filesystem**, so a compromised container cannot rewrite its own code or install
+  anything. Each needs exactly one writable mount at `/tmp`:
+  - the gateway renders pushed policies to a tempfile there
+    (`config_manager._policy_file`);
+  - nginx keeps its pid file and all five temp dirs there.
+
+  Removing that mount is a **delayed** failure, not a startup one: the gateway
+  goes Ready, passes its health check, and then 500s on the first policy push.
+
+  The **control-plane backend** is deliberately *not* read-only. It writes two
+  paths derived from `__file__` that land beside the installed package —
+  `database._DB_DIR` (at import time, so it raises before any code runs) and
+  `persistence.STATE_FILE` (on every gateway registration). The image pre-creates
+  and chowns both. Making it immutable requires relocating those into `/data`
+  first, which is a code change rather than a manifest one.
+
+  On ECS the writable mount is a plain empty `volumes` entry, **not**
+  `linuxParameters.tmpfs` — tmpfs is unsupported on the Fargate launch type this
+  task family declares, and a task definition using it fails to launch.
 - **Database**: The control plane uses SQLite for dev. For production, configure PostgreSQL via RDS.
 - **TLS**: Terminate TLS at the load balancer or ingress controller, not at the gateway.
 - **`OSTIARI_ENV=production` and `OSTIARI_HITL` travel together.** Production is

@@ -40,6 +40,17 @@ services:
     depends_on:
       control-plane-backend:
         condition: service_healthy
+    # The image runs as uid 10001; these harden it further. read_only makes the
+    # root filesystem immutable, so the one path the gateway writes — the rendered
+    # policy tempfile — needs the tmpfs below. Without it the container starts
+    # healthy and then 500s on the first config push.
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8421/health"]
       interval: 10s
@@ -61,6 +72,15 @@ services:
       DATABASE_URL: "sqlite+aiosqlite:////data/control_plane.db"
     volumes:
       - control-plane-data:/data
+    # Runs as uid 10001. No read_only here, unlike the gateway: this app writes
+    # two paths derived from __file__ that land beside the installed package
+    # (database._DB_DIR at import, persistence.STATE_FILE on every gateway
+    # registration). The image pre-creates and chowns both; making / immutable
+    # needs those relocated in code first.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8400/api/health"]
       interval: 10s
@@ -83,6 +103,15 @@ services:
     depends_on:
       control-plane-backend:
         condition: service_healthy
+    # Runs as nginx's own uid 101. The image points the pid file and all five
+    # nginx temp dirs at /tmp, so this one tmpfs covers a read-only root.
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9000/ || exit 1"]
       interval: 10s
