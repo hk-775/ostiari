@@ -27,9 +27,40 @@ spec:
       labels:
         app: ostiari-control-plane
     spec:
+      # Pod-level runAsNonRoot only — deliberately no pod-level runAsUser, because
+      # the two containers here need different uids (backend 10001, nginx 101) and
+      # a pod-level value would override both. Each container sets its own below.
+      #
+      # fsGroup 10001 is what makes the PVC writable to the backend: a freshly
+      # provisioned volume is root-owned, so without it a non-root backend can
+      # create the SQLite file nowhere and crashes on first write.
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: backend
           image: ostiari-control-plane:latest
+          # Immutable root filesystem: everything this app writes (the SQLite
+          # database and persistence.STATE_FILE, flushed on shutdown) is under
+          # /data, redirected there by OSTIARI_DATA_DIR below. The PVC is the only
+          # writable mount it needs — no /tmp, since nothing here writes one.
+          #
+          # OSTIARI_DATA_DIR is load-bearing for this flag, not cosmetic: without
+          # it those paths resolve from __file__ into the app directory (/app,
+          # root-owned), and the database one fails at *import* time — the
+          # container crash-loops before serving anything. Setting only
+          # DATABASE_URL is the subtler trap: it redirects the database but not
+          # state.json, and that failure surfaces only at shutdown, after the pod
+          # has been serving traffic, silently losing all persisted state.
+          securityContext:
+            runAsUser: 10001
+            runAsGroup: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8400
               name: api
@@ -38,6 +69,8 @@ spec:
             # postgresql+asyncpg://user:pass@host:5432/ostiari
             - name: DATABASE_URL
               value: "sqlite+aiosqlite:////data/control_plane.db"
+            - name: OSTIARI_DATA_DIR
+              value: "/data"
           volumeMounts:
             - name: data
               mountPath: /data
@@ -69,6 +102,16 @@ spec:
         #     -t ostiari-frontend:latest .
         - name: frontend
           image: ostiari-frontend:latest
+          # uid 101 is nginx's own user in the base image, not 10001 — the static
+          # assets and cache dirs are owned by it. The image relocates nginx's pid
+          # file to /tmp so the master process needs no root either.
+          securityContext:
+            runAsUser: 101
+            runAsGroup: 101
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 9000
               name: ui
@@ -85,10 +128,20 @@ spec:
             limits:
               cpu: 500m
               memory: 256Mi
+          # nginx writes its pid and five temp dirs at startup. The image points
+          # all of them at /tmp, so this single mount is all a read-only root
+          # needs — and it avoids an emptyDir over /var/cache/nginx, which would
+          # arrive root-owned and unwritable to uid 101 (the pod's fsGroup is
+          # 10001, for the backend's PVC, so it would not help here).
+          volumeMounts:
+            - name: nginx-tmp
+              mountPath: /tmp
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: ostiari-control-plane-data
+        - name: nginx-tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

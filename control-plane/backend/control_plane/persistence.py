@@ -1,22 +1,30 @@
 """Simple JSON persistence for in-memory stores (quotas, experiments, models).
 
-Saves to data/state.json on shutdown, loads on startup.
+Saves to state.json in the data dir on shutdown, loads on startup.
 Production would use proper DB tables for these.
 """
 
 import json
 import logging
-from pathlib import Path
 from typing import Any
+
+from control_plane.env import data_dir
 
 log = logging.getLogger("control_plane.persistence")
 
-STATE_FILE = Path(__file__).parent.parent / "data" / "state.json"
+# Same directory as the SQLite database (control_plane.env.data_dir). These two
+# used to disagree — db in control-plane/data, this one in
+# control-plane/backend/data — because each derived its own path from __file__ with
+# a different number of hops. That split was invisible in a dev checkout but broke
+# the container: DATABASE_URL redirected only the db onto the mounted volume, so
+# this resolved to /app/data, root-owned and uncreatable by the non-root user, and
+# save_state raised PermissionError on every shutdown.
+STATE_FILE = data_dir() / "state.json"
 
 
 def save_state(state: dict[str, Any]) -> None:
     """Save in-memory state to JSON file."""
-    STATE_FILE.parent.mkdir(exist_ok=True)
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     STATE_FILE.write_text(json.dumps(state, indent=2, default=str))
     log.info("State saved to %s", STATE_FILE)
 

@@ -42,6 +42,28 @@ gateway:
   # meaningful *before* you rely on this. See docs/control-plane-guide.md §7.4.
   hitl: true
 
+# Run unprivileged. The image already sets USER 10001, but a Dockerfile USER is
+# only a default that a manifest can override — runAsNonRoot is what makes the
+# kubelet *refuse* to start a container running as uid 0, so an image rebuilt
+# without USER fails loudly instead of quietly regaining root.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+# The gateway writes nothing to its image at runtime — the only write is the
+# rendered policy file, which goes to the /tmp emptyDir the deployment mounts.
+# So the root filesystem can be immutable, which is what stops a compromised
+# gateway from rewriting its own code or installing anything.
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
 redis:
   enabled: true
   endpoint: "ostiari-redis"

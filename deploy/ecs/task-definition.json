@@ -17,6 +17,19 @@
           "protocol": "tcp"
         }
       ],
+      "user": "10001:10001",
+      "readonlyRootFilesystem": true,
+      "linuxParameters": {
+        "capabilities": { "drop": ["ALL"] },
+        "initProcessEnabled": true
+      },
+      "mountPoints": [
+        {
+          "sourceVolume": "tmp",
+          "containerPath": "/tmp",
+          "readOnly": false
+        }
+      ],
       "healthCheck": {
         "command": ["CMD-SHELL", "curl -f http://localhost:8421/health || exit 1"],
         "interval": 10,
@@ -55,6 +68,11 @@
           "awslogs-stream-prefix": "gateway"
         }
       }
+    }
+  ],
+  "volumes": [
+    {
+      "name": "tmp"
     }
   ]
 }
