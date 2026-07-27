@@ -412,15 +412,17 @@ class AgenticExecutor:
         """
         context = context or {}
         effective_max_tokens = max_tokens or self._config.max_tokens
-        # AxonLLM has no tool-calling pass-through (see AxonRouter.supports_tools),
-        # so an agentic round that needs tools must go direct to the provider.
-        # Routing it through AxonLLM returns a fluent tool-free answer — the model
-        # denies having any tools — which looks like success and isn't.
+        # Tool-bearing rounds route through AxonLLM like everything else — it
+        # translates tool specs into each provider's dialect. The supports_tools()
+        # check is a version guard (Ostiari doesn't pin an AxonLLM version): an
+        # older checkout drops the specs and returns a fluent tool-free answer —
+        # the model denies having any tools — which looks like success and isn't.
         route_via_axon = self._axon.available and not (tools and not self._axon.supports_tools())
-        if tools and not route_via_axon:
-            log.info(
-                "Tools requested (%d) — bypassing AxonLLM (no tool pass-through), "
-                "calling provider directly", len(tools),
+        if tools and self._axon.available and not route_via_axon:
+            log.warning(
+                "AxonLLM predates tool pass-through — calling the provider directly "
+                "for %d tool(s); routing governance and cost tracking are bypassed "
+                "for this call. Upgrade AxonLLM.", len(tools),
             )
         if route_via_axon:
             # Only pass the model through if AxonLLM's registry knows it; its names

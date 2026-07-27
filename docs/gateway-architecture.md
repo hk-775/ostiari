@@ -1355,11 +1355,18 @@ Importing a Python package is like linking a library in C — the code becomes p
 
 ### What AxonLLM provides to the sidecar
 
-| AxonLLM Component | What it does in the sidecar | Without AxonLLM (fallback) |
+The "fallback" column is what a *mid-flight* AxonLLM failure degrades to for one
+call — it is **not** a supported way to run the gateway. AxonLLM is a required
+dependency: with `llm_gateway` enabled, the sidecar refuses to start without it,
+because the whole right-hand column is a silent downgrade of what Ostiari claims
+to enforce. See [axon-router.md](axon-router.md).
+
+| AxonLLM Component | What it does in the sidecar | Degraded (mid-flight failure) |
 |-------------------|---------------------------|---------------------------|
 | **TaskClassifier** | Analyzes the prompt ("is this code, math, creative?") and picks the best model for that task type | Simple rule matching only |
 | **Router** (5 strategies) | Round-robin, weighted, least-latency, cost-optimized, smart | Direct call to default model |
 | **Provider Adapters** (6) | Bedrock, Anthropic, OpenAI, Azure, Vertex AI, Cohere — unified interface | Anthropic, OpenAI, Bedrock only |
+| **Tool translation** | Carries `tools`/`tool_choice` and translates them into each provider's dialect, so tool-using traffic stays on the governed path | Direct provider call (or 501 on `/v1/chat/completions`) |
 | **ProviderHealthTracker** | Tracks which providers are healthy, circuit-breaks unhealthy ones | Basic retry |
 | **CostTracker** | Records token usage, enforces budgets, alerts on thresholds | No cost tracking |
 | **EnsembleStrategy** | Sends prompt to multiple models, uses a judge to synthesize the best answer | Not available |
