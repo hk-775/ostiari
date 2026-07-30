@@ -1578,9 +1578,19 @@ llm:
 
   # Cost control (uses AxonLLM CostTracker)
   max_tokens: 4096
-  temperature: 0.7
   max_tool_rounds: 10
+  # temperature: 0.7   # optional — see below before setting it
 ```
+
+`temperature` is unset above on purpose. It defaults to `None`, which means *the
+parameter is not sent*, not "0.7": every provider path omits the key entirely
+when it is None, so each model applies its own default. Naming a value here puts
+`temperature` on the wire for **every** call, including calls from clients that
+never mentioned it — and newer models reject the parameter rather than ignoring
+it (Bedrock Mantle's Claude models answer
+`400 "`temperature` is deprecated for this model."`), which failed the whole
+request. Set it when you genuinely need a specific sampling temperature and the
+models you route to still accept it.
 
 ### AxonLLM's absence is visible, not fatal (and what a mid-flight failure degrades to)
 

@@ -146,7 +146,12 @@ class ChatProxy:
                 messages=messages,
                 model=axon_model,
                 max_tokens=int(body.get("max_tokens", getattr(self._config, "max_tokens", 4096))),
-                temperature=float(body.get("temperature", getattr(self._config, "temperature", 0.7))),
+                # Pass through only what the caller actually sent. Defaulting to a
+                # number here made every request carry `temperature`, which newer
+                # models reject outright (Mantle Claude: 400 "`temperature` is
+                # deprecated for this model"), so the whole call failed rather than
+                # running with the default the caller never asked for.
+                temperature=translate.opt_float(body.get("temperature")),
                 tools=body.get("tools"),
                 smart=not axon_model,
                 ensemble=False,

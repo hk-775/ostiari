@@ -24,6 +24,38 @@ import json
 from collections.abc import Iterator
 from typing import Any
 
+# ── inbound request parameters ──────────────────────────────────────────────
+
+
+def opt_float(value: Any) -> float | None:
+    """Coerce an inbound numeric request field while preserving *absence*.
+
+    Lives here, rather than in either proxy, because both shims need the identical
+    function and neither imports the other — and unlike ``_err``/``_provider_of``,
+    which are duplicated across them because each needs genuinely different
+    behavior, this has exactly one correct implementation.
+
+    Returns None when the field was omitted (or holds something uncoercible), so
+    the caller can leave the parameter off the upstream request rather than
+    substituting an invented value. That distinction is load-bearing for
+    ``temperature``: newer models *reject* the parameter instead of ignoring it
+    (Bedrock Mantle's Claude models answer ``400 "`temperature` is deprecated for
+    this model."``), so materializing a default turns "the caller didn't care"
+    into a failed request. A default is only safe for a parameter every provider
+    still accepts, and which ones those are changes under us.
+    """
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        # A non-numeric temperature is a malformed request, but rejecting it here
+        # would fail calls that previously worked (the old code raised ValueError
+        # from float() — an unhandled 500). Dropping it degrades to the provider's
+        # own default, which is the same outcome as omitting it.
+        return None
+
+
 # ── content flattening ──────────────────────────────────────────────────────
 
 

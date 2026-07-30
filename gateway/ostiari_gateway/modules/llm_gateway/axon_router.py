@@ -203,7 +203,7 @@ class AxonRouter:
         *,
         model: str = "",
         max_tokens: int = 4096,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         tools: list[dict[str, Any]] | None = None,
         smart: bool = False,
         ensemble: str | bool = False,
@@ -221,6 +221,14 @@ class AxonRouter:
         routing anyway would return a confident tool-free answer ("I don't have
         access to a database") that reads like a successful response. Callers
         check ``supports_tools()`` first so they can degrade deliberately.
+
+        ``temperature`` is None-by-default and omitted from the request when None,
+        rather than defaulting to a value here. Newer models *reject* the parameter
+        outright — Bedrock Mantle's Claude models answer
+        ``400 "`temperature` is deprecated for this model."`` — so sending a
+        locally-invented default made every such call fail. AxonLLM already omits
+        the key when it is None; the bug was materializing a number here so it
+        never could.
         """
         self._ensure()
         if not self._available or self._agent is None:
@@ -254,9 +262,15 @@ class AxonRouter:
             "model": req_model,
             "messages": msgs,
             "max_tokens": max_tokens,
-            "temperature": temperature,
             "stream": False,
         }
+        # Omitted entirely when None — see the docstring. A key present with value
+        # None is NOT equivalent: AxonLLM reads it with ``data.get("temperature")``,
+        # which returns None either way, but Mantle's paths test
+        # ``is not None`` on the parsed value, so only genuine absence keeps the
+        # parameter off the wire.
+        if temperature is not None:
+            request_data["temperature"] = temperature
         if tools:
             request_data["tools"] = tools
 

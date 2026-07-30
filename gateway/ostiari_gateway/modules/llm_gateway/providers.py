@@ -152,9 +152,18 @@ class LLMProvider:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 4096,
-        temperature: float = 0.7,
+        temperature: float | None = None,
     ) -> LLMResponse:
-        """Call an LLM using AxonLLM's routing engine, with direct-call fallback."""
+        """Call an LLM using AxonLLM's routing engine, with direct-call fallback.
+
+        ``temperature=None`` means *omit the parameter*, not "use 0.7". Every
+        provider path below leaves the key off its request entirely when it is
+        None, because newer models reject the parameter rather than ignoring it —
+        Bedrock Mantle's Claude models answer ``400 "`temperature` is deprecated
+        for this model."`` — so a default invented here failed calls that had
+        never asked for it. Providers that still accept it apply their own
+        default, which is the behavior a caller who said nothing wants.
+        """
         self._ensure_initialized()
 
         if self._router is not None:
@@ -167,7 +176,7 @@ class LLMProvider:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
         max_tokens: int,
-        temperature: float,
+        temperature: float | None,
     ) -> LLMResponse:
         """Route through AxonLLM's engine."""
         try:
@@ -210,7 +219,7 @@ class LLMProvider:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
         max_tokens: int,
-        temperature: float,
+        temperature: float | None,
     ) -> LLMResponse:
         """Direct provider calls as fallback when AxonLLM router isn't available."""
         provider = self._detect_provider(model)
@@ -315,8 +324,9 @@ class LLMProvider:
             "model": model,
             "messages": api_messages,
             "max_tokens": max_tokens,
-            "temperature": temperature,
         }
+        if temperature is not None:
+            kwargs["temperature"] = temperature
         if system:
             kwargs["system"] = system
         if tools:
@@ -360,9 +370,10 @@ class LLMProvider:
         client = openai.OpenAI(api_key=self._credentials.openai)
 
         kwargs: dict[str, Any] = {
-            "model": model, "messages": messages,
-            "max_tokens": max_tokens, "temperature": temperature,
+            "model": model, "messages": messages, "max_tokens": max_tokens,
         }
+        if temperature is not None:
+            kwargs["temperature"] = temperature
         # OpenAI requires tool names match ^[a-zA-Z0-9_-]+$ — replace dots
         name_map: dict[str, str] = {}
         if tools:
@@ -417,9 +428,12 @@ class LLMProvider:
                     "content": [{"text": msg.get("content", "")}],
                 })
 
+        inference_config: dict[str, Any] = {"maxTokens": max_tokens}
+        if temperature is not None:
+            inference_config["temperature"] = temperature
         kwargs: dict[str, Any] = {
             "modelId": model_id, "messages": bedrock_messages,
-            "inferenceConfig": {"maxTokens": max_tokens, "temperature": temperature},
+            "inferenceConfig": inference_config,
         }
         if system_prompts:
             kwargs["system"] = system_prompts
@@ -455,9 +469,10 @@ class LLMProvider:
         deployment = model.removeprefix("azure/")
 
         kwargs: dict[str, Any] = {
-            "model": deployment, "messages": messages,
-            "max_tokens": max_tokens, "temperature": temperature,
+            "model": deployment, "messages": messages, "max_tokens": max_tokens,
         }
+        if temperature is not None:
+            kwargs["temperature"] = temperature
         if tools:
             kwargs["tools"] = self._convert_tools_to_openai_format(tools)
 
@@ -491,8 +506,9 @@ class LLMProvider:
             "model": model_name,
             "messages": [{"role": m["role"], "content": m.get("content", "")} for m in messages],
             "max_tokens": max_tokens,
-            "temperature": temperature,
         }
+        if temperature is not None:
+            kwargs["temperature"] = temperature
         if tools:
             kwargs["tools"] = [
                 {"type": "function", "function": {"name": t["name"], "description": t.get("description", ""), "parameters": t.get("schema", {})}}
@@ -538,7 +554,10 @@ class LLMProvider:
                 history.insert(1, {"role": "model", "parts": ["Understood."]})
 
         chat = genai_model.start_chat(history=history)
-        response = chat.send_message(latest_msg, generation_config={"max_output_tokens": max_tokens, "temperature": temperature})
+        gen_config: dict[str, Any] = {"max_output_tokens": max_tokens}
+        if temperature is not None:
+            gen_config["temperature"] = temperature
+        response = chat.send_message(latest_msg, generation_config=gen_config)
 
         content = response.text if response.text else ""
         tokens = response.usage_metadata.total_token_count if hasattr(response, "usage_metadata") else 0

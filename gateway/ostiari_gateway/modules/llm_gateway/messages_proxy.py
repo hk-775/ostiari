@@ -361,7 +361,12 @@ class MessagesProxy:
                 messages=oai_messages,
                 model=axon_model,
                 max_tokens=int(body.get("max_tokens", getattr(self._config, "max_tokens", 4096))),
-                temperature=float(body.get("temperature", getattr(self._config, "temperature", 0.7))),
+                # Only what the client actually sent — see translate.opt_float. The
+                # config default is deliberately not consulted: it made every
+                # request carry `temperature`, and Mantle's Claude models reject it
+                # (400 "`temperature` is deprecated for this model"), so a
+                # parameter nobody asked for failed the whole call.
+                temperature=translate.opt_float(body.get("temperature")),
                 tools=translate.anthropic_tools_to_openai(body.get("tools"))[0],
                 smart=not axon_model,        # unknown/absent model → smart auto-select
                 ensemble=False,              # never on the interactive shim path
@@ -406,7 +411,12 @@ class MessagesProxy:
         import anyio
 
         max_tokens = int(body.get("max_tokens", getattr(self._config, "max_tokens", 4096)))
-        temperature = float(body.get("temperature", getattr(self._config, "temperature", 0.7)))
+        # Client value, else the configured one, else absent — never an invented
+        # default. This is the fallback path taken when the AxonLLM route raises,
+        # which is exactly what a temperature-rejection 400 does, so inventing one
+        # here would fail the retry the same way the original call failed.
+        temperature = translate.opt_float(
+            body.get("temperature", getattr(self._config, "temperature", None)))
         system = body.get("system")
         messages = body.get("messages", [])
         tools = body.get("tools")
@@ -428,7 +438,7 @@ class MessagesProxy:
 
     def _openai_like_call(
         self, provider: str, model: str, messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None, max_tokens: int, temperature: float
+        tools: list[dict[str, Any]] | None, max_tokens: int, temperature: float | None
     ) -> Any:
         """Direct OpenAI/Azure SDK call using the gateway's credentials."""
         import openai
@@ -445,16 +455,17 @@ class MessagesProxy:
             model_name = model.removeprefix("openai/")
 
         kwargs: dict[str, Any] = {
-            "model": model_name, "messages": messages,
-            "max_tokens": max_tokens, "temperature": temperature,
+            "model": model_name, "messages": messages, "max_tokens": max_tokens,
         }
+        if temperature is not None:
+            kwargs["temperature"] = temperature
         if tools:
             kwargs["tools"] = tools
         return client.chat.completions.create(**kwargs)
 
     def _call_bedrock(
         self, model: str, system: Any, messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None, max_tokens: int, temperature: float
+        tools: list[dict[str, Any]] | None, max_tokens: int, temperature: float | None
     ) -> dict[str, Any]:
         """Bedrock Converse call, translated back to Anthropic Messages."""
         import boto3
@@ -470,9 +481,12 @@ class MessagesProxy:
                 continue
             br_messages.append({"role": role, "content": [{"text": translate.text_of(m.get("content", ""))}]})
 
+        inference_config: dict[str, Any] = {"maxTokens": max_tokens}
+        if temperature is not None:
+            inference_config["temperature"] = temperature
         kwargs: dict[str, Any] = {
             "modelId": model_id, "messages": br_messages,
-            "inferenceConfig": {"maxTokens": max_tokens, "temperature": temperature},
+            "inferenceConfig": inference_config,
         }
         sys_text = translate.flatten_system(system)
         if sys_text:
