@@ -453,3 +453,101 @@ class TestToolSpecBuilding:
         schema = {"type": "object", "properties": {"to": {"type": "string"}}}
         self._register(ex, "send_email", schema)
         assert ex._manager.tool_proxy.list_tools()[0]["schema"] == schema
+
+
+class TestTemperatureIsOmittedWhenUnset:
+    """An unrequested ``temperature`` must not reach the provider.
+
+    ``temperature`` was typed ``float = 0.7`` from the shims down through
+    ``providers``, so "the caller sent nothing" and "the caller asked for 0.7"
+    were the same value by the time a request was built — Ostiari put the
+    parameter on the wire for every call. Bedrock Mantle's current Claude models
+    *reject* it (``400 "`temperature` is deprecated for this model."``) rather
+    than ignoring it, so every Ostiari→Mantle-Claude call failed on a parameter
+    nobody had asked for. Tools were irrelevant: it failed identically with and
+    without them, which made it look like the tool path was broken.
+
+    These assert *absence of the key*, not ``temperature is None``. A key present
+    with a None value is not equivalent: AxonLLM reads it with
+    ``data.get("temperature")`` (None either way) but its Mantle paths test
+    ``is not None`` on the parsed value, so only genuine absence keeps the
+    parameter off the wire.
+    """
+
+    def _router(self, monkeypatch, captured: dict):
+        a = AxonRouter()
+        monkeypatch.setattr(a, "supports_tools", lambda: True)
+        monkeypatch.setattr(a, "_ensure", lambda: None)
+        a._available = True
+
+        class _Agent:
+            async def handle_chat_completion(self, request_data, ctx):
+                captured.update(request_data)
+                return {"model": "m", "provider": "p", "usage": {},
+                        "choices": [{"message": {"content": "ok"}}]}
+
+        a._agent = _Agent()
+        return a
+
+    @pytest.mark.anyio
+    async def test_route_omits_temperature_by_default(self, monkeypatch):
+        """The regression: no temperature argument => no temperature key."""
+        captured: dict = {}
+        a = self._router(monkeypatch, captured)
+        await a.route(messages=[{"role": "user", "content": "hi"}], model="claude-sonnet")
+        assert "temperature" not in captured, (
+            "an invented temperature default reaches the provider and Mantle 400s on it"
+        )
+
+    @pytest.mark.anyio
+    async def test_route_omits_temperature_when_explicitly_none(self, monkeypatch):
+        captured: dict = {}
+        a = self._router(monkeypatch, captured)
+        await a.route(messages=[{"role": "user", "content": "hi"}], model="claude-sonnet",
+                      temperature=None)
+        assert "temperature" not in captured
+
+    @pytest.mark.anyio
+    async def test_route_forwards_a_caller_supplied_temperature(self, monkeypatch):
+        """Omission is not suppression — an explicit value still goes through,
+        including 0.0, which is falsy and would vanish under a truthiness test."""
+        captured: dict = {}
+        a = self._router(monkeypatch, captured)
+        await a.route(messages=[{"role": "user", "content": "hi"}], model="claude-sonnet",
+                      temperature=0.0)
+        assert captured["temperature"] == 0.0
+
+    def test_llm_config_default_does_not_invent_one(self):
+        """The other source of the same value: the config default fed every
+        /invoke call through executor._call_llm."""
+        from ostiari_gateway.modules.llm_gateway.models import LLMConfig
+
+        assert LLMConfig().temperature is None
+        assert LLMConfig(temperature=0.3).temperature == 0.3
+
+    def test_shipped_demo_config_leaves_temperature_unset(self):
+        """gateway/llm-gateway-config.yaml set 0.7 explicitly, which reintroduces
+        the failure regardless of what the field defaults to."""
+        import pathlib
+
+        import yaml
+
+        cfg = pathlib.Path(__file__).resolve().parents[1] / "llm-gateway-config.yaml"
+        llm = yaml.safe_load(cfg.read_text())["llm"]
+        assert "temperature" not in llm, (
+            "the demo config puts temperature on every call again — Mantle 400s on it"
+        )
+
+    @pytest.mark.parametrize("value", ["", "hot", None, {}])
+    def test_opt_float_treats_unusable_input_as_absent(self, value):
+        """A malformed value degrades to absence rather than raising. The old
+        ``float(body.get(...))`` raised ValueError out of the request handler."""
+        from ostiari_gateway.modules.llm_gateway import translate
+
+        assert translate.opt_float(value) is None
+
+    @pytest.mark.parametrize(("value", "expected"), [(0, 0.0), (0.5, 0.5), ("0.7", 0.7), (1, 1.0)])
+    def test_opt_float_coerces_usable_input(self, value, expected):
+        from ostiari_gateway.modules.llm_gateway import translate
+
+        assert translate.opt_float(value) == expected

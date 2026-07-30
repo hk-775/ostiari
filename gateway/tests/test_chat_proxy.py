@@ -109,3 +109,56 @@ class TestGovernance:
             r = c.post("/v1/chat/completions", headers={"X-Agent-Id": "a"},
                        json={"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]})
         assert r.status_code == 503
+
+
+class TestTemperatureIsNotInvented:
+    """What the client omitted must not appear on the upstream request.
+
+    ``temperature`` was read as ``float(body.get("temperature", <config or 0.7>))``,
+    so a client that never mentioned it still had 0.7 substituted and sent. Bedrock
+    Mantle's current Claude models *reject* the parameter
+    (``400 "`temperature` is deprecated for this model."``) rather than ignoring
+    it, so those calls failed on a value the client never chose — and identically
+    with and without tools, which made it look like the tool path was at fault.
+
+    Asserted at the HTTP seam because that is where the substitution happened; the
+    router-level contract is covered in test_axon_router.py.
+    """
+
+    def _capture(self, payload: dict) -> dict:
+        seen: dict = {}
+
+        async def _route(self_inner, **kwargs):
+            seen.update(kwargs)
+            return AxonResult(content="ok", model="gpt-4o", provider="openai",
+                              input_tokens=1, output_tokens=1)
+
+        c = _app()
+        with patch("ostiari_gateway.modules.llm_gateway.axon_router.AxonRouter.available", True), \
+             patch("ostiari_gateway.modules.llm_gateway.axon_router.AxonRouter.route", new=_route):
+            r = c.post("/v1/chat/completions", headers={"X-Agent-Id": "a"}, json=payload)
+        assert r.status_code == 200, r.text
+        return seen
+
+    def test_omitted_temperature_stays_omitted(self):
+        seen = self._capture({"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]})
+        assert seen["temperature"] is None, (
+            "a temperature the client never sent reaches the provider, and Mantle 400s on it"
+        )
+
+    def test_explicit_temperature_is_forwarded(self):
+        seen = self._capture({"model": "gpt-4o", "temperature": 0.2,
+                              "messages": [{"role": "user", "content": "hi"}]})
+        assert seen["temperature"] == 0.2
+
+    def test_explicit_zero_is_forwarded_not_treated_as_absent(self):
+        """0.0 is falsy — a truthiness check here would silently drop it."""
+        seen = self._capture({"model": "gpt-4o", "temperature": 0,
+                              "messages": [{"role": "user", "content": "hi"}]})
+        assert seen["temperature"] == 0.0
+
+    def test_unusable_temperature_does_not_500(self):
+        """``float("hot")`` raised ValueError straight out of the handler."""
+        seen = self._capture({"model": "gpt-4o", "temperature": "hot",
+                              "messages": [{"role": "user", "content": "hi"}]})
+        assert seen["temperature"] is None
