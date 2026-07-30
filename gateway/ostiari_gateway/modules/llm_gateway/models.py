@@ -76,7 +76,13 @@ class LLMConfig(BaseModel):
     fallback_chain: list[str] = Field(default_factory=list)
     credentials: LLMCredentials = Field(default_factory=LLMCredentials)
     max_tokens: int = 4096
-    temperature: float = 0.7
+    # None = don't send `temperature` at all, which is not the same as 0.7. Newer
+    # models reject the parameter rather than ignoring it (Bedrock Mantle's Claude
+    # models answer 400 "`temperature` is deprecated for this model"), so a
+    # default here failed every call to them — including calls from clients that
+    # never mentioned temperature, since this value was substituted for them.
+    # Setting it explicitly still forwards it; only "unconfigured" is now silent.
+    temperature: float | None = None
     max_tool_rounds: int = 10
     security: dict | None = None
     ab_experiments: list[ABExperiment] = Field(default_factory=list)

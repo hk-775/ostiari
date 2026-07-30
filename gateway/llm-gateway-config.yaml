@@ -20,7 +20,12 @@ llm:
     - gpt-4o
     - claude-haiku-4-5-20251001
   max_tokens: 1024
-  temperature: 0.7
+  # temperature is deliberately unset: omitting it lets each provider apply its
+  # own default, whereas naming a value here sends the parameter on every call —
+  # and newer models reject it outright (Bedrock Mantle's Claude models answer
+  # 400 "`temperature` is deprecated for this model"), so a value nobody asked
+  # for failed the request. Set it only if you actually need a specific sampling
+  # temperature and know the target models still accept the parameter.
   max_tool_rounds: 5
   credentials:
     anthropic: ${ANTHROPIC_API_KEY}
