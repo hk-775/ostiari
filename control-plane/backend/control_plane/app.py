@@ -117,6 +117,7 @@ async def lifespan(app: FastAPI):
             seed_demo_db,
             seed_demo_experiments,
             seed_demo_pricing,
+            seed_demo_quotas,
         )
         from control_plane.routers.traces import seed_traces
         seed_traces()
@@ -127,6 +128,9 @@ async def lifespan(app: FastAPI):
         from control_plane.database import async_session
         async with async_session() as db:
             await seed_demo_db(db)
+            # After seed_demo_db: quota spend is summed from the usage records
+            # it writes, so on a first run they have to exist first.
+            await seed_demo_quotas(db)
 
     # Start background health-check loop for gateways
     start_health_check()

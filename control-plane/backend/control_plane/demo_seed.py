@@ -335,6 +335,80 @@ def seed_demo_approvals() -> None:
              len(_PENDING_APPROVALS), len(_DECIDED_APPROVALS))
 
 
+# Gateway quotas. One per seeded gateway, with budgets chosen so each lands in a
+# different state the Quotas page renders differently — red bar + warning, amber
+# + warning, amber alone, green. A demo where every bar is green shows the fields
+# exist but not that the limit ever bites.
+#
+# current_spend is NOT invented: it's summed from the UsageRecord rows already
+# seeded for metering, so the Quotas page and the Metering/Costs pages agree
+# about what each gateway has spent. The budget is the only chosen number, and
+# it's chosen to place real spend at a particular percentage.
+#
+# Field names match the gateway's own QuotaConfig (rate_limit_rpm,
+# budget_limit_usd, max_tokens_per_request, allowed_models), so the page's
+# "Push to gateway" button sends a payload the sidecar actually accepts.
+#
+# The budgets are tuned against the spend the *metering seed* produces, which is
+# deterministic (random.Random(42) over fixed per-agent volumes). Don't tune them
+# against a long-running instance: live gateway traffic adds usage rows, which
+# raises spend and quietly moves a bar into a band it won't occupy on a fresh
+# start. test_budgets_span_every_band_the_page_renders pins this to the seed.
+# (name, gateway_id, rate_limit_rpm, budget_limit_usd, max_tokens, target_pct)
+_GATEWAY_QUOTAS = [
+    ("CRM production cap", "crm-agent", 120, 2.60, 8192, 95),
+    ("Analytics warehouse cap", "analytics-agent", 90, 3.00, 16384, 86),
+    ("Ops fleet cap", "ops-agent", 60, 3.00, 4096, 79),
+    ("DevOps deploy cap", "devops-agent", 30, 10.00, 4096, 24),
+]
+
+# Only the models the demo actually meters (see _MODELS) — an allowlist naming a
+# model no usage record mentions would be unenforceable in this demo.
+_QUOTA_ALLOWED_MODELS = {
+    "crm-agent": ["claude-sonnet", "claude-haiku", "gpt-4o"],
+    "analytics-agent": ["claude-haiku", "gpt-4o-mini"],
+    "ops-agent": ["claude-haiku", "gpt-4o-mini"],
+    "devops-agent": [],           # unrestricted — not every quota caps models
+}
+
+
+async def seed_demo_quotas(db: AsyncSession) -> None:
+    """Seed one gateway-scoped quota per demo gateway (idempotent).
+
+    Spend is read from the metering rows rather than made up, so a viewer who
+    cross-checks the Costs page against a budget bar finds the same number.
+    Rate limits are the configured ceiling; current_rpm stays 0 because nothing
+    is driving live traffic — a nonzero RPM with an idle fleet would be a lie
+    the Live Traces page immediately contradicts.
+    """
+    from control_plane.models.database import DEFAULT_ORG
+    from control_plane.routers.quotas import QuotaResponse, _next_id, _quotas
+
+    if _quotas[DEFAULT_ORG]:
+        return
+
+    rows = (await db.execute(
+        select(UsageRecord.gateway_id, func.sum(UsageRecord.cost_usd))
+        .group_by(UsageRecord.gateway_id)
+    )).all()
+    spend_by_gw = {gw: float(total or 0.0) for gw, total in rows}
+
+    for name, gw, rpm, budget, max_tokens, _pct in _GATEWAY_QUOTAS:
+        qid = _next_id[DEFAULT_ORG]
+        _quotas[DEFAULT_ORG][qid] = QuotaResponse(
+            id=qid, name=name, scope="gateway", scope_id=gw,
+            rate_limit_rpm=rpm, budget_limit_usd=budget,
+            max_tokens_per_request=max_tokens,
+            allowed_models=_QUOTA_ALLOWED_MODELS.get(gw, []),
+            current_spend=round(spend_by_gw.get(gw, 0.0), 4),
+            current_rpm=0,
+        )
+        _next_id[DEFAULT_ORG] += 1
+
+    log.info("Seeded %d gateway quotas (spend read from %d metered gateways)",
+             len(_GATEWAY_QUOTAS), len(spend_by_gw))
+
+
 def seed_demo_agents() -> None:
     """Seed the in-memory agent registry with the demo agents (idempotent)."""
     from control_plane.models.database import DEFAULT_ORG
