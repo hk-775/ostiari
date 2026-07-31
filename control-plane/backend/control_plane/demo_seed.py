@@ -196,6 +196,145 @@ def seed_demo_pricing() -> None:
     log.info("Seeded demo payment pricing (crm-agent: passthrough)")
 
 
+# Approvals demo data. The four pending calls are the *same* four intervene-tier
+# calls seeded into the trace buffer (routers/traces.py), with matching agent,
+# action, params, and score — that page and this one describe one fleet, so an
+# operator who clicks from a paused trace to the approval queue must find the
+# call it paused, not a different set of fictional ones.
+#
+# Scores are not hand-picked: each is the sum of its signals below, and the
+# reason string is what ostiari.explain._summarize() produces from them. That
+# keeps the queue honest — every row is one the real scorer could have emitted,
+# and the intervene band (allow_max 30 < score <= intervene_max 70) holds by
+# construction rather than by luck.
+_APPROVAL_SIGNALS: dict[str, list[tuple[str, int, str]]] = {
+    "file_write": [
+        ("policy", 30, "Filesystem write outside the agent's sandbox path"),
+        ("anomaly:rate", 18, "12 writes in 60s — 4x this agent's baseline"),
+    ],
+    "execute_code": [
+        ("policy", 45, "Arbitrary code execution requires review"),
+        ("anomaly:new-action", 17, "First use of execute_code by this agent"),
+    ],
+    "send_email": [
+        ("policy", 25, "Email has moderate risk"),
+        ("anomaly:sequence", 19, "Outbound email directly after a bulk read"),
+    ],
+    "deploy": [
+        ("policy", 30, "Deployment mutates running infrastructure"),
+        ("parameter-risk", 25, "Parameter risk: targets production/live"),
+    ],
+    "db_export": [
+        ("policy", 20, "Bulk export leaves the trust boundary"),
+        ("parameter-risk", 25, "Parameter risk: high volume (rows=5000)"),
+    ],
+}
+
+# (agent_id, gateway_id, action, params, age_minutes). Ordered oldest first; the
+# queue sorts newest-first for display, so the oldest ends up at the bottom.
+_PENDING_APPROVALS = [
+    ("research-agent", "crm-agent", "file_write",
+     {"path": "/reports/summary.md", "bytes": 4096}, 44),
+    ("bedrock-agent", "crm-agent", "execute_code",
+     {"lang": "python", "lines": 34}, 27),
+    ("planner-bot", "crm-agent", "send_email",
+     {"to": "team@example.com", "subject": "Competitor brief ready"}, 12),
+    ("ops-agent", "devops-agent", "deploy",
+     {"service": "auth-service", "environment": "production"}, 3),
+]
+
+# Already-decided calls, so the "Recent decisions" table on the Approvals page
+# has an audit trail instead of being hidden entirely (it renders only when a
+# decision exists). One denial included: a queue where every answer was "yes"
+# would not show that denying is a real outcome.
+# (agent_id, gateway_id, action, params, decision, decided_by, age_minutes)
+_DECIDED_APPROVALS = [
+    ("ops-agent", "ops-agent", "send_email",
+     {"to": "oncall@example.com", "subject": "Nightly report"},
+     "approved", "dana@example.com", 96),
+    ("analytics-agent", "analytics-agent", "db_export",
+     {"table": "customers", "rows": 5000, "destination": "s3://acme-exports/"},
+     "denied", "dana@example.com", 71),
+    ("coder-agent", "crm-agent", "file_write",
+     {"path": "/etc/hosts", "bytes": 128},
+     "denied", "sam@example.com", 58),
+    ("planner-bot", "crm-agent", "execute_code",
+     {"lang": "python", "lines": 12},
+     "approved", "sam@example.com", 33),
+]
+
+
+def _approval_reason(action: str, score: int) -> str:
+    """The reason string the gateway would have stored for this call.
+
+    The gateway sends `explain(result).summary`, so build the same explanation
+    from the seeded signals rather than writing prose that only looks like it.
+    """
+    from types import SimpleNamespace
+
+    from ostiari.explain import explain
+    from ostiari.models import RiskSignal
+
+    signals = [
+        RiskSignal(source=src, score_contribution=pts, description=desc)
+        for src, pts, desc in _APPROVAL_SIGNALS[action]
+    ]
+    result = SimpleNamespace(
+        action=action, tier="intervene", original_tier="intervene",
+        score=score, signals=signals,
+    )
+    return explain(result).summary
+
+
+def _approval_score(action: str) -> int:
+    """Total risk score for a seeded action — the sum of its signals."""
+    return sum(pts for _, pts, _ in _APPROVAL_SIGNALS[action])
+
+
+def seed_demo_approvals() -> None:
+    """Seed the HITL approval queue: pending calls plus a decision history.
+
+    In-memory and per-process (approvals are not in the state file), so this
+    runs on every start. Idempotent by the usual rule — skips entirely once the
+    queue holds anything, so a real gateway's pending approvals are never
+    joined by demo rows.
+    """
+    from control_plane.models.database import DEFAULT_ORG
+    from control_plane.routers.approvals import Approval, _pending
+
+    if _pending[DEFAULT_ORG]:
+        return
+
+    now = datetime.now(timezone.utc)
+
+    def _stamp(minutes: int) -> str:
+        return (now - timedelta(minutes=minutes)).isoformat()
+
+    for i, (agent, gw, action, params, age) in enumerate(_PENDING_APPROVALS):
+        score = _approval_score(action)
+        aid = f"apr-demo{i:04d}pend"
+        _pending[DEFAULT_ORG][aid] = Approval(
+            id=aid, agent_id=agent, gateway_id=gw, action=action, params=params,
+            score=score, reason=_approval_reason(action, score),
+            status="pending", created_at=_stamp(age),
+        )
+
+    for i, (agent, gw, action, params, decision, who, age) in enumerate(_DECIDED_APPROVALS):
+        score = _approval_score(action)
+        aid = f"apr-demo{i:04d}done"
+        # Decided a few minutes after it was raised — a review takes a moment,
+        # and a decided_at equal to created_at reads like a machine, not a human.
+        _pending[DEFAULT_ORG][aid] = Approval(
+            id=aid, agent_id=agent, gateway_id=gw, action=action, params=params,
+            score=score, reason=_approval_reason(action, score),
+            status=decision, decided_by=who,
+            decided_at=_stamp(max(0, age - 4)), created_at=_stamp(age),
+        )
+
+    log.info("Seeded %d pending and %d decided approvals",
+             len(_PENDING_APPROVALS), len(_DECIDED_APPROVALS))
+
+
 def seed_demo_agents() -> None:
     """Seed the in-memory agent registry with the demo agents (idempotent)."""
     from control_plane.models.database import DEFAULT_ORG

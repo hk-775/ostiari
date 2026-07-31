@@ -76,6 +76,155 @@ class TestApprovals:
         assert len(approved) == 1 and approved[0]["status"] == "approved"
 
 
+class TestApprovalDemoSeed:
+    """The seeded queue exists so the Approvals page isn't empty in the demo.
+
+    Its value is entirely in being *consistent* with the rest of the demo: a
+    score the real scorer couldn't produce, or a pending call that no trace
+    shows being paused, turns the page into a contradiction an operator will
+    notice before a bug report does.
+    """
+
+    def test_seeds_pending_and_decided(self):
+        from control_plane.demo_seed import (
+            _DECIDED_APPROVALS,
+            _PENDING_APPROVALS,
+            seed_demo_approvals,
+        )
+        from control_plane.models.database import DEFAULT_ORG
+        from control_plane.routers.approvals import _pending
+
+        seed_demo_approvals()
+        q = _pending[DEFAULT_ORG].values()
+        assert len([a for a in q if a.status == "pending"]) == len(_PENDING_APPROVALS)
+        assert len([a for a in q if a.status != "pending"]) == len(_DECIDED_APPROVALS)
+
+    def test_seeding_twice_does_not_duplicate(self):
+        from control_plane.demo_seed import seed_demo_approvals
+        from control_plane.models.database import DEFAULT_ORG
+        from control_plane.routers.approvals import _pending
+
+        seed_demo_approvals()
+        first = len(_pending[DEFAULT_ORG])
+        seed_demo_approvals()
+        assert len(_pending[DEFAULT_ORG]) == first
+
+    async def test_a_real_pending_approval_suppresses_the_seed(self, client):
+        """A live gateway's queue must never be padded with demo rows — an
+        operator would be deciding fictional calls alongside real ones."""
+        from control_plane.demo_seed import seed_demo_approvals
+        from control_plane.models.database import DEFAULT_ORG
+        from control_plane.routers.approvals import _pending
+
+        await _create(client)
+        seed_demo_approvals()
+        assert len(_pending[DEFAULT_ORG]) == 1
+
+    def test_every_score_is_the_sum_of_its_signals(self):
+        """Scores aren't hand-picked numbers; they're what the signals add to."""
+        from control_plane.demo_seed import _approval_score, seed_demo_approvals
+        from control_plane.models.database import DEFAULT_ORG
+        from control_plane.routers.approvals import _pending
+
+        seed_demo_approvals()
+        for a in _pending[DEFAULT_ORG].values():
+            assert a.score == _approval_score(a.action), a.action
+
+    def test_every_score_lands_in_the_intervene_band(self):
+        """Only the intervene tier reaches this queue: allow runs, block doesn't.
+        A seeded 20 or 95 would depict a call that could not be here at all."""
+        from control_plane.demo_seed import seed_demo_approvals
+        from control_plane.models.database import DEFAULT_ORG
+        from control_plane.routers.approvals import _pending
+
+        from ostiari.models import ThresholdConfig
+
+        t = ThresholdConfig()
+        seed_demo_approvals()
+        for a in _pending[DEFAULT_ORG].values():
+            assert t.allow_max < a.score <= t.intervene_max, (a.action, a.score)
+
+    def test_reasons_are_what_explain_would_have_said(self):
+        """The gateway stores explain(result).summary, so the seed must too —
+        not prose that merely resembles it."""
+        from control_plane.demo_seed import _approval_reason, seed_demo_approvals
+        from control_plane.models.database import DEFAULT_ORG
+        from control_plane.routers.approvals import _pending
+
+        seed_demo_approvals()
+        for a in _pending[DEFAULT_ORG].values():
+            assert a.reason == _approval_reason(a.action, a.score)
+            assert "flagged for human approval" in a.reason
+
+    def test_pending_rows_carry_no_decision_and_decided_rows_do(self):
+        from control_plane.demo_seed import seed_demo_approvals
+        from control_plane.models.database import DEFAULT_ORG
+        from control_plane.routers.approvals import _pending
+
+        seed_demo_approvals()
+        for a in _pending[DEFAULT_ORG].values():
+            if a.status == "pending":
+                assert not a.decided_by and not a.decided_at, a.id
+            else:
+                # A decision needs an author and a time after the request, or the
+                # audit trail it's meant to demonstrate says nothing.
+                assert a.decided_by and a.decided_at > a.created_at, a.id
+
+    def test_history_shows_both_outcomes(self):
+        """A queue where every answer was 'yes' wouldn't show denial is real."""
+        from control_plane.demo_seed import seed_demo_approvals
+        from control_plane.models.database import DEFAULT_ORG
+        from control_plane.routers.approvals import _pending
+
+        seed_demo_approvals()
+        statuses = {a.status for a in _pending[DEFAULT_ORG].values()}
+        assert {"pending", "approved", "denied"} <= statuses
+
+    def test_pending_calls_match_the_intervene_traces(self):
+        """Live Traces and Approvals describe one fleet. Every pending approval
+        must correspond to a seeded intervene trace on agent, action, score and
+        params — otherwise clicking from a paused trace to the queue finds a
+        different, fictional call."""
+        from control_plane.demo_seed import _PENDING_APPROVALS, _approval_score
+        from control_plane.models.database import DEFAULT_ORG
+        from control_plane.routers.traces import _recent_traces, seed_traces
+
+        seed_traces()
+        traces = [t for t in _recent_traces[DEFAULT_ORG] if t["tier"] == "intervene"]
+        for agent, _gw, action, params, _age in _PENDING_APPROVALS:
+            assert any(
+                t["agent_id"] == agent and t["action"] == action
+                and t["score"] == _approval_score(action) and t["params"] == params
+                for t in traces
+            ), f"no intervene trace for pending approval {agent}/{action}"
+
+    async def test_the_seeded_queue_can_actually_be_decided(self, client):
+        """The rows are real Approval objects on the real routes, not display
+        fixtures — Approve/Deny in the UI must work on them."""
+        from control_plane.demo_seed import seed_demo_approvals
+
+        seed_demo_approvals()
+        pending = (await client.get("/api/approvals")).json()
+        aid = pending[0]["id"]
+        r = await client.post(f"/api/approvals/{aid}/decision",
+                              json={"decision": "approve", "decided_by": "operator"})
+        assert r.status_code == 200 and r.json()["status"] == "approved"
+        assert len((await client.get("/api/approvals")).json()) == len(pending) - 1
+
+    def test_seeded_actions_all_have_signals_defined(self):
+        """A row whose action has no signal set would KeyError at seed time and
+        take the whole control-plane startup down with it."""
+        from control_plane.demo_seed import (
+            _APPROVAL_SIGNALS,
+            _DECIDED_APPROVALS,
+            _PENDING_APPROVALS,
+        )
+
+        used = {r[2] for r in _PENDING_APPROVALS} | {r[2] for r in _DECIDED_APPROVALS}
+        assert used <= set(_APPROVAL_SIGNALS)
+        assert set(_APPROVAL_SIGNALS) == used, "unused signal entries drift out of date"
+
+
 def _hdr(org: str) -> dict[str, str]:
     from control_plane.auth.service import create_access_token
     tok = create_access_token(user_id=1, email=f"{org}@t.io", role="admin", org=org)
