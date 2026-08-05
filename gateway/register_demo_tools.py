@@ -144,22 +144,42 @@ def main() -> int:
 
 
 def _fix_block_policy() -> None:
-    """Ensure crm-agent's block policy actually blocks the destructive demo tools.
+    """Ensure crm-agent has a block policy that stops the destructive demo tools.
 
-    Two seeded issues break the Scenarios guard demo:
+    This registers the destructive tools (db_delete, github.delete_repo,
+    drawio.delete_diagram) so the Scenarios tab can demonstrate the guard
+    stopping them — which only works if a policy actually blocks them.
+
+    Creates the policy if it's missing. It used to only patch an existing one,
+    which meant the guard demo depended on a row someone had added by hand in an
+    earlier session: recreate the database and crm-agent came up with an empty
+    block list, so the destructive scenarios silently *executed* while the
+    Policies page showed nothing for this gateway.
+
+    Two further issues break the guard even when the policy is present:
       1. Block patterns like '*.delete' don't fnmatch actions named 'db_delete'.
       2. A second active policy with 'block: []' clobbers the block list during
          the control plane's policy merge (dict.update).
-    Fix the block-destructive policy's patterns and drop any empty block: [] from
-    other active crm-agent policies so the merge can't wipe them.
+    So also fix the patterns, and drop any empty block: [] from other active
+    crm-agent policies so the merge can't wipe them.
     """
     status, policies = _req("GET", f"{CONTROL_PLANE}/api/policies")
     if status != 200 or not isinstance(policies, list):
         print("  ! could not read policies to fix block rules")
         return
-    for p in policies:
-        if p.get("gateway_id") != GATEWAY_ID:
-            continue
+
+    mine = [p for p in policies if p.get("gateway_id") == GATEWAY_ID]
+
+    if not any(p["name"] == "block-destructive" for p in mine):
+        st, _ = _req("POST", f"{CONTROL_PLANE}/api/policies", {
+            "name": "block-destructive",
+            "description": "Block destructive tool calls (delete/drop/destroy) on crm-agent",
+            "content": {"block": BLOCK_PATTERNS},
+            "gateway_id": GATEWAY_ID,
+        })
+        print(f"  {'+' if st == 200 else '!'} policy 'block-destructive' created ({st})")
+
+    for p in mine:
         content = dict(p.get("content") or {})
         changed = False
         if p["name"] == "block-destructive":
