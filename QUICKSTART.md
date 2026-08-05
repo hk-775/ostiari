@@ -4,37 +4,36 @@ Choose your path:
 
 | Path | Command | Time | For |
 |------|---------|------|-----|
-| [**1. Demo Mode**](#1-demo-mode-frontend-only) | `make demo` | 2 min | See the UI with mock data, no backend needed |
+| [**1. Frontend Only**](#1-frontend-only) | `make demo` | 2 min | Landing page + build check; no backend, so no dashboard |
 | [**2. Full Demo Stack**](#2-full-demo-stack) | `make demo-full` | 5 min | All components running with seeded demo data |
 | [**3. Clean Install**](#3-clean-install) | `make clean-start` | 15 min | Fresh start, no demo data, connect your own agents |
 
 ---
 
-## 1. Demo Mode (Frontend Only)
+## 1. Frontend Only
 
-See the full UI with mock data. No backend, no gateways, no credentials needed.
+Starts the Vite dev server and nothing else.
 
 ```bash
 make demo
 ```
 
-Open **http://localhost:9000** — that's it.
+Open **http://localhost:9000** for the landing page.
 
-You'll see:
-- Dashboard with live metrics
-- 14 configured models with pricing
-- Per-agent model access and budgets
-- Policies, quotas, tools, MCP servers
-- Architecture demo with narration
-- Sandbox (chat, scenarios, A2A)
+**This is not a working dashboard.** There is no client-side mock data layer:
+every page except the landing page is behind `RequireAuth`, sign-in POSTs to
+`/api/auth/login` on the backend, and each page fetches from the API. With no
+backend on :8400 the login fails and every route redirects back to `/login`.
 
-Everything runs client-side with mock data.
+Use this to check the frontend builds and to work on the landing page. For a
+populated dashboard you want [Full Demo Stack](#2-full-demo-stack) — it's one
+command and needs no credentials either.
 
 ---
 
 ## 2. Full Demo Stack
 
-All components running with real API responses and seeded demo data. Five gateways, nine agents, an A2A demo agent, and the full control plane.
+All components running with real API responses and seeded demo data. Four gateways, nine agents, an A2A demo agent, and the full control plane.
 
 ### Prerequisites
 
@@ -44,7 +43,7 @@ All components running with real API responses and seeded demo data. Five gatewa
 ### Install
 
 ```bash
-git clone https://github.com/aws-samples/sample-ostiari.git
+git clone https://github.com/hk-775/ostiari.git
 cd ostiari
 
 # Core library + gateway
@@ -62,7 +61,7 @@ make demo-full
 ```
 
 This starts everything in the background:
-- **Control Plane backend** on port 8400 (loads demo data from `control-plane/backend/data/state.json`)
+- **Control Plane backend** on port 8400 (seeds demo data on first start; restores saved state from `control-plane/data/state.json` on later starts)
 - **Control Plane frontend** on http://localhost:9000
 - **4 Gateways** on ports 8421, 8422, 8424, 8425
 - **A2A Demo Agent** on port 9200
@@ -78,10 +77,10 @@ The `crm-agent` gateway also loads `llm-gateway-config.yaml` (enables the LLM mo
 |---|---|---|---|
 | Control Plane UI | http://localhost:9000 | — | — |
 | Control Plane API | http://localhost:8400 | — | — |
-| CRM Gateway | http://localhost:8421 | `crm-agent` | web_search, db_query, send_email, github.*, drawio.* |
-| Ops Gateway | http://localhost:8422 | `ops-agent` | deploy, slack_send |
-| DevOps Gateway | http://localhost:8424 | `devops-agent` | github.* (MCP) |
-| Analytics Gateway | http://localhost:8425 | `analytics-agent` | file_read (MCP) |
+| CRM Gateway | http://localhost:8421 | `crm-agent` | web_search, db_query, send_email, github.*, drawio.* (12) — plus the real draw.io + filesystem MCP servers |
+| Ops Gateway | http://localhost:8422 | `ops-agent` | db_query, send_email, slack.post, db_delete (4) |
+| DevOps Gateway | http://localhost:8424 | `devops-agent` | github.search_code, github.create_issue, web_search, github.delete_repo (4) |
+| Analytics Gateway | http://localhost:8425 | `analytics-agent` | db_query, web_search, drawio.create_diagram (3) |
 | A2A Demo Agent | http://localhost:9200 | — | deploy, rollback, status |
 | Demo Tools | http://localhost:9300 | — | canned tool backends |
 
@@ -114,17 +113,29 @@ In the Control Plane UI:
 2. **Sandbox > A2A tab** — enter `http://localhost:9200`, click Discover, send tasks
 3. **Live Traces** — pre-seeded with demo traces on startup; new Sandbox/gateway calls stream in live
 4. **Gateways** — see all 4 gateways registered and heartbeating
-5. **Models** — 14 models with routing rules and pricing
+5. **Models** — 18 models with routing rules and pricing
 6. **Agents** — 9 pre-configured agents across frameworks
 
 ### Demo data details
 
-The backend loads seeded state from `control-plane/backend/data/state.json`:
-- 8 quota configurations across gateways
-- 14 model routing configs (Anthropic, OpenAI, Bedrock, Mistral)
-- 5 experiments (A/B tests, canary deployments)
+Nothing is checked in — the backend seeds on first start (`control_plane/demo_seed.py`),
+then saves to `control-plane/data/state.json` on shutdown and restores it next time:
+- 4 gateway quotas, one per gateway, with spend summed from real usage records
+- 18 model routing configs (Anthropic, OpenAI, Bedrock, Vertex, Mistral, xAI, …)
+- 3 experiments (`haiku-vs-sonnet`, `gpt4o-vs-o3`, `cost-routing-test`)
+- 8 approvals (4 pending, 4 decided), 8 payment wallets, 2 broker pools
+- 647 usage records across 8 agents, feeding Costs / Metering / ROI
 
-Gateways, tools, and MCP servers are seeded in the control plane DB (`control-plane/data/control_plane.db`) and pushed to each gateway on registration.
+Set `OSTIARI_NO_DEMO=1` to skip the seeders above (that's what `make clean-start`
+does). **The 18 models are not among them** — `seed_models()` runs at the bottom of
+`control_plane/routers/model_config.py`, at import time, so the Models page is
+populated in every mode including a clean install. That's deliberate: the model
+catalog is a routing table, not demo content.
+
+Tools, policies, MCP servers, and A2A peers are registered by the
+`gateway/register_demo_*.py` scripts the Makefile runs, and the control plane
+pushes them to each gateway on registration. The SQLite DB
+(`control-plane/data/control_plane.db`) is created on first run, not shipped.
 
 Agents are seeded in-memory (see `control-plane/backend/control_plane/routers/agents.py`):
 - research-agent (OpenAI), ops-agent (Strands), claude-agent (Anthropic)
@@ -147,7 +158,7 @@ Fresh Ostiari with no demo data. You register your own gateways, agents, and too
 ### Install
 
 ```bash
-git clone https://github.com/aws-samples/sample-ostiari.git
+git clone https://github.com/hk-775/ostiari.git
 cd ostiari
 
 pip install -e .
@@ -161,10 +172,22 @@ cd control-plane/frontend && npm install && cd ../..
 make clean-start
 ```
 
-This wipes demo data and starts:
-- **Control Plane backend** on port 8400 (empty state)
+This starts:
+- **Control Plane backend** on port 8400 (`OSTIARI_NO_DEMO=1`, so no seeders run)
 - **Control Plane frontend** on http://localhost:9000
 - **One gateway** (`my-gateway`) on port 8421, connected to the control plane
+
+> **`clean-start` doesn't fully wipe today.** It deletes the SQLite database but
+> targets `control-plane/backend/data/state.json` — the *old* path. `state.json`
+> now lives beside the database in `control-plane/data/` (see `data_dir()` in
+> `control-plane/backend/control_plane/env.py`), and the lifespan restores it
+> **before** the `OSTIARI_NO_DEMO` check, so previously-seeded quotas,
+> experiments, models, and providers come back. If you want a genuinely empty
+> control plane, delete it yourself first:
+>
+> ```bash
+> rm -f control-plane/data/state.json
+> ```
 
 ### Register the gateway with the Control Plane
 
@@ -202,7 +225,7 @@ curl -X POST http://localhost:8421/config/tools \
 curl -X POST http://localhost:8421/config/policy \
   -H "Content-Type: application/json" \
   -d '{
-    "block": ["*.delete", "*.drop", "*.destroy"],
+    "block": ["*delete*", "*drop*", "*destroy*"],
     "allow": ["send_email", "db_query"],
     "rules": [
       {"type": "risk_adjust", "action": "send_email", "risk_adjust": 25}
@@ -212,6 +235,12 @@ curl -X POST http://localhost:8421/config/policy \
     }
   }'
 ```
+
+> **Use `*delete*`, not `*.delete`.** Patterns are `fnmatch` globs, so `*.delete`
+> requires a literal dot — it matches `github.delete` but **not** `db_delete`. The
+> bare-underscore names are the ones you most want blocked, so a `*.delete` block
+> list reads as protective and lets `db_delete` straight through. Test every block
+> pattern against your real action names (the Sandbox is for exactly this).
 
 ### Set per-agent access control
 
@@ -267,10 +296,16 @@ curl -X POST http://localhost:8421/config/mcp-servers \
   -H "Content-Type: application/json" \
   -d '{
     "name": "github",
-    "transport": "sse",
+    "mode": "remote",
     "url": "http://your-github-mcp:3000"
   }'
 ```
+
+The field is **`mode`**, and the only accepted values are `remote`, `stdio`, and
+`embedded` (the default). `MCPServerConfig` has no `transport` field — an unknown
+key is ignored, so passing `"transport": "sse"` silently leaves the server in
+`embedded` mode, where it looks for a Python package named `github` and connects to
+nothing.
 
 Your agent can now call `POST /tool/github.create_issue` — the gateway handles MCP protocol translation.
 
@@ -283,7 +318,7 @@ curl -X POST http://localhost:8421/tool/send_email \
   -H "X-Agent-Id: my-agent" \
   -d '{"to": "user@example.com", "body": "test"}'
 
-# Should be blocked (*.delete pattern)
+# Should be blocked (*delete* pattern)
 curl -X POST http://localhost:8421/tool/db_delete \
   -H "Content-Type: application/json" \
   -H "X-Agent-Id: my-agent" \
@@ -319,7 +354,7 @@ OTEL_SERVICE_NAME=ostiari-gateway
 
 ## Production deployment
 
-See the full [Production Guide](docs/production.md) for Docker, Kubernetes, ECS, Helm, and Lambda deployments.
+See [`deploy/README.md`](deploy/README.md) for Docker, Kubernetes, ECS, Helm, and Lambda deployments.
 
 | Target | Command |
 |--------|---------|

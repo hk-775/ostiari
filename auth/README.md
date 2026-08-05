@@ -7,8 +7,11 @@ issue them — identity is delegated to the IdP.
 ## Model in one line
 
 **Identity in the token (JWT, validated locally via JWKS); authorization in the
-Ostiari engine (RBAC + policy).** See `docs/internal/security-faq-jwt-vs-ostiari.md`
-for the PDP/PEP rationale.
+Ostiari engine (RBAC + policy).** The token says *who you are*; Ostiari decides
+*what that principal may do* — a JWT can't express "this agent may call
+`send_email` but not `db_delete`, under a $10 cap, unless the risk score clears
+70". Validation lives in `control-plane/backend/control_plane/auth/oidc.py` (and
+its gateway twin, `gateway/ostiari_gateway/oidc.py`).
 
 ## Three principals, one validation path
 
@@ -44,7 +47,16 @@ export OSTIARI_AUTH_MODE=oidc                     # default: local (unchanged de
 export OSTIARI_OIDC_ISSUER=https://cognito-idp.<region>.amazonaws.com/<pool-id>
 export OSTIARI_OIDC_JWKS_URL=$OSTIARI_OIDC_ISSUER/.well-known/jwks.json   # optional; derived by default
 export OSTIARI_OIDC_AUDIENCE=<app-client-id>      # optional aud/client_id check
+export OSTIARI_REQUIRE_AUTH=true                  # default: off — see below
 ```
+
+`OSTIARI_AUTH_MODE=oidc` only decides *how* a token is validated. It does not
+make tokens mandatory: without `OSTIARI_REQUIRE_AUTH`, `AuthMiddleware` passes
+every request straight through and an unauthenticated caller still reads and
+rewrites the whole API. Production needs **both**. When it's on, every `/api/*`
+route is fail-closed except a short allowlist — `/api/health`,
+`/api/auth/login`, `/api/auth/register`, `/api/auth/sso/*`, `/api/traces/ingest`
+(machine ingest, guarded by its own `X-Ingest-Key`), and the OpenAPI docs.
 
 Gateway (agent/service tool calls):
 ```bash
@@ -75,14 +87,41 @@ register scripts all keep working with zero config. OIDC is opt-in.
 
 ## Role mapping (claims → Ostiari role)
 
-Precedence: explicit `role`/`custom:role`/`ostiari_role` → `cognito:groups` /
-`groups` → OAuth `scope` → default `viewer`. Admin beats operator beats viewer.
+Precedence in `_role_from_claims`: explicit `ostiari_role` / `custom:role` /
+`role` → `cognito:groups` or `groups` → OAuth `scope` → default `viewer` (least
+privilege). Group names are matched case-insensitively **by substring**, and
+admin beats operator beats viewer — so `ostiari-admin`, `Admin`, and
+`eng-admins` all map to `admin`. Scopes map by keyword: anything containing
+`admin` → admin, `write` or `operator` → operator.
 
 ## Multi-tenancy
 
-Single-tenant today (every token → `tenant_id="default"`), multi-tenant-ready:
-the tenant is read from a claim and the issuer is a resolvable function, so going
-SaaS later is additive. See the internal security FAQ.
+`tenant_from_claims` reads the tenant from `tenant_id`, `custom:tenant_id`,
+`org_id`, or `custom:org`, defaulting to `"default"` — so a single-issuer,
+single-tenant deployment needs no extra claims. Both the control plane and the
+gateway have this function; `get_current_org` in `auth/dependencies.py` is the
+route-layer seam, and it also falls back to `"default"` for a tokenless request
+(the demo posture — `AuthMiddleware` has already 401'd those when
+`OSTIARI_REQUIRE_AUTH` is on).
+
+Most of the database is scoped: the tables behind gateways, tools, policies, MCP
+servers, usage, A2A agents, wallets, payments, and audit logs each carry an
+`org_id`, and 15 routers scope their queries through
+`control_plane/models/scoping.py`. Routers whose state is in-memory (quotas,
+agents, models, providers, ROI, agent-routing, discovery) key their dicts by org
+instead, which is equivalent.
+
+**Two known gaps, both in the broker pilot.** `TokenPool` and
+`ReconciliationRecord` have no `org_id` column, and `routers/broker_pilot.py`
+takes no `get_current_org` dependency — so pool inventory, draw-down, and
+reconciliation are global across tenants. `routers/proxy.py` is also
+org-unaware: it resolves a gateway by id and forwards, without checking that the
+caller's org owns it. Neither matters in the single-org deployment that is the
+only supported one today, but both need closing before a second tenant exists.
+
+Gateways post usage, payments, and approvals with no user token, so their org is
+derived from their own `gateways` row (`org_of_gateway`) rather than trusted from
+the payload — a tenant can't write into another's ledger.
 
 ## Off-AWS portability
 

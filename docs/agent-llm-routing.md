@@ -34,7 +34,9 @@ So an agent opted into round-robin always rotates, regardless of other rules.
   for stateless / batch / cost-spreading).
 - **`session`** — all calls sharing an `X-Session-Id` use one model; the
   rotation advances between sessions. Better for an interactive coding agent so
-  it doesn't switch models mid-conversation.
+  it doesn't switch models mid-conversation. With no session id on the request,
+  `session` degrades to `request` scope rather than pinning everything to one
+  model.
 
 Policies are keyed per `agent_id`; a `"*"` key applies to any agent without a
 specific entry. A single-model list acts as a pin.
@@ -74,4 +76,10 @@ gateway's provider credentials.
   rotating across *families* can produce inconsistent behavior; prefer
   `session` scope or same-family models there.
 - Control-plane policies are held in memory (like the other config routers), so
-  they need re-applying after a control-plane restart.
+  they need re-applying after a control-plane restart. They are keyed per org, so
+  a policy set in one tenant doesn't leak into another.
+- The **Codex shim** (`POST /v1/chat/completions`) does not apply per-agent
+  routing — it forwards the requested model to AxonLLM as-is. Only `/v1/messages`
+  and `/invoke` go through `ModelRouter.select_model`.
+- Only `strategy: "round_robin"` is implemented; a policy with any other strategy
+  is ignored and selection falls through to A/B, rules, smart routing, and default.

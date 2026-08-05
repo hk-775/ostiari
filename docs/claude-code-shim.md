@@ -35,14 +35,17 @@ claude
 Optional headers Ostiari reads for attribution:
 
 - `X-Agent-Id` — which agent/principal this traffic belongs to (default `unknown`)
-- `X-Session-Id` — groups a run's calls in traces
+- `X-Session-Id`, or `x-claude-code-session-id` as a fallback — groups a run's
+  calls in traces under one parent span
 - `X-Framework` — defaults to `claude-code`
 
 ## What Ostiari does to each call
 
 1. **Agent authorization** — `agent_auth.check(agent_id, "/v1/messages")`.
-2. **Prompt-injection detection** — detection-only; blocks but never rewrites
-   the forwarded body (rewriting would corrupt tool round-trips).
+2. **Injection / PII detection** — fail-closed, and detection-only: it blocks but
+   never rewrites the forwarded body (rewriting would corrupt tool round-trips).
+   With `pii_redaction` on, PII *presence* blocks the call rather than being
+   redacted in place — block-content rewriting on the shim is a follow-up.
 3. **Routing** — the embedded **AxonLLM** router selects model + provider,
    enforces model access, tracks cost, and does health-aware fallback. Run in
    single-response mode (ensemble stays on `/invoke`), since Claude Code needs
@@ -54,9 +57,12 @@ Optional headers Ostiari reads for attribution:
 
 ## Cross-provider routing
 
-Every call — tool-bearing or not — routes through AxonLLM, which is the single
-routing authority across the gateway and a required dependency (see
-[axon-router.md](axon-router.md)). AxonLLM's OpenAI-shaped result is translated
+Every call — tool-bearing or not — routes through AxonLLM, the single routing
+authority across the gateway (see [axon-router.md](axon-router.md)). It is
+strongly recommended rather than strictly required: without it the gateway still
+boots and this shim still answers via the direct-provider path below, but with no
+routing governance and no token cost tracking. `OSTIARI_REQUIRE_AXON=1` makes it
+mandatory. AxonLLM's OpenAI-shaped result is translated
 back into an **Anthropic Messages object**, re-emitted as valid Anthropic SSE when
 the client asked to stream, so Claude Code sees Anthropic format regardless of
 which provider served the call. Tool specs and `tool_use`/`tool_result` blocks are
