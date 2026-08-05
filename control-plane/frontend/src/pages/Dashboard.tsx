@@ -44,6 +44,7 @@ export function Dashboard() {
   const { data: gateways = [] } = useQuery({ queryKey: ["gateways"], queryFn: api.gateways.list });
   const { data: tools = [] } = useQuery({ queryKey: ["tools"], queryFn: () => api.tools.list() });
   const { data: policies = [] } = useQuery({ queryKey: ["policies"], queryFn: api.policies.list });
+  const { data: mcpServers = [] } = useQuery({ queryKey: ["mcp-servers"], queryFn: () => api.mcpServers.list() });
 
   const healthy = gateways.filter((s) => s.status === "healthy").length;
 
@@ -64,7 +65,7 @@ export function Dashboard() {
         <StatCard label="Agent Gateways" value={gateways.length} sub={`${healthy} healthy`} icon={Server} href="/gateways" colorIdx={0} />
         <StatCard label="Tools" value={tools.length} sub="registered" icon={Wrench} href="/tools" colorIdx={1} />
         <StatCard label="Policies" value={policies.length} sub="active" icon={FileText} href="/policies" colorIdx={2} />
-        <StatCard label="MCP Servers" value="—" icon={Plug} href="/mcp-servers" colorIdx={3} />
+        <StatCard label="MCP Servers" value={mcpServers.length} sub="connected" icon={Plug} href="/mcp-servers" colorIdx={3} />
       </div>
 
       <div className="card">
