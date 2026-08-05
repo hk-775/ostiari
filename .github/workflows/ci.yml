@@ -3,8 +3,12 @@ name: CI
 on:
   push:
     branches: [main]
+  # Every PR, not just those targeting main. Stacked PRs (feature → feature →
+  # main) previously ran no checks at all: #79 and #80 both merged into an
+  # intermediate branch with an empty status rollup, so a broken commit could
+  # reach it unnoticed and only surfaced when the parent PR retriggered. The
+  # base branch is not a signal about whether code needs testing.
   pull_request:
-    branches: [main]
   workflow_dispatch:
 
 jobs:
