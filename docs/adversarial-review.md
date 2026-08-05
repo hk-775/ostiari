@@ -6,7 +6,8 @@ payment path. Every candidate finding was **empirically verified** (a live
 exploit or a focused test), which mattered — it ruled out a plausible-looking
 finding that turned out not to be real.
 
-Regression tests for everything below live in `gateway/tests/test_adversarial.py`.
+Regression tests for everything below live in `gateway/tests/test_adversarial.py`
+(15 tests; `cd gateway && PYTHONPATH=. pytest tests/test_adversarial.py`).
 
 ## Method
 
@@ -107,9 +108,14 @@ refusal) instead of silently open.
 ## Residual / informational (not fixed)
 
 - **Per-process quota/budget state** — each gateway replica has its own
-  counters, so a horizontally-scaled fleet gets K× the configured limit. This
-  is a known distributed-state limitation; the intended answer is shared Redis
-  state (already noted in the deploy docs). Not a single-node bug.
+  counters by default, so a horizontally-scaled fleet gets K× the configured
+  limit. Since this review, `gateway/ostiari_gateway/shared_store.py` closes it:
+  set `OSTIARI_REDIS_URL` (or `REDIS_ENDPOINT`) and rate-limit windows, budget
+  spend, and wallet balances move to Redis, each mutation a single atomic Lua
+  script so replicas can't race. It stays **opt-in and fail-safe** — no Redis
+  configured or reachable means the in-process path, so a Redis outage degrades
+  to per-process limits rather than taking the gateway down. A fleet running
+  without it still gets K× limits.
 - **Body-size append-then-check** — the middleware appends a chunk before
   testing the cap, but uvicorn bounds individual chunks (~64KB), so peak memory
   is `cap + one small chunk`. Informational.

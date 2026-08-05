@@ -32,10 +32,12 @@ make install       # Python deps + gateway + frontend
 make demo-full     # control plane + 4 gateways + demo tools, all seeded
 ```
 
-Open **http://localhost:9000**, log in with `admin@ostiari.ai` / `admin`, and
-you'll land on a fully-populated dashboard: four agent gateways governing real
-tool calls, live traces streaming, blocked destructive actions, MCP servers,
-agent-to-agent delegation, payments, and ROI — no setup, no mock data.
+Open **http://localhost:9000** and click **Sign in** — the demo admin
+(`admin@ostiari.ai` / `admin`) is prefilled. You'll land on a fully-populated
+dashboard: four agent gateways governing real tool calls, live traces streaming,
+blocked destructive actions, MCP servers, agent-to-agent delegation, quotas with
+live budget bars, a human-approval queue, payments, and ROI — no setup, no mock
+data.
 
 > Everything in the demo is **real**: the gateways actually proxy and govern
 > live tool calls (a `db_delete` really gets blocked with a 403), the MCP
@@ -139,23 +141,51 @@ Or protect a function inline:
 ```python
 from ostiari import protect
 
-@protect(action="email.send")
+@protect()                                  # action is the function name
 def send_email(to: str, subject: str, body: str): ...
+
+@protect(risk="high", confirm=True)         # hint the score, force the intervene tier
+def db_delete(table: str): ...
 ```
+
+`protect()` takes `risk`, `confirm`, and `policy` — there is no `action`
+parameter (passing one is a `TypeError`). The action is `fn.__name__`, so name
+the function what you want to see in policies and traces. It wraps sync and
+async functions alike, and lazily creates a module-level Guard on first call —
+use `ostiari.init(config=…)` to configure that singleton up front.
 
 ### Policy (YAML)
 
 ```yaml
-version: "1"
+allow:                       # fnmatch globs
+  - "file.read"
+  - "db_query"
+block:
+  - "*delete*"
+  - "*drop*"
 rules:
-  - action: "file.read"     # always allow reads
-    decision: allow
-  - action: "*.delete"      # block deletes  (note: matches "x.delete", not "db_delete")
-    decision: block
-  risk_adjust:
-    - action: "email.send"
-      adjust: +25            # nudge toward "intervene"
+  - type: risk_adjust        # nudge toward "intervene"
+    action: "email.send"
+    risk_adjust: 25
+thresholds:
+  global:
+    allow_max: 30
+    intervene_max: 70
 ```
+
+The schema is strict, and both halves of it are checked before anything loads:
+
+- **Top level accepts exactly `allow`, `block`, `rules`, `thresholds`.** Anything
+  else — including a `version:` key — is rejected as an unknown top-level key.
+- **A rule is keyed by `type`, not `decision`**, and `type` must be one of
+  `allow`, `block`, `risk_adjust`, `threshold_override`, `context_rule`. The
+  adjustment field repeats the type name (`risk_adjust: 25`), must be a non-zero
+  integer, and a rule always needs an `action` glob.
+- Caps: 500 rules per file, 256 characters per pattern. The same pattern in both
+  `allow` and `block` is an error, not a precedence question.
+
+Errors carry the field and line number, so a bad policy fails loudly at
+`configure()` rather than silently allowing everything.
 
 > **Pattern gotcha:** globs are `fnmatch`. `*.delete` matches `github.delete` but
 > **not** `db_delete` (no dot). To block `db_delete`, use `*delete*` or the exact
@@ -183,10 +213,14 @@ Built-in **anomaly detectors** (loop, drift, hallucination, contradiction) and a
 # Full platform (control plane + gateway + dashboard) — for the demo
 make install
 
-# Just the library
-pip install ostiari
-pip install ostiari[all]          # + all adapters, dashboard, TUI
+# Just the library, from a clone
+pip install -e .
+pip install -e ".[all]"           # + all adapters, dashboard, TUI
 ```
+
+Ostiari is **not on PyPI yet**, so install from source. The extras are real
+either way: `claude`, `openai`, `bedrock`, `strands`, `policy`, `fuzzy`, `tui`,
+`dashboard`, `all`, and `dev`.
 
 ## Make targets
 
@@ -194,13 +228,23 @@ pip install ostiari[all]          # + all adapters, dashboard, TUI
 |---|---|
 | `make demo-full` | Full demo — control plane, 4 gateways, A2A agent, seeded data (→ :9000) |
 | `make dev` | Control plane + frontend + primary gateway |
-| `make demo` | Frontend only, mock data |
-| `make clean-start` | Everything empty — no demo data |
+| `make demo` | Frontend only — landing page and build check, **no backend, so no dashboard** |
+| `make clean-start` | No demo data (`OSTIARI_NO_DEMO=1`) — see the caveat below |
 | `make test` | Run the test suites |
-| `make lint` | Ruff |
+| `make lint` | Ruff over `src/` + `gateway/`, then `tsc --noEmit` over the frontend |
+| `make install` / `make build` / `make clean` | Deps, frontend production build, build artifacts |
 
 > The Sandbox chat needs LLM credentials; point `make demo-full` at an env file
 > with `LLM_ENV=/path/to/.env`. Everything else runs without keys.
+
+> **`clean-start` doesn't fully wipe.** It removes the SQLite DB but deletes
+> `control-plane/backend/data/state.json` — the *old* path. State now lives at
+> `control-plane/data/state.json`, and the lifespan restores it *before* the
+> `OSTIARI_NO_DEMO` check, so earlier seeded quotas, experiments, and providers
+> come back. `rm -f control-plane/data/state.json` first for a truly empty start.
+> The 18 model routing configs come back regardless — `seed_models()` runs at
+> import time and isn't gated by `OSTIARI_NO_DEMO`. See
+> [`QUICKSTART.md` §3](QUICKSTART.md#3-clean-install).
 
 ## Architecture
 
@@ -256,6 +300,16 @@ docs/                 # architecture + the control plane guide
 - [`docs/gateway-architecture.md`](docs/gateway-architecture.md) — gateway internals
 - [`docs/detection-engine.md`](docs/detection-engine.md) — PII redaction and
   prompt-injection detection: config, what's detected, and what it can't catch
+- [`docs/Ostiari-Configure-Orchestrate-Lifecycle.md`](docs/Ostiari-Configure-Orchestrate-Lifecycle.md)
+  — how config reaches gateways: register/heartbeat lifecycle, Push semantics,
+  and what does *not* survive a restart
+- [`auth/README.md`](auth/README.md) — OIDC / Cognito: the three principals, role
+  mapping, and the two env vars production needs
+- [`docs/axon-router.md`](docs/axon-router.md) and
+  [`docs/agent-llm-routing.md`](docs/agent-llm-routing.md) — LLM routing through
+  the embedded AxonLLM router, and per-agent model access
+- [`docs/adversarial-review.md`](docs/adversarial-review.md) — the security
+  review: what was found, what was fixed, what's still open
 - [`deploy/README.md`](deploy/README.md) — deployment reference
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to contribute
 

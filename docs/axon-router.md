@@ -52,14 +52,16 @@ distinguishes them:
                "governed": true, "cost_tracking": true, "tools": true}
 ```
 
-Each caller also keeps a direct-provider fallback for a *mid-flight* failure (one
-call, logged as a warning), which is not a supported way to run the gateway.
+`/invoke` and `/v1/messages` also keep a direct-provider fallback for a *mid-flight*
+failure (one call, logged as a warning), which is not a supported way to run the
+gateway. `/v1/chat/completions` deliberately has none.
 
 ## Where it's wired
 
-**Both** the `/invoke` own-the-loop path *and* the Claude Code `/v1/messages`
-shim — AxonLLM is the single routing authority across the gateway. Every model
-call goes through `AxonRouter`, tool-bearing or not.
+All three LLM entry points — the `/invoke` own-the-loop path, the Claude Code
+`/v1/messages` shim, and the Codex `/v1/chat/completions` shim. AxonLLM is the
+single routing authority across the gateway; every model call goes through
+`AxonRouter`, tool-bearing or not.
 
 - **`/invoke`** — full delegate, all modes (fallback / smart / ensemble).
 - **`/v1/messages` shim** — routes through AxonLLM in **single-response mode
@@ -70,6 +72,10 @@ call goes through `AxonRouter`, tool-bearing or not.
   than token-by-token — the tradeoff for a single routing authority that also
   gives the shim AxonLLM's cost tracking, model access control, and
   health-aware fallback.
+- **`/v1/chat/completions` shim** — same single-response mode, but already in
+  AxonLLM's own OpenAI wire format, so no translation on either leg. This is the
+  only path with **no** direct-provider fallback: it returns 503 when AxonLLM is
+  unavailable rather than answering ungoverned.
 
 ### Model names
 
@@ -170,8 +176,9 @@ curl -X POST localhost:8421/invoke -d '{"messages":[...],"context":{"ensemble":t
 ## Install / embed
 
 AxonLLM is installed editable alongside the gateway (its package root is
-`src.gateway`), plus `tiktoken`. This is a **required** step — the gateway will
-not start with `llm_gateway` enabled without it:
+`src.gateway`), plus `tiktoken`. The gateway boots without it (warning above), and
+`/v1/chat/completions` is the one endpoint that hard-requires it, but treat this as
+a required step for any deployment that makes LLM calls:
 
 ```bash
 uv pip install -e ../AxonLLM tiktoken

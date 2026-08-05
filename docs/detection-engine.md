@@ -29,7 +29,7 @@ that raises **blocks**. It just no longer triggers on arrival.
 
 ## Configuration
 
-Set under `llm:` in the sidecar config (or push it from the control plane):
+Set under `llm:` in the gateway config (or push it from the control plane):
 
 ```yaml
 llm:
@@ -89,6 +89,28 @@ With `pii_reversible: true` (default) the gateway holds a `RedactionMap` for the
 of the request and restores real values in the response, so the agent sees its own
 data and never knows redaction happened. With `false`, the map is sealed and dropped
 after redaction.
+
+### Redaction only *replaces* on `/invoke`
+
+The engine always redacts; what the *caller* differs by entry point, and this
+surprises people:
+
+| Entry point | Behavior when PII is found |
+|---|---|
+| `POST /invoke` | Messages are redacted in place; the redacted set goes upstream, and the response is restored from the map. The agent never sees a failure. |
+| `POST /v1/messages` (Claude Code) | **403.** The proxy treats `pii_redacted` as equivalent to `blocked`. |
+| `POST /v1/chat/completions` (Codex) | **403**, same reason. |
+
+The shims refuse rather than rewrite because each client drives its own tool loop
+off the exact text it sent; handing back a response derived from *different* text
+would desynchronize its conversation state. So on a shim, read
+`pii_redaction: true` as "reject prompts containing PII." If you want prompts
+cleaned rather than refused, the call has to come through `/invoke`, where Ostiari
+owns the loop and can restore on the way out.
+
+There is also no `flag` equivalent for PII — `injection_mode` governs injection
+only, so enabling PII on a shim blocks from the first match with no observe-first
+step.
 
 ### Multimodal content
 
@@ -189,5 +211,9 @@ stay valid.
   redaction map, message/multimodal traversal, every injection category, obfuscation
   evasion, pattern-table integrity, and explicit "ordinary prose is not flagged"
   cases (clock times, C++ scope operators, expense-policy questions).
-- `gateway/tests/test_security_failclosed.py` — the fail-closed contract, plus
-  end-to-end block/redact/restore behavior through the gateway's `SecurityLayer`.
+- `gateway/tests/test_security_failclosed.py` — 23 tests over the fail-closed
+  contract, plus end-to-end block/redact/restore behavior through the gateway's
+  `SecurityLayer`.
+
+Both suites pass as of this writing (`pytest tests/unit/test_detect.py` from the
+repo root; `cd gateway && PYTHONPATH=. pytest tests/test_security_failclosed.py`).

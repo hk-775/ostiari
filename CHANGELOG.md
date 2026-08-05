@@ -42,6 +42,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a fail-closed intervene queues rather than 403s, the approve and deny loops complete,
   the explanation survives the raise, and the three non-bypass properties (genuine
   block, HITL off, shadow mode) each stay blocked.
+- **Demo seeds for the three pages that rendered empty on a fresh start.** The demo's
+  value is that everything in it is real, which is undercut by a page with nothing on
+  it. All three follow the existing `demo_seed` conventions — idempotent, suppressed by
+  `OSTIARI_NO_DEMO=1`, and skipped when real data already exists — and all three are
+  constrained to agree with the rest of the demo rather than merely look plausible:
+  - **Approvals (HITL)** — four pending calls plus a four-row decision history. The
+    pending calls *are* the four intervene-tier calls already seeded into traces, so the
+    queue and the trace view tell the same story.
+  - **Quotas** — one gateway-scoped quota per demo gateway. `current_spend` is summed
+    from the `UsageRecord` rows the metering seed already writes, not invented, so a
+    budget bar cross-checked against the Costs page shows the same number.
+  - **Broker pools** — seeded pools with the MCP card wired, plus the `block-destructive`
+    policy created rather than only patched. It previously depended on a row added by
+    hand in an earlier session: recreate the database and `crm-agent` came up with an
+    empty block list, so the destructive scenarios silently *executed* while the Policies
+    page showed nothing for that gateway.
+- **The demo login is prefilled** with the seeded admin, gated on `DEMO_LOGIN` (on under
+  `vite dev`; `VITE_DEMO_LOGIN=true` opts a deployed demo in). Deliberately not
+  unconditional: `_seed_admin` refuses `admin/admin` when `OSTIARI_ENV=production` and
+  requires `OSTIARI_ADMIN_PASSWORD`, so a hardcoded prefill would display a password that
+  cannot work there — and would ship a well-known credential in the bundle of a repo
+  heading for public. Verified absent from the production build: Vite folds the constant
+  and drops both the address and the hint.
+
+### Changed
+- **CI runs on every pull request, not only those targeting `main`.** The
+  `pull_request` trigger was filtered to `branches: [main]`, so a PR based on another
+  feature branch got an empty status rollup — which reads as "nothing to report" rather
+  than "nothing ran." Two stacked PRs merged untested that way, and the break (a
+  control-plane test importing `ostiari_gateway`, which that job didn't install) only
+  surfaced when the parent PR retriggered against `main`. `push` stays limited to `main`
+  so merge commits don't run twice.
+- All three container images run as **non-root** (gateway and control plane `10001`,
+  frontend `101` — nginx's own uid), with every manifest re-asserting it. Both layers
+  matter: a Dockerfile `USER` is only a default a manifest can override, while
+  `runAsNonRoot` makes the kubelet *refuse* a container that would run as uid 0, so an
+  image rebuilt without `USER` fails loudly instead of quietly regaining root. Plus
+  `allowPrivilegeEscalation: false`, all capabilities dropped, and seccomp
+  `RuntimeDefault`. For a product whose job is governing what agents may do, a
+  compromised gateway holding uid 0 could rewrite the policy engine deciding whether
+  calls are allowed.
+- **The deploy manifests now ship `OSTIARI_ENV=production` with `OSTIARI_HITL=on`.**
+  Helm (`gateway.env` / `gateway.hitl` values), both Kubernetes manifests, and the ECS
+  task definition set them together, because in a fail-closed deployment they are not
+  independent knobs: production refuses an intervene nobody can resolve, so HITL off is
+  what makes the middle tier disappear. Shipping production without it hands operators
+  a wall of 403s and an empty Approvals page. Both stay values/ConfigMap keys, so either
+  can be turned off deliberately rather than by omission. `docker-compose.yml` passes
+  both through from the environment (`OSTIARI_HITL:-off`, `OSTIARI_ENV` unset) — it is
+  the local stack, where fail-open is the intended demo posture.
+- HITL is not free, and `deploy/README.md` now says so beside the variables: a mid-band
+  call answers **202** and does not execute, so someone has to staff the queue and
+  callers have to re-submit with `X-Approval-Id`. Tune thresholds until the intervene
+  band is rare (validate in `shadow` mode) before turning it on. That README also gained
+  the ten production-relevant env vars it omitted entirely — the four the control plane
+  now *requires* in production, and the two gateway controls
+  (`OSTIARI_CONFIG_ADMIN_KEY`, `OSTIARI_GATEWAY_AUTH`) that stay fail-open unless set.
+- `mypy --strict src/` is clean (was 20 errors); `ruff check src/ gateway/` is clean
+  (was 49). Two ruff suggestions are deliberately declined with rationale in-comment:
+  negating the fail-open default would make the codebase's most safety-critical branch
+  a double negative, and suppressing the budget-alert callback error silently is
+  exactly the failure nobody notices (it logs a warning instead).
+- `http_limits` ASGI middlewares are fully typed, with local ASGI aliases rather than a
+  dependency on `starlette.types` — the module is shared by both apps and shouldn't
+  pull in a web framework.
 
 ### Documentation
 - `docs/axon-router.md` — what running without AxonLLM actually costs (startup warning,
@@ -81,6 +146,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   403s the day `OSTIARI_ENV=production` is set.
 
 ### Fixed
+- **Every Bedrock Mantle Claude call failed on a parameter no client sent.** `temperature`
+  was typed `float` with a `0.7` default from both shims down through `providers`, plus
+  `LLMConfig.temperature = 0.7` and an explicit `temperature: 0.7` in the shipped demo
+  config — so "the caller sent nothing" and "the caller asked for 0.7" were the same
+  value by the time a request was built, and the key went on the wire every time.
+  Mantle's current Claude models *reject* the parameter rather than ignoring it
+  (`400 "temperature is deprecated for this model."`). It is now `float | None`,
+  defaulting to None and omitted from the request when None; providers that still accept
+  it apply their own default, which is what a caller who said nothing wants. The
+  `opt_float` helper in `translate.py` preserves *absence* through inbound parsing, since
+  a non-numeric value degrading to the provider default is better than the 500 that
+  `float()` raised.
+- **Control-plane state was lost on every restart**, as a consequence of the non-root
+  change above. `database._DB_DIR` and `persistence.STATE_FILE` resolved independently:
+  the deployment redirected only the database onto the mounted volume and left
+  `state.json` in `/app/data`, a root-owned directory the now-unprivileged process could
+  not write. `save_state` raised `PermissionError` during shutdown, so every restart
+  discarded the persisted quotas, experiments, models, and provider config. Both now
+  resolve to one writable dir via `env.data_dir()`.
 - **Production silently deleted the *intervene* tier.** Production is fail-closed, so a
   Guard with no way to resolve an intervene in-process collapsed it to a block and
   *raised* — and the sidecar's exception handler returned 403 from a point upstream of
@@ -152,31 +236,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   doesn't declare `is_private`/`is_loopback`/`is_link_local`, so the SSRF guard
   type-errored on every check it exists to perform.
 
-### Changed
-- **The deploy manifests now ship `OSTIARI_ENV=production` with `OSTIARI_HITL=on`.**
-  Helm (`gateway.env` / `gateway.hitl` values), both Kubernetes manifests, and the ECS
-  task definition set them together, because in a fail-closed deployment they are not
-  independent knobs: production refuses an intervene nobody can resolve, so HITL off is
-  what makes the middle tier disappear. Shipping production without it hands operators
-  a wall of 403s and an empty Approvals page. Both stay values/ConfigMap keys, so either
-  can be turned off deliberately rather than by omission. `docker-compose.yml` passes
-  both through from the environment (`OSTIARI_HITL:-off`, `OSTIARI_ENV` unset) — it is
-  the local stack, where fail-open is the intended demo posture.
-- HITL is not free, and `deploy/README.md` now says so beside the variables: a mid-band
-  call answers **202** and does not execute, so someone has to staff the queue and
-  callers have to re-submit with `X-Approval-Id`. Tune thresholds until the intervene
-  band is rare (validate in `shadow` mode) before turning it on. That README also gained
-  the ten production-relevant env vars it omitted entirely — the four the control plane
-  now *requires* in production, and the two gateway controls
-  (`OSTIARI_CONFIG_ADMIN_KEY`, `OSTIARI_GATEWAY_AUTH`) that stay fail-open unless set.
-- `mypy --strict src/` is clean (was 20 errors); `ruff check src/ gateway/` is clean
-  (was 49). Two ruff suggestions are deliberately declined with rationale in-comment:
-  negating the fail-open default would make the codebase's most safety-critical branch
-  a double negative, and suppressing the budget-alert callback error silently is
-  exactly the failure nobody notices (it logs a warning instead).
-- `http_limits` ASGI middlewares are fully typed, with local ASGI aliases rather than a
-  dependency on `starlette.types` — the module is shared by both apps and shouldn't
-  pull in a web framework.
+### Known issues
+Found while auditing the docs against the code. All are documented where an
+operator would hit them; none is fixed yet.
+
+- **Enforcement mode is not restored on gateway restart.** `_build_config` sends
+  `mode` and `SidecarConfig` has the field, but `_apply_bundle` never reads it, so
+  a restarted gateway comes up on the default `enforce` no matter what the control
+  plane holds — and the Gateways page keeps rendering the stored `Shadow`. The
+  drift is toward enforcing, so a restart can start blocking traffic meant only to
+  be observed. Click Push on the Gateways page after any restart.
+- **A queued config push is dropped by the reconnect that should deliver it.**
+  `gateway_register` pops `config_queue` into `bundle["queued_updates"]`, a key
+  nothing on the gateway side reads; the pop empties the queue, so no later
+  heartbeat recovers it. The heartbeat path uses `config_updates`, which
+  *is* applied. Only deltas that were never persisted are actually lost — which
+  is exactly what `POST /api/gateways/{id}/push-config` (the Policies and Quotas
+  page buttons) sends.
+- **`make clean-start` doesn't fully wipe.** It deletes
+  `control-plane/backend/data/state.json`, the path from before `env.data_dir()`;
+  live state is at `control-plane/data/state.json`, and the lifespan restores it
+  before the `OSTIARI_NO_DEMO` check. Separately, `seed_models()` runs at import
+  time in `routers/model_config.py` and isn't gated by `OSTIARI_NO_DEMO`, so the
+  18 model configs are present even on a genuinely clean install.
+- **The broker pilot is not tenant-scoped.** `TokenPool` and
+  `ReconciliationRecord` have no `org_id`, and `routers/broker_pilot.py` takes no
+  `get_current_org`; `routers/proxy.py` likewise forwards to any gateway by id
+  without an org check. Harmless in the single-org deployment that is the only
+  supported one today.
+- `register_fleet_tools.py` skips the `devops-agent` policy on the assumption that
+  a `devops-strict` policy exists to block `github.delete_repo`. Nothing in the
+  repo creates one, so in a fresh demo that tool is unguarded.
 
 ## [0.1.0] - 2026-06-22
 
@@ -200,3 +290,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PyPI publish workflow via trusted publishing
 - CI matrix: Python 3.10-3.13, Ubuntu/macOS/Windows
 - 585 tests (unit, property-based, integration) with 90%+ coverage target
+
+> Entries above describe 0.1.0 as released and are left as written. Two have
+> since changed: the CI matrix was collapsed to a single Python 3.11 on
+> `ubuntu-latest` in exchange for running all three suites on every push, and the
+> coverage gate is `fail_under = 70`. Nothing has been published to PyPI — the
+> workflow exists but fires only on a published GitHub release.

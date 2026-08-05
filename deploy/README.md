@@ -98,18 +98,22 @@ sam deploy --guided
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OSTIARI_GATEWAY_ID` | `sidecar-1` | Unique gateway instance identifier |
+| `OSTIARI_GATEWAY_ID` | `sidecar-1` | Unique gateway instance identifier. Must match the gateway's control-plane record id or the control plane can't push it tools and policy. (The CLI flag is still `--sidecar-id`.) |
 | `OSTIARI_CONTROL_PLANE_URL` | _(none)_ | Control plane backend URL (enables register/heartbeat) |
 | `OSTIARI_PORT` | `8421` | Gateway listen port |
 | `OSTIARI_ADVERTISE_HOST` | _(bind host)_ | Host the control plane pushes config back to. Set this to the gateway's network-reachable name (compose service, k8s Service DNS, ECS service). Without it, config pushes may not reach the gateway. |
-| `OSTIARI_ENV` | _(unset = dev)_ | `production` flips every gateway control **fail-closed**. Unset, controls fail open (the demo posture). See "Production Notes". |
+| `OSTIARI_ENV` | _(unset = dev)_ | `production` (or `prod`) shifts the gateway's defaults toward fail-closed: an unreachable control plane flips agent auth to deny-by-default, SSRF protection also blocks private/internal targets, and startup warns about every control still left open. It does **not** itself set the controls below — see "Production Notes". |
+| `OSTIARI_FAIL_CLOSED_ON_CP_LOSS` | _(implied by `OSTIARI_ENV`)_ | Explicit override for the deny-by-default-on-registration-failure behavior. Set `true`/`false` to decide independently of `OSTIARI_ENV`. |
+| `OSTIARI_SSRF_ALLOW` | _(none)_ | Comma-separated hosts/CIDRs exempt from the production private-IP block, for tools that legitimately live on internal addresses. Link-local and metadata addresses (169.254.169.254) are blocked in **every** environment and cannot be allowlisted. |
 | `OSTIARI_HITL` | `off` | `on` enables human-in-the-loop for the *intervene* tier: a mid-band call returns **202** with an approval id instead of executing, and the caller re-submits with `X-Approval-Id` once a human approves. **Set this in production** — see below. |
 | `OSTIARI_STRICT` | _(unset)_ | With `OSTIARI_ENV=production`, makes the startup fail-open warning **fatal** instead of a log line. |
 | `OSTIARI_REQUIRE_AXON` | _(unset)_ | Refuse to start when AxonLLM can't embed. Unset, the gateway warns and serves LLM traffic with **no routing governance and no token cost tracking** (`GET /health` → `llm_router` reports it). Not shipped on in the manifests here — AxonLLM is a separate private repo, so a gateway that only proxies tools shouldn't need it installed. Set it if you route LLM calls. |
-| `OSTIARI_CONFIG_ADMIN_KEY` | _(none)_ | Required in production: without it `/config/*` (mode, tools, policy, quota, payments) is **unauthenticated**. |
+| `OSTIARI_CONFIG_ADMIN_KEY` | _(none)_ | Required in production: without it everything under `/config` (mode, tools, policy, quota, payments) is **unauthenticated**, reads included. When set, it's compared with `hmac.compare_digest`; `GET /config/mode` and `GET /tools` stay open. |
 | `OSTIARI_GATEWAY_AUTH` | `off` | Set `required` in production: otherwise `X-Agent-Id` is trusted with no token, so any caller can impersonate any agent. |
-| `REDIS_ENDPOINT` | _(none)_ | Redis host for distributed state |
+| `REDIS_ENDPOINT` | _(none)_ | Redis host for fleet-wide rate-limit / budget / wallet state |
 | `REDIS_PORT` | `6379` | Redis port |
+| `OSTIARI_REDIS_URL` | _(none)_ | Full URL alternative to the two above (`redis://[:pass@]host:port/db`); checked first |
+| `OSTIARI_REDIS_PREFIX` | `ostiari` | Key namespace, so several gateways or tenants can share one Redis |
 | `ANTHROPIC_API_KEY` | _(none)_ | Anthropic API key for LLM routing |
 | `OPENAI_API_KEY` | _(none)_ | OpenAI API key for LLM routing |
 
@@ -125,8 +129,28 @@ sam deploy --guided
 | `OSTIARI_ENV` | _(unset = dev)_ | `production` makes the four variables below **required** — the control plane refuses to start without them, rather than seeding a default admin. |
 | `OSTIARI_ADMIN_PASSWORD` | _(dev seed)_ | **Required in production.** Without it the control plane refuses to seed an admin at all. |
 | `OSTIARI_JWT_SECRET` | _(dev default)_ | **Required in production**, ≥32 chars. Startup fails otherwise. |
-| `OSTIARI_INGEST_KEY` | _(none)_ | **Required in production** on the control plane *and every gateway* — otherwise anyone reaching `/api/traces/ingest` can forge traces into your compliance and billing data. |
+| `OSTIARI_INGEST_KEY` | _(none)_ | Gates `POST /api/traces/ingest` with an `X-Ingest-Key` header; unset in production, every trace ingest is 401. **Read the caveats before setting it** — see below. |
 | `OSTIARI_ENCRYPTION_KEY` | _(ephemeral)_ | Encrypts stored provider API keys. Unset, a new key is minted per process — stored keys become unreadable after restart. |
+
+### `OSTIARI_INGEST_KEY` — two gaps
+
+This variable is not yet the control it's meant to be. Both of these were verified
+against a running control plane:
+
+- **The gateway never sends the header.** Nothing in `gateway/` reads
+  `OSTIARI_INGEST_KEY`, and `trace_reporter.py` posts to `/api/traces/ingest` with
+  no headers. Setting the key on the control plane therefore **stops trace
+  reporting** — every post 401s, and `report()` swallows the failure at debug
+  level, so Live Traces goes quiet with no visible error. Setting it on the gateway
+  side does nothing at all today.
+- **It only covers trace ingest.** `POST /api/costs/record`, `/api/costs/record/batch`,
+  `/api/approvals`, and `/api/payments/ingest` have no such check and accept an
+  anonymous POST even with the key set — so metering, cost, approval, and payment
+  records can still be forged.
+
+In production, an empty trace view beats a poisoned one, so setting it is still
+defensible — but expect a blank dashboard, and don't read it as "ingest is
+authenticated."
 
 ## Secrets Management
 
@@ -233,3 +257,10 @@ For ECS, store secrets in AWS Secrets Manager and reference them in the task def
   hard failure). `OSTIARI_REDIS_PREFIX` (default `ostiari`) namespaces keys so
   several gateways/tenants can share one Redis; a shared `budget_key` in the
   pushed quota config lets gateways share (or partition) one budget.
+
+  Because the fallback is silent by design, a typo'd endpoint looks exactly like
+  a working one from the outside. Confirm from the startup log rather than
+  assuming — a fleet you *believe* is sharing state but isn't enforces N× your
+  configured limits.
+- **Authenticating `/config`.** With `OSTIARI_CONFIG_ADMIN_KEY` set, callers
+  present it as `X-Config-Admin-Key: <key>` or `Authorization: Bearer <key>`.
