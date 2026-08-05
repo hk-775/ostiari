@@ -335,6 +335,191 @@ def seed_demo_approvals() -> None:
              len(_PENDING_APPROVALS), len(_DECIDED_APPROVALS))
 
 
+# Gateway quotas. One per seeded gateway, with budgets chosen so each lands in a
+# different state the Quotas page renders differently — red bar + warning, amber
+# + warning, amber alone, green. A demo where every bar is green shows the fields
+# exist but not that the limit ever bites.
+#
+# current_spend is NOT invented: it's summed from the UsageRecord rows already
+# seeded for metering, so the Quotas page and the Metering/Costs pages agree
+# about what each gateway has spent. The budget is the only chosen number, and
+# it's chosen to place real spend at a particular percentage.
+#
+# Field names match the gateway's own QuotaConfig (rate_limit_rpm,
+# budget_limit_usd, max_tokens_per_request, allowed_models), so the page's
+# "Push to gateway" button sends a payload the sidecar actually accepts.
+#
+# The budgets are tuned against the spend the *metering seed* produces, which is
+# deterministic (random.Random(42) over fixed per-agent volumes). Don't tune them
+# against a long-running instance: live gateway traffic adds usage rows, which
+# raises spend and quietly moves a bar into a band it won't occupy on a fresh
+# start. test_budgets_span_every_band_the_page_renders pins this to the seed.
+# (name, gateway_id, rate_limit_rpm, budget_limit_usd, max_tokens, target_pct)
+_GATEWAY_QUOTAS = [
+    ("CRM production cap", "crm-agent", 120, 2.60, 8192, 95),
+    ("Analytics warehouse cap", "analytics-agent", 90, 3.00, 16384, 86),
+    ("Ops fleet cap", "ops-agent", 60, 3.00, 4096, 79),
+    ("DevOps deploy cap", "devops-agent", 30, 10.00, 4096, 24),
+]
+
+# Only the models the demo actually meters (see _MODELS) — an allowlist naming a
+# model no usage record mentions would be unenforceable in this demo.
+_QUOTA_ALLOWED_MODELS = {
+    "crm-agent": ["claude-sonnet", "claude-haiku", "gpt-4o"],
+    "analytics-agent": ["claude-haiku", "gpt-4o-mini"],
+    "ops-agent": ["claude-haiku", "gpt-4o-mini"],
+    "devops-agent": [],           # unrestricted — not every quota caps models
+}
+
+
+async def seed_demo_quotas(db: AsyncSession) -> None:
+    """Seed one gateway-scoped quota per demo gateway (idempotent).
+
+    Spend is read from the metering rows rather than made up, so a viewer who
+    cross-checks the Costs page against a budget bar finds the same number.
+    Rate limits are the configured ceiling; current_rpm stays 0 because nothing
+    is driving live traffic — a nonzero RPM with an idle fleet would be a lie
+    the Live Traces page immediately contradicts.
+    """
+    from control_plane.models.database import DEFAULT_ORG
+    from control_plane.routers.quotas import QuotaResponse, _next_id, _quotas
+
+    if _quotas[DEFAULT_ORG]:
+        return
+
+    rows = (await db.execute(
+        select(UsageRecord.gateway_id, func.sum(UsageRecord.cost_usd))
+        .group_by(UsageRecord.gateway_id)
+    )).all()
+    spend_by_gw = {gw: float(total or 0.0) for gw, total in rows}
+
+    for name, gw, rpm, budget, max_tokens, _pct in _GATEWAY_QUOTAS:
+        qid = _next_id[DEFAULT_ORG]
+        _quotas[DEFAULT_ORG][qid] = QuotaResponse(
+            id=qid, name=name, scope="gateway", scope_id=gw,
+            rate_limit_rpm=rpm, budget_limit_usd=budget,
+            max_tokens_per_request=max_tokens,
+            allowed_models=_QUOTA_ALLOWED_MODELS.get(gw, []),
+            current_spend=round(spend_by_gw.get(gw, 0.0), 4),
+            current_rpm=0,
+        )
+        _next_id[DEFAULT_ORG] += 1
+
+    log.info("Seeded %d gateway quotas (spend read from %d metered gateways)",
+             len(_GATEWAY_QUOTAS), len(spend_by_gw))
+
+
+# Broker token pools. The Token Broker page renders the pool inventory and the
+# reconciliation ledger as tables with no empty state, so with nothing seeded
+# both show a header row and nothing else.
+#
+# Consumption is not invented: tokens and cost are aggregated from the same
+# UsageRecord rows the metering seed writes, grouped by the provider each model
+# draws from (broker_pilot.provider_for), and the cost is put through the same
+# retail * (1 - bulk_discount) conversion draw_down() applies. So a pool's
+# consumed figures are what the draw-down path would have produced had it run
+# over this usage — which is the point of a pool inventory that claims to be
+# auditable.
+#
+# Only the *purchase* is chosen, expressed as a multiple of what was consumed so
+# it stays correct if the metering volumes change. One pool is deliberately sized
+# to sit under its low-water mark: `status` is computed by the same rule
+# draw_down uses (remaining <= low_threshold -> depleted), so the page shows the
+# depleted badge and the halt condition it exists to demonstrate, rather than two
+# healthy rows that never exercise it.
+# (provider, purchase_multiple, low_threshold_fraction_of_purchase)
+_BROKER_POOLS = [
+    ("anthropic", 2.5, 0.10),   # healthy: consumed 40% of a 2.5x buy
+    ("openai", 1.05, 0.10),     # depleted: only 5% headroom left, under the 10% mark
+]
+
+# Reconciliations: the provider's invoice against what we tracked. Drift is the
+# whole point of the page, and >5% is styled red, so one of each — a small
+# benign delta and one big enough to be flagged. Invoices are a multiplier on the
+# computed cost rather than a fixed dollar figure, for the same reason as above.
+# (provider, invoice_multiple_of_computed, period_days)
+_BROKER_RECONCILIATIONS = [
+    ("anthropic", 1.018, 30),   # +1.8% — normal rounding/timing drift
+    ("openai", 1.094, 30),      # +9.4% — over the 5% threshold, rendered red
+]
+
+
+async def seed_demo_broker_pools(db: AsyncSession) -> None:
+    """Seed broker token pools and a reconciliation history (idempotent).
+
+    Consumption is aggregated from the metered usage rows and converted at the
+    configured bulk discount, exactly as draw_down() would have done, so the
+    Token Broker page agrees with Costs and Metering instead of asserting its
+    own numbers.
+    """
+    from control_plane.broker_pilot import provider_for
+    from control_plane.models.database import DEFAULT_ORG, ReconciliationRecord, TokenPool
+    from control_plane.routers.token_broker import _config as _tb_config
+
+    if (await db.execute(select(func.count()).select_from(TokenPool))).scalar_one():
+        return
+
+    # Same conversion draw_down() applies to each usage record.
+    discount = float(_tb_config[DEFAULT_ORG].get("bulk_discount", 0.0))
+
+    consumed: dict[str, tuple[int, float]] = {}
+    rows = (await db.execute(
+        select(UsageRecord.model, UsageRecord.total_tokens, UsageRecord.cost_usd)
+    )).all()
+    for model, tokens, retail in rows:
+        provider = provider_for(model)
+        tok, cost = consumed.get(provider, (0, 0.0))
+        consumed[provider] = (
+            tok + int(tokens or 0),
+            cost + float(retail or 0.0) * (1 - discount),
+        )
+
+    for provider, multiple, low_frac in _BROKER_POOLS:
+        used_tokens, used_cost = consumed.get(provider, (0, 0.0))
+        if not used_tokens:
+            continue
+        purchased = int(used_tokens * multiple)
+        low = int(purchased * low_frac)
+        remaining = max(0, purchased - used_tokens)
+        db.add(TokenPool(
+            provider=provider,
+            purchased_tokens=purchased,
+            # Bulk cost of the whole purchase, at the same per-token rate the
+            # consumed portion was charged at.
+            purchased_cost_usd=round(used_cost * multiple, 6),
+            consumed_tokens=used_tokens,
+            consumed_cost_usd=round(used_cost, 6),
+            low_threshold_tokens=low,
+            # draw_down()'s own rule, so the badge matches what enforcement does.
+            status="depleted" if remaining <= low else "active",
+        ))
+
+    now = datetime.now(timezone.utc)
+    for provider, invoice_mult, days in _BROKER_RECONCILIATIONS:
+        since = now - timedelta(days=days)
+        # The route computes drift over *retail* cost for the period, not the
+        # discounted pool cost — mirror that so a re-run of Reconcile agrees.
+        computed = sum(
+            float(retail or 0.0) for model, _tokens, retail in rows
+            if provider_for(model) == provider
+        )
+        tokens = sum(
+            int(t or 0) for model, t, _r in rows if provider_for(model) == provider
+        )
+        if not tokens:
+            continue
+        db.add(ReconciliationRecord(
+            provider=provider, period_start=since, period_end=now,
+            computed_cost_usd=round(computed, 6),
+            invoiced_cost_usd=round(computed * invoice_mult, 6),
+            consumed_tokens=tokens,
+        ))
+
+    await db.commit()
+    log.info("Seeded %d broker token pools and %d reconciliations",
+             len(_BROKER_POOLS), len(_BROKER_RECONCILIATIONS))
+
+
 def seed_demo_agents() -> None:
     """Seed the in-memory agent registry with the demo agents (idempotent)."""
     from control_plane.models.database import DEFAULT_ORG

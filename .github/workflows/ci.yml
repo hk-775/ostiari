@@ -81,6 +81,9 @@ jobs:
         run: |
           pip install -e "$GITHUB_WORKSPACE"
           pip install -e ".[dev]"
+          # The sidecar package: test_quotas_demo_seed asserts the /push payload
+          # matches the gateway's QuotaConfig signature, so it imports it directly.
+          pip install -e "$GITHUB_WORKSPACE/gateway"
           pip install aiosqlite greenlet pytest pytest-asyncio anyio httpx
           pip install opentelemetry-exporter-otlp-proto-http
 

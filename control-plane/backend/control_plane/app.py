@@ -114,9 +114,11 @@ async def lifespan(app: FastAPI):
         from control_plane.demo_seed import (
             seed_demo_agents,
             seed_demo_approvals,
+            seed_demo_broker_pools,
             seed_demo_db,
             seed_demo_experiments,
             seed_demo_pricing,
+            seed_demo_quotas,
         )
         from control_plane.routers.traces import seed_traces
         seed_traces()
@@ -127,6 +129,11 @@ async def lifespan(app: FastAPI):
         from control_plane.database import async_session
         async with async_session() as db:
             await seed_demo_db(db)
+            # Both of these read the usage records seed_demo_db writes — quota
+            # spend and broker pool draw-down are aggregates over them — so on a
+            # first run they have to exist first.
+            await seed_demo_quotas(db)
+            await seed_demo_broker_pools(db)
 
     # Start background health-check loop for gateways
     start_health_check()
