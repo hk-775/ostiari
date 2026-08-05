@@ -78,7 +78,7 @@ cd control-plane/frontend && npm install && cd ../..
 make clean-start
 ```
 
-`clean-start` wipes any prior state and brings up three processes:
+`clean-start` brings up three processes with the seeders off:
 
 ```
   ┌──────────────────────────┐        ┌──────────────────────────┐
@@ -94,14 +94,33 @@ make clean-start
   └──────────────────────────┘
 ```
 
-The `OSTIARI_NO_DEMO=1` flag is what keeps it empty — the app skips all demo seeders (agents, traces, experiments, pricing, usage records).
+The `OSTIARI_NO_DEMO=1` flag is what skips the demo seeders (agents, traces, experiments, pricing, usage records, approvals, quotas, wallets).
 
-**Verify it's genuinely empty:**
+> **Two things `clean-start` does not clear.** First, the `rm` targets
+> `control-plane/backend/data/state.json` — the path from before `env.data_dir()`
+> centralized it. State now lives at `control-plane/data/state.json`, and the
+> lifespan calls `load_state()` *before* the `OSTIARI_NO_DEMO` check, so quotas,
+> experiments, models, and providers persisted by an earlier demo run come back.
+> Delete it yourself for a genuinely empty control plane:
+>
+> ```bash
+> rm -f control-plane/data/state.json
+> ```
+>
+> Second, the **18 model routing configs are always present.** `seed_models()`
+> runs at import time at the bottom of `control_plane/routers/model_config.py`
+> and isn't gated by `OSTIARI_NO_DEMO`. That is deliberate — the catalog is a
+> routing table with pricing, not demo content — but it means the Models page is
+> populated on a clean install.
+
+**Verify it's empty:**
 
 ```bash
 curl http://localhost:8400/api/agents          # → []
-curl http://localhost:8400/api/gateways         # → [ my-gateway (auto-registered) ]
-curl http://localhost:8421/tools                # → { "tools": [] }
+curl http://localhost:8400/api/gateways        # → [ my-gateway (auto-registered) ]
+curl http://localhost:8421/tools               # → { "tools": [], "mcp_tools": [] }
+curl http://localhost:8400/api/quotas          # → [] only if state.json was removed
+curl http://localhost:8400/api/models          # → 18 models, by design (see above)
 ```
 
 Open **http://localhost:9000** — every page renders, but the dashboard, agents, traces, and metering views are empty until you send real traffic.
@@ -151,7 +170,7 @@ Policy decides **allow / intervene / block** for each call. It combines allow/bl
 curl -X POST http://localhost:8421/config/policy \
   -H "Content-Type: application/json" \
   -d '{
-    "block": ["*.delete", "*.drop", "*.destroy"],
+    "block": ["*delete*", "*drop*", "*destroy*"],
     "allow": ["send_email", "db_query"],
     "rules": [
       {"type": "risk_adjust", "action": "send_email", "risk_adjust": 25}
@@ -174,7 +193,23 @@ curl -X POST http://localhost:8421/config/policy \
    score thresholds        >  intervene_max ──▶  BLOCK
 ```
 
-**Policy YAML** (for the core library / gateway startup config) is documented in [`README.md`](README.md#policy-yaml). **Fleet path:** manage in the **Policies** page or `POST /api/policies/{id}/push`.
+> **Patterns are `fnmatch` globs, so use `*delete*`, not `*.delete`.** A dotted
+> pattern requires a literal dot: `*.delete` matches `github.delete` but **not**
+> `db_delete`. The bare-underscore names are usually the ones you most want
+> blocked, so a `*.delete` block list reads as protective while letting
+> `db_delete` straight through. Test every pattern against your real action names
+> — the Sandbox exists for this.
+
+**Policy YAML** (for the core library / gateway startup config) is documented in [`README.md`](README.md#policy-yaml); note the top level accepts only `allow`, `block`, `rules`, `thresholds`, and a rule is keyed by `type`, not `decision`. **Fleet path:** manage in the **Policies** page or `POST /api/policies/{id}/push`.
+
+`POST /api/policies/{id}/push` targets the gateway's *partial* `/config/policy`
+endpoint, which changes policy and nothing else. The **Policies page's Push
+button does not use it** — it calls `POST /api/gateways/{id}/push-config`, which
+forwards to the gateway's `POST /config`, a whole-document replace that clears
+the tool registry and resets enforcement mode. Prefer the Gateways page's Push
+(`POST /api/gateways/{id}/push`), which rebuilds the whole bundle from stored
+state. See
+[`docs/Ostiari-Configure-Orchestrate-Lifecycle.md`](docs/Ostiari-Configure-Orchestrate-Lifecycle.md) §4.
 
 ### 1.3.3 Per-agent access control (agent-auth)
 
@@ -210,7 +245,16 @@ curl -X POST http://localhost:8421/config/quota \
   }'
 ```
 
-**Fleet path:** **Quotas** page or `POST /api/quotas/{id}/push`. Quotas are persisted in the control plane and restored across restarts.
+**Fleet path:** `POST /api/quotas/{id}/push` — it forwards to the gateway's
+`/config/quota` and is the one that actually enforces. Quotas are persisted to
+`state.json` and restored across control-plane restarts.
+
+> **The Quotas page's Push button is not that route.** It calls
+> `POST /api/gateways/{id}/push-config` with `{"quota": …}`, and the gateway's
+> `POST /config` applies only tools and policy — the quota is stored and echoed
+> back by `GET /config` but never handed to the quota enforcer. Use
+> `POST /api/quotas/{id}/push` (gateway-scoped quotas only), or the Gateways
+> page's Push, which sends the whole bundle from stored state.
 
 ### 1.3.5 LLM gateway (model routing)
 
@@ -308,6 +352,15 @@ curl -X POST http://localhost:8421/config/mode \
 
 Review outcomes on the **Shadow Report** page, then switch to `enforce`.
 
+> **Mode does not survive a gateway restart.** `PUT /api/gateways/{id}/mode`
+> persists the mode in the control plane and pushes it live, and the config
+> bundle carries `mode` — but the gateway's `_apply_bundle` never reads it, so a
+> restarted gateway comes up on the default `enforce` regardless. The drift is
+> toward *enforcing* a gateway you deliberately put in shadow, and the Gateways
+> page keeps showing `Shadow` because it renders the stored record rather than
+> live state. After any gateway restart, click Push on the Gateways page (or
+> `POST /api/gateways/push-all`) to reconcile.
+
 ## 1.4 Point your agent at the gateway
 
 ```python
@@ -335,7 +388,7 @@ curl -X POST http://localhost:8421/tool/send_email \
   -H "X-Agent-Id: my-agent" -H "Content-Type: application/json" \
   -d '{"to": "user@example.com", "body": "test"}'
 
-# Blocked by the *.delete pattern → 403
+# Blocked by the *delete* pattern → 403
 curl -X POST http://localhost:8421/tool/db_delete \
   -H "X-Agent-Id: my-agent" -H "Content-Type: application/json" \
   -d '{"table": "users"}'
@@ -347,7 +400,8 @@ Both calls now appear in **Live Traces** in the UI.
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Agents/traces appear despite `clean-start` | Stale DB from a prior demo run | `clean-start` now wipes `control-plane/data/control_plane.db` (+ `-shm`/`-wal`) and `state.json`; re-run it |
+| Quotas/experiments/providers appear despite `clean-start` | `state.json` restored — the Makefile `rm` targets the old `control-plane/backend/data/` path | `rm -f control-plane/data/state.json`, then re-run `clean-start` |
+| 18 models on the Models page despite `clean-start` | `seed_models()` runs at import time, not gated by `OSTIARI_NO_DEMO` | Expected — the model catalog is a routing table, not demo data |
 | Gateway shows in UI but config push fails | Gateway endpoint missing its port | Fixed — gateways advertise `host:port` on register. Confirm `curl /api/gateways` shows `http://…:8421`, not `http://…` |
 | `POST /tool/x` returns 404 | Tool not registered on that gateway | Register via `/config/tools` or push from the control plane |
 | Tool call 403 unexpectedly | agent-auth enabled but agent not listed | Add the agent to `/config/agent-auth`, or disable agent-auth |
@@ -406,14 +460,22 @@ This brings up the complete topology and seeds demo data:
 |-----------|-----|-----------|------------|
 | Control Plane UI | http://localhost:9000 | — | Every page populated |
 | Control Plane API | http://localhost:8400 | — | 9 agents, seeded traces, quotas, experiments |
-| CRM Gateway | http://localhost:8421 | `crm-agent` | LLM chat, 14 tools (HTTP + MCP), payments |
+| CRM Gateway | http://localhost:8421 | `crm-agent` | LLM chat, 12 HTTP tools + the draw.io and filesystem MCP servers, payments, `block-destructive` policy |
 | Ops Gateway | http://localhost:8422 | `ops-agent` | 4 ops tools + `ops-guard` policy |
-| DevOps Gateway | http://localhost:8424 | `devops-agent` | 4 DevOps tools |
-| Analytics Gateway | http://localhost:8425 | `analytics-agent` | 3 analytics tools |
+| DevOps Gateway | http://localhost:8424 | `devops-agent` | 4 DevOps tools, **no policy** — see below |
+| Analytics Gateway | http://localhost:8425 | `analytics-agent` | 3 analytics tools, no policy (no destructive tools) |
 | A2A Demo Agent | http://localhost:9200 | — | deploy / rollback / status skills |
 | Demo Tools server | http://localhost:9300 | — | Canned tool backends |
 
-The registration scripts (`register_demo_tools`, `register_fleet_tools`, `register_demo_mcp`, `register_demo_a2a`, `register_demo_payments`) run automatically and push tools, policy, MCP servers, an A2A agent, and payment wallets to the gateways.
+The registration scripts (`register_demo_tools`, `register_fleet_tools`, `register_demo_mcp`, `register_demo_a2a`, `register_demo_payments`, `register_demo_providers`) run automatically and push tools, policy, MCP servers, an A2A agent, payment wallets, and provider credentials to the gateways.
+
+> **`github.delete_repo` is unguarded on a fresh demo.** `register_fleet_tools.py`
+> sets `"policy": None` for `devops-agent` on the assumption that a
+> `devops-strict` policy already blocks it — but nothing in the repo creates one,
+> so two policies get created, not three. It's a demo-seeding gap rather than an
+> enforcement bug: add a block policy for that gateway on the Policies page and
+> the block fires. Don't read the demo fleet as showing every destructive tool
+> covered.
 
 ## 2.4 Verify the demo is wired
 
@@ -432,12 +494,27 @@ curl http://localhost:9200/.well-known/agent.json                     # A2A agen
 3. **Sandbox → A2A** — enter `http://localhost:9200`, Discover, send a task ("Deploy auth-service to staging").
 4. **Live Traces** — pre-seeded, plus your Sandbox calls stream in live.
 5. **Gateways** — all four registered and heartbeating (endpoints show correct ports).
-6. **Payments** — 8 wallets, a drained agent that blocks, settled micropayments.
-7. **Metering / Costs / ROI** — populated from seeded usage records.
+6. **Approvals (HITL)** — four pending calls awaiting a decision, plus a decision
+   history. The pending four *are* the intervene-tier calls in Live Traces, so both
+   views describe the same events. Approve or deny one and watch it move.
+7. **Quotas** — one quota per gateway with live budget bars, rate limits, model
+   allowlists, and **Push to gateway**. Spend is summed from the same usage records
+   the Costs page reads, so the two agree.
+8. **Payments** — 8 wallets, a drained agent that blocks, settled micropayments.
+9. **Metering / Costs / ROI** — populated from seeded usage records.
 
 ## 2.6 Reset
 
-To go from full-demo back to a clean slate, stop the processes and run `make clean-start` (Part 1), which wipes the demo DB and state.
+To go from full-demo back to a clean slate, stop the processes, delete the state
+file the Makefile misses, then run `make clean-start` (Part 1):
+
+```bash
+rm -f control-plane/data/state.json
+make clean-start
+```
+
+Without that `rm`, the demo's quotas, experiments, models, and providers are
+restored on the next boot — see the caveat in §1.2.
 
 ---
 
@@ -474,6 +551,11 @@ docker build -f deploy/docker/Dockerfile.frontend \
 | `OSTIARI_CONTROL_PLANE_URL` | Control plane URL (enables register/heartbeat) |
 | `OSTIARI_PORT` | Listen port (default 8421) |
 | `OSTIARI_ADVERTISE_HOST` | **Critical.** Host the control plane pushes config back to. Set to the gateway's network-reachable name (compose service / k8s Service DNS / ECS service). Without it, config pushes may not reach the gateway. |
+| `OSTIARI_CONFIG_ADMIN_KEY` | **Fail-open unless set.** Gates the `/config/*` administration endpoints; unset, anything that can reach the gateway can rewrite its policy |
+| `OSTIARI_GATEWAY_AUTH=required` | **Off by default**, meaning `X-Agent-Id` is trusted as-is. When required, a tool call needs a Bearer token whose identity matches the header (401 missing/invalid, 403 mismatch) |
+| `OSTIARI_HITL=on` | Enables the human-approval gate for the *intervene* tier (202 + `X-Approval-Id` resubmit). Off in a fail-closed production deployment means the middle tier becomes a refusal |
+| `OSTIARI_REQUIRE_AXON=1` | Refuse to start without AxonLLM instead of warning. The right setting in production — see [`docs/axon-router.md`](docs/axon-router.md) |
+| `REDIS_ENDPOINT` / `OSTIARI_REDIS_URL` | Share rate-limit, budget, and wallet counters fleet-wide. Without it they are per-replica (see §3.8) |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | LLM credentials (mount from a secret) |
 
 **Control plane** (env vars):
@@ -481,12 +563,31 @@ docker build -f deploy/docker/Dockerfile.frontend \
 | Variable | Purpose |
 |----------|---------|
 | `DATABASE_URL` | `sqlite+aiosqlite:///…` (dev) or `postgresql+asyncpg://user:pass@host:5432/ostiari` (prod RDS) |
-| `OSTIARI_NO_DEMO` | `1` to start empty (recommended for production) |
-| `OSTIARI_REQUIRE_AUTH` | Require API authentication |
-| `OSTIARI_ENV=production` | Enables production guardrails (forces explicit admin password) |
-| `OSTIARI_ADMIN_EMAIL` / `OSTIARI_ADMIN_PASSWORD` | Initial admin (password **required** in production) |
+| `OSTIARI_DATA_DIR` | Writable dir for the SQLite DB and `state.json` (default `control-plane/data`). Both resolve through `env.data_dir()` — point it at the mounted volume |
+| `OSTIARI_NO_DEMO` | `1` to skip the demo seeders (recommended for production) |
+| `OSTIARI_ENV=production` | The single production signal. Turns three defaults fail-closed: admin password, JWT secret, and trace-ingest key |
+| `OSTIARI_REQUIRE_AUTH` | **Off by default.** The coarse gate: when truthy, every `/api/*` route needs a Bearer token. Without it the whole API is unauthenticated even with OIDC configured |
+| `OSTIARI_ADMIN_EMAIL` / `OSTIARI_ADMIN_PASSWORD` | Initial admin. The app **refuses to seed** `admin/admin` when `OSTIARI_ENV=production` |
+| `OSTIARI_JWT_SECRET` | Signing secret for issued tokens. In production the dev default is refused and the value must be **≥ 32 characters** |
+| `OSTIARI_INGEST_KEY` | Shared secret for `POST /api/traces/ingest` (`X-Ingest-Key`). **Required in production** — unset, ingest 401s |
 | `OSTIARI_CORS_ORIGINS` | Comma-separated allowed origins (enables credentialed CORS) |
-| `OSTIARI_JWT_SECRET` | Signing secret for issued tokens |
+| `OSTIARI_AUTH_MODE=oidc` + `OSTIARI_OIDC_*` | Validate IdP JWTs instead of local tokens — see [`auth/README.md`](auth/README.md) |
+
+> **`OSTIARI_ENV=production` and `OSTIARI_REQUIRE_AUTH` are separate knobs, and
+> you need both.** Production mode hardens the admin password, JWT secret, and
+> ingest key, but it does *not* make authentication mandatory — that's
+> `OSTIARI_REQUIRE_AUTH` alone. Set production without it and every route stays
+> reachable with no token.
+>
+> Two of these make the app **refuse to start** rather than warn:
+> `OSTIARI_ADMIN_PASSWORD` and a ≥32-char `OSTIARI_JWT_SECRET`. That's deliberate
+> — a governance control plane that silently boots on `admin/admin` is worse than
+> one that fails loudly.
+>
+> `OSTIARI_INGEST_KEY` has two known gaps: the gateway never sends
+> `X-Ingest-Key`, and only `/api/traces/ingest` checks it. See
+> [`deploy/README.md`](deploy/README.md#ostiari_ingest_key--two-gaps) before
+> setting it.
 
 ### Why `OSTIARI_ADVERTISE_HOST` matters
 
@@ -632,7 +733,23 @@ sam build && sam deploy --guided
 - [ ] `DATABASE_URL` → PostgreSQL (RDS), not SQLite.
 - [ ] `OSTIARI_NO_DEMO=1` on the control plane.
 - [ ] `OSTIARI_ENV=production` + `OSTIARI_ADMIN_PASSWORD` set (the app refuses to seed `admin/admin` in production).
-- [ ] `OSTIARI_REQUIRE_AUTH=1` and a strong `OSTIARI_JWT_SECRET`.
+- [ ] `OSTIARI_REQUIRE_AUTH=1` and an `OSTIARI_JWT_SECRET` of **≥ 32 characters**
+      (production refuses the dev default and anything shorter).
+- [ ] `OSTIARI_INGEST_KEY` set — required in production, or every trace ingest
+      401s. Read the two gaps in [`deploy/README.md`](deploy/README.md) first.
+- [ ] `OSTIARI_CONFIG_ADMIN_KEY` set on every gateway. Unset, the `/config/*`
+      endpoints are open and anything on the network can rewrite the policy the
+      gateway enforces.
+- [ ] `OSTIARI_GATEWAY_AUTH=required` if agents must prove identity — otherwise
+      `X-Agent-Id` is a self-asserted header and per-agent limits are advisory.
+- [ ] `OSTIARI_HITL=on` wherever `OSTIARI_ENV=production` is set. Production is
+      fail-closed, so HITL off turns every scored *intervene* into a 403 with an
+      empty Approvals queue. Validate thresholds in `shadow` first.
+- [ ] `OSTIARI_REQUIRE_AXON=1` on gateways that route LLM traffic — without
+      AxonLLM, routing governance and token cost tracking silently stop applying.
+- [ ] After every gateway restart, Push from the Gateways page (or
+      `POST /api/gateways/push-all`) — enforcement mode is not restored from the
+      config bundle, so a shadow gateway comes back up enforcing.
 - [ ] `OSTIARI_CORS_ORIGINS` set to your dashboard origin(s).
 - [ ] `OSTIARI_ADVERTISE_HOST` set on every gateway to a name the control plane can reach.
 - [ ] API keys sourced from Secrets Manager / k8s Secrets, never baked into images.
@@ -665,8 +782,10 @@ sam build && sam deploy --guided
 | Tools | `/config/tools` | Tools | ✓ |
 | Policy | `/config/policy` | Policies | ✓ |
 | Per-agent access | `/config/agent-auth` | Agents / Agent Quotas | ✓ |
+| Cross-agent rules | `/config/cross-agent` | — | |
 | Quotas | `/config/quota` | Quotas | ✓ |
-| LLM routing | `/config/llm`, `/config/routing-overrides` | Models / Providers | ✓ |
+| Budget reset | `/config/budget-reset` | — | |
+| LLM routing | `/config/llm`, `/config/routing-overrides`, `/config/agent-routing` | Models / Providers | ✓ |
 | A/B experiments | — | Experiments | ✓ |
 | MCP servers | `/config/mcp-servers` | MCP Servers | ✓ |
 | A2A agents | `/config/a2a-agents` | Protocol Governance | ✓ |
@@ -679,4 +798,14 @@ sam build && sam deploy --guided
 | Discovery | — | Discovery | ✓ |
 | Token broker | — | Token Broker | ✓ |
 
-For deeper reference: [`docs/control-plane-guide.md`](docs/control-plane-guide.md), [`docs/gateway-architecture.md`](docs/gateway-architecture.md), [`deploy/README.md`](deploy/README.md).
+Every row above is a **partial** endpoint that changes one concern. The gateway
+also has a bare `POST /config`, which is a whole-document replace applying only
+tools + policy — that is what both UI Push buttons go through, and why they clear
+the tool registry and reset enforcement mode. Detail:
+[`docs/Ostiari-Configure-Orchestrate-Lifecycle.md`](docs/Ostiari-Configure-Orchestrate-Lifecycle.md) §4
+and [`docs/gateway-architecture.md`](docs/gateway-architecture.md#the-config-partial-push-trap).
+
+`/config/agent-routing` is registered by the **llm_gateway module**, not the core
+server, so it 404s on a gateway started without `modules.llm_gateway: true`.
+
+For deeper reference: [`docs/control-plane-guide.md`](docs/control-plane-guide.md), [`docs/gateway-architecture.md`](docs/gateway-architecture.md), [`deploy/README.md`](deploy/README.md), [`auth/README.md`](auth/README.md).

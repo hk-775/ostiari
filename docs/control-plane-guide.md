@@ -376,6 +376,28 @@ early warning.
 **What to avoid:** setting quotas so tight that normal bursty traffic trips them.
 A quota that cries wolf gets ignored (or raised until it's useless).
 
+**Four things about quotas that the page doesn't tell you:**
+
+1. **The Push button on this page does not enforce the quota** (§10). Verify with
+   the gateway's `GET /config/quota`.
+2. **"Daily" is your word, not the system's.** There is no billing period and no
+   rollover. Spend accumulates from process start until something calls the
+   gateway's `POST /config/quota/reset-spend`. The *Budget Reset Schedule* control
+   on the Models page stores your choice and no timer reads it — drive the reset
+   from cron if you need one.
+3. **The 80/90/100 thresholds are hardcoded** (`BUDGET_ALERT_THRESHOLDS`) and
+   delivery is in-process: a WARNING log line and any registered callback. There is
+   no webhook and no control-plane alert, so "watch the 80% alerts" means watch the
+   gateway's logs. The per-agent `alert_threshold` field in the UI is not pushed
+   anywhere.
+4. **The control-plane quota store is a per-org dict, not a table.** Quotas aren't
+   in the database; they're held in memory and serialized to `state.json` on clean
+   shutdown, so they survive a graceful restart but are lost on a `kill -9`. The
+   `current_spend` shown is a **snapshot** — seeded once from the metered usage
+   rows and never recomputed as traffic flows — and `current_rpm` is always 0
+   because nothing updates it. The live figures are on the gateway's
+   `GET /config/quota`.
+
 ### 5.4 Protocol Governance — agent↔agent (`/protocol-governance`)
 
 **What it is:** control over **one agent delegating a task to another agent**
@@ -451,6 +473,22 @@ llm:
 
 Both default to **off**. Full type tables and scoring in
 [detection-engine.md](detection-engine.md).
+
+**Two behaviors worth knowing before you turn `pii_redaction` on.** It does not do
+the same thing on every entry point:
+
+- On **`/invoke`**, where Ostiari owns the loop, messages really are redacted in
+  place and the redacted set is what goes upstream (`pii_reversible: true` keeps a
+  map so the response is restored on the way back).
+- On the **`/v1/messages` and `/v1/chat/completions` shims** it acts as a
+  *detector*: the proxies treat `pii_redacted` the same as `blocked` and return
+  **403**. That's deliberate — those clients drive their own tool loops off the
+  exact text they sent, and silently swapping in redacted content would
+  desynchronize their conversation state. So on a shim, `pii_redaction: true`
+  means "refuse prompts containing PII", not "clean them up."
+
+Also note the `injection_mode: flag` escape hatch applies to injection only. There
+is no flag mode for PII — enabling it on a shim blocks from the first match.
 
 **Best practice:** start with `injection_mode: flag`. It scores and reports in the
 response metadata without blocking — the same observe-before-enforce discipline as
@@ -784,12 +822,35 @@ outstanding work.
 | **operator** — labelled **Editor** in the UI | change config; no user/provider admin |
 | **viewer** | read-only |
 
-**Naming caveat, because it will confuse you:** the *stored* value is `operator`
-(the backend's `_VALID_ROLES` is `admin`/`operator`/`viewer`, and the SSO group
-mapper accepts `operators`, `operator_group`, or `editor` and normalizes them all
-to `operator`). The **UI** labels that same role **Editor** — the dropdown on this
-page and the sidebar badge both say Editor. Same role, two names; the API is the
-one that counts.
+`rbac.ROLES` spells out the intended permission sets (`admin` = operator's list
+plus `users:*`; `viewer` = the `:read` half). Note that `check_permission` is
+**only called from tests** — nothing in the request path consults it, so the table
+above is design intent, not enforcement. What's actually enforced is below.
+
+**Naming caveat, because it will confuse you:** the canonical value is `operator`.
+The backend's `_VALID_ROLES` is `admin`/`operator`/`viewer`, `rbac.ROLES` has
+entries for exactly those three, and the SSO group mapper accepts `operators`,
+`operator_group`, or `editor` and normalizes them all to `operator`. The **UI**
+labels that same role **Editor** — the dropdown on this page and the sidebar badge
+both say Editor.
+
+**But the two names are not reconciled on the local-user path.** `POST
+/api/auth/register` takes `role` as a plain unvalidated string (`UserCreate.role:
+str = "viewer"`, no validator, no enum), and this page's dropdown submits the
+literal `editor`. So creating an "Editor" here stores `role="editor"`, which is
+**not** in `_VALID_ROLES` and not a key in `rbac.ROLES`. That user gets:
+
+- the sidebar's write sections (the `viewer` hide-list is checked by name, and
+  `editor` isn't `viewer`), so the UI *looks* like an operator;
+- `check_permission("editor", …)` → **False** for everything, because the role has
+  no permission list;
+- `require_role("admin")` → 403, correctly;
+- the un-role-checked write routers → **200**, same as everyone else (see below).
+
+The normalization only exists on the SSO path (`sso.py:332`), so an SSO-provisioned
+operator is stored correctly and a locally-created "Editor" is not. If you create
+users locally and care about the distinction, `POST` `"role": "operator"` against
+the API directly rather than using the dropdown.
 
 **What RBAC actually enforces today — read this before relying on it.** Role
 restriction is mostly a *frontend* affordance:
@@ -801,28 +862,38 @@ restriction is mostly a *frontend* affordance:
   guess: provider *writes* and the key-reveal endpoint (`require_role("admin")` —
   the key-free provider *list* is readable by anyone authenticated), the
   user-management endpoints, and the Audit Log via its own inline admin/operator
-  check.
+  check — **which is itself conditional on `OSTIARI_REQUIRE_AUTH`**.
+  `_require_audit_reader` returns early when that variable is unset, so on a
+  default dev control plane a viewer reads the audit log with a 200. Only the
+  provider and user-management checks hold unconditionally.
 - Everything else is **not role-checked**. The write routers for policies, quotas,
   tools, gateways, agents, MCP servers, payments, and the token broker
   authenticate the caller and scope them to an org, but never look at the role. A
   viewer token `POST`ing to `/api/policies` gets **200** and the policy persists.
 
-Verified, not inferred — probing the live API with a genuine viewer token:
+Verified, not inferred — probing the live API with a genuine viewer token, with
+`OSTIARI_REQUIRE_AUTH=1` (the stricter of the two postures):
 
 | Request as a viewer | Result |
 |---|---|
 | `POST /api/policies` | **200**, policy created and persisted |
-| `POST /api/gateways` | **200** |
+| `POST /api/gateways` | **200**, gateway created |
 | `POST /api/providers`, `DELETE /api/providers/{n}` | 403 |
 | `GET /api/auth/users`, `POST /api/auth/register` | 403 |
-| `GET /api/audit` | 403 |
+| `GET /api/audit` | 403 — but **200** with `OSTIARI_REQUIRE_AUTH` unset |
 
 Treat viewer as "this person won't be shown the controls", not as "this person
 cannot change anything." If you need the stronger guarantee, the role checks
-belong on the write routers, not the nav.
+belong on the write routers, not the nav — `rbac.check_permission` already
+encodes the right answers and is wired to nothing, so the gap is plumbing rather
+than design.
 
 **The default admin credential.** In dev/demo the control plane seeds
-`admin@ostiari.ai` / `admin` on first login for convenience. In production
+`admin@ostiari.ai` / `admin` on first login for convenience, and the login form
+prefills it so the demo is one click to sign in. That prefill is gated on
+`DEMO_LOGIN` (on under `vite dev`, or `VITE_DEMO_LOGIN=true` for a deployed
+demo) precisely because the credential is dev-only — in production it would
+advertise a password that cannot work. In production
 (`OSTIARI_ENV=production`) it **refuses to seed at all** without an explicit
 password and raises `RuntimeError: OSTIARI_ADMIN_PASSWORD must be set in
 production` — so the well-known credential can't reach a real deployment by
@@ -863,6 +934,36 @@ A recurring source of confusion, made explicit:
 new value, but the gateway is still enforcing the old one until you push. If a
 change "isn't taking effect," check that you pushed.
 
+### The push has a hole in it — check the gate, not the dashboard
+
+Two of those bullets are truer of the *registration/heartbeat* path than of the
+Push button, because they arrive by different routes:
+
+- **Gateway registration and heartbeat** deliver a bundle that the gateway applies
+  **key by key**, configuring each gate explicitly. Everything in the list above
+  really does hot-reload this way.
+- **The Push button** posts to the gateway's `POST /config`, which replaces the
+  whole config document and applies **only tools and policy**. A quota or
+  agent-auth block in that body is stored and echoed back by `GET /config`, but
+  never handed to the enforcer.
+
+Concretely, today:
+
+| Page → Push | What actually happens |
+|---|---|
+| **Gateways** (Push / Push All) | Tools + policy applied. Fine. |
+| **Policies** | Policy applied — but the gateway's registered **tools are cleared** and `mode` resets to `enforce`, un-shadowing a shadow gateway. |
+| **Quotas** | **The quota is not enforced.** It's stored, the dashboard shows it, `GET /config` echoes it, and the enforcer still has no limit. Tools are cleared too. |
+| **Agent Quotas**, **Models** (per-agent access) | Applied — these call the gateway's `/config/agent-auth` gate endpoint directly. |
+
+So: after pushing a quota, **verify against the gateway's `GET /config/quota`**,
+not the dashboard and not `GET /config`. If `rate_limit_rpm` is `null` there, the
+quota is not in force regardless of what the UI shows. The working route is the API
+endpoint `POST /api/quotas/{id}/push`, which nothing in the UI calls.
+
+Mechanism and reproduction in
+[gateway-architecture.md](gateway-architecture.md#the-config-partial-push-trap).
+
 ---
 
 ## 10a. Tenant scoping — which org sees what
@@ -902,8 +1003,38 @@ not a user JWT, since a gateway has no user identity:
 | unset | `production` | every ingest is **401**; the control plane will not accept anonymous traces |
 
 The production refusal exists because forged traces poison everything downstream —
-compliance reports, ROI, metering, billing. **Set this in any deployment that isn't
-your laptop**, and configure the matching key on every gateway.
+compliance reports, ROI, metering, billing.
+
+**Two gaps to know before you rely on it,** both verified against a running control
+plane with `OSTIARI_INGEST_KEY=secret123`:
+
+1. **The check is on `/api/traces/ingest` only.** The other machine-ingest paths
+   have no `_require_ingest_auth` dependency and accept an anonymous POST with the
+   key set:
+
+   | Ingest path | No header, key set |
+   |---|---|
+   | `POST /api/traces/ingest` | **401** |
+   | `POST /api/costs/record`, `/record/batch` | **200** |
+   | `POST /api/approvals` | **200** |
+   | `POST /api/payments/ingest` | **200** |
+
+   So metering, cost, approval, and payment records can still be forged. Traces are
+   the one path closed; the "billing" half of the threat model is not.
+
+2. **The gateway never sends the header.** `trace_reporter.py` posts to
+   `/api/traces/ingest` with `json=event` and no headers, and nothing in the gateway
+   reads `OSTIARI_INGEST_KEY` — grep it and the only hits are in the control plane
+   and the deploy docs. So setting the key **breaks trace reporting**: every report
+   401s, and because `report()` swallows failures at debug level, Live Traces simply
+   goes quiet with no error surfaced anywhere.
+
+Until the gateway learns to send it, setting `OSTIARI_INGEST_KEY` trades forged
+traces for *no* traces. In production that is still arguably the right trade — an
+empty trace view is honest, a poisoned one is not — but go in knowing the dashboard
+will be blank, and don't set it expecting the demo to keep working. The
+[deploy README](../deploy/README.md) documents it as required on the control plane
+*and every gateway*; the gateway half of that is aspirational.
 
 **Approvals are the subtle one.** The queue holds an agent's raw tool parameters —
 SQL, recipients, payloads — plus the reviewer's identity. A flat id-keyed store put
@@ -923,8 +1054,9 @@ For a real deployment, in order:
 
 1. Set the production secrets **before first boot**: `OSTIARI_ADMIN_PASSWORD`
    (the control plane refuses to seed an admin without it), `OSTIARI_JWT_SECRET`,
-   `OSTIARI_INGEST_KEY` (on the control plane *and* every gateway),
-   `OSTIARI_ENCRYPTION_KEY`.
+   `OSTIARI_ENCRYPTION_KEY`, and `OSTIARI_INGEST_KEY` — reading §10a first, because
+   the gateway does not yet send the ingest header, so setting the key silences
+   Live Traces rather than authenticating it.
 2. **Register** gateways, agents, tools, MCP servers (Configure).
 3. Start every gateway in **shadow** mode.
 4. Write **policies** (deny-by-default for destructive; explicit allow for safe;
@@ -958,6 +1090,8 @@ For a real deployment, in order:
 | Empty `block: []` in a 2nd policy | Clobbers a good block list on merge | Never ship empty block lists |
 | Tools pointing at dead endpoints | Look healthy, do nothing | Verify calls execute, not just list |
 | Edited config, didn't push | Gateway still on old rules | Always push after editing |
+| Pushed a quota from the Quotas page | Stored and displayed, never enforced | Verify `GET /config/quota`; push via the API (§10) |
+| Pushing a policy to a shadow gateway | Clears its tools and resets it to `enforce` | Re-push tools and re-set the mode after (§10) |
 | Unlimited wallets | Runaway agent = unbounded bill | Per-call + daily limits, always |
 | `default_allow` on for A2A | One agent reaches everything | Deny-by-default + explicit matrix |
 | Borrowed ROI cost numbers | "Where'd that come from?" | Use your org's real risk figures |
@@ -968,7 +1102,8 @@ For a real deployment, in order:
 | Caller ignores the 202 | Approved call never re-submitted, looks lost | Retry with `X-Approval-Id` |
 | Trusting viewer as a security boundary | Only the UI is restricted | Role-gate the write routers (§9.2) |
 | Enabling detection straight to `block` | Fail-closed + untuned = blocked traffic | `injection_mode: flag` first (§5.5) |
-| No `OSTIARI_INGEST_KEY` outside dev | Forged traces poison compliance/billing | Set it on CP and every gateway (§10a) |
+| No `OSTIARI_INGEST_KEY` outside dev | Forged traces poison compliance/billing | Set it on the CP — but see §10a: the gateway can't send it yet, so traces go quiet |
+| Assuming the ingest key protects billing | Only `/api/traces/ingest` checks it; cost/approval/payment ingest stay open | Don't treat metering as authenticated (§10a) |
 
 ---
 

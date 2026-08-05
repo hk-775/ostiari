@@ -78,7 +78,8 @@ python -m ostiari_gateway.mcp_bridge --gateway http://localhost:8421 --port 8600
 # MCP endpoint: http://localhost:8600/mcp
 ```
 
-The bridge implements `initialize`, `tools/list`, and `tools/call`, and needs no
+The bridge implements `initialize`, `notifications/initialized`, `tools/list`,
+`tools/call`, and `ping` — the minimum set an MCP client needs — and requires no
 MCP SDK dependency.
 
 ## Notes / limitations
@@ -91,5 +92,18 @@ MCP SDK dependency.
   pre-existing database file needs those columns added or a fresh DB.
 - The spec parser lives in the shared root `ostiari` package
   (`ostiari.openapi_import`) so both the gateway and the control plane can use
-  it without either service depending on the other.
+  it without either service depending on the other. The gateway's
+  `ostiari_gateway.openapi_import` is a thin wrapper that turns the parsed dicts
+  into `ToolDefinition`s.
 - The generator inspects only JSON media types for request bodies.
+- A URL source is fetched **by the receiving service**, not the CLI, and passes
+  through `ostiari.net_guard.validate_public_url` first with redirects disabled —
+  so a spec URL pointing at an internal address or the instance metadata endpoint
+  is refused rather than fetched. In dev, private and loopback ranges are allowed
+  (that's what makes `--gateway http://localhost` importing work); under
+  `OSTIARI_ENV=production` they are blocked unless listed in `OSTIARI_SSRF_ALLOW`,
+  and link-local/metadata addresses are blocked in every environment. A local
+  file path is read by the CLI and inlined instead.
+- Like the rest of `/config/*`, the gateway's import endpoint is behind
+  `OSTIARI_CONFIG_ADMIN_KEY` when that's set and **unauthenticated** when it
+  isn't — an open gateway lets any caller register arbitrary tool endpoints.

@@ -62,10 +62,12 @@ Start with `/validate` — it isolates Ostiari from network noise, so a
 regression there is unambiguous. Layer in `/tool` and the LLM paths once you
 have a baseline.
 
-## Prerequisites (already present on this machine)
+## Prerequisites
 
-- `locust` — scenario-based load with a live web UI and percentiles.
-- `ab` (ApacheBench) — quick single-endpoint baseline.
+- `locust` — scenario-based load with a live web UI and percentiles
+  (`pip install locust`).
+- `ab` (ApacheBench) — quick single-endpoint baseline (ships with macOS; on
+  Debian/Ubuntu it's `apache2-utils`).
 
 ## Step 1 — start a gateway to test
 
@@ -149,8 +151,9 @@ Stress the guards, not just the happy path:
 - **Rate limiter** (off by default). Restart with
   `OSTIARI_GATEWAY_RATE_LIMIT_RPM=600` and confirm a single agent's excess
   requests get `429 Retry-After` while others aren't affected (it's keyed by
-  `X-Agent-Id`). Note it's **per-process** — a multi-replica fleet needs Redis
-  to share the window (documented limitation).
+  `X-Agent-Id`, falling back to client IP when that header is absent). Note it's
+  **per-process** by default — set `OSTIARI_REDIS_URL` to share the sliding
+  window across replicas (see Scaling notes).
 - **Body-size limit.** `OSTIARI_MAX_BODY_BYTES` (default 10 MiB) — POST a body
   over the cap and confirm `413`.
 - **Budget under concurrency.** Configure a small `budget_limit_usd`, fire
@@ -159,11 +162,15 @@ Stress the guards, not just the happy path:
 
 ## Scaling notes (from the deploy docs)
 
-Quota, budget, and rate-limit state are **per gateway process**. A horizontally
-scaled fleet (k8s `gateway-shared`, ECS with >1 task) therefore multiplies the
-effective limits by the replica count unless backed by shared Redis. Load-test
-a **single** instance to get true per-node capacity, then size the fleet — and
-enable Redis if you need the limits to hold fleet-wide.
+Quota, budget, rate-limit, and wallet state are **per gateway process** by
+default. A horizontally scaled fleet (k8s `gateway-shared`, ECS with >1 task)
+therefore multiplies the effective limits by the replica count. Set
+`OSTIARI_REDIS_URL` (or `REDIS_ENDPOINT`) and
+`gateway/ostiari_gateway/shared_store.py` moves those counters into Redis, each
+mutation a single atomic Lua script — so the limits hold fleet-wide. It's
+fail-safe: unreachable Redis degrades to per-process rather than failing the
+gateway, which also means a misconfigured URL looks like it worked. Load-test a
+**single** instance to get true per-node capacity, then size the fleet.
 
 ## Don't stress a shared/prod environment
 

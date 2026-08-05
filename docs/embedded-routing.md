@@ -63,6 +63,12 @@ explicit rules + the default model and the call still routes through AxonLLM.
    a routing rule of the form `task_type == 'coding'` maps that class to a model
 5. Default model
 
+**Where this ladder runs:** `select_model` is called from the `/v1/messages` shim
+and the `/invoke` executor only. The Codex shim (`/v1/chat/completions`) takes the
+client's model straight to AxonLLM, so steps 1–3 and 5 above — routing policies,
+A/B experiments, explicit rules, and the configured default — do not apply on that
+endpoint. AxonLLM's own smart routing still does.
+
 So smart routing only *chooses* a model when a rule maps the classified
 `task_type`. Configure the mapping with routing rules:
 

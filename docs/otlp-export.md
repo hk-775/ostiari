@@ -36,9 +36,25 @@ gracefully.
 | status | `ERROR` when tier is `block`, else `OK` |
 | start/end | the event timestamp |
 
-Attributes:
-- **`gen_ai.request.model`**, **`gen_ai.usage.input_tokens`**, **`gen_ai.usage.output_tokens`** — the GenAI semantic conventions where they exist.
-- **`ostiari.tier`**, **`ostiari.score`** (risk), **`ostiari.decision`/`blocked_reason`**, **`ostiari.limit_type`**, **`ostiari.agent_id`**, **`ostiari.routed`**, **`ostiari.session_id`** — the governance-specific fields (no OTEL standard exists for these, so they use the `ostiari.` namespace).
+Attributes (see `control_plane/services/otlp_exporter.py`):
+
+| Attribute | Notes |
+|---|---|
+| `gen_ai.request.model` | GenAI semantic convention |
+| `gen_ai.usage.input_tokens` | GenAI semantic convention |
+| `gen_ai.usage.output_tokens` | GenAI semantic convention |
+| `ostiari.action` | the tool or LLM action |
+| `ostiari.agent_id` | calling agent |
+| `ostiari.tier` | `allow` / `intervene` / `block` |
+| `ostiari.score` | risk score, 0–100 |
+| `ostiari.framework` | the agent's framework |
+| `ostiari.session_id` | session grouping |
+| `ostiari.routed` | whether AxonLLM routed the model choice |
+| `ostiari.trace_id` | Ostiari's own event id |
+| `ostiari.blocked_reason` | only present when set |
+| `ostiari.limit_type` | only present when a quota fired |
+
+The `ostiari.*` namespace exists because no OTEL standard covers these fields.
 
 So in your existing tracing UI you get a span tree per coding-agent prompt, with
 each sub-call annotated by *why* Ostiari allowed or blocked it and what it cost —

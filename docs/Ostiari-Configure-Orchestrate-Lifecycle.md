@@ -24,7 +24,10 @@ This document explains how Ostiari manages the lifecycle of the components it go
 
 All config lives in the Control Plane — policies, quotas, models, agent-auth, provider keys. Gateways are *consumers* of this config, not owners.
 
-If a gateway restarts, it doesn't lose config. It pulls the latest from the Control Plane on startup.
+If a gateway restarts, it doesn't lose config: registration returns the full bundle
+and the gateway applies it. Two things in that bundle are **not** reapplied today —
+the enforcement mode and anything left in the pending-push queue. Both are covered
+below (§2 and §4), and both are repaired by clicking Push on the Gateways page.
 
 ### 2. Push is Best-Effort, Not Required
 
@@ -32,38 +35,134 @@ Clicking "Push" sends config to the gateway NOW. But if the gateway isn't reacha
 
 When the gateway reconnects (via heartbeat), it automatically receives the latest config.
 
-This means Push never truly "fails" — it either applies immediately or queues for later.
+Push therefore never reports a hard failure — it either applies immediately or
+queues. Two caveats on the queue, though, and the second one is a real bug.
+
+**Caveat 1 — the queue doesn't survive a control-plane restart.** `config_queue`
+in `control_plane/routers/gateways.py` is a plain in-memory dict. The durable part
+is the stored config itself, so a gateway that registers later still gets the
+current state in its bundle; what's lost is the delta that was waiting. Restarting
+the control plane while a gateway is down is the case to watch.
+
+**Caveat 2 — a queued push is dropped by the very reconnect that should deliver
+it.** `gateway_register` pops the queue into `bundle["queued_updates"]`, but
+nothing on the gateway side reads that key — `_apply_bundle` in
+`gateway/ostiari_gateway/server.py` looks at `tools`, `policy`, `quotas`/`quota`,
+`agent_auth`, and `payments` only. So the pop clears the queue and the payload goes
+nowhere. Verified end to end:
+
+```
+# gateway down, operator pushes a policy
+POST /api/gateways/probe-gw/push-config {"policy":{"block":["LOST_ON_RESTART"]}}
+  → {"status":"queued","reason":"became_unreachable"}
+
+# gateway restarts, registers
+GET  http://localhost:8479/config
+  → policy: {"allow":[],"block":[],"rules":[],"thresholds":{}}   ← not applied
+
+# and the queue is now empty, so no later heartbeat can deliver it either
+POST /api/gateways/probe-gw/register
+  → config has no "queued_updates" key
+```
+
+The heartbeat path *does* work — it sends the same list under `config_updates`
+(which `lifecycle._heartbeat_loop` reads and applies one by one). Only the
+register path names the key `queued_updates`, which is the name nothing consumes.
+
+In practice the damage is usually invisible, because the register bundle carries
+the current stored config anyway: a queued policy edit that was also saved to the
+database arrives via `bundle["policy"]`. The delta is lost only when it was
+*never* stored — which is exactly what `POST /{id}/push-config` does, since it
+forwards an arbitrary operator-supplied body without persisting it. That's the
+Policies page's Push button (see §4).
 
 ### 3. Gateway Lifecycle
 
 ```
 Gateway starts
-  → POST /api/gateways/register (announces itself to CP)
-  → CP responds with full config bundle (policies, quotas, tools, agent-auth)
-  → Gateway applies config and begins serving
+  → POST /api/gateways/{id}/register (announces itself, advertising callback_url)
+  → CP auto-creates the record if it doesn't exist, marks healthy
+  → CP responds with full config bundle (tools, policy, mode, quotas,
+    agent_auth, mcp_servers, and a2a_agents when any are stored)
+  → Gateway applies config, reconnects MCP servers + A2A peers, begins serving
 
 Running
   → Every 30s: POST /api/gateways/{id}/heartbeat
-  → CP responds with any pending config changes since last heartbeat
-  → Gateway applies deltas
+  → CP marks healthy and returns queued deltas under "config_updates"
+  → Gateway applies each one
 
 Gateway unhealthy
-  → 3 missed heartbeats → CP marks gateway as "unhealthy" (red dot in UI)
+  → last heartbeat older than 90s → CP marks it "unhealthy" (red dot in UI).
+    The sweep runs every 15s, so the transition lands 90–105s after the last beat.
   → Config changes queue until reconnect
 
 Gateway reconnects
-  → Full config sync (CP pushes entire current state)
-  → Queued changes applied
+  → Heartbeat from a non-healthy record → CP sends the full bundle plus the queue
   → Status returns to "healthy" (green dot)
 ```
 
+Note the asymmetry: on **heartbeat** reconnect the queue arrives as
+`config_updates`, which the gateway applies. On **register** it arrives as
+`queued_updates`, which nothing reads — see §2, Caveat 2.
+
 ### 4. Push Button Semantics in the UI
 
-| Gateway Status | What Push Does |
-|---|---|
-| 🟢 Healthy | Config sent immediately → ✓ |
-| 🔴 Unhealthy | Config saved + queued → "Will apply on reconnect" |
-| ⚪ Unregistered | Config saved → "Gateway not yet registered" |
+`POST /api/gateways/{id}/push-config`:
+
+| Gateway Status | What Push Does | Response |
+|---|---|---|
+| 🟢 Healthy | Forwarded to the gateway's `/config` immediately | `{"status": "applied"}` |
+| 🟢 Healthy but now unreachable | Marked unhealthy, config queued | `{"status": "queued", "reason": "became_unreachable"}` |
+| 🔴 Unhealthy | Queued for the next heartbeat | `{"status": "queued", "reason": "gateway_offline"}` |
+| ⚪ No control-plane record | Rejected — there's nothing to push *to* | `404 Gateway not found` |
+
+The last row is the one to know: a gateway must exist as a control-plane record
+before config can be pushed to it. Gateways create their own record on first
+registration, so in practice this only bites when you push to an id that has
+never come up.
+
+**Two different Push buttons, two different routes.** They are not
+interchangeable:
+
+| UI | Route | Body | Persisted? |
+|---|---|---|---|
+| Gateways page ↑ icon | `POST /api/gateways/{id}/push` | built from the DB by `push_service._build_config` | yes — it *is* the stored state |
+| Policies page **Push** | `POST /api/gateways/{id}/push-config` | `{"policy": …}` supplied by the browser | **no** |
+| Quotas page **Push** | `POST /api/gateways/{id}/push-config` | `{"quota": …}` supplied by the browser | **no**, and not enforced either |
+
+`push-config` forwards whatever body it's given to the gateway's `POST /config`,
+which is a **whole-document replace** that applies only tools + policy. So the
+Policies page's Push clears the gateway's tool registry and resets its enforcement
+mode to `enforce`, and the Quotas page's Push does nothing at all. Full detail and
+reproductions: [gateway-architecture.md → The /config partial-push
+trap](gateway-architecture.md#the-config-partial-push-trap).
+
+Prefer the **Gateways page** Push (or `POST /api/gateways/push-all`): it rebuilds
+the bundle from stored state, so it can't clear anything or leave the gateway
+holding config the control plane doesn't know about.
+
+**Enforcement mode is not restored on restart — Push it back.** `PUT
+/api/gateways/{id}/mode` persists the mode in the gateway record and pushes it
+live, and `_build_config` always sends `mode` explicitly. But the gateway's
+`_apply_bundle` never reads it, so a restarted gateway comes up on the default
+`enforce` regardless of what the control plane holds. Verified:
+
+```
+PUT /api/gateways/probe-gw/mode {"mode":"shadow"}
+  → CP record: shadow      → GET :8479/config/mode: {"mode":"shadow"}   ✓ live push works
+
+# restart the gateway
+  → CP record: shadow      → GET :8479/config/mode: {"mode":"enforce"}  ✗ drifted
+
+POST /api/gateways/probe-gw/push
+  → GET :8479/config/mode: {"mode":"shadow"}                            ✓ Push repairs it
+```
+
+The direction matters: the drift is toward *enforcing* a gateway you had
+deliberately put in shadow, so a restart can start blocking traffic you meant only
+to observe. The Gateways page will show `Shadow` the whole time, because it renders
+the stored record and not the gateway's live state. After any gateway restart,
+click Push (or `push-all`) to reconcile.
 
 ---
 
@@ -121,6 +220,7 @@ CP starts
   ← Gateway 1 registers (POST /api/gateways/crm-agent/register)
   ← Gateway 2 registers (POST /api/gateways/devops-agent/register)
   ← Gateway 3 registers (POST /api/gateways/ops-agent/register)
+  ← Gateway 4 registers (POST /api/gateways/analytics-agent/register)
 
 Running:
   ← Gateway 1 heartbeats every 30s
@@ -136,39 +236,55 @@ Gateway 3 goes down:
   → CP queues it
 
 Gateway 3 restarts:
-  → Registers → gets full config bundle (including the queued quota change)
+  → Registers → gets full config bundle (tools, policy, quotas, agent_auth, …)
   → Starts heartbeating → green dot again
+  → …but the *queued* change is dropped, and mode reverts to enforce (§2, §4)
+  → Click Push on the Gateways page to reconcile
 ```
 
 ---
 
 ## Fleet Status (Live Demo)
 
-| Service | Port | Status |
-|---------|------|--------|
-| Control Plane Backend | 8400 | ✅ |
-| Control Plane Frontend | 9000 | ✅ |
-| CRM Gateway | 8421 | ✅ Registered, heartbeating, 3 tools loaded |
-| Ops Gateway | 8422 | ✅ Registered, heartbeating, 2 tools loaded |
-| DevOps Gateway | 8423 | ✅ Registered, heartbeating, 4 tools + policy loaded |
-| Analytics Gateway | 8424 | ✅ Registered, heartbeating, 1 tool loaded |
+What `make demo-full` brings up:
+
+| Service | Port | Gateway id | Tools |
+|---------|------|---|---|
+| Control Plane Backend | 8400 | — | — |
+| Control Plane Frontend | 9000 | — | — |
+| CRM Gateway | 8421 | `crm-agent` | 12 tools + `block-destructive` policy, plus the draw.io and filesystem MCP servers |
+| Ops Gateway | 8422 | `ops-agent` | 4 tools + `ops-guard` policy |
+| DevOps Gateway | 8424 | `devops-agent` | 4 tools, **no policy** — see below |
+| Analytics Gateway | 8425 | `analytics-agent` | 3 tools, no policy (no destructive tools) |
+
+Two policies get created, not three. `register_fleet_tools.py` skips the
+devops-agent policy on the assumption that a `devops-strict` policy already
+exists to block `github.delete_repo` — but nothing in the repo creates one, so on
+a fresh demo that tool is unguarded. It's a demo-seeding gap rather than an
+enforcement bug (add a policy on the Policies page to see the block fire), but
+don't read the demo fleet as showing every destructive tool covered.
 
 Open http://localhost:9000 → Gateways page. You should see all 4 with green health dots, heartbeating every 30s. Push a policy change and it'll go to the correct gateway immediately (✓).
+
+Each gateway must start with the **same id as its control-plane record** — that's
+what lets the control plane push it tools and policy on registration.
 
 ---
 
 ## For the Demo
 
 In a demo environment:
-- Gateways ARE running (ports 8421-8424) — Push works immediately
+- Gateways ARE running (ports 8421, 8422, 8424, 8425) — Push works immediately
 - Traces ARE flowing — Live Traces shows real data
 - Health IS green — all heartbeats active
 
 If a gateway isn't running:
-- Push shows "Gateway offline — config saved, will sync on reconnect"
-- Health shows red
+- Push reports `queued` (`reason: gateway_offline` or `became_unreachable`)
+- Health shows red after 90s
 - Traces stop (obviously)
-- All config changes are still persisted and will apply when gateway restarts
+- Config changes written through the *stored* state (Policies/Quotas/Tools CRUD,
+  mode) are persisted and arrive in the next register bundle. A `push-config` body
+  is not stored, so it is lost — see §2, Caveat 2.
 
 ---
 
@@ -177,14 +293,20 @@ If a gateway isn't running:
 ```
 Operator changes policy in UI
   → Control Plane saves to database
-  → If gateway healthy: Push immediately (POST /config/policy)
-  → If gateway offline: Queue for next heartbeat
-  → Gateway receives config
+  → If gateway healthy: Push immediately
+      · Policies page Push → POST /config       (whole-document replace)
+      · Gateways page Push → POST /config       (rebuilt from stored state)
+      · POST /api/policies/{id}/push → POST /config/policy  (partial, safe)
+  → If gateway offline: queue (delivered on the next heartbeat, not on register)
   → Gateway applies immediately (hot-reload, no restart)
   → Next tool call uses new policy
   → Trace shows new policy decision
   → Operator sees result in Live Traces
 ```
+
+Only `POST /api/policies/{id}/push` hits the gateway's *partial* `/config/policy`
+endpoint — the one that changes policy and nothing else. Neither Push button in the
+UI uses it.
 
 Total propagation time (healthy gateway): **< 1 second**
 Total propagation time (reconnecting gateway): **≤ heartbeat interval (30s)**
