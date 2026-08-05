@@ -3,9 +3,18 @@ import { useNavigate } from "react-router-dom";
 import { useAuthStore } from "../stores/authStore";
 import { Shield } from "lucide-react";
 
+// The backend seeds admin@ostiari.ai / admin only outside production — in
+// production `_seed_admin` refuses that credential and requires
+// OSTIARI_ADMIN_PASSWORD. So prefilling unconditionally would show a password
+// that cannot work there. On in dev; opt in for a deployed demo with
+// VITE_DEMO_LOGIN=true.
+const DEMO_LOGIN =
+  import.meta.env.DEV || import.meta.env.VITE_DEMO_LOGIN === "true";
+
 export function LoginPage() {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  // Prefilled with the seeded demo admin so the demo is one click to sign in.
+  const [email, setEmail] = useState(DEMO_LOGIN ? "admin@ostiari.ai" : "");
+  const [password, setPassword] = useState(DEMO_LOGIN ? "admin" : "");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const login = useAuthStore((s) => s.login);
@@ -84,6 +93,13 @@ export function LoginPage() {
               {loading ? "Signing in..." : "Sign in"}
             </button>
           </form>
+
+          {/* Demo credentials (prefilled above) */}
+          {DEMO_LOGIN && (
+            <div className="mt-5 rounded-xl border border-violet-100 bg-violet-50/50 px-4 py-2.5 text-center text-xs text-stone-500">
+              Demo login prefilled — <span className="font-medium text-stone-700">admin@ostiari.ai</span> / <span className="font-medium text-stone-700">admin</span>
+            </div>
+          )}
         </div>
 
         <p className="mt-6 text-center text-xs text-stone-400">
