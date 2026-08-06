@@ -96,22 +96,20 @@ make clean-start
 
 The `OSTIARI_NO_DEMO=1` flag is what skips the demo seeders (agents, traces, experiments, pricing, usage records, approvals, quotas, wallets).
 
-> **Two things `clean-start` does not clear.** First, the `rm` targets
-> `control-plane/backend/data/state.json` — the path from before `env.data_dir()`
-> centralized it. State now lives at `control-plane/data/state.json`, and the
-> lifespan calls `load_state()` *before* the `OSTIARI_NO_DEMO` check, so quotas,
-> experiments, models, and providers persisted by an earlier demo run come back.
-> Delete it yourself for a genuinely empty control plane:
+> **What `clean-start` clears.** The SQLite database, both `state.json` paths (the
+> live `control-plane/data/state.json` that `data_dir()` resolves to, and the
+> pre-`data_dir()` `control-plane/backend/data/state.json`), and — via
+> `OSTIARI_NO_DEMO=1` — every seeder including the 18 model routing configs.
 >
-> ```bash
-> rm -f control-plane/data/state.json
-> ```
+> Two things previously survived it. The `rm` targeted only the *old* `state.json`
+> path while the lifespan called `load_state()` **before** the `OSTIARI_NO_DEMO`
+> check, so quotas, experiments, and providers from an earlier demo run came back.
+> And `seed_models()` ran at import time, ungated — defensible on the grounds that a
+> model catalog is a routing table rather than demo content, but it meant the Models
+> page was populated on an install that had promised to be empty.
 >
-> Second, the **18 model routing configs are always present.** `seed_models()`
-> runs at import time at the bottom of `control_plane/routers/model_config.py`
-> and isn't gated by `OSTIARI_NO_DEMO`. That is deliberate — the catalog is a
-> routing table with pricing, not demo content — but it means the Models page is
-> populated on a clean install.
+> On a clean install, register the models you use via `POST /api/models`, or call
+> `seed_models()` to get the built-in catalog back.
 
 **Verify it's empty:**
 
@@ -119,8 +117,8 @@ The `OSTIARI_NO_DEMO=1` flag is what skips the demo seeders (agents, traces, exp
 curl http://localhost:8400/api/agents          # → []
 curl http://localhost:8400/api/gateways        # → [ my-gateway (auto-registered) ]
 curl http://localhost:8421/tools               # → { "tools": [], "mcp_tools": [] }
-curl http://localhost:8400/api/quotas          # → [] only if state.json was removed
-curl http://localhost:8400/api/models          # → 18 models, by design (see above)
+curl http://localhost:8400/api/quotas          # → []
+curl http://localhost:8400/api/models          # → []
 ```
 
 Open **http://localhost:9000** — every page renders, but the dashboard, agents, traces, and metering views are empty until you send real traffic.
@@ -402,8 +400,8 @@ Both calls now appear in **Live Traces** in the UI.
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Quotas/experiments/providers appear despite `clean-start` | `state.json` restored — the Makefile `rm` targets the old `control-plane/backend/data/` path | `rm -f control-plane/data/state.json`, then re-run `clean-start` |
-| 18 models on the Models page despite `clean-start` | `seed_models()` runs at import time, not gated by `OSTIARI_NO_DEMO` | Expected — the model catalog is a routing table, not demo data |
+| Quotas/experiments/providers appear despite `clean-start` | Fixed — the recipe used to `rm` only the pre-`data_dir()` `state.json` path, so the live one was restored | Update, then re-run. On an older checkout: `rm -f control-plane/data/state.json` |
+| Models page empty on a clean install | `seed_models()` is now gated on `OSTIARI_NO_DEMO`, so a clean install starts with no catalog | Expected. Register what you use via `POST /api/models`, or call `seed_models()` for the built-in 18 |
 | Gateway shows in UI but config push fails | Gateway endpoint missing its port | Fixed — gateways advertise `host:port` on register. Confirm `curl /api/gateways` shows `http://…:8421`, not `http://…` |
 | `POST /tool/x` returns 404 | Tool not registered on that gateway | Register via `/config/tools` or push from the control plane |
 | Tool call 403 unexpectedly | agent-auth enabled but agent not listed | Add the agent to `/config/agent-auth`, or disable agent-auth |
@@ -464,20 +462,20 @@ This brings up the complete topology and seeds demo data:
 | Control Plane API | http://localhost:8400 | — | 9 agents, seeded traces, quotas, experiments |
 | CRM Gateway | http://localhost:8421 | `crm-agent` | LLM chat, 12 HTTP tools + the draw.io and filesystem MCP servers, payments, `block-destructive` policy |
 | Ops Gateway | http://localhost:8422 | `ops-agent` | 4 ops tools + `ops-guard` policy |
-| DevOps Gateway | http://localhost:8424 | `devops-agent` | 4 DevOps tools, **no policy** — see below |
+| DevOps Gateway | http://localhost:8424 | `devops-agent` | 4 DevOps tools + `devops-guard` policy |
 | Analytics Gateway | http://localhost:8425 | `analytics-agent` | 3 analytics tools, no policy (no destructive tools) |
 | A2A Demo Agent | http://localhost:9200 | — | deploy / rollback / status skills |
 | Demo Tools server | http://localhost:9300 | — | Canned tool backends |
 
 The registration scripts (`register_demo_tools`, `register_fleet_tools`, `register_demo_mcp`, `register_demo_a2a`, `register_demo_payments`, `register_demo_providers`) run automatically and push tools, policy, MCP servers, an A2A agent, payment wallets, and provider credentials to the gateways.
 
-> **`github.delete_repo` is unguarded on a fresh demo.** `register_fleet_tools.py`
-> sets `"policy": None` for `devops-agent` on the assumption that a
-> `devops-strict` policy already blocks it — but nothing in the repo creates one,
-> so two policies get created, not three. It's a demo-seeding gap rather than an
-> enforcement bug: add a block policy for that gateway on the Policies page and
-> the block fires. Don't read the demo fleet as showing every destructive tool
-> covered.
+> **Three policies get created, not two.** `register_fleet_tools.py` used to set
+> `"policy": None` for `devops-agent` on the assumption that a `devops-strict`
+> policy already blocked `github.delete_repo` — nothing in the repo ever created
+> one, so a fresh demo shipped that destructive tool ungoverned. It now creates a
+> `devops-guard` policy blocking `*delete*`, `*.drop`, `*.destroy`, `db_delete`
+> and allowing the three read/write tools. `analytics-agent` is still policy-free,
+> and legitimately so — it registers no destructive tools.
 
 ## 2.4 Verify the demo is wired
 

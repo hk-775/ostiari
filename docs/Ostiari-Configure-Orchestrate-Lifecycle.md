@@ -244,15 +244,16 @@ What `make demo-full` brings up:
 | Control Plane Frontend | 9000 | — | — |
 | CRM Gateway | 8421 | `crm-agent` | 12 tools + `block-destructive` policy, plus the draw.io and filesystem MCP servers |
 | Ops Gateway | 8422 | `ops-agent` | 4 tools + `ops-guard` policy |
-| DevOps Gateway | 8424 | `devops-agent` | 4 tools, **no policy** — see below |
+| DevOps Gateway | 8424 | `devops-agent` | 4 tools + `devops-guard` policy |
 | Analytics Gateway | 8425 | `analytics-agent` | 3 tools, no policy (no destructive tools) |
 
-Two policies get created, not three. `register_fleet_tools.py` skips the
-devops-agent policy on the assumption that a `devops-strict` policy already
-exists to block `github.delete_repo` — but nothing in the repo creates one, so on
-a fresh demo that tool is unguarded. It's a demo-seeding gap rather than an
-enforcement bug (add a policy on the Policies page to see the block fire), but
-don't read the demo fleet as showing every destructive tool covered.
+Three policies get created, one per gateway that registers a destructive tool.
+`register_fleet_tools.py` used to skip the devops-agent policy on the assumption
+that a `devops-strict` policy already existed to block `github.delete_repo` —
+nothing in the repo creates one, so a fresh demo left that tool ungoverned. It
+now seeds `devops-guard` alongside `block-destructive` and `ops-guard`.
+`analytics-agent` stays policy-free because it registers no destructive tools;
+a test pins that as deliberate rather than another oversight.
 
 Open http://localhost:9000 → Gateways page. You should see all 4 with green health dots, heartbeating every 30s. Push a policy change and it'll go to the correct gateway immediately (✓).
 

@@ -1,5 +1,6 @@
 """Model configuration API — registry of available models and their routing config."""
 
+import os
 from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -198,5 +199,13 @@ def seed_models():
         _models[DEFAULT_ORG][m.name] = m
 
 
-# Auto-seed on import
-seed_models()
+# Auto-seed on import, unless this is a clean install. Gated because it wasn't:
+# `make clean-start` and OSTIARI_NO_DEMO=1 promise an empty control plane, and the
+# 18 model configs showed up anyway — this was the one seeder running at import time
+# rather than from the gated block in app.py.
+#
+# On a clean install, register the models you use via POST /api/models, or call
+# seed_models() to get the built-in set back. Tests call it explicitly, since
+# conftest clears _models between them.
+if os.environ.get("OSTIARI_NO_DEMO", "").lower() not in ("1", "true", "yes"):
+    seed_models()

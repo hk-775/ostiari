@@ -216,6 +216,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it. It is now the sibling `config_updates` the heartbeat path already applies, and
   `lifecycle.register()` drains it. What was lost is exactly what
   `POST /api/gateways/{id}/push-config` (the Policies and Quotas page buttons) sends.
+- **The demo fleet shipped an ungoverned destructive tool.** `register_fleet_tools.py`
+  set `"policy": None` for `devops-agent` on a comment claiming a `devops-strict` policy
+  already blocked `github.delete_repo` — nothing in the repo ever created one, so a fresh
+  demo left that tool callable. A governance product's own demo now governs it: a
+  `devops-guard` policy blocks `*delete*`, `*.drop`, `*.destroy`, `db_delete` and allows
+  the three read/write tools. The test asserts the *invariant* rather than this one
+  gateway — no gateway may register a tool whose name contains a destructive verb without
+  a policy that blocks it — so the next tool added to the fleet can't reintroduce the gap.
+  `analytics-agent`'s `None` is pinned as deliberate: it registers nothing destructive.
+- **`make clean-start` now actually starts clean.** Two independent causes. The recipe
+  deleted `control-plane/backend/data/state.json`, the path from before `env.data_dir()`,
+  while the lifespan restored the live `control-plane/data/state.json` — so quotas,
+  experiments, and providers came back on a "clean" start. It now removes both, so an
+  older checkout doesn't leave a file a future refactor might read. Separately,
+  `seed_models()` ran at *import* time in `routers/model_config.py`, the one seeder
+  outside the `OSTIARI_NO_DEMO` block in `app.py`, so the 18 model configs appeared
+  regardless. It's now gated on the same flag. The argument for an always-on catalog — a
+  routing table is not demo content — isn't wrong, but it lost to a simpler one: a page
+  showing 18 models you didn't add contradicts the promise of the command. Register what
+  you use via `POST /api/models`, or call `seed_models()` to get the built-in set back.
 - **Every Bedrock Mantle Claude call failed on a parameter no client sent.** `temperature`
   was typed `float` with a `0.7` default from both shims down through `providers`, plus
   `LLMConfig.temperature = 0.7` and an explicit `temperature: 0.7` in the shipped demo
@@ -307,23 +327,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   type-errored on every check it exists to perform.
 
 ### Known issues
-Found while auditing the docs against the code. All are documented where an
-operator would hit them; none is fixed yet.
+Found while auditing the docs against the code. One remains from that audit; the
+rest are in **Fixed** above. It is documented where an operator would hit it.
 
-- **`make clean-start` doesn't fully wipe.** It deletes
-  `control-plane/backend/data/state.json`, the path from before `env.data_dir()`;
-  live state is at `control-plane/data/state.json`, and the lifespan restores it
-  before the `OSTIARI_NO_DEMO` check. Separately, `seed_models()` runs at import
-  time in `routers/model_config.py` and isn't gated by `OSTIARI_NO_DEMO`, so the
-  18 model configs are present even on a genuinely clean install.
 - **The broker pilot is not tenant-scoped.** `TokenPool` and
   `ReconciliationRecord` have no `org_id`, and `routers/broker_pilot.py` takes no
   `get_current_org`; `routers/proxy.py` likewise forwards to any gateway by id
   without an org check. Harmless in the single-org deployment that is the only
-  supported one today.
-- `register_fleet_tools.py` skips the `devops-agent` policy on the assumption that
-  a `devops-strict` policy exists to block `github.delete_repo`. Nothing in the
-  repo creates one, so in a fresh demo that tool is unguarded.
+  supported one today. Deliberately deferred: closing it means adding `org_id` to
+  both models plus a migration, and it only bites a deployment that doesn't exist
+  yet. Don't turn on multi-org without doing it first.
 
 ## [0.1.0] - 2026-06-22
 
