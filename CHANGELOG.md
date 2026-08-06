@@ -205,6 +205,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   process-local `_total_spend`, which stays `0.0` when a shared store is booking the
   spend — so alerting was silently absent from exactly the fleet deployments where it
   matters. It now reads the store when one is attached.
+- **Budget alerts arrived and then vanished.** The gateway→control-plane path was
+  wired end to end, but nothing displayed the result and a restart discarded it: the
+  alert deque was the one in-memory store the lifespan never wrote to `state.json`
+  (quotas, experiments, models, and providers all persist). So a gateway could cross
+  100% of its budget and the only trace was a log line, erased by the next bounce.
+  Alerts now persist and restore — still bounded by the deque's `maxlen`, which is
+  what caps the store; that bound was never a reason to drop the whole history. The
+  **Quotas** page shows them newest-first with an Acknowledge-all button, so
+  "per-agent budgets and spend alerts" on the landing page is now something an
+  operator can actually see.
+- **The Quotas page's Edit → Save button silently discarded every edit.** It called
+  `PUT /api/quotas/{id}`, which had no handler — 405, and the panel closed and the
+  list refetched unchanged, which is exactly what a successful save looks like. An
+  operator lowering a budget cap would have believed it took effect. The route now
+  exists (partial update: omitted fields untouched, an explicit `null` clears a
+  limit) and is audited like create and delete, since "who raised this budget" is an
+  audit question. The button also checks the response now instead of firing and
+  forgetting, which is what made the 405 invisible.
 - **A pushed price could lose to a built-in one.** `_get_pricing` checked the pushed table
   for an exact match, then fell into a fuzzy substring pass over `DEFAULT_PRICING` only —
   so a pushed `gpt-4o-mini` could be beaten by a fuzzy hit on built-in `gpt-4o`, 16x more

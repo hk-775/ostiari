@@ -18,20 +18,40 @@ interface Quota {
   current_rpm: number;
 }
 
+interface BudgetAlert {
+  gateway_id: string;
+  threshold: string;
+  spend_usd: number;
+  budget_usd: number;
+  timestamp: number;
+}
+
 async function fetchQuotas(): Promise<Quota[]> {
   const res = await fetch(`${API_BASE}/api/quotas`);
   if (res.status === 404) return [];
   return res.json();
 }
 
+async function fetchAlerts(): Promise<BudgetAlert[]> {
+  const res = await fetch(`${API_BASE}/api/quotas/alerts`);
+  if (!res.ok) return [];
+  return res.json();
+}
+
 export function Quotas() {
   const queryClient = useQueryClient();
   const { data: quotas = [] } = useQuery({ queryKey: ["quotas"], queryFn: fetchQuotas });
+  // Gateways report threshold crossings as they happen, so poll rather than
+  // waiting for a navigation to reveal that a budget blew through 100%.
+  const { data: alerts = [] } = useQuery({
+    queryKey: ["budget-alerts"], queryFn: fetchAlerts, refetchInterval: 15_000,
+  });
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ name: "", scope: "gateway", scope_id: "", rate_limit_rpm: "", budget_limit_usd: "", max_tokens_per_request: "", allowed_models: "" });
   const [pushStatus, setPushStatus] = useState<Record<number, string>>({});
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editForm, setEditForm] = useState({ rate_limit_rpm: "", budget_limit_usd: "", max_tokens_per_request: "" });
+  const [editError, setEditError] = useState("");
 
   const createMutation = useMutation({
     mutationFn: async (data: typeof form) => {
@@ -49,6 +69,11 @@ export function Quotas() {
   const deleteMutation = useMutation({
     mutationFn: async (id: number) => { await fetch(`${API_BASE}/api/quotas/${id}`, { method: "DELETE" }); },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["quotas"] }),
+  });
+
+  const clearAlertsMutation = useMutation({
+    mutationFn: async () => { await fetch(`${API_BASE}/api/quotas/alerts`, { method: "DELETE" }); },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["budget-alerts"] }),
   });
 
   return (
@@ -85,6 +110,44 @@ export function Quotas() {
         </form>
       )}
 
+      {alerts.length > 0 && (
+        <div className="card p-6">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-amber-600" />
+              <p className="text-sm font-medium text-stone-900">Budget Alerts</p>
+              <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700">{alerts.length}</span>
+            </div>
+            <button onClick={() => clearAlertsMutation.mutate()} className="btn-secondary text-xs">
+              Acknowledge all
+            </button>
+          </div>
+          <p className="mt-1 text-xs text-stone-500">
+            Threshold crossings reported by gateways as they enforce budgets. Newest first.
+          </p>
+          <div className="mt-4 divide-y divide-stone-100">
+            {alerts.map((a, i) => (
+              <div key={`${a.gateway_id}-${a.threshold}-${a.timestamp}-${i}`} className="flex items-center justify-between py-2">
+                <div className="flex items-center gap-3">
+                  <span className={`rounded-lg px-2 py-0.5 text-xs font-semibold ${
+                    a.threshold === "100%" ? "bg-rose-50 text-rose-700"
+                      : a.threshold === "90%" ? "bg-orange-50 text-orange-700"
+                      : "bg-amber-50 text-amber-700"
+                  }`}>{a.threshold || "—"}</span>
+                  <span className="text-sm text-stone-900">{a.gateway_id || "unknown gateway"}</span>
+                </div>
+                <div className="flex items-center gap-4 text-xs text-stone-500">
+                  <span>${a.spend_usd.toFixed(4)} / ${a.budget_usd.toFixed(2)}</span>
+                  <span className="tabular-nums">
+                    {a.timestamp ? new Date(a.timestamp * 1000).toLocaleString() : ""}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="grid gap-4">
         {quotas.map((q) => {
           const budgetPct = q.budget_limit_usd ? (q.current_spend / q.budget_limit_usd) * 100 : 0;
@@ -102,6 +165,7 @@ export function Quotas() {
                 </div>
                 <div className="flex gap-1">
                   <button onClick={() => {
+                    setEditError("");
                     if (editingId === q.id) { setEditingId(null); } else {
                       setEditingId(q.id);
                       setEditForm({ rate_limit_rpm: String(q.rate_limit_rpm || ""), budget_limit_usd: String(q.budget_limit_usd || ""), max_tokens_per_request: String(q.max_tokens_per_request || "") });
@@ -181,8 +245,14 @@ export function Quotas() {
                 <div className="mt-4 rounded-xl border border-indigo-100 bg-indigo-50/30 p-4 space-y-3">
                   <div className="flex items-center justify-between">
                     <p className="text-xs font-semibold text-indigo-700">Edit Quota</p>
-                    <button onClick={() => setEditingId(null)} className="text-stone-400 hover:text-stone-600"><X className="h-3.5 w-3.5" /></button>
+                    <button onClick={() => { setEditingId(null); setEditError(""); }} className="text-stone-400 hover:text-stone-600"><X className="h-3.5 w-3.5" /></button>
                   </div>
+                  {editError && (
+                    <div className="flex items-center gap-2 rounded-lg bg-rose-50 border border-rose-200 px-3 py-2">
+                      <AlertTriangle className="h-3.5 w-3.5 text-rose-600 shrink-0" />
+                      <span className="text-xs text-rose-700">{editError}</span>
+                    </div>
+                  )}
                   <div className="grid grid-cols-3 gap-3">
                     <div>
                       <label className="text-[10px] font-semibold text-stone-400 uppercase">Rate Limit (RPM)</label>
@@ -203,7 +273,16 @@ export function Quotas() {
                       if (editForm.rate_limit_rpm) payload.rate_limit_rpm = parseInt(editForm.rate_limit_rpm);
                       if (editForm.budget_limit_usd) payload.budget_limit_usd = parseFloat(editForm.budget_limit_usd);
                       if (editForm.max_tokens_per_request) payload.max_tokens_per_request = parseInt(editForm.max_tokens_per_request);
-                      await fetch(`${API_BASE}/api/quotas/${q.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+                      // The response is checked. This used to fire and forget, so
+                      // when the PUT route didn't exist the 405 was invisible: the
+                      // panel closed and the list refetched unchanged, which reads
+                      // as a successful save.
+                      const res = await fetch(`${API_BASE}/api/quotas/${q.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+                      if (!res.ok) {
+                        setEditError(`Save failed (HTTP ${res.status})`);
+                        return;
+                      }
+                      setEditError("");
                       queryClient.invalidateQueries({ queryKey: ["quotas"] });
                       setEditingId(null);
                     }} className="btn-primary text-xs">Save</button>
