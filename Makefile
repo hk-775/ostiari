@@ -59,7 +59,7 @@ demo-full: ## Full demo — all gateways, A2A agent, control plane (seeded demo 
 	cd control-plane/frontend && npm run dev &
 
 clean-start: ## Clean install — wipe demo data, start all components empty
-	rm -f control-plane/backend/data/state.json
+	rm -f control-plane/data/state.json control-plane/backend/data/state.json
 	rm -f control-plane/data/control_plane.db control-plane/data/control_plane.db-shm control-plane/data/control_plane.db-wal
 	cd control-plane/backend && OSTIARI_NO_DEMO=1 python main.py &
 	cd control-plane/frontend && npm run dev &
