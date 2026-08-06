@@ -65,8 +65,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cannot work there — and would ship a well-known credential in the bundle of a repo
   heading for public. Verified absent from the production build: Vite folds the constant
   and drops both the address and the hint.
+- **Budget alerts now land somewhere.** `on_budget_alert` had exactly one caller in the
+  repo — its own definition — so crossing 80% produced a log line an operator had to be
+  tailing to see. The gateway now subscribes at startup and reports each crossing to
+  `POST /api/quotas/alerts`; read them from `GET /api/quotas/alerts` (newest first, 200
+  per org) and acknowledge with `DELETE`. Alerts are held in memory rather than given a
+  table: an alert is a notification, and the spend behind it is already durable in
+  `usage_records`. `record_spend` is synchronous, so the report is dispatched as a task
+  on the running loop — with no loop (a sync script) it logs and the spend still books
+  rather than failing the booking. Org comes from the reporting gateway's row, never the
+  payload, like every other unauthenticated ingest path.
+- **`POST /api/experiments/{name}/push`**, and an automatic push on create, toggle, and
+  delete. The gateway had implemented the traffic split all along; the control plane's
+  experiment store was never read by any push path, so creating an experiment in the UI
+  split no traffic. Every mutating response now carries `pushed` and `push_error` instead
+  of throwing, so the UI can say "saved, not live" for a gateway that was down rather
+  than implying the split is running; the explicit push route returns 502.
+- **`POST` / `GET /config/ab-experiments`** on the gateway — a *partial* config endpoint,
+  because `POST /config/llm` is a whole-document replace and pushing experiments through
+  it would wipe the provider credentials loaded at startup. The push sends the complete
+  experiment set rather than a delta, which is what makes a delete take effect.
+- **A/B experiments survive a gateway restart.** `_build_config` adds an
+  `ab_experiments` key when the gateway has any, and `_apply_bundle` applies it. A
+  restart used to silently end a running experiment.
+- **Audit coverage beyond gateways and policies** — tools (including one entry per
+  OpenAPI import, not one per generated tool), MCP servers (including `discover`, which
+  changes the callable tool surface even though no row changes), quotas, models (recording
+  only the changed fields as `{from, to}`, since the Models page PUTs the whole record),
+  agents (re-registering an existing name is an `update`, because a tool-list change is a
+  privilege change), and experiments. Entries are written inside the same transaction as
+  the change, so the hash chain stays verifiable and a failed commit leaves no entry.
+  Delete routes capture their details *before* the row is gone.
+- `actor_of()` in `audit_service` — the `X-Actor` lookup was duplicated privately in the
+  two routers that already audited, which is part of how the others ended up with none.
 
 ### Changed
+- **The quota push now carries a `pricing` table** built from the model registry
+  (`model_config.py::pricing_table`). The gateway's enforcer had read a `pricing` key all
+  along and nothing sent it, so editing a model's `input_cost_per_1k` changed what the
+  control plane *reported* but not what the gateway used to project a budget. The
+  registry already stores per-1k costs — the same unit the enforcer wants — so nothing is
+  converted. Models priced `0.0` on both sides are omitted rather than sent as free: a
+  missing entry falls back to `DEFAULT_PRICING`, while `0.0` would assert a real model is
+  free and disable the budget for it.
+- **The Sandbox Code tab issues the tool calls in its editor.** It previously ignored the
+  textarea and fired one hardcoded `db_query`, so editing the code changed nothing about
+  what ran. `runCode` now extracts each `/tool/<name>` call and its JSON body and issues
+  them in order, streaming responses. Deliberately still not an interpreter — loops and
+  conditionals are not evaluated, and arbitrary execution would mean a remote-eval
+  endpoint on the control plane. A refusal is reported as a result, not a failure: `403`
+  is `✗ BLOCKED`, `429` is `✗ QUOTA`.
 - **CI runs on every pull request, not only those targeting `main`.** The
   `pull_request` trigger was filtered to `branches: [main]`, so a PR based on another
   feature branch got an empty status rollup — which reads as "nothing to report" rather
@@ -146,6 +194,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   403s the day `OSTIARI_ENV=production` is set.
 
 ### Fixed
+- **A restarted gateway came back enforcing, whatever mode the control plane held.**
+  `_build_config` sent `mode` and `SidecarConfig` had the field, but `_apply_bundle`
+  never read it — so a gateway deliberately left in shadow started blocking traffic
+  meant only to be observed, while the Gateways page kept rendering `Shadow`. Mode is
+  now applied **first**, before tools or policy, so such a gateway doesn't spend even one
+  request enforcing. An unrecognized value is ignored rather than defaulted: a typo must
+  not flip an observing gateway into enforcement.
+- **Budget alerts never fired under Redis.** `_check_alert_thresholds` compared the
+  process-local `_total_spend`, which stays `0.0` when a shared store is booking the
+  spend — so alerting was silently absent from exactly the fleet deployments where it
+  matters. It now reads the store when one is attached.
+- **A pushed price could lose to a built-in one.** `_get_pricing` checked the pushed table
+  for an exact match, then fell into a fuzzy substring pass over `DEFAULT_PRICING` only —
+  so a pushed `gpt-4o-mini` could be beaten by a fuzzy hit on built-in `gpt-4o`, 16x more
+  expensive and in the wrong direction for a budget. Both tables are now checked for an
+  exact match before either fuzzy pass.
+- **A queued config push was dropped by the reconnect meant to deliver it.**
+  `gateway_register` popped `config_queue` into `bundle["queued_updates"]`, a key nothing
+  on the gateway read — and the pop emptied the queue, so no later heartbeat recovered
+  it. It is now the sibling `config_updates` the heartbeat path already applies, and
+  `lifecycle.register()` drains it. What was lost is exactly what
+  `POST /api/gateways/{id}/push-config` (the Policies and Quotas page buttons) sends.
 - **Every Bedrock Mantle Claude call failed on a parameter no client sent.** `temperature`
   was typed `float` with a `0.7` default from both shims down through `providers`, plus
   `LLMConfig.temperature = 0.7` and an explicit `temperature: 0.7` in the shipped demo
@@ -240,19 +310,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Found while auditing the docs against the code. All are documented where an
 operator would hit them; none is fixed yet.
 
-- **Enforcement mode is not restored on gateway restart.** `_build_config` sends
-  `mode` and `SidecarConfig` has the field, but `_apply_bundle` never reads it, so
-  a restarted gateway comes up on the default `enforce` no matter what the control
-  plane holds — and the Gateways page keeps rendering the stored `Shadow`. The
-  drift is toward enforcing, so a restart can start blocking traffic meant only to
-  be observed. Click Push on the Gateways page after any restart.
-- **A queued config push is dropped by the reconnect that should deliver it.**
-  `gateway_register` pops `config_queue` into `bundle["queued_updates"]`, a key
-  nothing on the gateway side reads; the pop empties the queue, so no later
-  heartbeat recovers it. The heartbeat path uses `config_updates`, which
-  *is* applied. Only deltas that were never persisted are actually lost — which
-  is exactly what `POST /api/gateways/{id}/push-config` (the Policies and Quotas
-  page buttons) sends.
 - **`make clean-start` doesn't fully wipe.** It deletes
   `control-plane/backend/data/state.json`, the path from before `env.data_dir()`;
   live state is at `control-plane/data/state.json`, and the lifespan restores it

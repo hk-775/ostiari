@@ -43,6 +43,7 @@ def _reset_in_memory_state() -> None:
         agent_routing,
         agents,
         approvals,
+        experiments,
         model_config,
         providers,
         quotas,
@@ -53,12 +54,14 @@ def _reset_in_memory_state() -> None:
         (agents, "_agents"),
         (approvals, "_pending"),
         (agent_routing, "_policies"),
+        (experiments, "_experiments"),
         (model_config, "_models"),
         (providers, "_providers"),
         (quotas, "_quotas"),
         # _next_id too: leaving it set would make a later test's first quota id
         # continue from a previous test's count.
         (quotas, "_next_id"),
+        (quotas, "_alerts"),
         (traces, "_recent_traces"),
         (traces, "_session_parents"),
         (traces, "_ws_clients"),

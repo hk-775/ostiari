@@ -462,7 +462,7 @@ UI calls:
 | Quotas page → **Push** | same, with `{quota: {...}}` | **Nothing.** Stored, echoed by `GET /config`, never enforced. Tools are cleared as a side effect. |
 | Quotas API → `POST /api/quotas/{id}/push` | `POST /config/quota` | Works — this is the gate endpoint. |
 | Agent Quotas / Models pages | `POST /config/agent-auth` | Works — gate endpoint. |
-| Gateway registration + heartbeat | `_apply_bundle` (not `/config`) | Works — it configures each gate explicitly and touches only the keys present. |
+| Gateway registration + heartbeat | `_apply_bundle` (not `/config`) | Works — it configures each gate explicitly and touches only the keys present, including `mode` and `ab_experiments`. |
 
 So the Quotas page's **Push** button does not enforce the quota it just pushed,
 and nothing in the UI calls `POST /api/quotas/{id}/push` — the endpoint that
@@ -2635,9 +2635,22 @@ alert doesn't block anything, the budget projection does.
 | 1.0 | `100%` | Budget spent — the projection is already rejecting |
 
 Every crossing logs at **WARNING** (`Budget alert [80%]: $x / $y`) whether or not
-callbacks are registered, so alerting via log scraping needs no code. For
-programmatic handling, register on the enforcer instance — the callback signature is
-`(threshold_label: str, current_spend: float, budget_limit: float)`:
+callbacks are registered, so alerting via log scraping needs no code.
+
+**One subscriber is registered by default:** the gateway reports every crossing to
+the control plane at `POST /api/quotas/alerts` via the trace reporter, so alerts are
+visible from `GET /api/quotas/alerts` without writing any code. `record_spend` is
+synchronous, so the report is dispatched as a task on the running event loop; called
+outside a loop (a sync script or test) it logs and the spend still books, rather
+than failing the booking. Delivery is fire-and-forget — a control plane that's down
+loses the notification, not the spend.
+
+Note that a single large spend can cross **two** thresholds at once — $9 against a
+$10 budget fires both `80%` and `90%` — so one call can produce two alerts.
+
+For additional programmatic handling, register on the enforcer instance — the
+callback signature is `(threshold_label: str, current_spend: float,
+budget_limit: float)`:
 
 ```python
 # quota_enforcer is the QuotaEnforcer the gateway constructed at startup
@@ -2651,8 +2664,8 @@ inside the callback. A callback that raises is logged and the remaining callback
 still fire; it never breaks the request that triggered it.
 
 Quota config is a flat map pushed from the control plane. There is **no** `alerts`
-list, no `period`, and no webhook action — thresholds are hardcoded and delivery is
-in-process:
+list, no `period`, and no webhook action — thresholds are hardcoded, and delivery is
+a log line plus the control-plane report:
 
 ```json
 {
@@ -2863,7 +2876,7 @@ sequenceDiagram
 
     Admin->>CP: Create quota scoped to gateway "crm-agent"
     Admin->>CP: POST /api/quotas/{id}/push
-    CP->>GW: POST {gateway.endpoint}/config/quota<br/>{rate_limit_rpm, budget_limit_usd,<br/>max_tokens_per_request, allowed_models}
+    CP->>GW: POST {gateway.endpoint}/config/quota<br/>{rate_limit_rpm, budget_limit_usd,<br/>max_tokens_per_request, allowed_models,<br/>pricing}
     GW->>GW: QuotaEnforcer.configure() — hot-reload
     GW-->>CP: 200 (the enforcer's status payload)
 
@@ -2880,10 +2893,13 @@ Four things to know about the push:
   `budget_limit_usd` sets it to `None` and **removes** the budget limit. That's
   consistent, but it means editing one field in the UI and re-pushing carries the
   others along only because the stored quota still holds them.
-- **`pricing` and `budget_key` are not pushable from here.** The push builds a
-  four-field payload; the enforcer accepts both extra keys, but `POST /api/quotas`
-  has no field for either. Set them by calling the gateway's `/config/quota`
-  directly.
+- **`pricing` is pushed; `budget_key` is not.** The payload carries a `pricing`
+  table built from the model registry (`model_config.py::pricing_table(org)`) —
+  the registry stores per-1k costs, the same unit the enforcer wants, so it's a
+  rename rather than a conversion. Models priced `0.0` on both sides are omitted,
+  because a missing entry falls back to `DEFAULT_PRICING` while a `0.0` entry
+  would assert a real model is free and disable the budget for it. `budget_key`
+  has no field on `POST /api/quotas`; set it by calling `/config/quota` directly.
 - **The control-plane quota store is a per-org dict, not a table** (`_quotas`).
   It's serialized to `state.json` in `lifespan`'s shutdown half and reloaded on
   boot, so quotas survive a *graceful* restart and are lost on `kill -9`. The
@@ -3093,12 +3109,26 @@ Note the "Multi-Step Plan" card is described in the UI as "10 steps" but runs si
 
 ### Code Tab
 
-A code editor with a Python template. **The editor's contents are not executed.**
-`runCode` ignores the textarea and always issues one fixed request —
-`POST /tool/db_query` with `{"sql": "SELECT * FROM users"}` — then prints the
-status and JSON. There is no backend executor and nothing is sandboxed; the tab
-is a canned demo of a governed tool call, and editing the code changes nothing
-about what runs. Treat the template as documentation:
+A code editor whose **tool calls are issued for real** — but whose code is not
+interpreted. `runCode` scans the editor for `/tool/<name>` calls, extracts each
+one's JSON body, and issues them sequentially through the gateway as
+`X-Agent-Id: sandbox-code`, streaming each response as it lands. There is no
+backend executor, so this is deliberately not `eval`: adding one would mean a
+remote-code endpoint on the control plane.
+
+What that boundary means in practice: the calls you write are the calls that
+happen, and they travel the full gate chain — but loops, conditionals, variables,
+and `print()` are not evaluated. A call inside an `if False:` is still issued. For
+real agent logic, run it locally against the gateway.
+
+Because the calls are governed, a refusal is a **result**, not a failure: `403`
+renders as `✗ BLOCKED` and `429` as `✗ QUOTA`, which is the distinction the
+scenario cards above get wrong. Body extraction handles `requests.post(json={...})`,
+`httpx`, `fetch(body: JSON.stringify({...}))`, and `curl -d '{...}'`, tolerating
+Python literals (`True`/`False`/`None`, single quotes), unquoted JS object keys, and
+trailing commas. A body it can't parse becomes `{}` rather than skipping the call.
+
+The default template exercises both outcomes:
 
 ```python
 import requests
@@ -3106,8 +3136,11 @@ import requests
 GATEWAY = "/api/proxy/gateway/crm-agent"
 
 resp = requests.post(f"{GATEWAY}/tool/db_query", json={"sql": "SELECT * FROM users"})
-print(f"Status: {resp.status_code}")
-print(f"Result: {resp.json()}")
+print(resp.status_code, resp.json())
+
+# A tool the default policy blocks — expect 403.
+resp = requests.post(f"{GATEWAY}/tool/db_delete", json={"table": "users"})
+print(resp.status_code, resp.json())
 ```
 
 ### A2A Tab
@@ -3168,7 +3201,7 @@ All providers use the same unified interface internally. The gateway (via AxonLL
 | **Cost reporting** | Reports token usage to the control plane — **`/invoke` only; shim traffic is absent from the Cost Dashboard** | Automatic when LLM Gateway active |
 | **Local cost calculation** | Computes cost per request using per-model pricing table | Pricing pushed via /config/quota |
 | **Pre-request budget projection** | Estimates cost before the LLM call, blocks if over budget; reservations close the concurrent-overshoot window | Yes — budget config in quota |
-| **Budget alert thresholds** | Logs a WARNING and fires `on_budget_alert` callbacks at 80/90/100% | No — `BUDGET_ALERT_THRESHOLDS` is a fixed constant, not configurable |
+| **Budget alert thresholds** | Logs a WARNING at 80/90/100% and reports each crossing to the control plane (`GET /api/quotas/alerts`) | No — `BUDGET_ALERT_THRESHOLDS` is a fixed constant, not configurable |
 | **Quota enforcement** | Rate limits, budget caps, model allowlist, max_tokens | Yes — /api/quotas + push (in-memory store, lost on restart) |
 | **Max tokens silent cap** | Caps output tokens without rejecting the request | Yes — max_tokens in quota |
 | **Budget period rollover** | **Does not exist.** Spend is a running total; `/config/budget-reset` stores a schedule nothing reads | Drive `POST /config/quota/reset-spend` from cron |

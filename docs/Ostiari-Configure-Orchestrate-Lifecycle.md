@@ -25,9 +25,11 @@ This document explains how Ostiari manages the lifecycle of the components it go
 All config lives in the Control Plane — policies, quotas, models, agent-auth, provider keys. Gateways are *consumers* of this config, not owners.
 
 If a gateway restarts, it doesn't lose config: registration returns the full bundle
-and the gateway applies it. Two things in that bundle are **not** reapplied today —
-the enforcement mode and anything left in the pending-push queue. Both are covered
-below (§2 and §4), and both are repaired by clicking Push on the Gateways page.
+and the gateway applies it — tools, policy, MCP servers, payments, quotas,
+agent-auth, A/B experiments, and the enforcement mode. Anything left in the
+pending-push queue arrives beside the bundle as `config_updates` and is applied
+after it (§2, Caveat 2). What is *not* recoverable is a `push-config` body that was
+never persisted; clicking Push on the Gateways page re-sends stored state.
 
 ### 2. Push is Best-Effort, Not Required
 
@@ -44,37 +46,24 @@ is the stored config itself, so a gateway that registers later still gets the
 current state in its bundle; what's lost is the delta that was waiting. Restarting
 the control plane while a gateway is down is the case to watch.
 
-**Caveat 2 — a queued push is dropped by the very reconnect that should deliver
-it.** `gateway_register` pops the queue into `bundle["queued_updates"]`, but
-nothing on the gateway side reads that key — `_apply_bundle` in
-`gateway/ostiari_gateway/server.py` looks at `tools`, `policy`, `quotas`/`quota`,
-`agent_auth`, and `payments` only. So the pop clears the queue and the payload goes
-nowhere. Verified end to end:
+**Caveat 2 — the queue is a sibling key, not part of the bundle.** `gateway_register`
+drains `config_queue` into a top-level `config_updates` on the response, *beside*
+`config`, and `lifecycle.register()` applies the bundle first and then each queued
+update in order — so a queued change wins over the stored config it was meant to
+change. It cannot be nested inside `config`, because the gateway applies that as a
+single document and an unrecognized key inside it is silently dropped. (It used to be
+`bundle["queued_updates"]`, which is exactly what happened: the pop cleared the queue
+and the payload went nowhere, so no later heartbeat could recover it either.)
 
-```
-# gateway down, operator pushes a policy
-POST /api/gateways/probe-gw/push-config {"policy":{"block":["LOST_ON_RESTART"]}}
-  → {"status":"queued","reason":"became_unreachable"}
+The name matches the heartbeat path deliberately — `_heartbeat_loop` reads
+`config_updates` and applies each entry the same way, so both reconnect paths behave
+identically.
 
-# gateway restarts, registers
-GET  http://localhost:8479/config
-  → policy: {"allow":[],"block":[],"rules":[],"thresholds":{}}   ← not applied
-
-# and the queue is now empty, so no later heartbeat can deliver it either
-POST /api/gateways/probe-gw/register
-  → config has no "queued_updates" key
-```
-
-The heartbeat path *does* work — it sends the same list under `config_updates`
-(which `lifecycle._heartbeat_loop` reads and applies one by one). Only the
-register path names the key `queued_updates`, which is the name nothing consumes.
-
-In practice the damage is usually invisible, because the register bundle carries
-the current stored config anyway: a queued policy edit that was also saved to the
-database arrives via `bundle["policy"]`. The delta is lost only when it was
-*never* stored — which is exactly what `POST /{id}/push-config` does, since it
-forwards an arbitrary operator-supplied body without persisting it. That's the
-Policies page's Push button (see §4).
+What was at risk was narrow but real: the register bundle carries the current stored
+config anyway, so a queued policy edit that was also persisted arrived via
+`bundle["policy"]`. Only a delta that was *never* stored was lost — which is exactly
+what `POST /{id}/push-config` sends, since it forwards an arbitrary operator-supplied
+body without persisting it. That's the Policies and Quotas page Push buttons (see §4).
 
 ### 3. Gateway Lifecycle
 
@@ -101,9 +90,9 @@ Gateway reconnects
   → Status returns to "healthy" (green dot)
 ```
 
-Note the asymmetry: on **heartbeat** reconnect the queue arrives as
-`config_updates`, which the gateway applies. On **register** it arrives as
-`queued_updates`, which nothing reads — see §2, Caveat 2.
+Both reconnect paths deliver the queue the same way — as a top-level
+`config_updates` list applied entry by entry after the full bundle, so a queued
+change wins over the stored config. See §2, Caveat 2.
 
 ### 4. Push Button Semantics in the UI
 
@@ -141,28 +130,29 @@ Prefer the **Gateways page** Push (or `POST /api/gateways/push-all`): it rebuild
 the bundle from stored state, so it can't clear anything or leave the gateway
 holding config the control plane doesn't know about.
 
-**Enforcement mode is not restored on restart — Push it back.** `PUT
-/api/gateways/{id}/mode` persists the mode in the gateway record and pushes it
-live, and `_build_config` always sends `mode` explicitly. But the gateway's
-`_apply_bundle` never reads it, so a restarted gateway comes up on the default
-`enforce` regardless of what the control plane holds. Verified:
+**Enforcement mode survives a restart.** `PUT /api/gateways/{id}/mode` persists the
+mode in the gateway record and pushes it live, `_build_config` always sends `mode`
+explicitly, and `_apply_bundle` applies it — **first**, before tools or policy, so a
+gateway the operator left in shadow doesn't spend even one request enforcing while
+the rest of the bundle lands:
 
 ```
 PUT /api/gateways/probe-gw/mode {"mode":"shadow"}
-  → CP record: shadow      → GET :8479/config/mode: {"mode":"shadow"}   ✓ live push works
+  → CP record: shadow      → GET :8479/config/mode: {"mode":"shadow"}   ✓ live push
 
 # restart the gateway
-  → CP record: shadow      → GET :8479/config/mode: {"mode":"enforce"}  ✗ drifted
-
-POST /api/gateways/probe-gw/push
-  → GET :8479/config/mode: {"mode":"shadow"}                            ✓ Push repairs it
+  → CP record: shadow      → GET :8479/config/mode: {"mode":"shadow"}   ✓ restored
 ```
 
-The direction matters: the drift is toward *enforcing* a gateway you had
-deliberately put in shadow, so a restart can start blocking traffic you meant only
-to observe. The Gateways page will show `Shadow` the whole time, because it renders
-the stored record and not the gateway's live state. After any gateway restart,
-click Push (or `push-all`) to reconcile.
+An unrecognized mode value is **ignored rather than defaulted**. A typo must not flip
+a gateway that was deliberately observing into enforcement — the dangerous direction
+here is toward *enforcing*, since that starts blocking traffic you meant only to
+watch.
+
+This used to drift: `_apply_bundle` never read the key, so a restarted gateway came
+up `enforce` regardless, while the Gateways page kept rendering `Shadow` (it shows the
+stored record, not the gateway's live state — so verify with the gateway's
+`GET /config/mode` if you need the truth).
 
 ---
 
@@ -236,10 +226,10 @@ Gateway 3 goes down:
   → CP queues it
 
 Gateway 3 restarts:
-  → Registers → gets full config bundle (tools, policy, quotas, agent_auth, …)
+  → Registers → gets full config bundle (tools, policy, mode, quotas,
+    agent_auth, ab_experiments, …) plus the drained queue as config_updates
+  → Applies the bundle, then each queued change on top (§2, Caveat 2)
   → Starts heartbeating → green dot again
-  → …but the *queued* change is dropped, and mode reverts to enforce (§2, §4)
-  → Click Push on the Gateways page to reconcile
 ```
 
 ---
@@ -284,7 +274,8 @@ If a gateway isn't running:
 - Traces stop (obviously)
 - Config changes written through the *stored* state (Policies/Quotas/Tools CRUD,
   mode) are persisted and arrive in the next register bundle. A `push-config` body
-  is not stored, so it is lost — see §2, Caveat 2.
+  is not stored, so it survives only via the pending-push queue — and only if the
+  control plane doesn't restart first. See §2, Caveats 1 and 2.
 
 ---
 

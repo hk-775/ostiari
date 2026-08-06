@@ -30,14 +30,87 @@ const CODE_TEMPLATE = `import requests
 
 GATEWAY = "${GATEWAY_PROXY}"
 
-# Call a tool through the gateway
-resp = requests.post(f"{GATEWAY}/tool/db_query", json={
-    "sql": "SELECT * FROM users"
-}, headers={"X-Agent-Id": "sandbox-agent"})
+# Every /tool/<name> call below is extracted and really issued through the
+# gateway, in order. Edit the tool names and bodies and re-run.
 
-print(f"Status: {resp.status_code}")
-print(f"Result: {resp.json()}")
+resp = requests.post(f"{GATEWAY}/tool/db_query", json={"sql": "SELECT * FROM users"})
+print(resp.status_code, resp.json())
+
+# A tool the default policy blocks — expect 403.
+resp = requests.post(f"{GATEWAY}/tool/db_delete", json={"table": "users"})
+print(resp.status_code, resp.json())
 `;
+
+/** A tool call extracted from the Code tab's editor. */
+interface ParsedCall {
+  tool: string;
+  body: Record<string, any>;
+}
+
+/**
+ * Extract the gateway tool calls from editor text.
+ *
+ * The Code tab is not a Python interpreter and deliberately isn't one — running
+ * arbitrary user code would mean a remote-eval endpoint on the control plane.
+ * Instead we pull out each `/tool/<name>` call and its JSON body and issue those
+ * for real, so the request travels the actual governance path (policy, quota,
+ * approval, trace) and editing the code changes what runs.
+ *
+ * Understood forms (Python `requests` and JS `fetch`):
+ *   requests.post(f"{GATEWAY}/tool/db_query", json={"sql": "SELECT 1"})
+ *   fetch(`${GATEWAY}/tool/db_query`, { body: JSON.stringify({sql: "SELECT 1"}) })
+ * A call with no parseable body runs with `{}` rather than being skipped —
+ * plenty of tools take no arguments.
+ */
+export function parseToolCalls(source: string): ParsedCall[] {
+  const calls: ParsedCall[] = [];
+  // Find each /tool/<name>, then scan forward for the first balanced {...} on
+  // the same statement. Regex alone can't match nested braces.
+  const toolRe = /\/tool\/([A-Za-z0-9_.:-]+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = toolRe.exec(source)) !== null) {
+    const tool = m[1];
+    // Stop at the end of the statement so the next call's body isn't captured.
+    const rest = source.slice(m.index + m[0].length);
+    const stmtEnd = rest.search(/\n\s*\n|\n(?=[A-Za-z_#])/);
+    const stmt = stmtEnd === -1 ? rest : rest.slice(0, stmtEnd);
+    calls.push({ tool, body: firstJsonObject(stmt) ?? {} });
+  }
+  return calls;
+}
+
+/** The first balanced `{...}` in `text`, parsed leniently. null if none parses. */
+function firstJsonObject(text: string): Record<string, any> | null {
+  for (let start = text.indexOf("{"); start !== -1; start = text.indexOf("{", start + 1)) {
+    let depth = 0;
+    for (let i = start; i < text.length; i++) {
+      if (text[i] === "{") depth++;
+      else if (text[i] === "}") {
+        depth--;
+        if (depth === 0) {
+          const raw = text.slice(start, i + 1);
+          try {
+            // Things JSON rejects that both languages write freely: Python's
+            // single quotes and True/False/None, trailing commas, and JS's
+            // unquoted object keys. The key rule only fires right after `{` or
+            // `,`, so it can't touch a colon inside a string value.
+            const normalized = raw
+              .replace(/'/g, '"')
+              .replace(/\bTrue\b/g, "true")
+              .replace(/\bFalse\b/g, "false")
+              .replace(/\bNone\b/g, "null")
+              .replace(/([{,]\s*)([A-Za-z_$][\w$]*)(\s*:)/g, '$1"$2"$3')
+              .replace(/,(\s*[}\]])/g, "$1");
+            const parsed = JSON.parse(normalized);
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+          } catch { /* not this one — try the next opening brace */ }
+          break;
+        }
+      }
+    }
+  }
+  return null;
+}
 
 export function Sandbox() {
   const [tab, setTab] = useState<Tab>("chat");
@@ -152,17 +225,41 @@ export function Sandbox() {
   const runCode = async () => {
     setCodeRunning(true);
     setCodeOutput("Running...\n");
-    try {
-      // Execute code by sending to a simple eval endpoint (or simulate)
-      // For safety, we'll just execute the fetch calls from the code
-      const resp = await fetch(`${GATEWAY_PROXY}/tool/db_query`, {
-        method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Id": "sandbox-code" },
-        body: JSON.stringify({ sql: "SELECT * FROM users" }),
-      });
-      const data = await resp.json();
-      setCodeOutput(`Status: ${resp.status}\nResult: ${JSON.stringify(data, null, 2)}`);
-    } catch (e: any) {
-      setCodeOutput(`Error: ${e.message}\n\nMake sure the gateway is running at ${GATEWAY_PROXY}`);
+    const calls = parseToolCalls(code);
+    if (calls.length === 0) {
+      setCodeOutput(
+        "No gateway tool calls found in the editor.\n\n" +
+        "This runner is not a Python interpreter — it extracts the tool calls your\n" +
+        "code makes and issues each one through the gateway, so the governance path\n" +
+        "(policy, quota, approval, trace) is the real one. Write calls like:\n\n" +
+        '  requests.post(f"{GATEWAY}/tool/db_query", json={"sql": "SELECT 1"})'
+      );
+      setCodeRunning(false);
+      return;
+    }
+    const lines: string[] = [`Executing ${calls.length} tool call${calls.length !== 1 ? "s" : ""} via ${GATEWAY_PROXY}`, ""];
+    setCodeOutput(lines.join("\n"));
+    for (const call of calls) {
+      try {
+        const resp = await fetch(`${GATEWAY_PROXY}/tool/${call.tool}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Agent-Id": "sandbox-code" },
+          body: JSON.stringify(call.body),
+        });
+        const text = await resp.text();
+        let pretty = text;
+        try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch { /* not JSON — show raw */ }
+        // A block is a result, not a failure: 403/429 is the gateway doing its job,
+        // so label it rather than reporting it as an error.
+        const verdict = resp.ok ? "✓" : resp.status === 403 ? "✗ BLOCKED" : resp.status === 429 ? "✗ QUOTA" : "✗";
+        lines.push(`${verdict} POST /tool/${call.tool}  →  ${resp.status}`);
+        lines.push(`  request:  ${JSON.stringify(call.body)}`);
+        lines.push(pretty.split("\n").map((l) => `  ${l}`).join("\n"), "");
+      } catch (e: any) {
+        lines.push(`✗ POST /tool/${call.tool}  →  ${e.message}`,
+                   `  Is the gateway reachable at ${GATEWAY_PROXY}?`, "");
+      }
+      setCodeOutput(lines.join("\n"));
     }
     setCodeRunning(false);
   };
@@ -291,7 +388,12 @@ export function Sandbox() {
         <div className="grid grid-cols-2 gap-4">
           <div className="card flex flex-col">
             <div className="card-header flex items-center justify-between">
-              <span className="text-xs font-semibold text-stone-500">Agent Code</span>
+              <div>
+                <span className="text-xs font-semibold text-stone-500">Agent Code</span>
+                <p className="text-[10px] text-stone-400">
+                  Each <code>/tool/&lt;name&gt;</code> call is issued for real through the gateway — not a Python interpreter
+                </p>
+              </div>
               <button onClick={runCode} disabled={codeRunning} className="btn-primary text-xs px-3 py-1.5">
                 {codeRunning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
                 Run

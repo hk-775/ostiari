@@ -2,11 +2,14 @@
 
 from collections import defaultdict
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.auth.dependencies import get_current_org
+from control_plane.database import get_db
 from control_plane.models.database import DEFAULT_ORG
+from control_plane.services.audit_service import actor_of, audit
 
 router = APIRouter(prefix="/api/models", tags=["models"])
 
@@ -48,26 +51,85 @@ async def get_model(name: str, org: str = Depends(get_current_org)) -> ModelConf
     return _models[org][name]
 
 
+def _audit_details(m: ModelConfig) -> dict:
+    """The fields of a model worth recording: prices (they drive budget
+    enforcement) and provider mapping (it decides where the data goes)."""
+    return {
+        "input_cost_per_1k": m.input_cost_per_1k,
+        "output_cost_per_1k": m.output_cost_per_1k,
+        "routing_strategy": m.routing_strategy,
+        "max_tokens": m.max_tokens,
+        "providers": [f"{p.provider}:{p.model_id}" for p in m.providers],
+    }
+
+
 @router.post("")
-async def add_model(body: ModelConfig, org: str = Depends(get_current_org)) -> ModelConfig:
+async def add_model(
+    body: ModelConfig,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+) -> ModelConfig:
     _models[org][body.name] = body
+    await audit.log(db, actor_of(request), "create", "model", body.name,
+                    _audit_details(body), org=org)
+    await db.commit()
     return body
 
 
 @router.put("/{name}")
-async def update_model(name: str, body: ModelConfig, org: str = Depends(get_current_org)) -> ModelConfig:
-    if name not in _models[org]:
+async def update_model(
+    name: str,
+    body: ModelConfig,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+) -> ModelConfig:
+    before = _models[org].get(name)
+    if before is None:
         raise HTTPException(status_code=404, detail=f"Model '{name}' not found")
     _models[org][name] = body
+    # Record only what actually changed — a full before/after doubles the row size
+    # and buries the one edited price.
+    old, new = _audit_details(before), _audit_details(body)
+    changes = {k: {"from": old[k], "to": new[k]} for k in new if old[k] != new[k]}
+    await audit.log(db, actor_of(request), "update", "model", name, changes, org=org)
+    await db.commit()
     return body
 
 
 @router.delete("/{name}")
-async def delete_model(name: str, org: str = Depends(get_current_org)):
-    if name not in _models[org]:
+async def delete_model(
+    name: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+):
+    model = _models[org].get(name)
+    if model is None:
         raise HTTPException(status_code=404, detail=f"Model '{name}' not found")
     del _models[org][name]
+    await audit.log(db, actor_of(request), "delete", "model", name,
+                    _audit_details(model), org=org)
+    await db.commit()
     return {"deleted": name}
+
+
+def pricing_table(org: str) -> dict[str, dict[str, float]]:
+    """This org's registry as a gateway-shaped pricing table.
+
+    The gateway's QuotaEnforcer takes ``{model: {"input": x, "output": y}}`` with
+    costs per 1k tokens — the same unit the registry stores — so this is a rename,
+    not a conversion. Models priced at zero are omitted: the enforcer treats a
+    missing model as "fall back to DEFAULT_PRICING", which is a better answer than
+    asserting a real model is free (that would silently disable budget enforcement
+    for it).
+    """
+    return {
+        name: {"input": m.input_cost_per_1k, "output": m.output_cost_per_1k}
+        for name, m in _models[org].items()
+        if m.input_cost_per_1k > 0 or m.output_cost_per_1k > 0
+    }
 
 
 def seed_models():
