@@ -37,7 +37,7 @@ NO token cost tracking. GET /health reports llm_router for the machine-readable
 version. Set OSTIARI_REQUIRE_AXON=1 to refuse to start instead.
 ```
 
-A warning and not a refusal, because AxonLLM is a separate private repo and isn't
+A warning and not a refusal, because AxonLLM is a separate repository and isn't
 on PyPI: requiring it makes it a *deployment* dependency of every gateway, CI
 runner, and contributor checkout — including the ones that only ever proxy tools
 and never make an LLM call. **Set `OSTIARI_REQUIRE_AXON=1` in production**, where

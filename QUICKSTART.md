@@ -1,5 +1,8 @@
 # Ostiari — Quick Start Guide
 
+For the complete capability map and runtime flows, see
+[`docs/features-and-flows.md`](docs/features-and-flows.md).
+
 Choose your path:
 
 | Path | Command | Time | For |
@@ -37,7 +40,7 @@ All components running with real API responses and seeded demo data. Four gatewa
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.11+ for the full platform (the core library and gateway support 3.10+)
 - Node.js 18+
 
 ### Install
@@ -158,7 +161,7 @@ Fresh Ostiari with no demo data. You register your own gateways, agents, and too
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.11+ for the full platform (the core library and gateway support 3.10+)
 - Node.js 18+
 
 ### Install

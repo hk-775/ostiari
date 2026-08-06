@@ -10,7 +10,11 @@ This guide covers **three** ways to stand Ostiari up, end to end:
 
 Parts 1 and 3 include **per-feature configuration** walkthroughs with diagrams. Part 2 is intentionally turnkey — one command brings everything up.
 
-> **Related docs:** [`QUICKSTART.md`](QUICKSTART.md) is the condensed cheat-sheet; [`deploy/README.md`](deploy/README.md) is the deployment reference; [`docs/control-plane-guide.md`](docs/control-plane-guide.md) covers the UI in depth.
+> **Related docs:** [`QUICKSTART.md`](QUICKSTART.md) is the condensed cheat-sheet;
+> [`deploy/README.md`](deploy/README.md) is the deployment reference;
+> [`docs/control-plane-guide.md`](docs/control-plane-guide.md) covers the UI in
+> depth; and [`docs/features-and-flows.md`](docs/features-and-flows.md) is the
+> canonical inventory of implemented features and their end-to-end flows.
 
 ---
 
@@ -50,7 +54,10 @@ Ostiari is a **runtime governance layer for AI agents**. Every tool call, model 
 | Control-plane backend | `control-plane/backend` | 8400 | FastAPI; fleet management, policy, traces, persistence |
 | Control-plane frontend | `control-plane/frontend` | 9000 | React/Vite dashboard UI |
 
-**Prerequisites (Parts 1 & 2):** Python 3.10+, Node.js 18+. No AWS account or cloud credentials are required for local use — all AWS integrations (Bedrock, S3) are optional and import-guarded.
+**Prerequisites (Parts 1 & 2):** Python 3.11+ for the full platform (the core
+library and gateway support 3.10+), plus Node.js 18+. No AWS account or cloud
+credentials are required for local use — all AWS integrations (Bedrock, S3) are
+optional and import-guarded.
 
 ---
 

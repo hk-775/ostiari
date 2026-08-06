@@ -49,13 +49,17 @@ data.
 — a complete, novice-friendly tour of the control plane with architecture
 diagrams, best practices, and pitfalls.
 
-## The two halves
+## The three layers
 
 | | What it is | Where |
 |---|---|---|
 | **Gateway** (sidecar) | A proxy that runs next to each agent and enforces the rules in the request path. Fast, local. | `gateway/` |
 | **Control Plane** | The central brain + dashboard: configure policies once and push them to every gateway; watch the whole fleet. | `control-plane/` |
 | **Guard** (library) | The embeddable risk engine — use it directly in Python without the gateway. | `src/ostiari/` |
+
+For a complete inventory of implemented capabilities and their request,
+configuration, approval, telemetry, and deployment flows, see
+[`docs/features-and-flows.md`](docs/features-and-flows.md).
 
 ## The gate chain
 
@@ -289,6 +293,8 @@ docs/                 # architecture + the control plane guide
 
 ## Documentation
 
+- [`docs/features-and-flows.md`](docs/features-and-flows.md) — canonical feature
+  inventory and end-to-end flows, grounded in the current code
 - [`STARTUP.md`](STARTUP.md) — full startup & deployment guide: local (no demo),
   local (full demo), and enterprise service, with per-feature config and diagrams
 - [`QUICKSTART.md`](QUICKSTART.md) — condensed quick-start cheat-sheet
