@@ -172,7 +172,7 @@ Authoritative source: `http://localhost:8400/docs` (generated from the app).
 | `/api/gateways/{gateway_id}/register` | POST | Self-registration (called by the gateway on boot) |
 | `/api/gateways/{gateway_id}/heartbeat` | POST | Liveness ping (called by the gateway) |
 | `/api/gateways/{gateway_id}/health` | GET | Check gateway health |
-| `/api/gateways/{gateway_id}/mode` | PUT | Set enforcement mode (`enforce` \| `shadow`), persist it, and push it live. **Not restored on gateway restart** — `_apply_bundle` doesn't read `mode`, so a restarted gateway comes up on `enforce` while this page still shows `Shadow`. Push from the Gateways page after any restart |
+| `/api/gateways/{gateway_id}/mode` | PUT | Set enforcement mode (`enforce` \| `shadow`), persist it, and push it live. Registration and reconnect bundles include the stored mode, so it is restored after a gateway restart |
 | `/api/gateways/push-all` | POST | Push config to all gateways |
 
 ### Tools
@@ -621,5 +621,7 @@ to the control plane:
 ## Related
 
 - [Gateway](../gateway/) — the runtime proxy that sits between agents and tools
+- [Features and Flows](../docs/features-and-flows.md) — complete capability map
+  and end-to-end runtime flows
 - [Getting Started Guide](docs/getting-started.md) — full walkthrough from zero to running fleet
 - [Control Plane Guide](../docs/control-plane-guide.md) — novice-friendly tour with diagrams and pitfalls
