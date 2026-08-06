@@ -2060,7 +2060,7 @@ traffic keeps flowing and `/health` keeps saying "ok". So a gateway that starts
 without it logs a warning naming exactly what stopped applying, rather than
 letting the absence be discovered later from a cost report that never filled in.
 
-It warns rather than refuses because AxonLLM is a separate private repo and isn't
+It warns rather than refuses because AxonLLM is a separate repository and isn't
 on PyPI — a hard requirement makes it a deployment dependency of every gateway, CI
 runner, and contributor checkout, including the ones that only ever proxy tools.
 `OSTIARI_REQUIRE_AXON=1` restores the refusal and **is the right setting in
