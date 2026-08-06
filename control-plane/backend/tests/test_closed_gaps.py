@@ -117,6 +117,124 @@ class TestBudgetAlerts:
         try to parse "alerts" as an int quota id and 422."""
         assert (await client.request("DELETE", "/api/quotas/alerts")).status_code == 200
 
+    async def test_adding_put_did_not_disturb_the_alert_routes(self, client):
+        """PUT /{quota_id} is the only PUT on this router, so it cannot shadow the
+        /alerts routes — but assert that directly rather than trusting it.
+
+        PUT /api/quotas/alerts itself 422s (the path-param route matches and can't
+        parse "alerts" as an int) rather than 405. That's inherent to a path-param
+        PUT and harmless: there is no PUT /alerts to reach.
+        """
+        await _make_gateway(client)
+        await client.post("/api/quotas/alerts", json={"gateway_id": "gw1", "threshold": "80%"})
+        assert len((await client.get("/api/quotas/alerts")).json()) == 1
+        assert (await client.request("DELETE", "/api/quotas/alerts")).json() == {"cleared": 1}
+        assert (await client.put("/api/quotas/alerts", json={})).status_code == 422
+
+    async def test_alerts_survive_a_restart(self, client):
+        """The store is bounded, not disposable.
+
+        Every other in-memory store (quotas, experiments, models, providers) is
+        written to state.json on shutdown; alerts were the one that wasn't, so a
+        control-plane bounce silently discarded the record that a gateway had blown
+        through 100% of its budget.
+        """
+        from collections import deque
+
+        from control_plane.routers.quotas import ALERT_HISTORY, BudgetAlert, _alerts
+
+        await _make_gateway(client)
+        for t in ("80%", "100%"):
+            await client.post("/api/quotas/alerts", json={
+                "gateway_id": "gw1", "threshold": t, "spend_usd": 9.0, "budget_usd": 10.0})
+
+        # What the lifespan writes...
+        dumped = [{**rec.model_dump(), "_org": org}
+                  for org, seq in _alerts.items() for rec in seq]
+        assert [d["threshold"] for d in dumped] == ["80%", "100%"]
+
+        # ...survives a process boundary and reloads in the same order.
+        _alerts.clear()
+        assert (await client.get("/api/quotas/alerts")).json() == []
+        for a in dumped:
+            data = {k: v for k, v in a.items() if k != "_org"}
+            _alerts[a["_org"]].append(BudgetAlert(**data))
+
+        alerts = (await client.get("/api/quotas/alerts")).json()
+        assert [a["threshold"] for a in alerts] == ["100%", "80%"]   # newest first
+        assert alerts[0]["spend_usd"] == 9.0 and alerts[0]["gateway_id"] == "gw1"
+
+        # Restored as a bounded deque, not a plain list: reloading must not quietly
+        # remove the cap that keeps a chatty fleet from growing this forever.
+        assert isinstance(_alerts["default"], deque)
+        assert _alerts["default"].maxlen == ALERT_HISTORY
+
+
+# ─── Editing a quota actually saves ──────────────────────────────────────────
+
+class TestQuotaUpdate:
+    """PUT /api/quotas/{id} had no handler, but the Quotas page's Edit → Save
+    button called it. It answered 405; the panel closed and the list refetched
+    unchanged, which is indistinguishable from a successful save.
+    """
+
+    async def _quota(self, client, **kw):
+        body = {"name": "q1", "scope": "gateway", "scope_id": "gw1",
+                "rate_limit_rpm": 60, "budget_limit_usd": 10.0, **kw}
+        return (await client.post("/api/quotas", json=body)).json()
+
+    async def test_update_persists(self, client):
+        q = await self._quota(client)
+        r = await client.put(f"/api/quotas/{q['id']}", json={"budget_limit_usd": 99.5})
+        assert r.status_code == 200, r.text
+        assert r.json()["budget_limit_usd"] == 99.5
+        listed = (await client.get("/api/quotas")).json()
+        assert listed[0]["budget_limit_usd"] == 99.5
+
+    async def test_omitted_fields_are_untouched(self, client):
+        """A partial body must not blank the limits it doesn't mention — the edit
+        panel sends only the fields the operator filled in."""
+        q = await self._quota(client)
+        r = await client.put(f"/api/quotas/{q['id']}", json={"budget_limit_usd": 1.0})
+        assert r.json()["rate_limit_rpm"] == 60
+        assert r.json()["name"] == "q1"
+
+    async def test_explicit_null_clears_a_limit(self, client):
+        """Distinct from omission: this is how an operator removes a budget cap."""
+        q = await self._quota(client)
+        r = await client.put(f"/api/quotas/{q['id']}", json={"budget_limit_usd": None})
+        assert r.json()["budget_limit_usd"] is None
+        assert r.json()["rate_limit_rpm"] == 60      # still untouched
+
+    async def test_empty_body_is_a_noop(self, client):
+        q = await self._quota(client)
+        r = await client.put(f"/api/quotas/{q['id']}", json={})
+        assert r.status_code == 200
+        assert r.json()["rate_limit_rpm"] == 60 and r.json()["budget_limit_usd"] == 10.0
+
+    async def test_missing_quota_404s(self, client):
+        assert (await client.put("/api/quotas/9999", json={"budget_limit_usd": 1})).status_code == 404
+
+    async def test_update_is_audited(self, client):
+        """Spend and rate controls: "who raised this budget" is an audit question,
+        so the update leaves a trail like create and delete do."""
+        q = await self._quota(client)
+        await client.put(f"/api/quotas/{q['id']}", json={"budget_limit_usd": 500.0})
+        rows = await _audit_entries(client, "quota")
+        assert [e["action"] for e in rows] == ["create", "update"]
+        assert rows[-1]["details"]["budget_limit_usd"] == 500.0
+
+    async def test_another_org_cannot_edit(self, client):
+        """The store is per-org, so a quota id from one tenant must not resolve in
+        another — same 404 as a nonexistent id."""
+        from control_plane.auth.service import create_access_token
+
+        q = await self._quota(client)
+        tok = create_access_token(user_id=1, email="b@t.io", role="admin", org="org-b")
+        r = await client.put(f"/api/quotas/{q['id']}", json={"budget_limit_usd": 1},
+                             headers={"Authorization": f"Bearer {tok}"})
+        assert r.status_code == 404
+
 
 # ─── A/B experiments now reach the gateway ───────────────────────────────────
 
