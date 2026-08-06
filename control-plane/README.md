@@ -226,6 +226,15 @@ Models are keyed by **name**, not a numeric id.
 | `/api/quotas` | POST | Create a quota (rate limit, budget, model allowlist, `max_tokens`) |
 | `/api/quotas/{quota_id}` | DELETE | Remove a quota |
 | `/api/quotas/{quota_id}/push` | POST | **Push quota to the gateway** — activates runtime enforcement |
+| `/api/quotas/alerts` | POST | Record a budget threshold crossing (80/90/100%) — called by the gateway |
+| `/api/quotas/alerts` | GET | Budget alerts from this org's gateways, newest first |
+| `/api/quotas/alerts` | DELETE | Acknowledge (clear) this org's alerts; returns the count cleared |
+
+> Budget alerts are held **in memory, capped at 200 per org** — an alert is a
+> notification, not a ledger, and the spend behind it is already in
+> `usage_records`. They do not survive a restart. Ingest is an unauthenticated
+> gateway path like payments and approvals, so the org comes from the reporting
+> gateway's row rather than the payload.
 
 > **Important:** Creating a quota only saves it in the control plane. You must
 > call `/api/quotas/{id}/push` to activate enforcement — that route forwards to
@@ -307,6 +316,7 @@ so they have no control-plane CRUD of their own.
 | `/api/experiments` | POST | Create a new experiment |
 | `/api/experiments/{name}` | DELETE | Delete an experiment |
 | `/api/experiments/{name}/toggle` | PATCH | Enable/disable an experiment |
+| `/api/experiments/{name}/push` | POST | Re-push this experiment's gateway set — for a gateway that was down when it was created (502 if still unreachable) |
 | `/api/experiments/{name}/results` | GET | Compare model A vs model B stats (`?period_days=7`) |
 
 ### Traces
