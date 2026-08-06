@@ -44,6 +44,12 @@ class LifecycleManager:
             # Apply config bundle if callback is set
             if self._config_callback and "config" in data:
                 self.apply_config(data["config"])
+            # Then drain any partial updates queued while we were down. These are
+            # applied AFTER the full bundle so a queued change wins over the
+            # baseline it was meant to amend — same ordering as the heartbeat path.
+            if self._config_callback:
+                for update in data.get("config_updates") or []:
+                    self.apply_config(update)
             return data
         except httpx.HTTPStatusError as e:
             log.error(f"Registration failed: HTTP {e.response.status_code}")

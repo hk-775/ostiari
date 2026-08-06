@@ -1,14 +1,15 @@
 """MCP Server management API."""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
 from control_plane.models.database import Gateway, McpServer
-from control_plane.models.scoping import get_scoped, scoped, stamp
 from control_plane.models.schemas import McpServerCreate, McpServerResponse
+from control_plane.models.scoping import get_scoped, scoped, stamp
+from control_plane.services.audit_service import actor_of, audit
 
 router = APIRouter(prefix="/api/mcp-servers", tags=["mcp-servers"])
 
@@ -23,7 +24,7 @@ async def list_mcp_servers(gateway_id: str | None = None, db: AsyncSession = Dep
 
 
 @router.post("/{gateway_id}", response_model=McpServerResponse)
-async def add_mcp_server(gateway_id: str, body: McpServerCreate, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+async def add_mcp_server(gateway_id: str, body: McpServerCreate, request: Request, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
     gateway = await get_scoped(db, Gateway, gateway_id, org)
     if not gateway:
         raise HTTPException(status_code=404, detail="Gateway not found")
@@ -53,6 +54,14 @@ async def add_mcp_server(gateway_id: str, body: McpServerCreate, db: AsyncSessio
     )
     stamp(mcp, gateway.org_id)
     db.add(mcp)
+    await db.flush()
+    # An MCP server is a whole toolset arriving from outside — the allow/block
+    # lists here decide what an agent can reach, so record who set them.
+    await audit.log(db, actor_of(request), "create", "mcp_server", str(mcp.id),
+                    {"name": body.name, "mode": body.mode, "gateway_id": gateway_id,
+                     "url": body.url, "package": body.package, "command": body.command,
+                     "allowed_tools": body.allowed_tools, "blocked_tools": body.blocked_tools},
+                    org=gateway.org_id or org)
     await db.commit()
     await db.refresh(mcp)
     return mcp
@@ -67,17 +76,21 @@ async def get_mcp_server(mcp_id: int, db: AsyncSession = Depends(get_db), org: s
 
 
 @router.delete("/{mcp_id}")
-async def delete_mcp_server(mcp_id: int, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+async def delete_mcp_server(mcp_id: int, request: Request, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
     mcp = await get_scoped(db, McpServer, mcp_id, org)
     if not mcp:
         raise HTTPException(status_code=404, detail="MCP server not found")
+    # Capture before the delete — the response also reads mcp.name.
+    name, gw = mcp.name, mcp.gateway_id
     await db.delete(mcp)
+    await audit.log(db, actor_of(request), "delete", "mcp_server", str(mcp_id),
+                    {"name": name, "gateway_id": gw}, org=org)
     await db.commit()
-    return {"deleted": mcp_id, "name": mcp.name}
+    return {"deleted": mcp_id, "name": name}
 
 
 @router.post("/{mcp_id}/discover")
-async def discover_tools(mcp_id: int, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+async def discover_tools(mcp_id: int, request: Request, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
     """Ask the gateway to discover/refresh tools from this MCP server."""
     import httpx
 
@@ -93,6 +106,11 @@ async def discover_tools(mcp_id: int, db: AsyncSession = Depends(get_db), org: s
         try:
             resp = await client.post(f"{gateway.endpoint}/config/mcp-servers/{mcp.name}/refresh")
             if resp.status_code == 200:
+                # A refresh can change the tool surface an agent can call, so it
+                # belongs in the trail even though no CP row changed.
+                await audit.log(db, actor_of(request), "discover", "mcp_server", str(mcp_id),
+                                {"name": mcp.name, "gateway_id": mcp.gateway_id}, org=org)
+                await db.commit()
                 return resp.json()
             return {"error": f"Gateway returned {resp.status_code}", "detail": resp.text[:200]}
         except httpx.ConnectError:

@@ -119,3 +119,13 @@ class AuditService:
 
 
 audit = AuditService()
+
+
+def actor_of(request: Any) -> str:
+    """The actor to attribute a change to: the X-Actor header, else "system".
+
+    Lives here so every router audits the same way — it was duplicated in the
+    gateway and policy routers, which is how the other routers ended up with no
+    audit trail at all.
+    """
+    return request.headers.get("X-Actor", "system") if request is not None else "system"

@@ -140,6 +140,29 @@ class TraceReporter:
         except Exception as e:
             log.debug("Failed to report payment: %s", e)
 
+    async def report_budget_alert(
+        self, *, threshold: str, spend_usd: float, budget_usd: float
+    ) -> None:
+        """Report a crossed budget threshold to the control plane.
+
+        Fire-and-forget, like trace reporting. The gateway logs the alert either
+        way; this is what makes it visible to an operator who isn't tailing logs.
+        """
+        if not self.enabled:
+            return
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=3.0)
+        try:
+            await self._client.post(f"{self._url}/api/quotas/alerts", json={
+                "gateway_id": self._sidecar_id,
+                "threshold": threshold,
+                "spend_usd": round(spend_usd, 4),
+                "budget_usd": budget_usd,
+                "timestamp": time.time(),
+            })
+        except Exception as e:
+            log.debug("Failed to report budget alert: %s", e)
+
     async def push_spend_snapshot(self) -> None:
         """Push current per-agent spend to the Control Plane for persistence."""
         if not self.enabled or not self._agent_auth:

@@ -23,6 +23,38 @@ class LLMGatewayModule:
         self._messages_proxy: MessagesProxy | None = None
         self._chat_proxy: Any = None
 
+    def _resync_proxy(self) -> None:
+        """Point the /v1/* shims at the current config/router/provider/security.
+
+        Called after every config mutation so a hot reload reaches both the
+        /invoke path and the Claude Code / Codex shims, not just the executor.
+        """
+        if self._messages_proxy and self._executor:
+            self._messages_proxy._config = self._config
+            self._messages_proxy._router = self._executor._router
+            self._messages_proxy._provider = self._executor._provider
+            self._messages_proxy._security = self._executor._security
+            self._messages_proxy._axon = self._executor._axon
+        if self._chat_proxy and self._executor:
+            self._chat_proxy._config = self._config
+            self._chat_proxy._security = self._executor._security
+            self._chat_proxy._axon = self._executor._axon
+
+    def apply_ab_experiments(self, experiments: list[dict[str, Any]]) -> None:
+        """Replace the A/B experiment set, preserving all other LLM config.
+
+        The bundle path into this: the control plane ships ``ab_experiments`` in
+        the registration/reconnect bundle so an experiment survives a gateway
+        restart instead of silently ending.
+        """
+        data = self._config.model_dump()
+        data["ab_experiments"] = experiments
+        self._config = LLMConfig(**data)
+        if self._executor:
+            self._executor.update_config(self._config)
+        self._resync_proxy()
+        log.info("A/B experiments applied: %d", len(self._config.ab_experiments))
+
     @property
     def name(self) -> str:
         return "llm_gateway"
@@ -173,18 +205,9 @@ class LLMGatewayModule:
                 self._executor._intent_cache.clear()
             return {"status": "cleared"}
 
-        def _resync_proxy() -> None:
-            if self._messages_proxy and self._executor:
-                # Keep the shim on the same live config/router/provider/security.
-                self._messages_proxy._config = self._config
-                self._messages_proxy._router = self._executor._router
-                self._messages_proxy._provider = self._executor._provider
-                self._messages_proxy._security = self._executor._security
-                self._messages_proxy._axon = self._executor._axon
-            if self._chat_proxy and self._executor:
-                self._chat_proxy._config = self._config
-                self._chat_proxy._security = self._executor._security
-                self._chat_proxy._axon = self._executor._axon
+        # Same resync the config routes use, as a method so callers outside this
+        # closure (the control-plane config bundle) can apply config too.
+        _resync_proxy = self._resync_proxy
 
         @app.post("/config/llm")
         async def update_llm_config(request: Request) -> Any:
@@ -223,8 +246,32 @@ class LLMGatewayModule:
             return {"agent_routing": {k: v.model_dump()
                                       for k, v in self._config.agent_routing.items()}}
 
+        @app.post("/config/ab-experiments")
+        async def update_ab_experiments(request: Request) -> Any:
+            """Replace the A/B experiment set WITHOUT touching credentials.
+
+            Body: {"ab_experiments": [{"name": ..., "model_a": ..., "model_b": ...,
+                   "traffic_pct_b": 10, "agents": [], "enabled": true}]}. Partial
+            like /config/agent-routing — POST /config/llm is a whole-document
+            replace, so pushing experiments through it would wipe the provider
+            credentials the gateway loaded at startup. Without this endpoint the
+            control plane's experiment store had no way to reach the router, so
+            the split was implemented but never actually ran.
+            """
+            body = await request.json()
+            experiments = body.get("ab_experiments", body if isinstance(body, list) else [])
+            self.apply_ab_experiments(experiments)
+            return {"status": "applied",
+                    "ab_experiments": [e.model_dump() for e in self._config.ab_experiments]}
+
+        @app.get("/config/ab-experiments")
+        async def get_ab_experiments() -> Any:
+            """Return the current A/B experiments."""
+            return {"ab_experiments": [e.model_dump() for e in self._config.ab_experiments]}
+
         log.info("LLM Gateway module registered: POST /v1/messages, POST /invoke, "
-                 "GET /models, POST /config/llm, POST /config/agent-routing")
+                 "GET /models, POST /config/llm, POST /config/agent-routing, "
+                 "POST /config/ab-experiments")
 
     def shutdown(self) -> None:
         self._executor = None

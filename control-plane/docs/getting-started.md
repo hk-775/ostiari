@@ -31,11 +31,11 @@ The control plane provides twelve core capabilities:
 | 4 | **MCP Server Management** | Connect MCP-compatible tool servers (embedded, remote, or stdio) that auto-discover tools |
 | 5 | **Model Configuration** | Central registry of LLM models with pricing, capabilities, providers, and routing strategies. 18 models pre-seeded. |
 | 6 | **Quotas (Runtime Enforced)** | Rate limits, budget caps, model allowlists, and max_tokens caps — pushed to gateways and enforced at runtime |
-| 7 | **Sandbox** | Interactive testing through a real gateway: chat with LLMs, run pre-built scenarios, or exercise A2A. Pinned to `crm-agent`; the Code tab is a fixed probe, not an executor |
+| 7 | **Sandbox** | Interactive testing through a real gateway: chat with LLMs, run pre-built scenarios, or exercise A2A. Pinned to `crm-agent`; the Code tab issues the `/tool/<name>` calls it finds in the editor |
 | 8 | **Cost Dashboard** | Track LLM spend across your fleet, broken down by model, gateway, agent, and day |
-| 9 | **A/B Experiments** | Compare two models on cost/token/request metrics. The gateway implements the traffic split, but the control plane has no push path to it yet — see Step 13 |
+| 9 | **A/B Experiments** | Compare two models on cost/token/request metrics. Creating, toggling, or deleting an experiment pushes the full set to its gateway, which runs the split — see Step 13 |
 | 10 | **Live Trace Viewer** | Watch tool calls happen in real time across all gateways via WebSocket streaming, including /invoke tool calls, session grouping, and parameters. In-memory, 200 per org |
-| 11 | **Audit Log** | Hash-chained, tamper-evident history of gateway and policy changes — who did what, when. Other resource types aren't logged yet |
+| 11 | **Audit Log** | Hash-chained, tamper-evident history of configuration changes — gateways, policies, tools, MCP servers, quotas, models, agents, and experiments |
 | 12 | **Agent Registry** | View all agents across your fleet — framework badges, tools, model, and gateway assignment. 9 agents across 8 frameworks in demo |
 
 ---
@@ -592,11 +592,12 @@ A single push that fails returns **502** with the failure detail, rather than a
 > sends `gateway_id`, `tools`, the merged `policy`, `mcp_servers`, `payments`
 > (when configured), everything in the gateway's stored `config` blob (modules,
 > `llm`, …), and an explicit `mode`. The register/heartbeat path additionally
-> folds in `quotas` and `agent_auth` from that stored blob. But the gateway's
-> `_apply_bundle` only reads tools, policy, MCP, payments, quotas, and
-> agent-auth — it never reads `mode`, so **enforcement mode is not restored
-> after a gateway restart**: a gateway you put in shadow mode comes back
-> *enforcing* until you push again. See
+> folds in `quotas`, `agent_auth`, and `ab_experiments` from that stored blob. The
+> gateway's `_apply_bundle` reads all of these — tools, policy, MCP, payments,
+> quotas, agent-auth, A/B experiments, and `mode`. Mode is applied **first**, before
+> tools or policy, so a gateway the operator left in shadow doesn't spend even one
+> request enforcing. An unrecognized mode value is ignored rather than defaulted, so
+> a typo can't silently flip a deliberately-observing gateway into enforcement. See
 > [`docs/Ostiari-Configure-Orchestrate-Lifecycle.md`](../../docs/Ostiari-Configure-Orchestrate-Lifecycle.md).
 
 ### What happens during a push
@@ -1367,15 +1368,22 @@ above.
 
 ### How model pricing feeds cost enforcement
 
-The gateway's `QuotaEnforcer` *can* take a pushed per-model pricing table — its
+The gateway's `QuotaEnforcer` takes a pushed per-model pricing table — its
 `configure()` reads a `pricing` key, and `_get_pricing()` prefers it over the
-built-in `DEFAULT_PRICING`. **Nothing in the control plane currently sends it.**
-`POST /api/quotas/{id}/push` builds a payload of exactly four keys —
-`rate_limit_rpm`, `budget_limit_usd`, `max_tokens_per_request`, `allowed_models` —
-and `_build_config` doesn't add pricing either. So editing a model's
-`input_cost_per_1k` in the Models page changes what the **control plane** reports
-(the Costs dashboard's `_estimate_cost`) but does not change what the **gateway**
-uses to project a budget.
+built-in `DEFAULT_PRICING`. `POST /api/quotas/{id}/push` sends it: alongside
+`rate_limit_rpm`, `budget_limit_usd`, `max_tokens_per_request`, and
+`allowed_models`, it includes a `pricing` table built from the model registry by
+`model_config.py::pricing_table(org)`. The registry already stores per-1k costs,
+the same unit the enforcer wants, so no conversion happens in between.
+
+So editing a model's `input_cost_per_1k` in the Models page changes both what the
+**control plane** reports (the Costs dashboard's `_estimate_cost`) and — after the
+next quota push — what the **gateway** uses to project a budget.
+
+Models priced at `0.0` on both sides are **omitted** from the pushed table rather
+than sent as free. A missing model means "fall back to `DEFAULT_PRICING`" in the
+gateway, which is safer than asserting a real model costs nothing (that would
+disable the budget for it).
 
 ```mermaid
 sequenceDiagram
@@ -1386,14 +1394,15 @@ sequenceDiagram
     Admin->>CP: Set claude-sonnet pricing: $3/$15 per M tokens
     Note over CP: Feeds /api/costs/summary via MODEL_PRICING
     Admin->>CP: Push quota to gateway
-    CP->>SC: POST /config/quota<br/>{rate_limit_rpm, budget_limit_usd,<br/>max_tokens_per_request, allowed_models}
-    Note over SC: Cost projection uses the gateway's own<br/>DEFAULT_PRICING — the registry edit does NOT<br/>reach it. Pushing `pricing` is supported by<br/>the enforcer but not yet wired up.
+    CP->>SC: POST /config/quota<br/>{rate_limit_rpm, budget_limit_usd,<br/>max_tokens_per_request, allowed_models,<br/>pricing}
+    Note over SC: Cost projection uses the pushed `pricing`<br/>table first, falling back to the gateway's<br/>own DEFAULT_PRICING for anything absent.
 ```
 
-Two independent pricing tables are in play, and they don't agree by construction:
-`control_plane/routers/costs.py::MODEL_PRICING` (5 models, priced per token) and
-`gateway/ostiari_gateway/quota_enforcer.py::DEFAULT_PRICING` (8 models, priced per
-1k tokens). Neither reads the model registry.
+`control_plane/routers/costs.py::MODEL_PRICING` (5 models, priced per token) is
+still a separate table from the pushed one — it backs the Costs dashboard's
+historical reporting, not runtime enforcement, and it doesn't read the registry.
+The gateway's `DEFAULT_PRICING` (8 models, per 1k tokens) is now only a fallback
+for models the pushed table doesn't cover.
 
 ---
 
@@ -1586,13 +1595,21 @@ response = requests.post(f"{GATEWAY}/invoke", json={
 print(f"Response: {response.json()['response']}")
 ```
 
-> **The Code tab does not run your code.** There is no backend executor. `runCode`
-> (`Sandbox.tsx:152`) ignores the editor contents entirely and fires one hardcoded
-> call — `POST /tool/db_query` with `{"sql": "SELECT * FROM users"}` as
-> `X-Agent-Id: sandbox-code` — then prints that response's status and JSON. Editing
-> the code changes nothing about what executes. Treat the tab as a one-button
-> "is the gateway answering?" probe; to actually run agent code, run it locally
-> against the gateway as in Step 7.
+> **The Code tab issues your tool calls; it does not interpret your code.** There
+> is no backend executor, so nothing runs a Python interpreter. What `runCode`
+> does instead: it scans the editor for `/tool/<name>` calls, extracts the JSON
+> body of each, and issues them for real against the gateway in order as
+> `X-Agent-Id: sandbox-code`, streaming each response as it arrives. So the calls
+> you write are the calls that happen — and they travel the full governance path,
+> which is why a `403` is reported as `✗ BLOCKED` and a `429` as `✗ QUOTA` rather
+> than as an error. Loops, conditionals, variables, and `print()` are *not*
+> evaluated; a call inside an `if` is issued unconditionally. For real agent logic,
+> run it locally against the gateway as in Step 7.
+>
+> The body parser accepts what the templates use — `requests.post(json={...})`,
+> `httpx`, `fetch(body: JSON.stringify({...}))`, and `curl -d '{...}'` — and
+> tolerates Python literals (`True`/`None`, single quotes) and unquoted JS keys. A
+> call whose body it can't parse is issued with `{}`.
 
 ### Sandbox uses real enforcement
 
@@ -1610,19 +1627,46 @@ This makes it a true integration test, not a mock.
 
 A/B experiments let you split traffic between two models by percentage and compare their performance side-by-side. This helps answer questions like: "Is GPT-4o-mini good enough for this task, or do we need Claude Sonnet?"
 
-> **The control plane's Experiments API does not reach any gateway.** This is the
-> one feature in this guide where the two halves aren't wired together. The
-> control-plane store (`routers/experiments.py::_experiments`) is a per-org dict
-> that is never read by any push path — there is no `POST /api/experiments/{name}/push`,
-> `push_service` doesn't mention experiments, and `_build_config` doesn't include
-> them. The gateway *does* implement the split (`LLMConfig.ab_experiments` +
-> `router.py::_check_ab_experiments`), but the only way to populate it is a direct
-> `POST /config/llm` to the gateway with an `ab_experiments` list — which the UI
-> never sends (the Models page's "Save Routing" button posts only
-> `routing_rules`). So: creating an experiment in the UI splits no traffic. The
-> `/results` endpoint still works, because it queries `usage_records` by model name
-> — it will report on whatever traffic those two models happened to get for other
-> reasons, which is not the same as an experiment.
+> **How an experiment reaches its gateway.** Creating, toggling, or deleting an
+> experiment pushes the **complete** experiment set for that gateway to
+> `POST /config/ab-experiments` on it. Sending the whole set rather than a delta is
+> what makes a delete take effect — the gateway endpoint replaces
+> `LLMConfig.ab_experiments` wholesale, so an experiment's absence from the pushed
+> document is how it ends.
+>
+> It is a *partial* config endpoint on purpose. `POST /config/llm` is a
+> whole-document replace, so pushing experiments through it would wipe the provider
+> credentials the gateway loaded at startup.
+>
+> The push is **reported, not enforced**. Every mutating response carries
+> `pushed` and `push_error`:
+>
+> ```json
+> {"name": "sonnet-vs-mini", "...": "...", "pushed": false,
+>  "push_error": "All connection attempts failed"}
+> ```
+>
+> A gateway that was down when you created the experiment keeps the experiment
+> stored but not live — so the UI can say "saved, not live" instead of implying the
+> split is running. Re-push it once the gateway is back:
+>
+> ```bash
+> curl -X POST localhost:8400/api/experiments/sonnet-vs-mini/push
+> ```
+>
+> That route returns `502` if the push fails, unlike the create/toggle/delete
+> routes which succeed with `pushed: false`.
+>
+> Experiments also ride the registration bundle (`push_service::_build_config`
+> adds an `ab_experiments` key when the gateway has any), so a gateway restart
+> doesn't silently end a running experiment. The key is omitted entirely when
+> there are none.
+>
+> Two limits worth knowing. The control-plane model has no per-agent scoping, so
+> every pushed experiment applies to **all** of the gateway's agents (`agents: []`
+> is sent explicitly). And `/results` queries `usage_records` by model name, so it
+> reports on all traffic those two models saw — including traffic that reached them
+> for reasons other than this experiment.
 
 ### How it works
 
@@ -2094,17 +2138,34 @@ The gateway calculates LLM cost locally (no round-trip to control plane) and enf
    keys; if that misses too, it falls back to a flat `$0.003 / $0.015` mid-range
    guess. Bedrock model ids are not listed by name and rely on the substring match.
 3. **Budget alert thresholds** — crossing 80%, 90%, or 100%
-   (`BUDGET_ALERT_THRESHOLDS`) emits a `log.warning` **once** per threshold, and
-   would also invoke any callback registered via `on_budget_alert`.
+   (`BUDGET_ALERT_THRESHOLDS`) emits a `log.warning` **once** per threshold and
+   invokes every callback registered via `on_budget_alert`.
 4. **Silent max_tokens cap** — if quota limits output to 2048 tokens but the agent
    requests 4096, the gateway silently uses 2048 (no error, just a shorter response).
 
-> **The alert callbacks have no subscribers.** `on_budget_alert()` exists and the
-> registry works, but nothing in the repo calls it — so today crossing 80% produces
-> a log line and nothing else. No webhook, no email, no control-plane notification.
-> Grep for `on_budget_alert` and you'll find one hit: the definition. If you need
-> alerting, register a callback at gateway startup, or scrape the log / poll
-> `GET /config/quota/status`.
+> **Where a budget alert goes.** The gateway subscribes to `on_budget_alert` at
+> startup and reports each crossing to the control plane at
+> `POST /api/quotas/alerts` — the same unauthenticated gateway ingest path traces
+> and payments use, so the org is resolved from the reporting gateway's row, never
+> from the payload. `record_spend` is synchronous, so the report is handed to the
+> running event loop as a task; if there's no loop (a sync script or test), the
+> alert is logged and the spend still books.
+>
+> Alerts are held **in memory, newest first, capped at 200 per org** — an alert is
+> a notification, and the spend behind it is already durable in `usage_records`.
+> They do not survive a control-plane restart.
+>
+> ```bash
+> curl localhost:8400/api/quotas/alerts            # list this org's alerts
+> curl -X DELETE localhost:8400/api/quotas/alerts  # acknowledge (clear) them
+> ```
+>
+> There is still no webhook or email — to page someone, poll that endpoint or
+> register your own additional callback at gateway startup.
+>
+> One thing to expect: a single large spend can cross **two** thresholds at once
+> (a $9 charge against a $10 budget fires both 80% and 90%), so you may see two
+> alerts from one call. Each threshold still fires only once per budget period.
 
 > **The `max_tokens` cap only applies on `/invoke`.** `cap_max_tokens` is called
 > from one place — `executor.py:162`, the agentic loop. The `/v1/chat/completions`
@@ -2124,21 +2185,43 @@ closes the concurrent-overshoot window but not the estimation one.
 
 ## Audit Log
 
-The audit log records configuration changes to **gateways and policies**. Those are
-the only two routers that call `audit.log` today, so `resource_type` is always
-`gateway` or `policy`:
+The audit log records configuration changes across every mutating router — anything
+that changes what an agent is allowed to do, or what it costs:
 
 | `resource_type` | `action` values | Logged from |
 |---|---|---|
 | `gateway` | `create`, `update`, `delete`, `set_mode`, `push`, `push_all`, plus an auto-register entry | `routers/gateways.py` |
 | `policy` | `create`, `update`, `delete`, `push` | `routers/policies.py` |
+| `tool` | `create`, `delete`, `import_openapi` | `routers/tools.py` |
+| `mcp_server` | `create`, `delete`, `discover` | `routers/mcp_servers.py` |
+| `quota` | `create`, `delete`, `push` | `routers/quotas.py` |
+| `model` | `create`, `update`, `delete` | `routers/model_config.py` |
+| `agent` | `register`, `update` | `routers/agents.py` |
+| `experiment` | `create`, `toggle`, `delete` | `routers/experiments.py` |
 
-> **Tools, MCP servers, quotas, agents, models, and experiments are *not* audited.**
-> Creating an MCP server or changing a quota leaves no audit entry. If you need
-> those covered, the gap is a one-line `await audit.log(...)` per mutating route —
-> see `services/audit_service.py` for the signature. A gateway `push` *is* logged,
-> so a config change that reaches a gateway through a push is at least indirectly
-> visible.
+A few of these deserve their reasoning stated, because the action name is a
+judgment call rather than a mechanical mapping:
+
+- **`mcp_server` / `discover`** is logged even though no control-plane row changes.
+  A rediscovery changes the set of tools an agent can call, which is a change in
+  privilege whether or not it's a change in stored state.
+- **`agent` / `update`** rather than a second `register`: re-registering an existing
+  name with a different tool list is a privilege change, and the trail should say
+  so rather than showing two identical `register` lines.
+- **`tool` / `import_openapi`** writes **one** entry for the whole import, carrying
+  the count and the tool names, not one entry per generated tool. The operator
+  performed one action.
+- **`model` / `update`** records only the fields that actually changed, as
+  `{field: {from, to}}`. The Models page PUTs the whole record, so logging the full
+  body would bury the one price edit that mattered.
+
+Entries are written inside the same transaction as the change they describe, so an
+action that fails to commit leaves no audit entry — and the hash chain stays
+verifiable (`GET /api/audit/verify`) across all of these call sites.
+
+> **Deletes record what was there.** A delete route captures the details it needs
+> (name, gateway, prices) *before* the row is removed — otherwise the entry would
+> describe a resource by an id that no longer resolves to anything.
 
 ### Viewing the audit log
 
@@ -2239,8 +2322,12 @@ resolved by `env.py::data_dir()` and overridable with `OSTIARI_DATA_DIR`:
 > **What does *not* survive a restart:**
 > - **Traces** — in-memory `deque(maxlen=200)` per org, no table, no state.json entry. The Live Traces view starts empty (or re-seeded with demo traces) after every restart.
 > - **Quotas' consumed counters** — only the quota *definitions* are in `state.json`. Rate-limit windows and spend-to-date live in the gateway's `QuotaEnforcer` (or Redis, if `REDIS_ENDPOINT` is set), so restarting a gateway without Redis resets its budget tracking to zero.
-> - **A gateway's enforcement mode** — see the Lifecycle doc; `_apply_bundle` never reads `mode`, so a restarted gateway comes up in its own default (`enforce`) regardless of what the control plane thinks.
 > - **Approvals** — the HITL queue is in-memory too.
+> - **Budget alerts** — in-memory per org, capped at 200. The spend behind each one is durable in `usage_records`; the notification isn't.
+>
+> Restored on reconnect, because the registration bundle carries them: a gateway's
+> **enforcement mode** and its **A/B experiments**. Both used to be lost — a shadow
+> gateway came back enforcing, and a running experiment silently ended.
 
 For production, back up `control_plane.db` **and** `state.json` — the DB alone
 loses every quota, experiment, and model config. Ship traces to a durable backend
@@ -2348,11 +2435,15 @@ surfaces as a 500 rather than being passed through.
 | Quota not enforced | Quota created but not pushed, **or** it isn't gateway-scoped | Click "Push to Gateway"; a non-gateway scope returns 200 `{"status": "skipped"}` — use `agent_auth.budget_usd` for per-agent budgets |
 | Agent gets 429 unexpectedly | Rate limit, budget, **or** a disallowed model — all three are 429 | Read `limit_type` in the body (`rate_limit` / `budget` / `model_restriction`); check quota config and budget usage in Costs |
 | Budget looks exhausted after a gateway restart, or resets unexpectedly | Spend lives in the gateway, not the control plane | Set `REDIS_ENDPOINT` so spend and reservations survive restarts and are shared fleet-wide |
-| No 80% budget warning reached Slack/email | `on_budget_alert` has no registered callbacks | Expected — alerts are log lines only; scrape logs or poll `GET /config/quota/status` |
+| No 80% budget warning reached Slack/email | There's no webhook or email integration — alerts land in the control plane, not in a chat client | Poll `GET /api/quotas/alerts` (in-memory, newest first, 200 per org) and clear with `DELETE`; for paging, register your own `on_budget_alert` callback at gateway startup |
+| Two budget alerts from one call | A single spend can cross two thresholds at once ($9 on a $10 budget crosses 80% and 90%) | Expected — each threshold still fires only once per budget period |
+| Budget alerts stopped once Redis was enabled | Fixed — the threshold check used to read the process-local spend, which stays `0.0` when a shared store is booking it | Update the gateway; verify with `GET /config/quota` reporting `spend_scope: "fleet"` |
 | Agent gets shorter responses | Max tokens cap is active | Check quota's `max_tokens_per_request` (silent cap, not an error). Only applies on `/invoke` — the `/v1/*` shims aren't capped |
 | `/invoke` returns 200 but the answer says "Request blocked by quota" | `/invoke` reports quota refusals in the body, not the status code | Don't gate on status alone for `/invoke`; check the `response` text or use `/tool/{action}`, which does return 429 |
 | Sandbox not connecting | Sandbox is hardcoded to the `crm-agent` gateway (no selector) | Start `crm-agent`, or exercise another gateway via `curl` against `/api/proxy/gateway/{id}/…` |
-| Sandbox Code tab ignores my code | There is no code executor; `runCode` fires a fixed `db_query` | Expected — run agent code locally against the gateway instead |
+| Sandbox Code tab ran a call I put inside an `if` | The tab issues the `/tool/<name>` calls it finds; it does not evaluate Python | Expected — control flow isn't interpreted. Delete the call, or run the logic locally against the gateway |
+| Sandbox Code tab shows `request: {}` | The parser couldn't read that call's JSON body | Put the body in one of the recognized forms — `json={...}`, `body: JSON.stringify({...})`, or `-d '{...}'` |
+| Sandbox Code tab says "no tool calls found" | The editor has no `/tool/<name>` URL in it | Add one, or use the template as a starting point |
 
 ---
 
