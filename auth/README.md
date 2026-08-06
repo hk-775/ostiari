@@ -104,20 +104,24 @@ route-layer seam, and it also falls back to `"default"` for a tokenless request
 (the demo posture — `AuthMiddleware` has already 401'd those when
 `OSTIARI_REQUIRE_AUTH` is on).
 
-Most of the database is scoped: the tables behind gateways, tools, policies, MCP
-servers, usage, A2A agents, wallets, payments, and audit logs each carry an
-`org_id`, and 15 routers scope their queries through
+The database is scoped: the tables behind gateways, tools, policies, MCP servers,
+usage, A2A agents, wallets, payments, audit logs, token pools, and reconciliations
+each carry an `org_id`, and the routers scope their queries through
 `control_plane/models/scoping.py`. Routers whose state is in-memory (quotas,
 agents, models, providers, ROI, agent-routing, discovery) key their dicts by org
 instead, which is equivalent.
 
-**Two known gaps, both in the broker pilot.** `TokenPool` and
-`ReconciliationRecord` have no `org_id` column, and `routers/broker_pilot.py`
-takes no `get_current_org` dependency — so pool inventory, draw-down, and
-reconciliation are global across tenants. `routers/proxy.py` is also
-org-unaware: it resolves a gateway by id and forwards, without checking that the
-caller's org owns it. Neither matters in the single-org deployment that is the
-only supported one today, but both need closing before a second tenant exists.
+`token_pools` is the one table where `org_id` is part of the **primary key** rather
+than an indexed column beside it. Pool identity is `(org, provider)`: two tenants
+must each be able to hold an `anthropic` pool, and with `provider` alone as the key
+the second to fund one would collide with the first — or worse, a lookup would hand
+a tenant whichever row existed and draw *their* traffic down against it. Fetch one
+with `broker_pilot._get_pool(db, org, provider)`; `get_scoped` is the wrong tool
+here, since it fetches by pk and only *then* compares `org_id`.
+
+One route is deliberately unscoped: `GET /api/token-broker/pilot/collector` reports
+which billing backend the process runs, which is deployment config rather than
+tenant data.
 
 Gateways post usage, payments, and approvals with no user token, so their org is
 derived from their own `gateways` row (`org_of_gateway`) rather than trusted from
