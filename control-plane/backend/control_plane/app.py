@@ -65,6 +65,15 @@ async def lifespan(app: FastAPI):
             if quotas:
                 _next_id[org] = max(quotas) + 1
 
+    if "budget_alerts" in state:
+        from control_plane.routers.quotas import BudgetAlert, _alerts
+        for a in state["budget_alerts"]:
+            org = _org_of(a)
+            data = {k: v for k, v in a.items() if k != "_org"}
+            # append, not assign: the deque's maxlen is what bounds this store, and
+            # replacing it with a plain list would quietly remove that bound.
+            _alerts[org].append(BudgetAlert(**data))
+
     if "experiments" in state:
         from control_plane.routers.experiments import ExperimentResponse, _experiments
         for e in state["experiments"]:
@@ -147,7 +156,7 @@ async def lifespan(app: FastAPI):
     from control_plane.routers.experiments import _experiments
     from control_plane.routers.model_config import _models
     from control_plane.routers.providers import _providers
-    from control_plane.routers.quotas import _quotas
+    from control_plane.routers.quotas import _alerts, _quotas
     from control_plane.routers.roi import _cost_model
     from control_plane.routers.token_broker import _config as _tb_config
 
@@ -161,8 +170,21 @@ async def lifespan(app: FastAPI):
                 out.append({**rec.model_dump(), "_org": org})
         return out
 
+    # Same tagging, for the org-keyed stores holding sequences rather than dicts.
+    def _dump_seq(store) -> list:
+        return [
+            {**rec.model_dump(), "_org": org}
+            for org, seq in store.items()
+            for rec in seq
+        ]
+
     save_state({
         "quotas": _dump(_quotas),
+        # Budget alerts were the one in-memory store that wasn't saved, so a
+        # restart silently discarded them — an operator could miss that a gateway
+        # blew through 100% of its budget purely because the control plane
+        # bounced. Bounded by the deque's maxlen, so this stays small.
+        "budget_alerts": _dump_seq(_alerts),
         "experiments": _dump(_experiments),
         "models": _dump(_models),
         "providers": _dump(_providers),

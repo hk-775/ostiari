@@ -27,6 +27,24 @@ class QuotaCreate(BaseModel):
     allowed_models: list[str] = Field(default_factory=list)
 
 
+class QuotaUpdate(BaseModel):
+    """Partial update of an existing quota.
+
+    Every field is optional, and the handler applies only the ones actually
+    present in the request body (`model_dump(exclude_unset=True)`). That keeps
+    `{"budget_limit_usd": null}` — clear the budget cap — distinguishable from a
+    body that never mentions the budget, which must leave it alone. A plain
+    `None` default can't tell those apart, and the frontend's edit panel sends
+    only the fields the operator filled in.
+    """
+
+    name: str | None = None
+    rate_limit_rpm: int | None = None
+    budget_limit_usd: float | None = None
+    max_tokens_per_request: int | None = None
+    allowed_models: list[str] | None = None
+
+
 class QuotaResponse(BaseModel):
     id: int
     name: str
@@ -55,8 +73,12 @@ _quotas: dict[str, dict[int, QuotaResponse]] = defaultdict(dict)
 _next_id: dict[str, int] = defaultdict(lambda: 1)
 
 # Budget alerts reported by gateways, newest last, per org. Bounded: an alert is
-# a notification, not a ledger — the spend itself lives in usage_records.
-_alerts: dict[str, deque[BudgetAlert]] = defaultdict(lambda: deque(maxlen=200))
+# a notification, not a ledger — the spend itself lives in usage_records. The cap
+# is what keeps a chatty fleet from growing this without limit; it is *not* a
+# reason to drop the whole deque on restart, which is why app.py's lifespan
+# persists it alongside the quotas themselves.
+ALERT_HISTORY = 200
+_alerts: dict[str, deque[BudgetAlert]] = defaultdict(lambda: deque(maxlen=ALERT_HISTORY))
 
 
 @router.get("", response_model=list[QuotaResponse])
@@ -134,6 +156,46 @@ async def clear_budget_alerts(org: str = Depends(get_current_org)):
     count = len(_alerts[org])
     _alerts[org].clear()
     return {"cleared": count}
+
+
+@router.put("/{quota_id}", response_model=QuotaResponse)
+async def update_quota(
+    quota_id: int,
+    body: QuotaUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+):
+    """Update an existing quota's limits.
+
+    The Quotas page's Edit → Save button has always called this route; until now
+    there was no handler, so it answered 405 and the edit was silently discarded —
+    the panel closed and the list refetched, which looked exactly like success.
+
+    Declared below the /alerts routes with the other path-parameter routes. It
+    can't shadow them (none of them accept PUT), but keeping the literal paths
+    first is the rule that stops the next route from doing so.
+
+    Editing a limit does not enforce it. Push the quota afterwards, same as
+    creating one.
+    """
+    quota = _quotas[org].get(quota_id)
+    if quota is None:
+        raise HTTPException(status_code=404, detail="Quota not found")
+
+    changes = body.model_dump(exclude_unset=True)
+    if not changes:
+        return quota
+    updated = quota.model_copy(update=changes)
+    _quotas[org][quota_id] = updated
+
+    # Audited for the same reason create and delete are: these are spend and rate
+    # controls, and "who raised this budget" is the question an audit asks.
+    await audit.log(db, actor_of(request), "update", "quota", str(quota_id), {
+        "name": updated.name, **{k: changes[k] for k in sorted(changes)},
+    }, org=org)
+    await db.commit()
+    return updated
 
 
 @router.delete("/{quota_id}")
