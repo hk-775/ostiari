@@ -279,6 +279,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The approvals queue was not tenant-scoped**, exposing one tenant's raw tool
   parameters (SQL, recipients, payloads) in every other tenant's review queue, and
   letting anyone decide them.
+- **The broker pilot was not tenant-scoped**, so purchased token inventory was global:
+  one tenant's traffic drew *another's* pool down, and the second org to fund an
+  `anthropic` pool would have collided with the first. `org_id` joins `token_pools`'
+  **primary key** rather than sitting beside it as an index — pool identity is
+  `(org, provider)`, and with `provider` alone as the key a lookup hands a tenant
+  whichever row happens to exist. `ReconciliationRecord` gets the usual indexed
+  column. Draw-down takes the org from the reporting gateway's row, never from the
+  payload, for the same reason trace ingest does. Reconciliation was computing one
+  operator's invoice drift against the whole fleet's usage — drift being the single
+  number that page exists to show. `GET /collector` stays deliberately unscoped: it
+  reports which billing backend this process runs, which is deployment config, not
+  tenant data.
+- **`/api/proxy/gateway/{id}/…` forwarded to any gateway by id with no org check** —
+  the widest of these holes, since it reached *through* the control plane to another
+  org's running gateway (`/config`, `/tool`), not merely to its records. A cross-org
+  id now 404s, the same answer as a nonexistent one, so probing can't tell them apart.
+- **Every live broker draw-down was charged at retail instead of bulk cost.**
+  `costs.py` read `_config.get("bulk_discount", 0.0)` from `token_broker`'s
+  *org-keyed* config dict, so it looked up an org named `"bulk_discount"` and always
+  fell through to `0.0` — while `demo_seed.py` indexed the same dict correctly, so the
+  seeded page and the live path disagreed about the pilot's margin. Found while
+  threading the org through.
 - Usage records were never stamped with an org, so every tenant's spend accumulated
   under `default` while their own ledger read empty. Cost summaries, usage lists,
   token-broker economics, experiment results, and discovery are now org-scoped.
@@ -327,16 +349,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   type-errored on every check it exists to perform.
 
 ### Known issues
-Found while auditing the docs against the code. One remains from that audit; the
-rest are in **Fixed** above. It is documented where an operator would hit it.
-
-- **The broker pilot is not tenant-scoped.** `TokenPool` and
-  `ReconciliationRecord` have no `org_id`, and `routers/broker_pilot.py` takes no
-  `get_current_org`; `routers/proxy.py` likewise forwards to any gateway by id
-  without an org check. Harmless in the single-org deployment that is the only
-  supported one today. Deliberately deferred: closing it means adding `org_id` to
-  both models plus a migration, and it only bites a deployment that doesn't exist
-  yet. Don't turn on multi-org without doing it first.
+None outstanding. Every gap the doc-vs-code audit surfaced is in **Fixed** above; the
+broker pilot was the last of them.
 
 ## [0.1.0] - 2026-06-22
 

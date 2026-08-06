@@ -169,6 +169,16 @@ class TokenPool(Base):
     __tablename__ = "token_pools"
 
     provider: Mapped[str] = mapped_column(String(64), primary_key=True)  # anthropic | openai | ...
+    # Part of the primary key, not just an indexed column like every other
+    # tenant table: two orgs must each be able to hold an "anthropic" pool. With
+    # provider alone as the PK the second tenant to fund one would collide with
+    # the first — and `db.get(TokenPool, provider)` would hand a tenant whichever
+    # row happened to exist, then draw *their* traffic down against it.
+    # Not nullable, for the same reason: a NULL in a PK column is not a row you
+    # can look up, and pool identity has to be exact.
+    org_id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=DEFAULT_ORG, index=True, nullable=False
+    )
     purchased_tokens: Mapped[int] = mapped_column(Integer, default=0)
     purchased_cost_usd: Mapped[float] = mapped_column(Float, default=0.0)  # our bulk cost for them
     consumed_tokens: Mapped[int] = mapped_column(Integer, default=0)
@@ -192,6 +202,7 @@ class ReconciliationRecord(Base):
     __tablename__ = "reconciliation_records"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[str] = mapped_column(String(64), default=DEFAULT_ORG, index=True, nullable=True)
     provider: Mapped[str] = mapped_column(String(64))
     period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
