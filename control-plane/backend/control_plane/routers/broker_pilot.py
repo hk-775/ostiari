@@ -21,8 +21,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane import broker_pilot
+from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
-from control_plane.models.database import ReconciliationRecord, TokenPool, UsageRecord
+from control_plane.models.database import DEFAULT_ORG, ReconciliationRecord, TokenPool, UsageRecord
+from control_plane.models.scoping import scoped, stamp
 
 log = logging.getLogger("control_plane.broker_pilot")
 
@@ -54,18 +56,22 @@ class ReconcileInput(BaseModel):
 # ─── Pool inventory ──────────────────────────────────────────────────────────
 
 @router.get("/pools")
-async def list_pools(db: AsyncSession = Depends(get_db)):
-    rows = (await db.execute(select(TokenPool))).scalars().all()
+async def list_pools(db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+    rows = (await db.execute(scoped(select(TokenPool), TokenPool, org))).scalars().all()
     return [_pool_dict(p) for p in rows]
 
 
 @router.post("/pools/fund")
-async def fund_pool(body: PoolFund, db: AsyncSession = Depends(get_db)):
+async def fund_pool(body: PoolFund, db: AsyncSession = Depends(get_db),
+                    org: str = Depends(get_current_org)):
     """Add purchased token inventory to a provider pool (create if new)."""
-    p = await db.get(TokenPool, body.provider)
+    # Composite-key fetch. `db.get(TokenPool, provider)` would now be a TypeError,
+    # which is the point of making org_id part of the key: funding a pool cannot
+    # accidentally top up another tenant's inventory.
+    p = await _get_pool(db, org, body.provider)
     if p is None:
         p = TokenPool(
-            provider=body.provider, purchased_tokens=0, purchased_cost_usd=0.0,
+            provider=body.provider, org_id=org, purchased_tokens=0, purchased_cost_usd=0.0,
             consumed_tokens=0, consumed_cost_usd=0.0, low_threshold_tokens=0, status="active",
         )
         db.add(p)
@@ -83,20 +89,28 @@ async def fund_pool(body: PoolFund, db: AsyncSession = Depends(get_db)):
 
 @router.get("/collector")
 async def collector_info():
+    # Deliberately unscoped: the collector is process-level deployment config
+    # (which billing backend this control plane runs), not tenant data. Every
+    # other route on this router takes an org.
     return {"mode": _collector.mode}
 
 
 # ─── Reconciliation ──────────────────────────────────────────────────────────
 
 @router.post("/reconcile")
-async def reconcile(body: ReconcileInput, db: AsyncSession = Depends(get_db)):
+async def reconcile(body: ReconcileInput, db: AsyncSession = Depends(get_db),
+                    org: str = Depends(get_current_org)):
     """Compare our tracked consumption cost vs the provider's actual invoice."""
     from datetime import timedelta
     now = datetime.now(timezone.utc)
     since = now - timedelta(days=body.period_days)
 
+    # Scoped for the same reason token_broker's report is: the operator is
+    # entering *their* provider invoice, so computing it against every tenant's
+    # usage inflated one org's drift by the whole fleet's traffic — and drift is
+    # the number this page exists to show.
     records = (await db.execute(
-        select(UsageRecord).where(UsageRecord.timestamp >= since)
+        scoped(select(UsageRecord).where(UsageRecord.timestamp >= since), UsageRecord, org)
     )).scalars().all()
 
     computed = 0.0
@@ -111,6 +125,7 @@ async def reconcile(body: ReconcileInput, db: AsyncSession = Depends(get_db)):
         computed_cost_usd=round(computed, 6), invoiced_cost_usd=body.invoiced_cost_usd,
         consumed_tokens=tokens,
     )
+    stamp(rec, org)
     db.add(rec)
     await db.commit()
     await db.refresh(rec)
@@ -118,24 +133,34 @@ async def reconcile(body: ReconcileInput, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/reconciliations")
-async def list_reconciliations(db: AsyncSession = Depends(get_db)):
+async def list_reconciliations(db: AsyncSession = Depends(get_db),
+                               org: str = Depends(get_current_org)):
     rows = (await db.execute(
-        select(ReconciliationRecord).order_by(ReconciliationRecord.created_at.desc()).limit(50)
+        scoped(select(ReconciliationRecord), ReconciliationRecord, org)
+        .order_by(ReconciliationRecord.created_at.desc()).limit(50)
     )).scalars().all()
     return [_recon_dict(r) for r in rows]
 
 
 # ─── Draw-down (called from usage recording) ─────────────────────────────────
 
-async def draw_down(db: AsyncSession, *, model: str, tokens: int, our_cost_usd: float) -> None:
+async def draw_down(db: AsyncSession, *, model: str, tokens: int, our_cost_usd: float,
+                    org: str = DEFAULT_ORG) -> None:
     """Decrement the provider pool for consumed tokens; halt on depletion.
 
-    Best-effort: if no pool exists for the provider, this is a no-op (pilot may
-    not have provisioned every provider). Does not commit — the caller owns the
-    transaction so draw-down and the usage record land atomically.
+    Best-effort: if no pool exists for the provider *in this org*, this is a
+    no-op (the pilot may not have provisioned every provider). Does not commit —
+    the caller owns the transaction so draw-down and the usage record land
+    atomically.
+
+    `org` must be the org that owns the reporting gateway, never a value from the
+    request body — gateways post usage with no user token, so the payload naming
+    its own org would let one tenant burn down another's purchased inventory. It
+    defaults to the single-org tenant so the pilot's own callers and tests stay
+    unchanged.
     """
     provider = broker_pilot.provider_for(model)
-    pool = await db.get(TokenPool, provider)
+    pool = await _get_pool(db, org, provider)
     if pool is None:
         return
     pool.consumed_tokens += tokens
@@ -148,6 +173,16 @@ async def draw_down(db: AsyncSession, *, model: str, tokens: int, our_cost_usd: 
 
 def _remaining(p: TokenPool) -> int:
     return max(0, p.purchased_tokens - p.consumed_tokens)
+
+
+async def _get_pool(db: AsyncSession, org: str, provider: str) -> TokenPool | None:
+    """One org's pool for one provider, by composite primary key.
+
+    `get_scoped` in models.scoping is the wrong tool here: it fetches by pk and
+    *then* compares org_id, which assumes org_id is not part of the key. For this
+    table it is, so the org goes into the lookup itself.
+    """
+    return await db.get(TokenPool, {"org_id": org, "provider": provider})
 
 
 # ─── Serializers ─────────────────────────────────────────────────────────────

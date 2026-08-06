@@ -483,6 +483,10 @@ async def seed_demo_broker_pools(db: AsyncSession) -> None:
         remaining = max(0, purchased - used_tokens)
         db.add(TokenPool(
             provider=provider,
+            # Explicit because org_id is half this table's primary key — a column
+            # default would be filled in at flush, but the pool's identity is
+            # clearer stated at the point of construction.
+            org_id=DEFAULT_ORG,
             purchased_tokens=purchased,
             # Bulk cost of the whole purchase, at the same per-token rate the
             # consumed portion was charged at.
@@ -509,7 +513,7 @@ async def seed_demo_broker_pools(db: AsyncSession) -> None:
         if not tokens:
             continue
         db.add(ReconciliationRecord(
-            provider=provider, period_start=since, period_end=now,
+            provider=provider, org_id=DEFAULT_ORG, period_start=since, period_end=now,
             computed_cost_usd=round(computed, 6),
             invoiced_cost_usd=round(computed * invoice_mult, 6),
             consumed_tokens=tokens,
