@@ -2,10 +2,13 @@
 
 from collections import defaultdict
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.auth.dependencies import get_current_org
+from control_plane.database import get_db
+from control_plane.services.audit_service import actor_of, audit
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -101,14 +104,37 @@ async def get_agent(name: str, org: str = Depends(get_current_org)) -> AgentConf
 
 
 @router.post("")
-async def register_agent(body: AgentConfig, org: str = Depends(get_current_org)) -> AgentConfig:
+async def register_agent(
+    body: AgentConfig,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+) -> AgentConfig:
+    # "update" when the name already exists: registering an existing agent with a
+    # different tool list is a privilege change, and the trail should say so.
+    action = "update" if body.name in _agents[org] else "register"
     _agents[org][body.name] = body
+    await audit.log(db, actor_of(request), action, "agent", body.name, {
+        "framework": body.framework, "gateway_id": body.gateway_id,
+        "model": body.model, "tools": body.tools,
+    }, org=org)
+    await db.commit()
     return body
 
 
 @router.delete("/{name}")
-async def delete_agent(name: str, org: str = Depends(get_current_org)):
-    if name not in _agents[org]:
+async def delete_agent(
+    name: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+):
+    agent = _agents[org].get(name)
+    if agent is None:
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
     del _agents[org][name]
+    await audit.log(db, actor_of(request), "delete", "agent", name,
+                    {"framework": agent.framework, "gateway_id": agent.gateway_id},
+                    org=org)
+    await db.commit()
     return {"deleted": name}

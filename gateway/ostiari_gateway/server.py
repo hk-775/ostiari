@@ -1,5 +1,6 @@
 """Generic sidecar server — validates and proxies tool calls to remote endpoints."""
 
+import asyncio as _asyncio
 import logging
 import os as _os
 import uuid as _uuid
@@ -433,6 +434,34 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
         sidecar_id=(initial_config.sidecar_id if initial_config else ""),
     )
 
+    # Budget alerts (80/90/100%) reach the control plane. QuotaEnforcer fires this
+    # from record_spend(), which is sync, so bridge to the async reporter via the
+    # running loop. Nothing subscribed before this, so crossing a threshold only
+    # ever produced a gateway log line an operator had to be tailing to see.
+    _alert_tasks: set[_asyncio.Task] = set()
+
+    def _on_budget_alert(label: str, spend: float, budget: float) -> None:
+        if not trace_reporter.enabled:
+            return
+        try:
+            loop = _asyncio.get_running_loop()
+        except RuntimeError:
+            # record_spend called outside a loop (sync tests, scripts). The
+            # enforcer already logged the alert; don't crash the spend booking.
+            log.debug("Budget alert %s not reported: no running event loop", label)
+            return
+        # Hold a reference so the task isn't garbage-collected mid-flight, and
+        # drop it on completion so a long-lived gateway doesn't accumulate them.
+        task = loop.create_task(
+            trace_reporter.report_budget_alert(
+                threshold=label, spend_usd=spend, budget_usd=budget
+            )
+        )
+        _alert_tasks.add(task)
+        task.add_done_callback(_alert_tasks.discard)
+
+    quota_enforcer.on_budget_alert(_on_budget_alert)
+
     # Apply quota from initial config
     if initial_config and hasattr(initial_config, "quota") and initial_config.quota:
         quota_enforcer.configure(initial_config.quota)
@@ -454,6 +483,9 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
 
     # Lifecycle manager (CP registration + heartbeat)
     lifecycle = None
+    # The bundle applier, kept here so it can be exposed on app.state below —
+    # it only exists when a control_plane_url is configured.
+    bundle_applier = None
     if initial_config and initial_config.control_plane_url:
         from ostiari_gateway.lifecycle import LifecycleManager
 
@@ -466,6 +498,24 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
         def _apply_bundle(bundle: dict) -> None:
             """Apply a config bundle from the control plane."""
             from ostiari_gateway.models import PolicyConfig, ToolDefinition
+
+            # Apply enforcement mode FIRST — before tools or policy, so a gateway
+            # the operator left in shadow doesn't spend even one request enforcing
+            # a freshly-applied policy. Without this the mode silently reverted to
+            # the SidecarConfig default ("enforce") on every restart: drift toward
+            # blocking on a gateway that was deliberately observing.
+            mode = bundle.get("mode")
+            if mode in ("enforce", "shadow"):
+                if mode != manager.config.mode:
+                    log.info(
+                        "Enforcement mode from control plane: %s -> %s",
+                        manager.config.mode, mode,
+                    )
+                manager.config.mode = mode
+            elif mode is not None:
+                # Never guess. An unrecognized mode leaves the current one alone
+                # rather than falling back to enforce.
+                log.warning("Ignoring unknown enforcement mode from control plane: %r", mode)
 
             # Apply tools
             if "tools" in bundle:
@@ -491,7 +541,22 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
             if "payments" in bundle and bundle["payments"]:
                 payment_gate.configure(bundle["payments"])
 
+            # Apply A/B experiments to the LLM module, so an experiment the
+            # operator started survives a gateway restart. Applied as a partial
+            # update (not through the whole-document LLM config) so provider
+            # credentials loaded at startup are preserved.
+            if "ab_experiments" in bundle:
+                llm_mod = module_registry.get("llm_gateway")
+                if llm_mod is not None and hasattr(llm_mod, "apply_ab_experiments"):
+                    try:
+                        llm_mod.apply_ab_experiments(bundle["ab_experiments"] or [])
+                    except Exception as e:  # noqa: BLE001
+                        # A malformed experiment must not abort the rest of the
+                        # bundle — tools and policy are the safety-critical parts.
+                        log.warning("Failed to apply A/B experiments from bundle: %s", e)
+
         lifecycle.set_config_callback(_apply_bundle)
+        bundle_applier = _apply_bundle
 
     async def _connect_mcp_servers(mcp_cfgs: list) -> None:
         """Connect a list of MCP server configs (dicts or models), tolerating errors."""
@@ -1504,5 +1569,11 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
     app.state.mcp_manager = mcp_manager
     app.state.cross_agent = cross_agent
     app.state.agent_auth = agent_auth
+    app.state.quota_enforcer = quota_enforcer
+    app.state.module_registry = module_registry
+    # The control-plane bundle applier, when one is wired (it only exists with a
+    # control_plane_url). Exposed so the bundle path is directly testable rather
+    # than only reachable by standing up a control plane.
+    app.state.apply_bundle = bundle_applier
 
     return app

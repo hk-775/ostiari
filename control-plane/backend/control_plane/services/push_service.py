@@ -151,6 +151,15 @@ class PushService:
         if payments.get("mode", "off") != "off" or payments.get("wallets"):
             config["payments"] = payments
 
+        # A/B experiments for this gateway, so a restart doesn't silently end a
+        # running experiment. Sent as a sibling key (not nested under "llm") —
+        # the gateway applies it via the partial /config/ab-experiments path so
+        # provider credentials loaded at startup survive.
+        from control_plane.routers.experiments import _for_gateway
+        experiments = _for_gateway(gateway.org_id or "default", gateway.id)
+        if experiments:
+            config["ab_experiments"] = experiments
+
         # Include any stored gateway-level config (modules, llm, mode, etc.)
         if gateway.config:
             config.update(gateway.config)

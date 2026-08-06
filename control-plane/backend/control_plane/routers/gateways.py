@@ -13,9 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from control_plane.auth.dependencies import get_current_org
 from control_plane.database import async_session, get_db
 from control_plane.models.database import Gateway, Tool
-from control_plane.models.scoping import get_scoped, scoped, stamp
 from control_plane.models.schemas import GatewayCreate, GatewayResponse, GatewayUpdate
-from control_plane.services.audit_service import audit
+from control_plane.models.scoping import get_scoped, scoped, stamp
+from control_plane.services.audit_service import actor_of, audit
 from control_plane.services.push_service import PushService
 
 log = logging.getLogger("control_plane.gateways")
@@ -71,10 +71,6 @@ def stop_health_check() -> None:
         _health_check_task = None
 
 
-def _get_actor(request: Request) -> str:
-    return request.headers.get("X-Actor", "system")
-
-
 def _to_response(gateway: Gateway, tools_count: int = 0) -> GatewayResponse:
     """Build a GatewayResponse, surfacing the stored enforcement mode."""
     return GatewayResponse(
@@ -106,7 +102,7 @@ async def register_gateway(body: GatewayCreate, request: Request, db: AsyncSessi
     gateway = Gateway(id=body.id, name=body.name, endpoint=body.endpoint, description=body.description)
     stamp(gateway, org)
     db.add(gateway)
-    await audit.log(db, _get_actor(request), "create", "gateway", body.id, {"name": body.name, "endpoint": body.endpoint}, org=org)
+    await audit.log(db, actor_of(request), "create", "gateway", body.id, {"name": body.name, "endpoint": body.endpoint}, org=org)
     await db.commit()
     await db.refresh(gateway)
     return _to_response(gateway, 0)
@@ -130,7 +126,7 @@ async def update_gateway(gateway_id: str, body: GatewayUpdate, request: Request,
     changes = body.model_dump(exclude_unset=True)
     for field, value in changes.items():
         setattr(gateway, field, value)
-    await audit.log(db, _get_actor(request), "update", "gateway", gateway_id, changes, org=org)
+    await audit.log(db, actor_of(request), "update", "gateway", gateway_id, changes, org=org)
     await db.commit()
     await db.refresh(gateway)
     return await get_gateway(gateway_id, db, org)
@@ -141,7 +137,7 @@ async def delete_gateway(gateway_id: str, request: Request, db: AsyncSession = D
     gateway = await get_scoped(db, Gateway, gateway_id, org)
     if not gateway:
         raise HTTPException(status_code=404, detail="Gateway not found")
-    await audit.log(db, _get_actor(request), "delete", "gateway", gateway_id, {"name": gateway.name}, org=org)
+    await audit.log(db, actor_of(request), "delete", "gateway", gateway_id, {"name": gateway.name}, org=org)
     await db.delete(gateway)
     await db.commit()
     return {"deleted": gateway_id}
@@ -166,7 +162,7 @@ async def set_mode(gateway_id: str, body: dict, request: Request, db: AsyncSessi
     # Persist mode in the gateway config (JSON column reassigned so SQLAlchemy
     # detects the change).
     gateway.config = {**(gateway.config or {}), "mode": mode}
-    await audit.log(db, _get_actor(request), "set_mode", "gateway", gateway_id, {"mode": mode}, org=org)
+    await audit.log(db, actor_of(request), "set_mode", "gateway", gateway_id, {"mode": mode}, org=org)
     await db.commit()
     await db.refresh(gateway)
 
@@ -185,7 +181,7 @@ async def push_config(gateway_id: str, request: Request, db: AsyncSession = Depe
     if await get_scoped(db, Gateway, gateway_id, org) is None:
         raise HTTPException(status_code=404, detail="Gateway not found")
     result = await push_service.push_to_gateway(db, gateway_id)
-    await audit.log(db, _get_actor(request), "push", "gateway", gateway_id, {"status": result.status}, org=org)
+    await audit.log(db, actor_of(request), "push", "gateway", gateway_id, {"status": result.status}, org=org)
     await db.commit()
     if result.status == "error":
         raise HTTPException(status_code=502, detail=result.message)
@@ -196,7 +192,7 @@ async def push_config(gateway_id: str, request: Request, db: AsyncSession = Depe
 async def push_all(request: Request, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
     """Push config to all registered gateways in the caller's org."""
     result = await push_service.push_to_all(db, org=org)
-    await audit.log(db, _get_actor(request), "push_all", "gateway", "*", {"succeeded": result.succeeded, "failed": result.failed}, org=org)
+    await audit.log(db, actor_of(request), "push_all", "gateway", "*", {"succeeded": result.succeeded, "failed": result.failed}, org=org)
     await db.commit()
     return result
 
@@ -280,7 +276,7 @@ async def gateway_register(
     gateway.last_heartbeat = datetime.now(timezone.utc)
     if created:
         await audit.log(
-            db, _get_actor(request), "auto-register", "gateway", gateway_id,
+            db, actor_of(request), "auto-register", "gateway", gateway_id,
             {"endpoint": gateway.endpoint}, org=gateway.org_id or "default",
         )
     await db.commit()
@@ -298,13 +294,17 @@ async def gateway_register(
     if a2a:
         bundle["a2a_agents"] = a2a
 
-    # Drain any queued config
+    # Drain any queued config. This goes in a SIBLING key, not inside the bundle:
+    # the gateway applies `config` as one document, so a nested key was silently
+    # dropped (it was "queued_updates", which nothing ever read). Naming it
+    # config_updates matches the heartbeat path, which the gateway does apply.
     queued = config_queue.pop(gateway_id, [])
-    if queued:
-        bundle["queued_updates"] = queued
 
     log.info(f"Gateway {gateway_id} registered (healthy)")
-    return {"status": "registered", "config": bundle}
+    response: dict[str, Any] = {"status": "registered", "config": bundle}
+    if queued:
+        response["config_updates"] = queued
+    return response
 
 
 @router.post("/{gateway_id}/heartbeat")

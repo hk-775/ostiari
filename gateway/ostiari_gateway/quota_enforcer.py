@@ -338,15 +338,24 @@ class QuotaEnforcer:
             self._store.budget_reset(self._budget_key)
 
     def _get_pricing(self, model: str) -> dict[str, float]:
-        """Get pricing for a model from config or defaults."""
-        if self._config and self._config.pricing and model in self._config.pricing:
-            return self._config.pricing[model]
+        """Get pricing for a model, preferring what the control plane pushed.
+
+        Exact matches win over fuzzy ones in BOTH tables before either table's
+        fuzzy pass runs — otherwise a pushed "gpt-4o-mini" could lose to a fuzzy
+        hit on the built-in "gpt-4o", which is 16x more expensive.
+        """
+        pushed = self._config.pricing if (self._config and self._config.pricing) else {}
+        if model in pushed:
+            return pushed[model]
         if model in DEFAULT_PRICING:
             return DEFAULT_PRICING[model]
-        # Fuzzy match
-        for key, pricing in DEFAULT_PRICING.items():
-            if key in model or model in key:
-                return pricing
+        # Fuzzy match — pushed prices first, since the operator set them
+        # explicitly and they cover models the built-in table doesn't know
+        # (Bedrock ids, in particular, are only ever reachable this way).
+        for table in (pushed, DEFAULT_PRICING):
+            for key, pricing in table.items():
+                if key in model or model in key:
+                    return pricing
         # Fallback: assume mid-range pricing
         return {"input": 0.003, "output": 0.015}
 
@@ -354,18 +363,23 @@ class QuotaEnforcer:
         """Fire alert callbacks when budget thresholds are crossed."""
         if not self._config or not self._config.budget_limit_usd:
             return
-        pct = self._total_spend / self._config.budget_limit_usd
+        # Read spend the same way get_status() does. Using _total_spend directly
+        # meant that with a shared store (Redis) — where spend is booked to Redis
+        # and _total_spend stays 0.0 — the percentage was always 0 and no alert
+        # ever fired. Fleet deployments are exactly where alerting matters most.
+        spend = self._store.budget_spend(self._budget_key) if self._store is not None else self._total_spend
+        pct = spend / self._config.budget_limit_usd
         for threshold in BUDGET_ALERT_THRESHOLDS:
             if pct >= threshold and threshold not in self._alerted_thresholds:
                 self._alerted_thresholds.add(threshold)
                 label = f"{int(threshold * 100)}%"
                 log.warning(
                     "Budget alert [%s]: $%.4f / $%.2f (%s used)",
-                    label, self._total_spend, self._config.budget_limit_usd, label,
+                    label, spend, self._config.budget_limit_usd, label,
                 )
                 for cb in self._alert_callbacks:
                     try:
-                        cb(label, self._total_spend, self._config.budget_limit_usd)
+                        cb(label, spend, self._config.budget_limit_usd)
                     except Exception as e:  # noqa: BLE001
                         # One bad callback must not stop the others firing or
                         # break the call that triggered the alert. Logged rather

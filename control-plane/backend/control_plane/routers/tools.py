@@ -1,6 +1,6 @@
 """Tool management API."""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,8 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
 from control_plane.models.database import Gateway, Tool
-from control_plane.models.scoping import get_scoped, scoped, stamp
 from control_plane.models.schemas import ToolCreate, ToolResponse
+from control_plane.models.scoping import get_scoped, scoped, stamp
+from control_plane.services.audit_service import actor_of, audit
 
 router = APIRouter(prefix="/api/tools", tags=["tools"])
 
@@ -35,7 +36,7 @@ async def list_tools(gateway_id: str | None = None, db: AsyncSession = Depends(g
 
 
 @router.post("/{gateway_id}", response_model=ToolResponse)
-async def add_tool(gateway_id: str, body: ToolCreate, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+async def add_tool(gateway_id: str, body: ToolCreate, request: Request, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
     gateway = await get_scoped(db, Gateway, gateway_id, org)
     if not gateway:
         raise HTTPException(status_code=404, detail="Gateway not found")
@@ -47,23 +48,32 @@ async def add_tool(gateway_id: str, body: ToolCreate, db: AsyncSession = Depends
     )
     stamp(tool, org)
     db.add(tool)
+    await db.flush()
+    # A tool is a capability grant — what an agent is allowed to call. Auditing it
+    # alongside gateways and policies is the point of the chain.
+    await audit.log(db, actor_of(request), "create", "tool", str(tool.id),
+                    {"name": body.name, "gateway_id": gateway_id,
+                     "endpoint": body.endpoint, "method": body.method}, org=org)
     await db.commit()
     await db.refresh(tool)
     return tool
 
 
 @router.delete("/{tool_id}")
-async def delete_tool(tool_id: int, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+async def delete_tool(tool_id: int, request: Request, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
     tool = await get_scoped(db, Tool, tool_id, org)
     if not tool:
         raise HTTPException(status_code=404, detail="Tool not found")
+    # Read the name before the delete — after it the row is gone.
+    details = {"name": tool.name, "gateway_id": tool.gateway_id}
     await db.delete(tool)
+    await audit.log(db, actor_of(request), "delete", "tool", str(tool_id), details, org=org)
     await db.commit()
     return {"deleted": tool_id}
 
 
 @router.post("/{gateway_id}/import-openapi")
-async def import_openapi(gateway_id: str, body: OpenAPIImport, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+async def import_openapi(gateway_id: str, body: OpenAPIImport, request: Request, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
     """Generate tools from an OpenAPI spec and persist them to a gateway.
 
     Parsing is done by the shared gateway importer (single source of truth).
@@ -127,5 +137,10 @@ async def import_openapi(gateway_id: str, body: OpenAPIImport, db: AsyncSession 
         row.path_params = s["path_params"]
         row.query_params = s["query_params"]
 
+    # One entry for the whole import, not one per tool: the operator performed a
+    # single action, and N tool names in details is more legible than N rows.
+    await audit.log(db, actor_of(request), "import_openapi", "tool", gateway_id,
+                    {"count": len(preview), "replace": body.replace,
+                     "names": [p["name"] for p in preview]}, org=org)
     await db.commit()
     return {"status": "imported", "gateway_id": gateway_id, "count": len(preview), "tools": preview}

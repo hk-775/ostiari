@@ -352,14 +352,16 @@ curl -X POST http://localhost:8421/config/mode \
 
 Review outcomes on the **Shadow Report** page, then switch to `enforce`.
 
-> **Mode does not survive a gateway restart.** `PUT /api/gateways/{id}/mode`
-> persists the mode in the control plane and pushes it live, and the config
-> bundle carries `mode` — but the gateway's `_apply_bundle` never reads it, so a
-> restarted gateway comes up on the default `enforce` regardless. The drift is
-> toward *enforcing* a gateway you deliberately put in shadow, and the Gateways
-> page keeps showing `Shadow` because it renders the stored record rather than
-> live state. After any gateway restart, click Push on the Gateways page (or
-> `POST /api/gateways/push-all`) to reconcile.
+> **Mode survives a gateway restart.** `PUT /api/gateways/{id}/mode` persists the
+> mode in the control plane and pushes it live, the config bundle carries `mode`,
+> and the gateway applies it on reconnect — before tools or policy, so a gateway
+> you left in shadow doesn't spend even one request enforcing. A mode value the
+> gateway doesn't recognize is ignored rather than defaulted, since the dangerous
+> direction is toward *enforcing* a gateway you deliberately put in shadow.
+>
+> Note that the Gateways page shows the **stored** mode, not the gateway's live
+> state. To check what a specific gateway is actually doing, ask it:
+> `curl localhost:8421/config/mode`.
 
 ## 1.4 Point your agent at the gateway
 
