@@ -79,7 +79,7 @@ The `crm-agent` gateway also loads `llm-gateway-config.yaml` (enables the LLM mo
 | Control Plane API | http://localhost:8400 | — | — |
 | CRM Gateway | http://localhost:8421 | `crm-agent` | web_search, db_query, send_email, github.*, drawio.* (12) — plus the real draw.io + filesystem MCP servers |
 | Ops Gateway | http://localhost:8422 | `ops-agent` | db_query, send_email, slack.post, db_delete (4) |
-| DevOps Gateway | http://localhost:8424 | `devops-agent` | github.search_code, github.create_issue, web_search, github.delete_repo (4) |
+| DevOps Gateway | http://localhost:8424 | `devops-agent` | github.search_code, github.create_issue, web_search, github.delete_repo (4) — `devops-guard` blocks the last one |
 | Analytics Gateway | http://localhost:8425 | `analytics-agent` | db_query, web_search, drawio.create_diagram (3) |
 | A2A Demo Agent | http://localhost:9200 | — | deploy, rollback, status |
 | Demo Tools | http://localhost:9300 | — | canned tool backends |
@@ -127,10 +127,16 @@ then saves to `control-plane/data/state.json` on shutdown and restores it next t
 - 647 usage records across 8 agents, feeding Costs / Metering / ROI
 
 Set `OSTIARI_NO_DEMO=1` to skip the seeders above (that's what `make clean-start`
-does). **The 18 models are not among them** — `seed_models()` runs at the bottom of
-`control_plane/routers/model_config.py`, at import time, so the Models page is
-populated in every mode including a clean install. That's deliberate: the model
-catalog is a routing table, not demo content.
+does). The 18 models are skipped too, as of this release — `seed_models()` runs at
+the bottom of `control_plane/routers/model_config.py` and is now gated on the same
+flag.
+
+It used to run unconditionally, on the argument that a model catalog is a routing
+table rather than demo content. That argument isn't wrong, but it lost to a simpler
+one: `clean-start` promises an empty control plane, and a page showing 18 models you
+didn't add is confusing in a way that outweighs the convenience. If you want the
+catalog on a clean install, either register the models you actually use via
+`POST /api/models` or call `seed_models()` yourself.
 
 Tools, policies, MCP servers, and A2A peers are registered by the
 `gateway/register_demo_*.py` scripts the Makefile runs, and the control plane
@@ -177,17 +183,15 @@ This starts:
 - **Control Plane frontend** on http://localhost:9000
 - **One gateway** (`my-gateway`) on port 8421, connected to the control plane
 
-> **`clean-start` doesn't fully wipe today.** It deletes the SQLite database but
-> targets `control-plane/backend/data/state.json` — the *old* path. `state.json`
-> now lives beside the database in `control-plane/data/` (see `data_dir()` in
-> `control-plane/backend/control_plane/env.py`), and the lifespan restores it
-> **before** the `OSTIARI_NO_DEMO` check, so previously-seeded quotas,
-> experiments, models, and providers come back. If you want a genuinely empty
-> control plane, delete it yourself first:
->
-> ```bash
-> rm -f control-plane/data/state.json
-> ```
+`clean-start` removes the SQLite database and `control-plane/data/state.json` — the
+path `data_dir()` resolves to (see `control-plane/backend/control_plane/env.py`). It
+also still removes the pre-`data_dir()` path, `control-plane/backend/data/state.json`,
+so an older checkout doesn't leave a file behind that a future refactor might start
+reading again.
+
+This is worth knowing because the recipe used to delete *only* the old path, while
+the lifespan restored the live one **before** the `OSTIARI_NO_DEMO` check — so
+previously-seeded quotas, experiments, and providers came back on a "clean" start.
 
 ### Register the gateway with the Control Plane
 

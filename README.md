@@ -229,7 +229,7 @@ either way: `claude`, `openai`, `bedrock`, `strands`, `policy`, `fuzzy`, `tui`,
 | `make demo-full` | Full demo — control plane, 4 gateways, A2A agent, seeded data (→ :9000) |
 | `make dev` | Control plane + frontend + primary gateway |
 | `make demo` | Frontend only — landing page and build check, **no backend, so no dashboard** |
-| `make clean-start` | No demo data (`OSTIARI_NO_DEMO=1`) — see the caveat below |
+| `make clean-start` | No demo data (`OSTIARI_NO_DEMO=1`) — empty registry, empty DB |
 | `make test` | Run the test suites |
 | `make lint` | Ruff over `src/` + `gateway/`, then `tsc --noEmit` over the frontend |
 | `make install` / `make build` / `make clean` | Deps, frontend production build, build artifacts |
@@ -237,14 +237,11 @@ either way: `claude`, `openai`, `bedrock`, `strands`, `policy`, `fuzzy`, `tui`,
 > The Sandbox chat needs LLM credentials; point `make demo-full` at an env file
 > with `LLM_ENV=/path/to/.env`. Everything else runs without keys.
 
-> **`clean-start` doesn't fully wipe.** It removes the SQLite DB but deletes
-> `control-plane/backend/data/state.json` — the *old* path. State now lives at
-> `control-plane/data/state.json`, and the lifespan restores it *before* the
-> `OSTIARI_NO_DEMO` check, so earlier seeded quotas, experiments, and providers
-> come back. `rm -f control-plane/data/state.json` first for a truly empty start.
-> The 18 model routing configs come back regardless — `seed_models()` runs at
-> import time and isn't gated by `OSTIARI_NO_DEMO`. See
-> [`QUICKSTART.md` §3](QUICKSTART.md#3-clean-install).
+> **`clean-start` gives you an empty control plane** — SQLite DB, `state.json`, and
+> the 18 model routing configs all gone. It used to delete only the pre-`data_dir()`
+> `state.json` path while the lifespan restored the live one, and `seed_models()`
+> ran at import time ungated, so quotas, experiments, providers, and the model
+> catalog all came back. See [`QUICKSTART.md` §3](QUICKSTART.md#3-clean-install).
 
 ## Architecture
 

@@ -47,8 +47,14 @@ FLEET = {
             ("web_search", "/web_search", "Search docs/runbooks. Args: query."),
             ("github.delete_repo", "/github.delete_repo", "Delete a repository. Args: repo."),
         ],
-        # devops-agent already has a 'devops-strict' policy blocking delete_repo.
-        "policy": None,
+        # This used to be None, on a comment claiming a 'devops-strict' policy
+        # already blocked delete_repo. Nothing in the repo ever created one, so a
+        # fresh demo left github.delete_repo callable — a governance product
+        # shipping an ungoverned destructive tool.
+        "policy": {
+            "name": "devops-guard", "block": _BLOCK,
+            "allow": ["github.search_code", "github.create_issue", "web_search"],
+        },
     },
     "analytics-agent": {
         "role": "Analytics",

@@ -514,7 +514,7 @@ seeded by `control_plane/demo_seed.py` and the `gateway/register_demo_*.py` /
 | Gateways | 4 | `crm-agent`:8421, `ops-agent`:8422, `devops-agent`:8424, `analytics-agent`:8425 |
 | Agents | 9 | Across 8 frameworks (OpenAI, Anthropic, Strands, Bedrock, AgentCore, CrewAI, LangGraph, gateway-invoke) |
 | Tools | 23 | 12 on crm-agent, 4 on ops-agent, 4 on devops-agent, 3 on analytics-agent — all pointed at the demo tools server on :9300 |
-| Policies | 2 created | `block-destructive` (crm-agent), `ops-guard` (ops-agent). `register_fleet_tools.py` skips devops-agent's on the assumption a `devops-strict` policy exists — nothing creates one, so `github.delete_repo` is unguarded on a fresh demo |
+| Policies | 3 created | `block-destructive` (crm-agent), `ops-guard` (ops-agent), `devops-guard` (devops-agent). One per gateway that registers a destructive tool; `analytics-agent` gets none because it registers none |
 | Quotas | 4 | One per gateway; `current_spend` summed from real usage records so the budget bars match the Costs page |
 | MCP Servers | 2 | Real stdio servers via `npx`: draw.io and filesystem (sandboxed to `/tmp/ostiari-mcp-sandbox`) |
 | Models | 18 | Pre-seeded from AxonLLM; 4 appear in metered usage |
