@@ -19,6 +19,7 @@ from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
 from control_plane.models.database import Gateway
 from control_plane.models.scoping import get_scoped
+from control_plane.services.push_service import gateway_config_headers
 from control_plane.routers.traces import recent_traces_for
 
 router = APIRouter(prefix="/api/trust", tags=["trust"])
@@ -32,8 +33,12 @@ _enforced: dict[str, dict[str, bool]] = defaultdict(dict)
 async def _get_cross_agent(gateway) -> dict:
     """Fetch a gateway's current cross-agent policy (for configured scores)."""
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            r = await client.get(f"{gateway.endpoint}/config/cross-agent")
+        async with httpx.AsyncClient(
+            timeout=5.0, headers=gateway_config_headers()
+        ) as client:
+            r = await client.get(
+                f"{gateway.endpoint}/config/cross-agent"
+            )
             if r.status_code == 200:
                 return r.json()
     except Exception:
@@ -82,9 +87,13 @@ async def apply(gateway_id: str = "crm-agent", db: AsyncSession = Depends(get_db
 
     policy["trust_scores"] = {**policy.get("trust_scores", {}), **derived}
 
-    async with httpx.AsyncClient(timeout=5.0) as client:
+    async with httpx.AsyncClient(
+        timeout=5.0, headers=gateway_config_headers()
+    ) as client:
         try:
-            r = await client.post(f"{gateway.endpoint}/config/cross-agent", json=policy)
+            r = await client.post(
+                f"{gateway.endpoint}/config/cross-agent", json=policy,
+            )
             r.raise_for_status()
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"Failed to push to gateway: {exc}") from None

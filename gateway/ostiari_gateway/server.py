@@ -290,7 +290,9 @@ async def _check_approval(control_plane_url: str, approval_id: str) -> str | Non
     if not (control_plane_url and approval_id):
         return None
     try:
-        async with _httpx.AsyncClient(timeout=5.0) as c:
+        service_token = _os.environ.get("OSTIARI_SERVICE_TOKEN", "").strip()
+        headers = {"X-Ostiari-Service-Key": service_token} if service_token else {}
+        async with _httpx.AsyncClient(timeout=5.0, headers=headers) as c:
             r = await c.get(f"{control_plane_url.rstrip('/')}/api/approvals/{approval_id}")
             if r.status_code == 200:
                 return r.json().get("status")
@@ -304,7 +306,9 @@ async def _create_approval(control_plane_url: str, payload: dict) -> dict | None
     if not control_plane_url:
         return None
     try:
-        async with _httpx.AsyncClient(timeout=5.0) as c:
+        service_token = _os.environ.get("OSTIARI_SERVICE_TOKEN", "").strip()
+        headers = {"X-Ostiari-Service-Key": service_token} if service_token else {}
+        async with _httpx.AsyncClient(timeout=5.0, headers=headers) as c:
             r = await c.post(f"{control_plane_url.rstrip('/')}/api/approvals", json=payload)
             if r.status_code == 200:
                 return r.json()

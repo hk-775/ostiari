@@ -591,10 +591,10 @@ docker build -f deploy/docker/Dockerfile.frontend \
 > — a governance control plane that silently boots on `admin/admin` is worse than
 > one that fails loudly.
 >
-> `OSTIARI_INGEST_KEY` has two known gaps: the gateway never sends
-> `X-Ingest-Key`, and only `/api/traces/ingest` checks it. See
-> [`deploy/README.md`](deploy/README.md#ostiari_ingest_key--two-gaps) before
-> setting it.
+> Set `OSTIARI_INGEST_KEY`, `OSTIARI_SERVICE_TOKEN`, and
+> `OSTIARI_CONFIG_ADMIN_KEY` to matching values on the components that share
+> them. Trace ingest uses the ingest key; restricted gateway lifecycle and
+> event routes use the service token; config pushes use the config-admin key.
 
 ### Why `OSTIARI_ADVERTISE_HOST` matters
 
