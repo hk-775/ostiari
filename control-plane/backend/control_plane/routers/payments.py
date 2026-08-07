@@ -218,14 +218,19 @@ async def set_pricing(body: PricingConfig, gateway_id: str = "crm-agent", org: s
 @router.post("/push")
 async def push_payments(gateway_id: str = "crm-agent", db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
     """Push the full payment config (pricing + wallet balances) to a gateway."""
-    gateway = await db.get(Gateway, gateway_id)
+    gateway = await get_scoped(db, Gateway, gateway_id, org)
     if gateway is None:
         raise HTTPException(status_code=404, detail="Gateway not found")
 
     payload = await build_payment_config(db, gateway_id, org)
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    from control_plane.services.push_service import gateway_config_headers
+    async with httpx.AsyncClient(
+        timeout=10.0, headers=gateway_config_headers()
+    ) as client:
         try:
-            resp = await client.post(f"{gateway.endpoint}/config/payments", json=payload)
+            resp = await client.post(
+                f"{gateway.endpoint}/config/payments", json=payload,
+            )
             resp.raise_for_status()
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"Failed to push: {exc}") from None

@@ -9,6 +9,7 @@ from control_plane.database import get_db
 from control_plane.models.database import Gateway, McpServer
 from control_plane.models.schemas import McpServerCreate, McpServerResponse
 from control_plane.models.scoping import get_scoped, scoped, stamp
+from control_plane.services.push_service import gateway_config_headers
 from control_plane.services.audit_service import actor_of, audit
 
 router = APIRouter(prefix="/api/mcp-servers", tags=["mcp-servers"])
@@ -102,9 +103,13 @@ async def discover_tools(mcp_id: int, request: Request, db: AsyncSession = Depen
     if not gateway:
         raise HTTPException(status_code=404, detail="Gateway not found")
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(
+        timeout=10.0, headers=gateway_config_headers()
+    ) as client:
         try:
-            resp = await client.post(f"{gateway.endpoint}/config/mcp-servers/{mcp.name}/refresh")
+            resp = await client.post(
+                f"{gateway.endpoint}/config/mcp-servers/{mcp.name}/refresh",
+            )
             if resp.status_code == 200:
                 # A refresh can change the tool surface an agent can call, so it
                 # belongs in the trail even though no CP row changed.

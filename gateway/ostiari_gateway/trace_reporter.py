@@ -6,6 +6,7 @@ and restores on gateway startup.
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 from typing import Any
@@ -31,6 +32,16 @@ class TraceReporter:
         self._client: httpx.AsyncClient | None = None
         self._spend_task: asyncio.Task | None = None
         self._agent_auth: Any = None
+
+    @staticmethod
+    def _service_headers() -> dict[str, str]:
+        token = os.environ.get("OSTIARI_SERVICE_TOKEN", "").strip()
+        return {"X-Ostiari-Service-Key": token} if token else {}
+
+    @staticmethod
+    def _ingest_headers() -> dict[str, str]:
+        key = os.environ.get("OSTIARI_INGEST_KEY", "").strip()
+        return {"X-Ingest-Key": key} if key else {}
 
     def configure(self, control_plane_url: str, sidecar_id: str) -> None:
         self._url = control_plane_url.rstrip("/")
@@ -108,7 +119,9 @@ class TraceReporter:
         }
 
         try:
-            await self._client.post(f"{self._url}/api/traces/ingest", json=event)
+            await self._client.post(
+                f"{self._url}/api/traces/ingest", json=event, headers=self._ingest_headers()
+            )
         except Exception as e:
             log.debug("Failed to report trace: %s", e)
 
@@ -136,7 +149,7 @@ class TraceReporter:
                 "agent_id": agent_id, "gateway_id": self._sidecar_id, "action": action,
                 "amount_usdc": amount_usdc, "settled": settled, "tx_hash": tx_hash,
                 "mode": mode, "source": source,
-            })
+            }, headers=self._service_headers())
         except Exception as e:
             log.debug("Failed to report payment: %s", e)
 
@@ -159,7 +172,7 @@ class TraceReporter:
                 "spend_usd": round(spend_usd, 4),
                 "budget_usd": budget_usd,
                 "timestamp": time.time(),
-            })
+            }, headers=self._service_headers())
         except Exception as e:
             log.debug("Failed to report budget alert: %s", e)
 
@@ -178,6 +191,7 @@ class TraceReporter:
             await self._client.post(
                 f"{self._url}/api/gateways/{self._sidecar_id}/spend",
                 json={"spend": snapshot},
+                headers=self._service_headers(),
             )
             log.debug("Pushed spend snapshot: %d agents", len(snapshot))
         except Exception as e:
@@ -192,7 +206,8 @@ class TraceReporter:
 
         try:
             resp = await self._client.get(
-                f"{self._url}/api/gateways/{self._sidecar_id}/spend"
+                f"{self._url}/api/gateways/{self._sidecar_id}/spend",
+                headers=self._service_headers(),
             )
             if resp.status_code == 200:
                 data = resp.json()

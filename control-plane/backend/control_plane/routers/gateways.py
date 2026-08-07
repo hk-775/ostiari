@@ -16,7 +16,7 @@ from control_plane.models.database import Gateway, Tool
 from control_plane.models.schemas import GatewayCreate, GatewayResponse, GatewayUpdate
 from control_plane.models.scoping import get_scoped, scoped, stamp
 from control_plane.services.audit_service import actor_of, audit
-from control_plane.services.push_service import PushService
+from control_plane.services.push_service import PushService, gateway_config_headers
 
 log = logging.getLogger("control_plane.gateways")
 
@@ -290,7 +290,7 @@ async def gateway_register(
 
     # Include persisted A2A agents so the gateway reconnects them on startup.
     from control_plane.routers.a2a_agents import build_a2a_config
-    a2a = await build_a2a_config(db, gateway_id)
+    a2a = await build_a2a_config(db, gateway_id, gateway.org_id)
     if a2a:
         bundle["a2a_agents"] = a2a
 
@@ -339,9 +339,17 @@ async def gateway_heartbeat(gateway_id: str, db: AsyncSession = Depends(get_db))
 
 
 @router.get("/{gateway_id}/config-bundle")
-async def get_config_bundle(gateway_id: str, db: AsyncSession = Depends(get_db)):
+async def get_config_bundle(
+    gateway_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+):
     """Returns full current config for a gateway."""
-    gateway = await db.get(Gateway, gateway_id)
+    if getattr(request.state, "machine_authenticated", False):
+        gateway = await db.get(Gateway, gateway_id)
+    else:
+        gateway = await get_scoped(db, Gateway, gateway_id, org)
     if not gateway:
         raise HTTPException(status_code=404, detail="Gateway not found")
 
@@ -353,10 +361,13 @@ async def get_config_bundle(gateway_id: str, db: AsyncSession = Depends(get_db))
 
 @router.post("/{gateway_id}/push-config")
 async def push_config_lifecycle(
-    gateway_id: str, request: Request, db: AsyncSession = Depends(get_db)
+    gateway_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
 ):
     """Operator pushes config NOW. If healthy -> forward immediately. If unhealthy -> queue."""
-    gateway = await db.get(Gateway, gateway_id)
+    gateway = await get_scoped(db, Gateway, gateway_id, org)
     if not gateway:
         raise HTTPException(status_code=404, detail="Gateway not found")
 
@@ -364,9 +375,13 @@ async def push_config_lifecycle(
 
     if gateway.status == "healthy":
         # Forward immediately via the existing push mechanism
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(
+            timeout=10.0, headers=gateway_config_headers()
+        ) as client:
             try:
-                resp = await client.post(f"{gateway.endpoint}/config", json=body)
+                resp = await client.post(
+                    f"{gateway.endpoint}/config", json=body
+                )
                 if resp.status_code == 200:
                     return {"status": "applied", "gateway_id": gateway_id}
                 else:
@@ -381,3 +396,29 @@ async def push_config_lifecycle(
         # Queue for later delivery on heartbeat
         config_queue.setdefault(gateway_id, []).append(body)
         return {"status": "queued", "gateway_id": gateway_id, "reason": "gateway_offline"}
+
+
+@router.get("/{gateway_id}/spend")
+async def get_gateway_spend(gateway_id: str, db: AsyncSession = Depends(get_db)):
+    """Return the gateway's durable per-agent spend snapshot."""
+    gateway = await db.get(Gateway, gateway_id)
+    if gateway is None:
+        raise HTTPException(status_code=404, detail="Gateway not found")
+    return {"spend": (gateway.config or {}).get("agent_spend", {})}
+
+
+@router.post("/{gateway_id}/spend")
+async def set_gateway_spend(
+    gateway_id: str, request: Request, db: AsyncSession = Depends(get_db)
+):
+    """Persist the gateway's per-agent spend snapshot."""
+    gateway = await db.get(Gateway, gateway_id)
+    if gateway is None:
+        raise HTTPException(status_code=404, detail="Gateway not found")
+    body = await request.json()
+    spend = body.get("spend", {}) if isinstance(body, dict) else {}
+    if not isinstance(spend, dict):
+        raise HTTPException(status_code=422, detail="spend must be an object")
+    gateway.config = {**(gateway.config or {}), "agent_spend": spend}
+    await db.commit()
+    return {"status": "stored", "agents": len(spend)}

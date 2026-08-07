@@ -20,8 +20,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
 from control_plane.models.database import Gateway, UsageRecord
-from control_plane.models.scoping import scoped
+from control_plane.models.scoping import get_scoped, scoped
 from control_plane.services.audit_service import actor_of, audit
+from control_plane.services.push_service import gateway_config_headers
 
 router = APIRouter(prefix="/api/experiments", tags=["experiments"])
 
@@ -78,14 +79,16 @@ def _for_gateway(org: str, gateway_id: str) -> list[dict]:
 
 async def _push(org: str, gateway_id: str, db: AsyncSession) -> tuple[bool, str]:
     """Push this gateway's full experiment set to it. Never raises."""
-    gateway = await db.get(Gateway, gateway_id)
+    gateway = await get_scoped(db, Gateway, gateway_id, org)
     if not gateway:
         return False, f"Gateway '{gateway_id}' not found"
     payload = {"ab_experiments": _for_gateway(org, gateway_id)}
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(
+            timeout=10.0, headers=gateway_config_headers()
+        ) as client:
             resp = await client.post(
-                f"{gateway.endpoint}/config/ab-experiments", json=payload
+                f"{gateway.endpoint}/config/ab-experiments", json=payload,
             )
             if resp.status_code == 200:
                 return True, ""
