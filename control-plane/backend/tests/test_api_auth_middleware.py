@@ -43,3 +43,34 @@ class TestAuthMiddleware:
         monkeypatch.setenv("OSTIARI_REQUIRE_AUTH", "true")
         r = await client.get("/api/gateways", headers=admin_headers)
         assert r.status_code == 200
+
+    async def test_service_key_only_allows_machine_routes(self, client, monkeypatch):
+        monkeypatch.setenv("OSTIARI_REQUIRE_AUTH", "true")
+        monkeypatch.setenv("OSTIARI_SERVICE_TOKEN", "machine-secret")
+        headers = {"X-Ostiari-Service-Key": "machine-secret"}
+
+        registered = await client.post(
+            "/api/gateways/service-auth-test/register", json={}, headers=headers
+        )
+        assert registered.status_code == 200
+        assert (await client.get("/api/gateways", headers=headers)).status_code == 401
+
+    async def test_machine_route_rejects_wrong_service_key(self, client, monkeypatch):
+        monkeypatch.setenv("OSTIARI_REQUIRE_AUTH", "true")
+        monkeypatch.setenv("OSTIARI_SERVICE_TOKEN", "machine-secret")
+        r = await client.post(
+            "/api/gateways/service-auth-test/register",
+            json={},
+            headers={"X-Ostiari-Service-Key": "wrong"},
+        )
+        assert r.status_code == 401
+
+    async def test_viewer_is_read_only(self, client, monkeypatch, viewer_headers):
+        monkeypatch.setenv("OSTIARI_REQUIRE_AUTH", "true")
+        assert (await client.get("/api/gateways", headers=viewer_headers)).status_code == 200
+        r = await client.post(
+            "/api/gateways",
+            json={"id": "viewer-write", "name": "No", "endpoint": "http://gateway"},
+            headers=viewer_headers,
+        )
+        assert r.status_code == 403

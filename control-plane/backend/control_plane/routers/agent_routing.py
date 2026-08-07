@@ -15,6 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
 from control_plane.models.database import Gateway
+from control_plane.models.scoping import get_scoped
+from control_plane.services.push_service import gateway_config_headers
 
 router = APIRouter(prefix="/api/agent-routing", tags=["agent-routing"])
 
@@ -46,8 +48,12 @@ async def _push(org: str, gateway: Gateway) -> tuple[bool, str]:
     """Push this gateway's full agent_routing map to it."""
     payload = {"agent_routing": _by_gateway(org, gateway.id)}
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(f"{gateway.endpoint}/config/agent-routing", json=payload)
+        async with httpx.AsyncClient(
+            timeout=10.0, headers=gateway_config_headers()
+        ) as client:
+            resp = await client.post(
+                f"{gateway.endpoint}/config/agent-routing", json=payload,
+            )
             if resp.status_code == 200:
                 return True, ""
             return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
@@ -72,7 +78,7 @@ async def set_policy(
     org: str = Depends(get_current_org),
 ) -> dict:
     """Create/update a per-agent routing policy and push it to the gateway."""
-    gateway = await db.get(Gateway, body.gateway_id)
+    gateway = await get_scoped(db, Gateway, body.gateway_id, org)
     if not gateway:
         raise HTTPException(status_code=404, detail="Gateway not found")
     if body.strategy == "round_robin" and len(body.models) < 1:
@@ -93,6 +99,6 @@ async def delete_policy(
     if (org, gateway_id, agent_id) not in _policies:
         raise HTTPException(status_code=404, detail="Policy not found")
     del _policies[(org, gateway_id, agent_id)]
-    gateway = await db.get(Gateway, gateway_id)
+    gateway = await get_scoped(db, Gateway, gateway_id, org)
     pushed, err = (await _push(org, gateway)) if gateway else (False, "gateway not found")
     return {"status": "deleted", "pushed": pushed, "push_error": err or None}

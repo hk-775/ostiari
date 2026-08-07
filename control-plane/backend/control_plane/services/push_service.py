@@ -1,6 +1,7 @@
 """Push service — syncs configuration to gateways."""
 
 import logging
+import os
 from typing import Any
 
 import httpx
@@ -11,6 +12,12 @@ from control_plane.models.database import Gateway, McpServer, Policy, Tool
 from control_plane.models.schemas import PushResponse, PushResult
 
 log = logging.getLogger("control_plane.push")
+
+
+def gateway_config_headers() -> dict[str, str]:
+    """Authentication headers for control-plane config calls to gateways."""
+    key = os.environ.get("OSTIARI_CONFIG_ADMIN_KEY", "").strip()
+    return {"X-Config-Admin-Key": key} if key else {}
 
 
 class PushService:
@@ -27,9 +34,13 @@ class PushService:
 
         config = await self._build_config(db, gateway)
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(
+            timeout=self._timeout, headers=gateway_config_headers()
+        ) as client:
             try:
-                resp = await client.post(f"{gateway.endpoint}/config", json=config)
+                resp = await client.post(
+                    f"{gateway.endpoint}/config", json=config
+                )
                 if resp.status_code == 200:
                     return PushResult(gateway_id=gateway_id, status="success")
                 else:
@@ -73,10 +84,12 @@ class PushService:
         if gateway is None:
             return PushResult(gateway_id=gateway_id, status="error", message="Gateway not found")
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(
+            timeout=self._timeout, headers=gateway_config_headers()
+        ) as client:
             try:
                 resp = await client.post(
-                    f"{gateway.endpoint}/config/policy", json=policy.content
+                    f"{gateway.endpoint}/config/policy", json=policy.content,
                 )
                 if resp.status_code == 200:
                     return PushResult(gateway_id=gateway_id, status="success")
@@ -91,14 +104,17 @@ class PushService:
     async def _build_config(self, db: AsyncSession, gateway: Gateway) -> dict[str, Any]:
         """Build the full gateway config from database state."""
         # Get tools for this gateway
-        result = await db.execute(select(Tool).where(Tool.gateway_id == gateway.id))
+        result = await db.execute(select(Tool).where(
+            Tool.gateway_id == gateway.id, Tool.org_id == gateway.org_id
+        ))
         tools = result.scalars().all()
 
         # Get active policy for this gateway
         result = await db.execute(
             select(Policy).where(
                 (Policy.gateway_id == gateway.id) | (Policy.gateway_id.is_(None)),
-                Policy.is_active == True,
+                Policy.is_active.is_(True),
+                Policy.org_id == gateway.org_id,
             )
         )
         policies = result.scalars().all()
@@ -109,7 +125,9 @@ class PushService:
             merged_policy.update(p.content)
 
         # Get MCP servers for this gateway
-        result = await db.execute(select(McpServer).where(McpServer.gateway_id == gateway.id))
+        result = await db.execute(select(McpServer).where(
+            McpServer.gateway_id == gateway.id, McpServer.org_id == gateway.org_id
+        ))
         mcp_servers = result.scalars().all()
 
         config: dict[str, Any] = {

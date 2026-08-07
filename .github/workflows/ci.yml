@@ -28,7 +28,7 @@ jobs:
           pip install pytest pytest-asyncio anyio hypothesis httpx starlette ruff
 
       - name: Lint
-        run: ruff check src/ gateway/ --select F --ignore F401
+        run: ruff check src/ gateway/ control-plane/backend/control_plane/ control-plane/backend/tests/ --select F --ignore F401
 
       - name: Test (root suite)
         run: pytest tests/ -v --tb=short

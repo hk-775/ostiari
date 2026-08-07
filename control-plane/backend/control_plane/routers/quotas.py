@@ -233,8 +233,10 @@ async def push_quota(
 
     # Get gateway endpoint from the database
     from control_plane.models.database import Gateway
+    from control_plane.models.scoping import get_scoped
+    from control_plane.services.push_service import gateway_config_headers
 
-    gateway = await db.get(Gateway, quota.scope_id)
+    gateway = await get_scoped(db, Gateway, quota.scope_id, org)
     if not gateway:
         raise HTTPException(status_code=404, detail=f"Gateway '{quota.scope_id}' not found")
 
@@ -257,9 +259,13 @@ async def push_quota(
     if pricing:
         payload["pricing"] = pricing
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(
+        timeout=10.0, headers=gateway_config_headers()
+    ) as client:
         try:
-            resp = await client.post(f"{gateway.endpoint}/config/quota", json=payload)
+            resp = await client.post(
+                f"{gateway.endpoint}/config/quota", json=payload,
+            )
             if resp.status_code == 200:
                 # Audit the push, not just the edit: a stored quota that was never
                 # pushed enforces nothing, so the two are separate facts.

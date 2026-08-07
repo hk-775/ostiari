@@ -7,6 +7,8 @@ from typing import Literal
 
 import httpx
 
+from control_plane.services.push_service import gateway_config_headers
+
 logger = logging.getLogger(__name__)
 
 Schedule = Literal["manual", "daily", "weekly", "monthly"]
@@ -75,7 +77,9 @@ class BudgetResetScheduler:
 
     async def _trigger_reset(self) -> None:
         """Call each gateway's quota reset endpoint."""
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(
+            timeout=10.0, headers=gateway_config_headers()
+        ) as client:
             for endpoint in self._gateway_endpoints:
                 try:
                     url = f"{endpoint.rstrip('/')}/config/quota/reset-spend"
