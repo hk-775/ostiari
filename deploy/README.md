@@ -109,6 +109,7 @@ sam deploy --guided
 | `OSTIARI_STRICT` | _(unset)_ | With `OSTIARI_ENV=production`, makes the startup fail-open warning **fatal** instead of a log line. |
 | `OSTIARI_REQUIRE_AXON` | _(unset)_ | Refuse to start when AxonLLM can't embed. Unset, the gateway warns and serves LLM traffic with **no routing governance and no token cost tracking** (`GET /health` → `llm_router` reports it). Not shipped on in the manifests here — AxonLLM is a separate repository, so a gateway that only proxies tools shouldn't need it installed. Set it if you route LLM calls. |
 | `OSTIARI_CONFIG_ADMIN_KEY` | _(none)_ | Required in production: without it everything under `/config` (mode, tools, policy, quota, payments) is **unauthenticated**, reads included. When set, it's compared with `hmac.compare_digest`; `GET /config/mode` and `GET /tools` stay open. |
+| `OSTIARI_SERVICE_TOKEN` | _(none)_ | Shared machine credential sent to the control plane for registration, heartbeat, HITL, payment/quota events, and spend persistence. Set the same value on the gateway and control plane. |
 | `OSTIARI_GATEWAY_AUTH` | `off` | Set `required` in production: otherwise `X-Agent-Id` is trusted with no token, so any caller can impersonate any agent. |
 | `REDIS_ENDPOINT` | _(none)_ | Redis host for fleet-wide rate-limit / budget / wallet state |
 | `REDIS_PORT` | `6379` | Redis port |
@@ -130,23 +131,13 @@ sam deploy --guided
 | `OSTIARI_ADMIN_PASSWORD` | _(dev seed)_ | **Required in production.** Without it the control plane refuses to seed an admin at all. |
 | `OSTIARI_JWT_SECRET` | _(dev default)_ | **Required in production**, ≥32 chars. Startup fails otherwise. |
 | `OSTIARI_INGEST_KEY` | _(none)_ | Gates `POST /api/traces/ingest` with an `X-Ingest-Key` header; unset in production, every trace ingest is 401. **Read the caveats before setting it** — see below. |
+| `OSTIARI_SERVICE_TOKEN` | _(none)_ | Shared machine credential for the restricted gateway lifecycle/ingest routes. Required when `OSTIARI_REQUIRE_AUTH=true`; set the same value on every trusted gateway. |
+| `OSTIARI_CONFIG_ADMIN_KEY` | _(none)_ | Credential the control plane sends on gateway `/config/*` calls. Set the same value on the control plane and gateways. |
 | `OSTIARI_ENCRYPTION_KEY` | _(ephemeral)_ | Encrypts stored provider API keys. Unset, a new key is minted per process — stored keys become unreadable after restart. |
 
-### `OSTIARI_INGEST_KEY` — two gaps
-
-This variable is not yet the control it's meant to be. Both of these were verified
-against a running control plane:
-
-- **The gateway never sends the header.** Nothing in `gateway/` reads
-  `OSTIARI_INGEST_KEY`, and `trace_reporter.py` posts to `/api/traces/ingest` with
-  no headers. Setting the key on the control plane therefore **stops trace
-  reporting** — every post 401s, and `report()` swallows the failure at debug
-  level, so Live Traces goes quiet with no visible error. Setting it on the gateway
-  side does nothing at all today.
-- **It only covers trace ingest.** `POST /api/costs/record`, `/api/costs/record/batch`,
-  `/api/approvals`, and `/api/payments/ingest` have no such check and accept an
-  anonymous POST even with the key set — so metering, cost, approval, and payment
-  records can still be forged.
+The gateway sends `OSTIARI_INGEST_KEY` as `X-Ingest-Key`. Other gateway machine
+traffic uses `OSTIARI_SERVICE_TOKEN`; the service token is accepted only on the
+explicit lifecycle and ingest route allowlist, not on general control-plane APIs.
 
 In production, an empty trace view beats a poisoned one, so setting it is still
 defensible — but expect a blank dashboard, and don't read it as "ingest is

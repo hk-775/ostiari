@@ -330,7 +330,7 @@ so they have no control-plane CRUD of their own.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/traces/ingest` | POST | Receive a trace event from a gateway. Requires a matching `X-Ingest-Key` header when `OSTIARI_INGEST_KEY` is set (constant-time compare). Open when unset in dev; **401 when unset under `OSTIARI_ENV=production`**. Note the gateway's trace reporter does not send the header, so setting the key currently breaks live ingest — see [`../deploy/README.md`](../deploy/README.md#ostiari_ingest_key--two-gaps) |
+| `/api/traces/ingest` | POST | Receive a trace event from a gateway. Requires a matching `X-Ingest-Key` header when `OSTIARI_INGEST_KEY` is set (constant-time compare). Open when unset in dev; **401 when unset under `OSTIARI_ENV=production`**. The gateway reporter sends the configured key. |
 | `/api/traces/recent` | GET | Get recent traces (`?limit=50`) |
 | `/api/traces/spans` | GET | Traces grouped into session/plan/step spans |
 | `/api/traces/shadow-report` | GET | What shadow-mode gateways would have blocked |

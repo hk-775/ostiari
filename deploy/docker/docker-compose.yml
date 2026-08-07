@@ -35,6 +35,9 @@ services:
       # on the control plane. Do not set it here without reading §7.4 and §9 of
       # docs/control-plane-guide.md.
       OSTIARI_ENV: "${OSTIARI_ENV:-}"
+      OSTIARI_SERVICE_TOKEN: "${OSTIARI_SERVICE_TOKEN:-}"
+      OSTIARI_INGEST_KEY: "${OSTIARI_INGEST_KEY:-}"
+      OSTIARI_CONFIG_ADMIN_KEY: "${OSTIARI_CONFIG_ADMIN_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
     depends_on:
@@ -74,6 +77,9 @@ services:
       # DATABASE_URL above only covers the db; without this, state.json stays in
       # the root-owned app dir and shutdown loses every persisted store.
       OSTIARI_DATA_DIR: "/data"
+      OSTIARI_SERVICE_TOKEN: "${OSTIARI_SERVICE_TOKEN:-}"
+      OSTIARI_INGEST_KEY: "${OSTIARI_INGEST_KEY:-}"
+      OSTIARI_CONFIG_ADMIN_KEY: "${OSTIARI_CONFIG_ADMIN_KEY:-}"
     volumes:
       - control-plane-data:/data
     # Runs as uid 10001 with an immutable root filesystem. The volume above is the

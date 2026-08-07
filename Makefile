@@ -20,10 +20,9 @@ test: ## Run all tests
 	pytest tests/ -v
 	cd gateway && PYTHONPATH=. pytest tests/ -v
 	cd control-plane/backend && PYTHONPATH=. pytest tests/ -v
-	cd control-plane/frontend && npx vitest run 2>/dev/null || true
 
 lint: ## Run linters
-	ruff check src/ gateway/
+	ruff check src/ gateway/ control-plane/backend/control_plane/ control-plane/backend/tests/ --select F --ignore F401
 	cd control-plane/frontend && npx tsc --noEmit --skipLibCheck
 
 demo: ## Demo mode — frontend only with mock data (http://localhost:9000)

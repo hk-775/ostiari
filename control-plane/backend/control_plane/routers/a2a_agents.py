@@ -19,6 +19,7 @@ from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
 from control_plane.models.database import A2AAgentRecord, Gateway
 from control_plane.models.scoping import get_scoped, scoped, stamp
+from control_plane.services.push_service import gateway_config_headers
 
 router = APIRouter(prefix="/api/a2a-agents", tags=["a2a-agents"])
 
@@ -50,11 +51,14 @@ async def register_a2a_agent(gateway_id: str, body: A2AAgentCreate, db: AsyncSes
     if gateway is None:
         raise HTTPException(status_code=404, detail="Gateway not found")
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with httpx.AsyncClient(
+        timeout=15.0, headers=gateway_config_headers()
+    ) as client:
         try:
-            resp = await client.post(f"{gateway.endpoint}/config/a2a-agents", json={
-                "url": body.url, "name": body.name, "auth_token": body.auth_token,
-            })
+            resp = await client.post(
+                f"{gateway.endpoint}/config/a2a-agents",
+                json={"url": body.url, "name": body.name, "auth_token": body.auth_token},
+            )
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"Cannot reach gateway: {exc}") from None
     if resp.status_code != 200:
@@ -98,9 +102,13 @@ async def delete_a2a_agent(agent_id: int, db: AsyncSession = Depends(get_db), or
     gateway = await db.get(Gateway, rec.gateway_id)
     if gateway is not None:
         import contextlib
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(
+            timeout=10.0, headers=gateway_config_headers()
+        ) as client:
             with contextlib.suppress(Exception):  # record removal is what matters
-                await client.delete(f"{gateway.endpoint}/config/a2a-agents/{rec.agent_key}")
+                await client.delete(
+                    f"{gateway.endpoint}/config/a2a-agents/{rec.agent_key}",
+                )
     await db.delete(rec)
     await db.commit()
     return {"deleted": agent_id, "agent_key": rec.agent_key}

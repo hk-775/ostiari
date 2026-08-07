@@ -181,17 +181,9 @@ export function Quotas() {
                     }
                     setPushStatus(prev => ({ ...prev, [q.id]: "pushing" }));
                     try {
-                      const quotaPayload = {
-                        rate_limit_rpm: q.rate_limit_rpm,
-                        budget_limit_usd: q.budget_limit_usd,
-                        max_tokens_per_request: q.max_tokens_per_request,
-                        allowed_models: q.allowed_models,
-                      };
-                      const res = await api.gateways.pushConfig(q.scope_id, { quota: quotaPayload });
-                      if (res.status === "applied") {
+                      const res = await api.quotas.push(q.id);
+                      if (res.status === "pushed") {
                         setPushStatus(prev => ({ ...prev, [q.id]: "done" }));
-                      } else if (res.status === "queued") {
-                        setPushStatus(prev => ({ ...prev, [q.id]: "queued" }));
                       } else {
                         setPushStatus(prev => ({ ...prev, [q.id]: "error" }));
                       }

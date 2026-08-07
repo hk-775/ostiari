@@ -21,6 +21,8 @@ at all" gate that was missing.
 from __future__ import annotations
 
 import os
+import re
+import secrets
 
 from jose import JWTError
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -49,20 +51,40 @@ def _is_public(path: str) -> bool:
     return any(path == p or path.startswith(p) for p in _PUBLIC_PREFIXES)
 
 
-def _valid_token(token: str) -> bool:
-    """Validate a Bearer token (OIDC JWT when configured, else local token)."""
+def _token_role(token: str) -> str | None:
+    """Validate a Bearer token and return its effective role."""
     validator = oidc.get_validator()
     if validator is not None:
         try:
-            validator.validate(token)
-            return True
+            claims = validator.validate(token)
+            return oidc.principal_from_claims(claims).role
         except oidc.OIDCError:
-            return False
+            return None
     try:
-        decode_token(token)
-        return True
+        return decode_token(token).get("role")
     except JWTError:
-        return False
+        return None
+
+
+_MACHINE_ROUTES = (
+    ("POST", re.compile(r"^/api/gateways/[^/]+/(register|heartbeat|spend)$")),
+    ("GET", re.compile(r"^/api/gateways/[^/]+/spend$")),
+    ("GET", re.compile(r"^/api/gateways/[^/]+/config-bundle$")),
+    ("POST", re.compile(r"^/api/approvals$")),
+    ("GET", re.compile(r"^/api/approvals/[^/]+$")),
+    ("POST", re.compile(r"^/api/payments/ingest$")),
+    ("POST", re.compile(r"^/api/quotas/alerts$")),
+)
+
+
+def _is_machine_route(method: str, path: str) -> bool:
+    return any(method == allowed and pattern.fullmatch(path) for allowed, pattern in _MACHINE_ROUTES)
+
+
+def _valid_service_key(request: Request) -> bool:
+    expected = os.environ.get("OSTIARI_SERVICE_TOKEN", "").strip()
+    presented = request.headers.get("X-Ostiari-Service-Key", "")
+    return bool(expected and presented and secrets.compare_digest(presented, expected))
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -81,11 +103,24 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if not path.startswith("/api/") or _is_public(path):
             return await call_next(request)
 
+        if _is_machine_route(request.method, path):
+            if _valid_service_key(request):
+                request.state.machine_authenticated = True
+                return await call_next(request)
+            # Some lifecycle resources are also visible to signed-in operators.
+            # A missing service key may therefore continue to normal Bearer auth;
+            # an invalid request still fails below.
+
         auth = request.headers.get("Authorization", "")
-        if not auth.startswith("Bearer ") or not _valid_token(auth.removeprefix("Bearer ")):
+        token = auth.removeprefix("Bearer ") if auth.startswith("Bearer ") else ""
+        role = _token_role(token) if token else None
+        if role is None:
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Authentication required"},
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            if role == "viewer":
+                return JSONResponse(status_code=403, content={"detail": "Viewer role is read-only"})
         return await call_next(request)

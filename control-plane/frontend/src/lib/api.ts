@@ -97,6 +97,13 @@ export const api = {
     pushAll: () => fetchAPI("/api/gateways/push-all", { method: "POST" }),
     health: (id: string) => fetchAPI(`/api/gateways/${id}/health`),
   },
+  quotas: {
+    push: (id: number) =>
+      fetchAPI<{ status: string; gateway?: string; detail?: string }>(
+        `/api/quotas/${id}/push`,
+        { method: "POST" },
+      ),
+  },
   tools: {
     list: (gatewayId?: string) =>
       fetchAPI<Tool[]>(`/api/tools${gatewayId ? `?gateway_id=${gatewayId}` : ""}`),
