@@ -72,6 +72,7 @@ _MACHINE_ROUTES = (
     ("GET", re.compile(r"^/api/gateways/[^/]+/config-bundle$")),
     ("POST", re.compile(r"^/api/approvals$")),
     ("GET", re.compile(r"^/api/approvals/[^/]+$")),
+    ("POST", re.compile(r"^/api/costs/record(?:/batch)?$")),
     ("POST", re.compile(r"^/api/payments/ingest$")),
     ("POST", re.compile(r"^/api/quotas/alerts$")),
 )

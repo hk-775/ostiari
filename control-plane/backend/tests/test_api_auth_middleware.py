@@ -55,6 +55,39 @@ class TestAuthMiddleware:
         assert registered.status_code == 200
         assert (await client.get("/api/gateways", headers=headers)).status_code == 401
 
+    async def test_service_key_allows_cost_ingest(self, client, monkeypatch, admin_headers):
+        monkeypatch.setenv("OSTIARI_REQUIRE_AUTH", "true")
+        monkeypatch.setenv("OSTIARI_SERVICE_TOKEN", "machine-secret")
+        service_headers = {"X-Ostiari-Service-Key": "machine-secret"}
+        await client.post(
+            "/api/gateways",
+            headers=admin_headers,
+            json={"id": "cost-gateway", "name": "Cost Gateway", "endpoint": "http://gateway"},
+        )
+        record = {
+            "gateway_id": "cost-gateway",
+            "agent_id": "billing-test",
+            "model": "gpt-4o-mini",
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "total_tokens": 15,
+        }
+
+        single = await client.post("/api/costs/record", json=record, headers=service_headers)
+        batch = await client.post("/api/costs/record/batch", json=[record], headers=service_headers)
+
+        assert single.status_code == 200
+        assert batch.status_code == 200
+        assert batch.json() == {"recorded": 1}
+
+    async def test_cost_ingest_rejects_missing_service_key(self, client, monkeypatch):
+        monkeypatch.setenv("OSTIARI_REQUIRE_AUTH", "true")
+        monkeypatch.setenv("OSTIARI_SERVICE_TOKEN", "machine-secret")
+
+        r = await client.post("/api/costs/record/batch", json=[])
+
+        assert r.status_code == 401
+
     async def test_machine_route_rejects_wrong_service_key(self, client, monkeypatch):
         monkeypatch.setenv("OSTIARI_REQUIRE_AUTH", "true")
         monkeypatch.setenv("OSTIARI_SERVICE_TOKEN", "machine-secret")
