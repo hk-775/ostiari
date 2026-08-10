@@ -1,8 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { FlaskConical, Plus, Trash2, ToggleLeft, ToggleRight } from "lucide-react";
-
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
+import { fetchAPI } from "../lib/api";
 
 interface Experiment {
   name: string;
@@ -21,11 +20,11 @@ interface ExperimentResults {
 }
 
 async function fetchExperiments(): Promise<Experiment[]> {
-  return (await fetch(`${API_BASE}/api/experiments`)).json();
+  return fetchAPI<Experiment[]>("/api/experiments");
 }
 
 async function fetchResults(name: string): Promise<ExperimentResults> {
-  return (await fetch(`${API_BASE}/api/experiments/${name}/results`)).json();
+  return fetchAPI<ExperimentResults>(`/api/experiments/${name}/results`);
 }
 
 export function Experiments() {
@@ -42,26 +41,24 @@ export function Experiments() {
   });
 
   const createMutation = useMutation({
-    mutationFn: async (data: typeof form) => {
-      const resp = await fetch(`${API_BASE}/api/experiments`, {
+    mutationFn: (data: typeof form) =>
+      fetchAPI<Experiment>("/api/experiments", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...data, traffic_pct_b: parseInt(data.traffic_pct_b) }),
-      });
-      return resp.json();
-    },
+      }),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["experiments"] }); setShowForm(false); },
   });
 
   const deleteMutation = useMutation({
-    mutationFn: async (name: string) => { await fetch(`${API_BASE}/api/experiments/${name}`, { method: "DELETE" }); },
+    mutationFn: (name: string) => fetchAPI(`/api/experiments/${name}`, { method: "DELETE" }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["experiments"] }),
   });
 
   const toggleMutation = useMutation({
-    mutationFn: async (name: string) => { await fetch(`${API_BASE}/api/experiments/${name}/toggle`, { method: "PATCH" }); },
+    mutationFn: (name: string) => fetchAPI(`/api/experiments/${name}/toggle`, { method: "PATCH" }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["experiments"] }),
   });
+  const mutationError = createMutation.error ?? deleteMutation.error ?? toggleMutation.error;
 
   return (
     <div className="space-y-6">
@@ -74,6 +71,11 @@ export function Experiments() {
           <Plus className="h-4 w-4" /> New Experiment
         </button>
       </div>
+      {mutationError && (
+        <p className="text-sm font-medium text-rose-600">
+          {mutationError instanceof Error ? mutationError.message : "Experiment request failed"}
+        </p>
+      )}
 
       {showForm && (
         <form onSubmit={(e) => { e.preventDefault(); createMutation.mutate(form); }} className="card p-6 space-y-4">

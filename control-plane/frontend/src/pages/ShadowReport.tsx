@@ -1,7 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { EyeOff, ShieldAlert, ShieldCheck, RefreshCw } from "lucide-react";
-
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
+import { fetchAPI } from "../lib/api";
 
 interface OffendingAction {
   action: string;
@@ -19,8 +18,7 @@ interface ShadowReportData {
 }
 
 async function fetchReport(): Promise<ShadowReportData> {
-  const res = await fetch(`${API_BASE}/api/traces/shadow-report`);
-  return res.json();
+  return fetchAPI<ShadowReportData>("/api/traces/shadow-report");
 }
 
 function Stat({ label, value, tone }: { label: string; value: string; tone: string }) {

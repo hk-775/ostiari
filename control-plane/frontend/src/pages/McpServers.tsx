@@ -1,9 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Trash2, Plug, Server, Globe, Terminal, Search, Wrench } from "lucide-react";
-import { api, McpServer, Gateway } from "../lib/api";
-
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
+import { api, fetchAPI, McpServer, Gateway } from "../lib/api";
 
 const MODE_ICONS = { embedded: Plug, remote: Globe, stdio: Terminal };
 const MODE_COLORS = {
@@ -17,6 +15,7 @@ export function McpServers() {
   const { data: mcpServers = [] } = useQuery({ queryKey: ["mcp-servers"], queryFn: () => api.mcpServers.list() });
   const { data: gateways = [] } = useQuery({ queryKey: ["gateways"], queryFn: api.gateways.list });
   const [discoveredTools, setDiscoveredTools] = useState<Record<number, any[]>>({});
+  const [actionError, setActionError] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({
     name: "", mode: "embedded" as "embedded" | "remote" | "stdio",
@@ -52,6 +51,7 @@ export function McpServers() {
     mutationFn: api.mcpServers.delete,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["mcp-servers"] }),
   });
+  const mutationError = createMutation.error ?? deleteMutation.error;
 
   return (
     <div className="space-y-6">
@@ -64,6 +64,11 @@ export function McpServers() {
           <Plus className="h-4 w-4" /> Add MCP Server
         </button>
       </div>
+      {(mutationError || actionError) && (
+        <p className="text-sm font-medium text-rose-600">
+          {actionError || (mutationError instanceof Error ? mutationError.message : "MCP server request failed")}
+        </p>
+      )}
 
       {showForm && (
         <form
@@ -136,9 +141,13 @@ export function McpServers() {
                 <div className="flex gap-1">
                   <button
                     onClick={async () => {
-                      const resp = await fetch(`${API_BASE}/api/mcp-servers/${m.id}/tools`);
-                      const data = await resp.json();
-                      setDiscoveredTools(prev => ({ ...prev, [m.id]: data.tools || [] }));
+                      setActionError("");
+                      try {
+                        const data = await fetchAPI<{ tools?: string[] }>(`/api/mcp-servers/${m.id}/tools`);
+                        setDiscoveredTools(prev => ({ ...prev, [m.id]: data.tools || [] }));
+                      } catch (error) {
+                        setActionError(error instanceof Error ? error.message : "Tool discovery failed");
+                      }
                     }}
                     title="Discover tools"
                     className="rounded-xl p-2 text-stone-400 hover:bg-violet-50 hover:text-violet-600 transition"

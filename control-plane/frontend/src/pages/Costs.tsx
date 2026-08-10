@@ -1,8 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { DollarSign, TrendingUp, Zap, BarChart3 } from "lucide-react";
-
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
+import { fetchAPI } from "../lib/api";
 
 interface CostSummary {
   total_cost_usd: number;
@@ -15,8 +14,7 @@ interface CostSummary {
 }
 
 async function fetchSummary(days: number): Promise<CostSummary> {
-  const res = await fetch(`${API_BASE}/api/costs/summary?period_days=${days}`);
-  return res.json();
+  return fetchAPI<CostSummary>(`/api/costs/summary?period_days=${days}`);
 }
 
 function StatCard({ label, value, sub, icon: Icon }: { label: string; value: string; sub: string; icon: any }) {

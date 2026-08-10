@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Radio, Pause, Play, Trash2, ChevronDown, ChevronRight } from "lucide-react";
 import { useAuthStore } from "../stores/authStore";
+import { fetchAPI } from "../lib/api";
 
 const WS_URL = (import.meta.env.VITE_API_URL || "http://localhost:8400").replace("http", "ws");
 
@@ -69,11 +70,7 @@ export function LiveTraces() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const API_BASE = (import.meta.env.VITE_API_URL || "http://localhost:8400");
-    fetch(`${API_BASE}/api/traces/recent`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    })
-      .then(r => r.json())
+    fetchAPI<{ traces?: TraceEvent[] }>("/api/traces/recent")
       .then(data => {
         if (data.traces && data.traces.length > 0) {
           setTraces(data.traces.map(normalizeTrace).slice(-100));

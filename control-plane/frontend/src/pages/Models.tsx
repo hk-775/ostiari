@@ -2,8 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useLocation } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Brain, Plus, Trash2, Pencil, X, Wrench, Eye, Server, Shield, Lock, ArrowUp, ArrowDown, Save, Clock } from "lucide-react";
-
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
+import { fetchAPI } from "../lib/api";
 
 interface ProviderMapping {
   provider: string;
@@ -48,17 +47,17 @@ interface BudgetResetConfig {
 
 const ALL_PROVIDERS = ["anthropic", "openai", "bedrock", "azure", "vertex", "cohere"];
 
-const GATEWAY_BASE = `${API_BASE}/api/proxy/gateway/crm-agent`;
+const GATEWAY_PATH = "/api/proxy/gateway/crm-agent";
 
 async function fetchModels(): Promise<ModelConfig[]> {
-  return (await fetch(`${API_BASE}/api/models`)).json();
+  return fetchAPI<ModelConfig[]>("/api/models");
 }
 
 async function fetchAgentAccess(): Promise<AgentAccess[]> {
   try {
-    const res = await fetch(`${GATEWAY_BASE}/config/agent-auth`);
-    if (!res.ok) throw new Error("Failed to fetch agent access");
-    const data = await res.json();
+    const data = await fetchAPI<{ enabled: boolean; agents?: Record<string, unknown>[] }>(
+      `${GATEWAY_PATH}/config/agent-auth`,
+    );
     // The gateway returns { enabled, agents: [{agent_id, allowed_models, ...}] }.
     // Map it to the page's AgentAccess shape. If disabled/empty, return [] so
     // the UI falls back to its illustrative defaults.
@@ -90,18 +89,15 @@ async function saveAgentAccess(list: AgentAccess[]): Promise<void> {
       description: a.note ?? "",
     };
   }
-  await fetch(`${GATEWAY_BASE}/config/agent-auth`, {
+  await fetchAPI(`${GATEWAY_PATH}/config/agent-auth`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled: true, agents }),
   });
 }
 
 async function fetchBudgetReset(): Promise<BudgetResetConfig> {
   try {
-    const res = await fetch(`${GATEWAY_BASE}/config/budget-reset`);
-    if (!res.ok) throw new Error("Failed to fetch budget reset config");
-    return res.json();
+    return await fetchAPI<BudgetResetConfig>(`${GATEWAY_PATH}/config/budget-reset`);
   } catch {
     return { schedule: "manual" };
   }
@@ -156,6 +152,7 @@ function TaskClassificationRules({ models }: { models: ModelConfig[] }) {
   const [newKeyword, setNewKeyword] = useState<Record<string, string>>({});
   const [newCategory, setNewCategory] = useState("");
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState("");
 
   const addKeyword = (category: string) => {
     const kw = (newKeyword[category] || "").trim();
@@ -182,15 +179,17 @@ function TaskClassificationRules({ models }: { models: ModelConfig[] }) {
   };
 
   const saveRules = async () => {
+    setSaveError("");
     try {
-      await fetch(`${GATEWAY_BASE}/config/task-classification`, {
+      await fetchAPI(`${GATEWAY_PATH}/config/task-classification`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ rules, model_mapping: modelMapping }),
       });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-    } catch { /* gateway may not support this yet */ }
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Failed to save classification rules");
+    }
   };
 
   return (
@@ -202,6 +201,7 @@ function TaskClassificationRules({ models }: { models: ModelConfig[] }) {
           <span className="badge bg-indigo-50 text-indigo-700 text-xs">Smart Routing</span>
         </div>
         <div className="flex items-center gap-2">
+          {saveError && <span className="text-xs font-medium text-rose-600">{saveError}</span>}
           {saved && <span className="text-xs text-emerald-600 font-medium">Saved!</span>}
           <button onClick={saveRules} className="btn-primary"><Save className="h-4 w-4" /> Save Rules</button>
         </div>
@@ -281,6 +281,7 @@ export function Models() {
   const [showForm, setShowForm] = useState(false);
   const [editingModel, setEditingModel] = useState<string | null>(null);
   const [form, setForm] = useState<ModelConfig>({ ...EMPTY_FORM });
+  const [modelError, setModelError] = useState("");
 
   useEffect(() => { setShowForm(false); setEditingModel(null); }, [location.key]);
 
@@ -288,13 +289,16 @@ export function Models() {
   const [editingAgent, setEditingAgent] = useState<string | null>(null);
   const [agentForm, setAgentForm] = useState<AgentAccess>({ agent: "", models: [], providers: [], budget: 10, spend: 0, alert_threshold: 90 });
   const [showAgentForm, setShowAgentForm] = useState(false);
+  const [agentAccessError, setAgentAccessError] = useState("");
 
   // Routing state
   const [routingRules, setRoutingRules] = useState<RoutingRule[]>([]);
   const [routingSaved, setRoutingSaved] = useState(false);
+  const [routingError, setRoutingError] = useState("");
 
   // Budget reset state
   const [budgetReset, setBudgetReset] = useState<BudgetResetConfig>({ schedule: "manual" });
+  const [budgetResetError, setBudgetResetError] = useState("");
 
   // Sync routing rules from models
   useEffect(() => {
@@ -317,20 +321,23 @@ export function Models() {
   const createMutation = useMutation({
     mutationFn: async (data: ModelConfig) => {
       const method = editingModel ? "PUT" : "POST";
-      const url = editingModel ? `${API_BASE}/api/models/${editingModel}` : `${API_BASE}/api/models`;
-      await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+      const path = editingModel ? `/api/models/${editingModel}` : "/api/models";
+      await fetchAPI<ModelConfig>(path, { method, body: JSON.stringify(data) });
     },
+    onMutate: () => setModelError(""),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["model-config"] });
       setShowForm(false);
       setEditingModel(null);
       setForm({ ...EMPTY_FORM });
     },
+    onError: (error) => setModelError(error instanceof Error ? error.message : "Failed to save model"),
   });
 
   const deleteMutation = useMutation({
-    mutationFn: async (name: string) => { await fetch(`${API_BASE}/api/models/${name}`, { method: "DELETE" }); },
+    mutationFn: (name: string) => fetchAPI(`/api/models/${name}`, { method: "DELETE" }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["model-config"] }),
+    onError: (error) => setModelError(error instanceof Error ? error.message : "Failed to delete model"),
   });
 
   const startEdit = (m: ModelConfig) => {
@@ -358,6 +365,7 @@ export function Models() {
           <Plus className="h-4 w-4" /> Add Model
         </button>
       </div>
+      {modelError && <p className="text-sm font-medium text-rose-600">{modelError}</p>}
 
       {/* Add/Edit Form */}
       {showForm && (
@@ -482,12 +490,16 @@ export function Models() {
                     value={m.routing_strategy}
                     onChange={async (e) => {
                       const updated = { ...m, routing_strategy: e.target.value };
-                      await fetch(`${API_BASE}/api/models/${m.name}`, {
-                        method: "PUT",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify(updated),
-                      });
-                      queryClient.invalidateQueries({ queryKey: ["model-config"] });
+                      setModelError("");
+                      try {
+                        await fetchAPI<ModelConfig>(`/api/models/${m.name}`, {
+                          method: "PUT",
+                          body: JSON.stringify(updated),
+                        });
+                        queryClient.invalidateQueries({ queryKey: ["model-config"] });
+                      } catch (error) {
+                        setModelError(error instanceof Error ? error.message : "Failed to update routing strategy");
+                      }
                     }}
                     className="rounded-lg border border-stone-200 bg-white px-2 py-1 text-xs text-stone-700 cursor-pointer hover:border-indigo-300 focus:border-indigo-400 focus:outline-none focus:ring-1 focus:ring-indigo-100"
                   >
@@ -553,6 +565,7 @@ export function Models() {
           </button>
         </div>
         <p className="text-xs text-stone-500">Controls which agents can access which models and providers. Configured via gateway agent-auth.</p>
+        {agentAccessError && <p className="text-xs font-medium text-rose-600">{agentAccessError}</p>}
 
         {/* Add/Edit Agent Form */}
         {showAgentForm && (
@@ -677,10 +690,15 @@ export function Models() {
                   const updatedList = editingAgent
                     ? agentAccessList.map(a => a.agent === editingAgent ? agentForm : a)
                     : [...agentAccessList, agentForm];
-                  await saveAgentAccess(updatedList);
-                  queryClient.invalidateQueries({ queryKey: ["agent-access"] });
-                  setShowAgentForm(false);
-                  setEditingAgent(null);
+                  setAgentAccessError("");
+                  try {
+                    await saveAgentAccess(updatedList);
+                    queryClient.invalidateQueries({ queryKey: ["agent-access"] });
+                    setShowAgentForm(false);
+                    setEditingAgent(null);
+                  } catch (error) {
+                    setAgentAccessError(error instanceof Error ? error.message : "Failed to save agent access");
+                  }
                 }}
                 className="btn-primary"
               >
@@ -721,8 +739,13 @@ export function Models() {
                     <button
                       onClick={async () => {
                         const updatedList = agentAccessList.filter(a => a.agent !== agent.agent);
-                        await saveAgentAccess(updatedList);
-                        queryClient.invalidateQueries({ queryKey: ["agent-access"] });
+                        setAgentAccessError("");
+                        try {
+                          await saveAgentAccess(updatedList);
+                          queryClient.invalidateQueries({ queryKey: ["agent-access"] });
+                        } catch (error) {
+                          setAgentAccessError(error instanceof Error ? error.message : "Failed to delete agent access");
+                        }
                       }}
                       title="Delete"
                       className="rounded-lg p-1.5 text-stone-400 hover:bg-rose-50 hover:text-rose-600 transition"
@@ -775,13 +798,17 @@ export function Models() {
           </div>
           <button
             onClick={async () => {
-              await fetch(`${GATEWAY_BASE}/config/llm`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ routing_rules: routingRules }),
-              });
-              setRoutingSaved(true);
-              setTimeout(() => setRoutingSaved(false), 2000);
+              setRoutingError("");
+              try {
+                await fetchAPI(`${GATEWAY_PATH}/config/llm`, {
+                  method: "POST",
+                  body: JSON.stringify({ routing_rules: routingRules }),
+                });
+                setRoutingSaved(true);
+                setTimeout(() => setRoutingSaved(false), 2000);
+              } catch (error) {
+                setRoutingError(error instanceof Error ? error.message : "Failed to save routing policy");
+              }
             }}
             className="btn-primary"
           >
@@ -789,6 +816,7 @@ export function Models() {
             {routingSaved && <span className="ml-2 text-xs text-emerald-200">Saved!</span>}
           </button>
         </div>
+        {routingError && <p className="text-xs font-medium text-rose-600">{routingError}</p>}
         <p className="text-xs text-stone-500">Configure routing strategies, provider fallback order, and weight distribution for A/B testing.</p>
 
         <div className="space-y-3">
@@ -936,18 +964,23 @@ export function Models() {
 
             <button
               onClick={async () => {
-                await fetch(`${GATEWAY_BASE}/config/budget-reset`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify(budgetReset),
-                });
-                queryClient.invalidateQueries({ queryKey: ["budget-reset"] });
+                setBudgetResetError("");
+                try {
+                  await fetchAPI(`${GATEWAY_PATH}/config/budget-reset`, {
+                    method: "POST",
+                    body: JSON.stringify(budgetReset),
+                  });
+                  queryClient.invalidateQueries({ queryKey: ["budget-reset"] });
+                } catch (error) {
+                  setBudgetResetError(error instanceof Error ? error.message : "Failed to save budget reset");
+                }
               }}
               className="btn-primary ml-auto"
             >
               <Save className="h-4 w-4" /> Save Schedule
             </button>
           </div>
+          {budgetResetError && <p className="mt-2 text-xs font-medium text-rose-600">{budgetResetError}</p>}
         </div>
       </div>
     </div>
