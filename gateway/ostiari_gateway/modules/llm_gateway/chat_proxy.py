@@ -22,6 +22,9 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ostiari_gateway.modules.llm_gateway import translate
+from ostiari_gateway.modules.llm_gateway.broker_policy import (
+    BrokerPoolDepletedError,
+)
 
 log = logging.getLogger("ostiari.sidecar.llm.chat")
 
@@ -52,7 +55,8 @@ class ChatProxy:
 
     def __init__(self, config: Any, axon: Any = None, security: Any = None,
                  quota_enforcer: Any = None, trace_reporter: Any = None,
-                 agent_auth: Any = None, cost_reporter: Any = None) -> None:
+                 agent_auth: Any = None, cost_reporter: Any = None,
+                 broker_policy: Any = None) -> None:
         self._config = config
         self._axon = axon
         self._security = security
@@ -60,6 +64,7 @@ class ChatProxy:
         self._trace = trace_reporter
         self._agent_auth = agent_auth
         self._cost_reporter = cost_reporter
+        self._broker_policy = broker_policy
 
     async def handle(self, request: Request) -> Any:
         try:
@@ -197,6 +202,19 @@ class ChatProxy:
                 agent_id=agent_id,
                 session_id=session_id,
             )
+        except BrokerPoolDepletedError as e:
+            await self._report(
+                agent_id,
+                framework,
+                session_id,
+                requested_model,
+                tier="block",
+                reason=str(e),
+                limit_type="broker_pool",
+                reservation_id=reservation_id,
+                agent_reservation_id=agent_reservation_id,
+            )
+            return _err(503, str(e), "service_unavailable")
         except Exception as e:  # noqa: BLE001
             log.warning("Codex shim route failed: %s", e)
             await self._report(agent_id, framework, session_id, requested_model,
@@ -209,6 +227,7 @@ class ChatProxy:
                            tier="allow",
                            usage={"input_tokens": res.input_tokens, "output_tokens": res.output_tokens},
                            routed=(res.model or "") != requested_model,
+                           provider=res.provider,
                            reservation_id=reservation_id,
                            agent_reservation_id=agent_reservation_id)
 
@@ -234,6 +253,7 @@ class ChatProxy:
     async def _report(self, agent_id: str, framework: str, session_id: str, model: str,
                       *, tier: str, usage: dict[str, Any] | None = None,
                       reason: str | None = None, routed: bool = False,
+                      provider: str = "",
                       limit_type: str = "", reservation_id: int | None = None,
                       agent_reservation_id: int | None = None) -> None:
         in_tok = int((usage or {}).get("input_tokens", 0) or 0)
@@ -271,6 +291,7 @@ class ChatProxy:
                     total_tokens=in_tok + out_tok,
                     agent_id=agent_id,
                     action="chat",
+                    provider=provider,
                     cost_usd=cost,
                     record_quota=False,
                 )
@@ -283,7 +304,8 @@ class ChatProxy:
                     action="llm.chat", tier=tier, score=0, duration_ms=0.0,
                     agent_id=agent_id, framework=framework, endpoint=f"llm://{model}",
                     session_id=session_id, model=model, blocked_reason=reason, limit_type=limit_type,
-                    params={"input_tokens": in_tok, "output_tokens": out_tok, "routed": routed})
+                    params={"input_tokens": in_tok, "output_tokens": out_tok,
+                            "routed": routed, "provider": provider})
             except Exception as e:  # noqa: BLE001
                 log.debug("Trace report failed: %s", e)
 

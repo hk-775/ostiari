@@ -1209,8 +1209,10 @@ curl -X POST http://localhost:8400/api/costs/record \
   -H "Content-Type: application/json" \
   -d '{
     "gateway_id": "crm-agent",
+    "event_id": "01J5CRM7Z8Q2A1B3C4D5E6F7G8",
     "agent_id": "crm-main",
     "model": "claude-sonnet-4-6",
+    "provider": "anthropic",
     "input_tokens": 1500,
     "output_tokens": 500,
     "total_tokens": 2000,
@@ -1223,14 +1225,23 @@ When `cost_usd` is `0.0` **and** `total_tokens > 0`, the backend estimates the c
 from `input_tokens`/`output_tokens` and `MODEL_PRICING`. Note that `total_tokens` is
 what you send, not a computed sum — it isn't validated against
 `input_tokens + output_tokens`, and it's the field the summary totals and the broker
-drawdown use. Send them consistently.
+drawdown use. Send them consistently. `provider` should identify the provider
+that actually served the request, which can differ from the model family after
+routing or fallback.
+
+Use a stable, gateway-generated `event_id` for every event and preserve it across
+retries. The control plane keys idempotency on `(gateway_id, event_id)`, covering
+the usage row, token-pool debit, and broker charge. If billing fails after usage
+is persisted, the endpoint returns `503`; retry the unchanged event rather than
+creating a new ID.
 
 There's also a batch endpoint for backfills:
 
 ```bash
 curl -X POST http://localhost:8400/api/costs/record/batch \
   -H "Content-Type: application/json" \
-  -d '[{"gateway_id": "crm-agent", "model": "gpt-4o", "input_tokens": 100,
+  -d '[{"gateway_id": "crm-agent", "event_id": "backfill-0001",
+        "model": "gpt-4o", "provider": "openai", "input_tokens": 100,
         "output_tokens": 50, "total_tokens": 150, "cost_usd": 0.0}]'
 ```
 

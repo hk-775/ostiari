@@ -31,6 +31,9 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ostiari_gateway.modules.llm_gateway import translate
+from ostiari_gateway.modules.llm_gateway.broker_policy import (
+    BrokerPoolDepletedError,
+)
 
 log = logging.getLogger("ostiari.sidecar.llm.messages")
 
@@ -79,6 +82,7 @@ class MessagesProxy:
         agent_auth: Any = None,
         axon: Any = None,
         cost_reporter: Any = None,
+        broker_policy: Any = None,
     ) -> None:
         self._config = config
         self._provider = provider          # llm_gateway LLMProvider (holds creds + SDK calls)
@@ -89,6 +93,7 @@ class MessagesProxy:
         self._agent_auth = agent_auth
         self._axon = axon                  # AxonLLM router (single routing authority)
         self._cost_reporter = cost_reporter
+        self._broker_policy = broker_policy
 
     # ── credentials / endpoints ──────────────────────────────────────────
     def _anthropic_key(self) -> str:
@@ -219,6 +224,21 @@ class MessagesProxy:
 
         # ── Fallback: no AxonLLM — Ostiari's own ModelRouter + direct call ─
         model = self._route(agent_id, requested_model, flat, session_id)
+        try:
+            model = self._direct_model(model)
+        except BrokerPoolDepletedError as e:
+            await self._report(
+                agent_id,
+                framework,
+                session_id,
+                model,
+                tier="block",
+                reason=str(e),
+                limit_type="broker_pool",
+                reservation_id=reservation_id,
+                agent_reservation_id=agent_reservation_id,
+            )
+            return _err(503, "api_error", str(e))
         routed = model != requested_model
         provider = _provider_of(model)
         meta = {"agent_id": agent_id, "framework": framework, "session_id": session_id,
@@ -243,6 +263,21 @@ class MessagesProxy:
             log.info("Content routing: %s -> %s (agent=%s)", requested_model or "?", selected, agent_id)
             return selected
         return requested_model or selected
+
+    def _direct_model(self, primary: str) -> str:
+        """Choose the first direct model whose provider pool is not depleted."""
+        if self._broker_policy is None:
+            return primary
+        candidates = self._broker_policy.require_direct_route(
+            [primary, *list(getattr(self._config, "fallback_chain", []) or [])]
+        )
+        if candidates[0] != primary:
+            log.warning(
+                "Broker pool depleted for %s; routing direct fallback to %s",
+                primary,
+                candidates[0],
+            )
+        return candidates[0]
 
     @staticmethod
     def _flatten(system: Any, messages: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -301,6 +336,7 @@ class MessagesProxy:
                                 tier="allow" if resp.status_code == 200 else "block",
                                 usage=payload.get("usage", {}) if isinstance(payload, dict) else {},
                                 routed=meta["routed"],
+                                provider="anthropic",
                                 reason=None if resp.status_code == 200 else "upstream error",
                                 reservation_id=meta.get("reservation_id"),
                                 agent_reservation_id=meta.get("agent_reservation_id"))
@@ -350,6 +386,7 @@ class MessagesProxy:
                 await client.aclose()
                 await proxy._report(meta["agent_id"], meta["framework"], meta["session_id"], model,
                                     tier="allow", usage=_scrape_usage(scan), routed=meta["routed"],
+                                    provider="anthropic",
                                     reservation_id=meta.get("reservation_id"),
                                     agent_reservation_id=meta.get("agent_reservation_id"))
 
@@ -382,6 +419,7 @@ class MessagesProxy:
         usage = anthropic_msg.get("usage", {})
         await self._report(meta["agent_id"], meta["framework"], meta["session_id"], model,
                            tier="allow", usage=usage, routed=meta["routed"],
+                           provider=provider,
                            reservation_id=meta.get("reservation_id"),
                            agent_reservation_id=meta.get("agent_reservation_id"))
 
@@ -440,13 +478,69 @@ class MessagesProxy:
                 session_id=session_id,
                 system=None,                 # already folded into oai_messages
             )
+        except BrokerPoolDepletedError as e:
+            try:
+                model = self._direct_model(
+                    requested_model
+                    or getattr(self._config, "default_model", "")
+                    or "claude-sonnet-4-6"
+                )
+            except BrokerPoolDepletedError:
+                await self._report(
+                    agent_id,
+                    framework,
+                    session_id,
+                    requested_model,
+                    tier="block",
+                    reason=str(e),
+                    limit_type="broker_pool",
+                    reservation_id=reservation_id,
+                    agent_reservation_id=agent_reservation_id,
+                )
+                return _err(503, "api_error", str(e))
+            provider = _provider_of(model)
+            meta = {
+                "agent_id": agent_id,
+                "framework": framework,
+                "session_id": session_id,
+                "model": model,
+                "routed": model != requested_model,
+                "reservation_id": reservation_id,
+                "agent_reservation_id": agent_reservation_id,
+            }
+            if provider == "anthropic":
+                return await self._forward_anthropic(
+                    request, body, model, streaming, meta
+                )
+            return await self._forward_translated(
+                body, model, provider, streaming, meta
+            )
         except Exception as e:  # noqa: BLE001 — fall back to the direct path
             log.warning("AxonLLM shim route failed (%s) — using direct path", e)
             # Use the client's own requested model (a valid Anthropic ID from
             # Claude Code) rather than an Axon-registry/Bedrock name that the
             # direct provider path can't honor. Dispatch by provider so an
             # Anthropic model goes to the Anthropic endpoint (not the OpenAI SDK).
-            model = requested_model or getattr(self._config, "default_model", "") or "claude-sonnet-4-6"
+            model = (
+                requested_model
+                or getattr(self._config, "default_model", "")
+                or "claude-sonnet-4-6"
+            )
+            try:
+                model = self._direct_model(model)
+            except BrokerPoolDepletedError as depleted:
+                await self._report(
+                    agent_id,
+                    framework,
+                    session_id,
+                    model,
+                    tier="block",
+                    reason=str(depleted),
+                    limit_type="broker_pool",
+                    reservation_id=reservation_id,
+                    agent_reservation_id=agent_reservation_id,
+                )
+                return _err(503, "api_error", str(depleted))
             provider = _provider_of(model)
             meta = {"agent_id": agent_id, "framework": framework, "session_id": session_id,
                     "model": model, "routed": False, "reservation_id": reservation_id,
@@ -461,7 +555,8 @@ class MessagesProxy:
         await self._report(agent_id, framework, session_id, res.model or requested_model,
                            tier="allow",
                            usage={"input_tokens": res.input_tokens, "output_tokens": res.output_tokens},
-                           routed=routed, reservation_id=reservation_id,
+                           routed=routed, provider=res.provider,
+                           reservation_id=reservation_id,
                            agent_reservation_id=agent_reservation_id)
 
         if not streaming:
@@ -566,7 +661,8 @@ class MessagesProxy:
     async def _report(
         self, agent_id: str, framework: str, session_id: str, model: str,
         *, tier: str, usage: dict[str, Any] | None = None, reason: str | None = None,
-        routed: bool = False, limit_type: str = "", reservation_id: int | None = None,
+        routed: bool = False, provider: str = "", limit_type: str = "",
+        reservation_id: int | None = None,
         agent_reservation_id: int | None = None,
     ) -> None:
         in_tok = int((usage or {}).get("input_tokens", 0) or 0)
@@ -608,6 +704,7 @@ class MessagesProxy:
                     total_tokens=in_tok + out_tok,
                     agent_id=agent_id,
                     action="messages",
+                    provider=provider,
                     cost_usd=cost,
                     record_quota=False,
                 )
@@ -621,7 +718,8 @@ class MessagesProxy:
                     action="llm.messages", tier=tier, score=0, duration_ms=0.0,
                     agent_id=agent_id, framework=framework, endpoint=f"llm://{model}",
                     session_id=session_id, model=model, blocked_reason=reason, limit_type=limit_type,
-                    params={"input_tokens": in_tok, "output_tokens": out_tok, "routed": routed},
+                    params={"input_tokens": in_tok, "output_tokens": out_tok,
+                            "routed": routed, "provider": provider},
                 )
             except Exception as e:  # noqa: BLE001
                 log.debug("Trace report failed: %s", e)

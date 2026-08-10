@@ -586,7 +586,11 @@ customer saves *and* you profit. The page warns if your markup eats the discount
 **The pilot layer (for a real deployment):**
 
 - **Token pools** — purchased inventory per provider, drawn down as calls consume
-  tokens, with a low-balance alert that halts routing on depletion.
+  tokens, with a low-balance state that gateways use to reroute or halt calls
+  before another request reaches a depleted provider.
+- **Retry-safe charging** — every gateway usage event has a stable ID. Usage,
+  pool drawdown, and the customer charge are applied once even when a gateway
+  retries after a timeout or billing failure.
 - **Reconciliation** — compare *our computed* consumption cost against the
   *provider's actual invoice* each period, and flag the drift. This is the part
   that keeps a broker from silently losing money.
@@ -600,9 +604,10 @@ customer saves *and* you profit. The page warns if your markup eats the discount
 ```
 
 **Best practice:** set a low-balance threshold well above zero so you top up
-before the pool depletes and routing halts. Reconcile every billing period —
-drift over a few percent means your token-counting or the provider's billing
-disagree, and you want to know *before* it compounds.
+before the pool depletes and routing halts. Preserve the gateway-generated event
+ID on every delivery retry; changing it creates a new billable event. Reconcile
+every billing period — drift over a few percent means your token-counting or the
+provider's billing disagree, and you want to know *before* it compounds.
 
 **What to avoid:** treating the discount as real without a signed volume
 agreement behind it. The dashboard computes margin from *assumed* terms; the

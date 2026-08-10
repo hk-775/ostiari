@@ -406,6 +406,7 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
     from ostiari_gateway.agent_auth import AgentAuthPolicy
     from ostiari_gateway.mcp import MCPManager
     from ostiari_gateway.modules import ModuleRegistry
+    from ostiari_gateway.modules.llm_gateway.broker_policy import BrokerPoolPolicy
     from ostiari_gateway.quota_enforcer import QuotaEnforcer
     from ostiari_gateway.trace_reporter import TraceReporter
 
@@ -422,6 +423,7 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
 
     quota_enforcer = QuotaEnforcer()
     agent_auth = AgentAuthPolicy()
+    broker_policy = BrokerPoolPolicy()
     cross_agent = CrossAgentPolicy()
 
     # Payment gate — mode chosen by env: simulated (default, no chain) or live.
@@ -511,6 +513,9 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
         payment_gate.configure(initial_config.payments)
 
     if initial_config is not None:
+        broker_policy.configure(initial_config.broker_pools)
+
+    if initial_config is not None:
         manager.apply_config(initial_config)
 
     # Lifecycle manager (CP registration + heartbeat)
@@ -572,6 +577,11 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
             # Apply payment config (pricing + wallets)
             if "payments" in bundle and bundle["payments"]:
                 payment_gate.configure(bundle["payments"])
+
+            # Empty is meaningful: it clears stale depleted state after the last
+            # pool is removed or a fresh tenant starts without broker inventory.
+            if "broker_pools" in bundle:
+                broker_policy.configure(bundle["broker_pools"] or [])
 
             # Apply A/B experiments to the LLM module, so an experiment the
             # operator started survives a gateway restart. Applied as a partial
@@ -710,7 +720,17 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
 
         llm_config = LLMConfig(**initial_config.llm) if initial_config.llm else LLMConfig()
         module_registry.activate(
-            "llm_gateway", app, {"manager": manager, "llm_config": llm_config, "mcp_manager": mcp_manager, "trace_reporter": trace_reporter, "quota_enforcer": quota_enforcer, "agent_auth": agent_auth}
+            "llm_gateway",
+            app,
+            {
+                "manager": manager,
+                "llm_config": llm_config,
+                "mcp_manager": mcp_manager,
+                "trace_reporter": trace_reporter,
+                "quota_enforcer": quota_enforcer,
+                "agent_auth": agent_auth,
+                "broker_policy": broker_policy,
+            },
         )
         _check_axon(module_registry)
 
@@ -1233,6 +1253,7 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
         body = await request.json()
         config = SidecarConfig(**body)
         result = manager.apply_config(config)
+        broker_policy.configure(config.broker_pools)
         # Update trace reporter if control_plane_url changed
         if config.control_plane_url:
             trace_reporter.configure(config.control_plane_url, config.sidecar_id)
@@ -1589,6 +1610,7 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
             "modules_available": module_registry.get_available(),
             "quota": quota_enforcer.get_status(),
             "agent_auth": agent_auth.get_status(),
+            "broker": broker_policy.get_status(),
             "llm_router": _axon_health(module_registry),
         }
 
@@ -1606,6 +1628,7 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
     app.state.mcp_manager = mcp_manager
     app.state.cross_agent = cross_agent
     app.state.agent_auth = agent_auth
+    app.state.broker_policy = broker_policy
     app.state.quota_enforcer = quota_enforcer
     app.state.module_registry = module_registry
     # The control-plane bundle applier, when one is wired (it only exists with a

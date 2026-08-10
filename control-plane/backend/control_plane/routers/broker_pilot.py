@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import case, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane import broker_pilot
@@ -57,21 +57,21 @@ class ReconcileInput(BaseModel):
 
 @router.get("/pools")
 async def list_pools(db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
-    rows = (await db.execute(scoped(select(TokenPool), TokenPool, org))).scalars().all()
-    return [_pool_dict(p) for p in rows]
+    return await pool_snapshot(db, org)
 
 
 @router.post("/pools/fund")
 async def fund_pool(body: PoolFund, db: AsyncSession = Depends(get_db),
                     org: str = Depends(get_current_org)):
     """Add purchased token inventory to a provider pool (create if new)."""
+    provider = broker_pilot.canonical_provider(body.provider)
     # Composite-key fetch. `db.get(TokenPool, provider)` would now be a TypeError,
     # which is the point of making org_id part of the key: funding a pool cannot
     # accidentally top up another tenant's inventory.
-    p = await _get_pool(db, org, body.provider)
+    p = await _get_pool(db, org, provider)
     if p is None:
         p = TokenPool(
-            provider=body.provider, org_id=org, purchased_tokens=0, purchased_cost_usd=0.0,
+            provider=provider, org_id=org, purchased_tokens=0, purchased_cost_usd=0.0,
             consumed_tokens=0, consumed_cost_usd=0.0, low_threshold_tokens=0, status="active",
         )
         db.add(p)
@@ -113,15 +113,17 @@ async def reconcile(body: ReconcileInput, db: AsyncSession = Depends(get_db),
         scoped(select(UsageRecord).where(UsageRecord.timestamp >= since), UsageRecord, org)
     )).scalars().all()
 
+    target_provider = broker_pilot.canonical_provider(body.provider)
     computed = 0.0
     tokens = 0
     for r in records:
-        if broker_pilot.provider_for(r.model) == body.provider:
+        usage_provider = r.provider or broker_pilot.provider_for(r.model)
+        if broker_pilot.canonical_provider(usage_provider) == target_provider:
             computed += float(r.cost_usd or 0.0)
             tokens += int(r.total_tokens or 0)
 
     rec = ReconciliationRecord(
-        provider=body.provider, period_start=since, period_end=now,
+        provider=target_provider, period_start=since, period_end=now,
         computed_cost_usd=round(computed, 6), invoiced_cost_usd=body.invoiced_cost_usd,
         consumed_tokens=tokens,
     )
@@ -145,7 +147,7 @@ async def list_reconciliations(db: AsyncSession = Depends(get_db),
 # ─── Draw-down (called from usage recording) ─────────────────────────────────
 
 async def draw_down(db: AsyncSession, *, model: str, tokens: int, our_cost_usd: float,
-                    org: str = DEFAULT_ORG) -> None:
+                    org: str = DEFAULT_ORG, provider: str = "") -> TokenPool | None:
     """Decrement the provider pool for consumed tokens; halt on depletion.
 
     Best-effort: if no pool exists for the provider *in this org*, this is a
@@ -159,16 +161,44 @@ async def draw_down(db: AsyncSession, *, model: str, tokens: int, our_cost_usd: 
     defaults to the single-org tenant so the pilot's own callers and tests stay
     unchanged.
     """
-    provider = broker_pilot.provider_for(model)
+    if tokens <= 0:
+        return None
+    provider = broker_pilot.canonical_provider(
+        provider or broker_pilot.provider_for(model)
+    )
     pool = await _get_pool(db, org, provider)
     if pool is None:
-        return
-    pool.consumed_tokens += tokens
-    pool.consumed_cost_usd += our_cost_usd
-    if _remaining(pool) <= pool.low_threshold_tokens:
-        if pool.status != "depleted":
-            log.warning("Token pool '%s' depleted (%d tokens remaining)", provider, _remaining(pool))
-        pool.status = "depleted"
+        return None
+
+    was_depleted = pool.status == "depleted"
+    # Atomic SQL arithmetic prevents two concurrent gateway batches from reading
+    # the same balance and overwriting one another's consumption.
+    await db.execute(
+        update(TokenPool)
+        .where(TokenPool.org_id == org, TokenPool.provider == provider)
+        .values(
+            consumed_tokens=TokenPool.consumed_tokens + tokens,
+            consumed_cost_usd=TokenPool.consumed_cost_usd + our_cost_usd,
+            status=case(
+                (
+                    TokenPool.purchased_tokens
+                    - (TokenPool.consumed_tokens + tokens)
+                    <= TokenPool.low_threshold_tokens,
+                    "depleted",
+                ),
+                else_=TokenPool.status,
+            ),
+        )
+    )
+    await db.flush()
+    await db.refresh(pool)
+    if pool.status == "depleted" and not was_depleted:
+        log.warning(
+            "Token pool '%s' depleted (%d tokens remaining)",
+            provider,
+            _remaining(pool),
+        )
+    return pool
 
 
 def _remaining(p: TokenPool) -> int:
@@ -182,7 +212,27 @@ async def _get_pool(db: AsyncSession, org: str, provider: str) -> TokenPool | No
     *then* compares org_id, which assumes org_id is not part of the key. For this
     table it is, so the org goes into the lookup itself.
     """
-    return await db.get(TokenPool, {"org_id": org, "provider": provider})
+    return await db.get(
+        TokenPool,
+        {
+            "org_id": org,
+            "provider": broker_pilot.canonical_provider(provider),
+        },
+    )
+
+
+async def pool_snapshot(db: AsyncSession, org: str) -> list[dict]:
+    """Return the current provider inventory shipped to gateways."""
+    rows = (
+        await db.execute(
+            scoped(
+                select(TokenPool).order_by(TokenPool.provider),
+                TokenPool,
+                org,
+            )
+        )
+    ).scalars().all()
+    return [_pool_dict(pool) for pool in rows]
 
 
 # ─── Serializers ─────────────────────────────────────────────────────────────
