@@ -52,3 +52,43 @@ async def test_reporter_sends_ingest_and_service_credentials(monkeypatch):
 
     assert calls[0][1] == {"X-Ingest-Key": "ingest-secret"}
     assert calls[1][1] == {"X-Ostiari-Service-Key": "service-secret"}
+
+
+def test_gateway_lifecycle_starts_agent_spend_persistence(monkeypatch):
+    from ostiari_gateway.lifecycle import LifecycleManager
+    from ostiari_gateway.models import SidecarConfig
+    from ostiari_gateway.server import create_app
+    from starlette.testclient import TestClient
+
+    calls: dict[str, bool] = {}
+
+    async def _register(self):
+        return {"config": {}}
+
+    async def _start_heartbeat(self, interval=30):
+        calls["heartbeat"] = interval == 30
+
+    async def _stop(self):
+        return None
+
+    async def _start_spend(self, interval_seconds=30.0):
+        calls["spend"] = interval_seconds == 30.0
+        calls["wired"] = self._agent_auth is not None
+
+    async def _close(self):
+        return None
+
+    monkeypatch.setattr(LifecycleManager, "register", _register)
+    monkeypatch.setattr(LifecycleManager, "start_heartbeat", _start_heartbeat)
+    monkeypatch.setattr(LifecycleManager, "stop", _stop)
+    monkeypatch.setattr(TraceReporter, "start_spend_persistence", _start_spend)
+    monkeypatch.setattr(TraceReporter, "close", _close)
+
+    app = create_app(SidecarConfig(
+        sidecar_id="spend-persistence-test",
+        control_plane_url="http://cp.local",
+    ))
+    with TestClient(app):
+        pass
+
+    assert calls == {"spend": True, "wired": True, "heartbeat": True}

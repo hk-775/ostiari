@@ -33,7 +33,7 @@ Optional headers Ostiari reads for attribution:
 Same gate chain as the messages shim, in the OpenAI wire format (no cross-format
 translation needed — AxonLLM is OpenAI-shaped throughout):
 
-1. **Agent authorization** — endpoint grant + per-agent model/provider/budget (`authorize_llm`). Failure → **403**.
+1. **Agent authorization and quota** — endpoint grant plus per-agent model/provider, rolling RPM, projected budget reservation, and max-token cap (`check_llm`). Authorization failures return **403**; rate/budget failures return **429**.
 2. **Injection / PII** — detection-only and fail-closed: it blocks on a detection, and also blocks when PII is *present* rather than redacting it, since the redaction would desynchronize Codex's own conversation state. Failure → **403**.
 3. **Quota** — Ostiari's own budget ceiling, plus the rate limit and model allowlist from the pushed quota. The cost estimate is booked as an in-flight reservation so concurrent calls can't all pass on a stale spend total. Failure → **429**.
 4. **Routing** — AxonLLM selects model + provider (smart routing when the client's model isn't in the registry), health-aware fallback, cost tracking. Single-response mode — ensemble stays on `/invoke`.
