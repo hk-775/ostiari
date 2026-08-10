@@ -1,8 +1,10 @@
 import { useState, useRef } from "react";
 import { Play, Send, Beaker, Code2, MessageSquare, Loader2, CheckCircle, XCircle, Wrench, Users2, Plus, Trash2 } from "lucide-react";
+import { apiFetch } from "../lib/api";
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
-const GATEWAY_PROXY = `${API_BASE}/api/proxy/gateway/crm-agent`;
+const GATEWAY_PROXY_PATH = "/api/proxy/gateway/crm-agent";
+const GATEWAY_PROXY = `${API_BASE}${GATEWAY_PROXY_PATH}`;
 
 type Tab = "chat" | "scenarios" | "code" | "a2a";
 
@@ -140,7 +142,7 @@ export function Sandbox() {
     setChatLoading(true);
 
     try {
-      const resp = await fetch(`${GATEWAY_PROXY}/invoke`, {
+      const resp = await apiFetch(`${GATEWAY_PROXY_PATH}/invoke`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Agent-Id": "sandbox-chat", "X-Session-Id": "sandbox", "X-Plan": "Sandbox chat" },
         body: JSON.stringify({ messages: [...chatMessages, userMsg].map(m => ({ role: m.role, content: m.content })) }),
@@ -176,7 +178,7 @@ export function Sandbox() {
           { action: "db_delete", params: { table: "users" } },
         ];
         for (const t of tools) {
-          const resp = await fetch(`${GATEWAY_PROXY}/tool/${t.action}`, {
+          const resp = await apiFetch(`${GATEWAY_PROXY_PATH}/tool/${t.action}`, {
             method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Id": "sandbox-scenario" },
             body: JSON.stringify(t.params),
           });
@@ -187,7 +189,7 @@ export function Sandbox() {
         const steps = ["db_query", "github.search_code", "github.create_issue", "drawio.create_diagram", "drawio.add_shape", "send_email"];
         const params: any[] = [{ sql: "SELECT *" }, { query: "auth" }, { repo: "myorg/app", title: "Bug" }, { name: "Flow" }, { diagram_id: "d1", shape: "rect", label: "API" }, { to: "team@co.com", subject: "Done" }];
         for (let i = 0; i < steps.length; i++) {
-          const resp = await fetch(`${GATEWAY_PROXY}/tool/${steps[i]}`, {
+          const resp = await apiFetch(`${GATEWAY_PROXY_PATH}/tool/${steps[i]}`, {
             method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Id": "sandbox-multistep", "X-Session-Id": "sandbox-plan", "X-Plan": "Multi-step sandbox", "X-Step": `${i+1}/${steps.length}` },
             body: JSON.stringify(params[i]),
           });
@@ -196,7 +198,7 @@ export function Sandbox() {
       } else if (id === "blocked") {
         const blocked = ["db_delete", "github.delete_repo", "drawio.delete_diagram"];
         for (const action of blocked) {
-          const resp = await fetch(`${GATEWAY_PROXY}/tool/${action}`, {
+          const resp = await apiFetch(`${GATEWAY_PROXY_PATH}/tool/${action}`, {
             method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Id": "sandbox-blocked" },
             body: JSON.stringify({ target: "all" }),
           });
@@ -207,7 +209,7 @@ export function Sandbox() {
         const mcpTools = ["github.list_repos", "github.search_code", "drawio.list_diagrams", "drawio.create_diagram"];
         const params: any[] = [{ org: "myorg" }, { query: "config" }, {}, { name: "Sandbox Diagram" }];
         for (let i = 0; i < mcpTools.length; i++) {
-          const resp = await fetch(`${GATEWAY_PROXY}/tool/${mcpTools[i]}`, {
+          const resp = await apiFetch(`${GATEWAY_PROXY_PATH}/tool/${mcpTools[i]}`, {
             method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Id": "sandbox-mcp" },
             body: JSON.stringify(params[i]),
           });
@@ -241,7 +243,7 @@ export function Sandbox() {
     setCodeOutput(lines.join("\n"));
     for (const call of calls) {
       try {
-        const resp = await fetch(`${GATEWAY_PROXY}/tool/${call.tool}`, {
+        const resp = await apiFetch(`${GATEWAY_PROXY_PATH}/tool/${call.tool}`, {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Agent-Id": "sandbox-code" },
           body: JSON.stringify(call.body),
@@ -441,7 +443,7 @@ export function Sandbox() {
                     if (!a2aNewUrl.trim()) return;
                     setA2aDiscovering(true);
                     try {
-                      const resp = await fetch(`${GATEWAY_PROXY}/config/a2a-agents`, {
+                      const resp = await apiFetch(`${GATEWAY_PROXY_PATH}/config/a2a-agents`, {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ url: a2aNewUrl.trim() }),
@@ -556,7 +558,7 @@ export function Sandbox() {
                       id: `task-${Date.now()}`
                     };
                     const toolName = `a2a.${agent.name.toLowerCase().replace(/\s+/g, "_")}`;
-                    const resp = await fetch(`${GATEWAY_PROXY}/tool/${toolName}`, {
+                    const resp = await apiFetch(`${GATEWAY_PROXY_PATH}/tool/${toolName}`, {
                       method: "POST",
                       headers: { "Content-Type": "application/json", "X-Agent-Id": "sandbox-a2a", "X-Framework": "a2a" },
                       body: JSON.stringify(a2aPayload),

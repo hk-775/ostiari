@@ -1,8 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { FileCheck, CheckCircle2, AlertTriangle, XCircle, RefreshCw } from "lucide-react";
-
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
+import { fetchAPI } from "../lib/api";
 
 interface Requirement {
   id: string;
@@ -26,8 +25,7 @@ interface Report {
 }
 
 async function fetchReport(framework: string, period: number): Promise<Report> {
-  const res = await fetch(`${API_BASE}/api/compliance/report?framework=${framework}&period_days=${period}`);
-  return res.json();
+  return fetchAPI<Report>(`/api/compliance/report?framework=${framework}&period_days=${period}`);
 }
 
 const STATUS = {
