@@ -3,8 +3,6 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Trash2, Upload, FileText, Pencil, Check, Clock } from "lucide-react";
 import { api, Policy } from "../lib/api";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
-
 export function Policies() {
   const queryClient = useQueryClient();
   const { data: policies = [] } = useQuery({ queryKey: ["policies"], queryFn: api.policies.list });
@@ -12,6 +10,7 @@ export function Policies() {
   const [form, setForm] = useState({ name: "", content: "" });
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editContent, setEditContent] = useState("");
+  const [editError, setEditError] = useState("");
   const [pushStatus, setPushStatus] = useState<Record<number, string>>({});
 
   const createMutation = useMutation({
@@ -28,6 +27,7 @@ export function Policies() {
     mutationFn: api.policies.delete,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["policies"] }),
   });
+  const mutationError = createMutation.error ?? deleteMutation.error;
 
   return (
     <div className="space-y-6">
@@ -40,6 +40,11 @@ export function Policies() {
           <Plus className="h-4 w-4" /> New Policy
         </button>
       </div>
+      {mutationError && (
+        <p className="text-sm font-medium text-rose-600">
+          {mutationError instanceof Error ? mutationError.message : "Policy request failed"}
+        </p>
+      )}
 
       {showForm && (
         <form
@@ -79,7 +84,7 @@ export function Policies() {
                 </div>
               </div>
               <div className="flex gap-1">
-                <button onClick={() => { setEditingId(editingId === p.id ? null : p.id); setEditContent(JSON.stringify(p.content, null, 2)); }} title="Edit" className="rounded-xl p-2 text-stone-400 hover:bg-indigo-50 hover:text-indigo-600 transition">
+                <button onClick={() => { setEditingId(editingId === p.id ? null : p.id); setEditContent(JSON.stringify(p.content, null, 2)); setEditError(""); }} title="Edit" className="rounded-xl p-2 text-stone-400 hover:bg-indigo-50 hover:text-indigo-600 transition">
                   <Pencil className="h-4 w-4" />
                 </button>
                 <button onClick={async () => {
@@ -117,11 +122,20 @@ export function Policies() {
             {editingId === p.id ? (
               <div className="mt-3 space-y-2">
                 <textarea value={editContent} onChange={(e) => setEditContent(e.target.value)} rows={8} className="input w-full font-mono text-xs" />
+                {editError && <p className="text-xs font-medium text-rose-600">{editError}</p>}
                 <div className="flex gap-2">
                   <button onClick={async () => {
-                    await fetch(`${API_BASE}/api/policies/${p.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: p.name, content: JSON.parse(editContent) }) });
-                    queryClient.invalidateQueries({ queryKey: ["policies"] });
-                    setEditingId(null);
+                    setEditError("");
+                    try {
+                      await api.policies.update(p.id, {
+                        name: p.name,
+                        content: JSON.parse(editContent),
+                      });
+                      queryClient.invalidateQueries({ queryKey: ["policies"] });
+                      setEditingId(null);
+                    } catch (error) {
+                      setEditError(error instanceof Error ? error.message : "Failed to update policy");
+                    }
                   }} className="btn-primary text-xs">Save</button>
                   <button onClick={() => setEditingId(null)} className="btn-secondary text-xs">Cancel</button>
                 </div>

@@ -1,7 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Gauge, AlertTriangle, CheckCircle, TrendingDown } from "lucide-react";
-
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
+import { fetchAPI } from "../lib/api";
 
 interface CostSummary {
   total_cost_usd: number;
@@ -12,8 +11,7 @@ interface CostSummary {
 }
 
 async function fetchData(): Promise<CostSummary> {
-  const res = await fetch(`${API_BASE}/api/costs/summary?period_days=7`);
-  return res.json();
+  return fetchAPI<CostSummary>("/api/costs/summary?period_days=7");
 }
 
 function ScoreBar({ label, score, color }: { label: string; score: number; color: string }) {

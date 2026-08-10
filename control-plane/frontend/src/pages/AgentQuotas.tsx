@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { ShieldCheck, Plus, Trash2, Save, Edit2, X } from "lucide-react";
+import { fetchAPI } from "../lib/api";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
-const GATEWAY_BASE = `${API_BASE}/api/proxy/gateway/crm-agent`;
+const GATEWAY_PATH = "/api/proxy/gateway/crm-agent";
 
 interface AgentQuota {
   agent_id: string;
@@ -30,12 +30,13 @@ export function AgentQuotas() {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState<AgentQuota>({ agent_id: "", rate_limit_rpm: 30, budget_limit_usd: 10, max_tokens_per_request: 4096, allowed_models: [], allowed_providers: [], alert_threshold_pct: 90, spend_usd: 0 });
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState("");
 
   const saveAll = async () => {
+    setSaveError("");
     try {
-      await fetch(`${GATEWAY_BASE}/config/agent-auth`, {
+      await fetchAPI(`${GATEWAY_PATH}/config/agent-auth`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           enabled: true,
           agents: Object.fromEntries(quotas.map(q => [q.agent_id, {
@@ -46,9 +47,11 @@ export function AgentQuotas() {
           }])),
         }),
       });
-    } catch {}
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Failed to push quotas");
+    }
   };
 
   const startEdit = (q: AgentQuota) => {
@@ -79,6 +82,7 @@ export function AgentQuotas() {
           <p className="mt-1 text-sm text-stone-500">Per-agent rate limits, budgets, and token caps</p>
         </div>
         <div className="flex items-center gap-2">
+          {saveError && <span className="text-xs font-medium text-rose-600">{saveError}</span>}
           {saved && <span className="text-xs text-emerald-600 font-medium">Saved!</span>}
           <button onClick={saveAll} className="btn-primary"><Save className="h-4 w-4" /> Push to Gateway</button>
           <button onClick={() => { setForm({ agent_id: "", rate_limit_rpm: 30, budget_limit_usd: 10, max_tokens_per_request: 4096, allowed_models: [], allowed_providers: [], alert_threshold_pct: 90, spend_usd: 0 }); setEditing(null); setShowForm(true); }} className="btn-primary">

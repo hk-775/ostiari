@@ -1,8 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Bot, Trash2, Plus, Route, Save } from "lucide-react";
 import { useState } from "react";
-
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
+import { fetchAPI } from "../lib/api";
 
 interface AgentConfig {
   name: string;
@@ -17,7 +16,7 @@ interface AgentConfig {
 
 
 async function fetchAgents(): Promise<AgentConfig[]> {
-  return (await fetch(`${API_BASE}/api/agents`)).json();
+  return fetchAPI<AgentConfig[]>("/api/agents");
 }
 
 
@@ -70,21 +69,24 @@ const DEFAULT_OVERRIDES: RoutingOverride[] = [
 function RoutingOverrideSection({ agents }: { agents: AgentConfig[] }) {
   const [overrides, setOverrides] = useState<RoutingOverride[]>(DEFAULT_OVERRIDES);
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState("");
 
   const updateOverride = (agent: string, field: keyof RoutingOverride, value: any) => {
     setOverrides(prev => prev.map(o => o.agent === agent ? { ...o, [field]: value } : o));
   };
 
   const saveOverrides = async () => {
+    setSaveError("");
     try {
-      await fetch(`${API_BASE}/api/proxy/gateway/crm-agent/config/routing-overrides`, {
+      await fetchAPI("/api/proxy/gateway/crm-agent/config/routing-overrides", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ overrides }),
       });
-    } catch { /* gateway may not support this yet */ }
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Failed to save routing overrides");
+    }
   };
 
   return (
@@ -95,6 +97,7 @@ function RoutingOverrideSection({ agents }: { agents: AgentConfig[] }) {
           <h2 className="text-lg font-semibold text-stone-900">Per-Agent Routing Override</h2>
         </div>
         <div className="flex items-center gap-2">
+          {saveError && <span className="text-xs font-medium text-rose-600">{saveError}</span>}
           {saved && <span className="text-xs text-emerald-600 font-medium">Saved!</span>}
           <button onClick={saveOverrides} className="btn-primary text-xs"><Save className="h-3.5 w-3.5" /> Save</button>
         </div>
@@ -216,12 +219,10 @@ function LLMRoundRobinSection({ agents }: { agents: AgentConfig[] }) {
     setStatus("");
     if (models.length < 1) { setStatus("Add at least one model."); return; }
     try {
-      const r = await fetch(`${API_BASE}/api/agent-routing`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
+      const d = await fetchAPI<{ pushed: boolean; push_error?: string }>("/api/agent-routing", {
+        method: "POST",
         body: JSON.stringify({ agent_id: agent, gateway_id: gw, strategy: "round_robin", models, scope }),
       });
-      const d = await r.json();
-      if (!r.ok) { setStatus(`Error: ${d.detail || r.status}`); return; }
       setStatus(d.pushed ? "Saved & pushed to gateway ✓" : `Saved (push failed: ${d.push_error})`);
     } catch (e) {
       setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
@@ -295,19 +296,19 @@ export function Agents() {
   const [form, setForm] = useState({ name: "", framework: "openai", gateway_id: "", tools: "", description: "", model: "" });
 
   const createMutation = useMutation({
-    mutationFn: async (data: typeof form) => {
-      await fetch(`${API_BASE}/api/agents`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
+    mutationFn: (data: typeof form) =>
+      fetchAPI<AgentConfig>("/api/agents", {
+        method: "POST",
         body: JSON.stringify({ ...data, tools: data.tools.split(",").map(t => t.trim()).filter(Boolean) }),
-      });
-    },
+      }),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["agents"] }); setShowForm(false); },
   });
 
   const deleteMutation = useMutation({
-    mutationFn: async (name: string) => { await fetch(`${API_BASE}/api/agents/${name}`, { method: "DELETE" }); },
+    mutationFn: (name: string) => fetchAPI(`/api/agents/${name}`, { method: "DELETE" }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["agents"] }),
   });
+  const mutationError = createMutation.error ?? deleteMutation.error;
 
   const frameworks = [...new Set(agents.map(a => a.framework))];
 
@@ -322,6 +323,11 @@ export function Agents() {
           <Plus className="h-4 w-4" /> Register Agent
         </button>
       </div>
+      {mutationError && (
+        <p className="text-sm font-medium text-rose-600">
+          {mutationError instanceof Error ? mutationError.message : "Agent request failed"}
+        </p>
+      )}
 
       {showForm && (
         <form onSubmit={(e) => { e.preventDefault(); createMutation.mutate(form); }} className="card p-6 space-y-4">
