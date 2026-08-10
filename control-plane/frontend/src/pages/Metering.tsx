@@ -1,8 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Gauge, Download } from "lucide-react";
-
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
+import { apiFetch, fetchAPI, requireOk } from "../lib/api";
 
 interface Row {
   key: string;
@@ -24,8 +23,7 @@ interface Summary {
 }
 
 async function fetchSummary(groupBy: string, period: number): Promise<Summary> {
-  const res = await fetch(`${API_BASE}/api/metering/summary?group_by=${groupBy}&period_days=${period}`);
-  return res.json();
+  return fetchAPI<Summary>(`/api/metering/summary?group_by=${groupBy}&period_days=${period}`);
 }
 
 const TIER_BADGE: Record<string, string> = {
@@ -37,12 +35,33 @@ const TIER_BADGE: Record<string, string> = {
 export function Metering() {
   const [groupBy, setGroupBy] = useState("agent");
   const [period, setPeriod] = useState(30);
+  const [exportError, setExportError] = useState("");
   const { data } = useQuery({
     queryKey: ["metering", groupBy, period],
     queryFn: () => fetchSummary(groupBy, period),
   });
 
   const d = data;
+
+  const exportCSV = async () => {
+    setExportError("");
+    try {
+      const res = await requireOk(
+        await apiFetch(`/api/metering/export?group_by=${groupBy}&period_days=${period}`),
+      );
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `ostiari-metering-${groupBy}-${period}d.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : "CSV export failed");
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -64,12 +83,12 @@ export function Metering() {
             <option value={30}>30 days</option>
             <option value={90}>90 days</option>
           </select>
-          <a href={`${API_BASE}/api/metering/export?group_by=${groupBy}&period_days=${period}`}
-             className="btn-secondary" title="Export CSV">
+          <button onClick={exportCSV} className="btn-secondary" title="Export CSV">
             <Download className="h-4 w-4" /> CSV
-          </a>
+          </button>
         </div>
       </div>
+      {exportError && <p className="text-sm font-medium text-rose-600">{exportError}</p>}
 
       <div className="grid grid-cols-4 gap-4">
         <div className="card p-5"><p className="text-xs font-semibold uppercase tracking-wider text-stone-500">Governed calls</p><p className="mt-2 text-3xl font-bold text-stone-900">{(d?.total_governed_calls ?? 0).toLocaleString()}</p></div>

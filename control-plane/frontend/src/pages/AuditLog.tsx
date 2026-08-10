@@ -1,8 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { History, Filter } from "lucide-react";
-
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
+import { fetchAPI } from "../lib/api";
 
 interface AuditEntry {
   id: number;
@@ -19,8 +18,7 @@ async function fetchAudit(filters: Record<string, string>): Promise<AuditEntry[]
   for (const [k, v] of Object.entries(filters)) {
     if (v) params.set(k, v);
   }
-  const res = await fetch(`${API_BASE}/api/audit?${params}`);
-  return res.json();
+  return fetchAPI<AuditEntry[]>(`/api/audit?${params}`);
 }
 
 const ACTION_COLORS: Record<string, string> = {

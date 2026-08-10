@@ -1,9 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ShieldCheck, Plus, Trash2, AlertTriangle, Upload, Check, Clock, Pencil, X } from "lucide-react";
-import { api } from "../lib/api";
-
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
+import { api, fetchAPI } from "../lib/api";
 
 interface Quota {
   id: number;
@@ -27,15 +25,11 @@ interface BudgetAlert {
 }
 
 async function fetchQuotas(): Promise<Quota[]> {
-  const res = await fetch(`${API_BASE}/api/quotas`);
-  if (res.status === 404) return [];
-  return res.json();
+  return fetchAPI<Quota[]>("/api/quotas");
 }
 
 async function fetchAlerts(): Promise<BudgetAlert[]> {
-  const res = await fetch(`${API_BASE}/api/quotas/alerts`);
-  if (!res.ok) return [];
-  return res.json();
+  return fetchAPI<BudgetAlert[]>("/api/quotas/alerts");
 }
 
 export function Quotas() {
@@ -60,21 +54,21 @@ export function Quotas() {
       if (data.budget_limit_usd) payload.budget_limit_usd = parseFloat(data.budget_limit_usd);
       if (data.max_tokens_per_request) payload.max_tokens_per_request = parseInt(data.max_tokens_per_request);
       if (data.allowed_models) payload.allowed_models = data.allowed_models.split(",").map((s: string) => s.trim());
-      const res = await fetch(`${API_BASE}/api/quotas`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-      return res.json();
+      return fetchAPI<Quota>("/api/quotas", { method: "POST", body: JSON.stringify(payload) });
     },
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["quotas"] }); setShowForm(false); },
   });
 
   const deleteMutation = useMutation({
-    mutationFn: async (id: number) => { await fetch(`${API_BASE}/api/quotas/${id}`, { method: "DELETE" }); },
+    mutationFn: (id: number) => fetchAPI(`/api/quotas/${id}`, { method: "DELETE" }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["quotas"] }),
   });
 
   const clearAlertsMutation = useMutation({
-    mutationFn: async () => { await fetch(`${API_BASE}/api/quotas/alerts`, { method: "DELETE" }); },
+    mutationFn: () => fetchAPI("/api/quotas/alerts", { method: "DELETE" }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["budget-alerts"] }),
   });
+  const mutationError = createMutation.error ?? deleteMutation.error ?? clearAlertsMutation.error;
 
   return (
     <div className="space-y-6">
@@ -87,6 +81,11 @@ export function Quotas() {
           <Plus className="h-4 w-4" /> Add Quota
         </button>
       </div>
+      {mutationError && (
+        <p className="text-sm font-medium text-rose-600">
+          {mutationError instanceof Error ? mutationError.message : "Quota request failed"}
+        </p>
+      )}
 
       {showForm && (
         <form onSubmit={(e) => { e.preventDefault(); createMutation.mutate(form); }} className="card p-6 space-y-4">
@@ -265,18 +264,17 @@ export function Quotas() {
                       if (editForm.rate_limit_rpm) payload.rate_limit_rpm = parseInt(editForm.rate_limit_rpm);
                       if (editForm.budget_limit_usd) payload.budget_limit_usd = parseFloat(editForm.budget_limit_usd);
                       if (editForm.max_tokens_per_request) payload.max_tokens_per_request = parseInt(editForm.max_tokens_per_request);
-                      // The response is checked. This used to fire and forget, so
-                      // when the PUT route didn't exist the 405 was invisible: the
-                      // panel closed and the list refetched unchanged, which reads
-                      // as a successful save.
-                      const res = await fetch(`${API_BASE}/api/quotas/${q.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-                      if (!res.ok) {
-                        setEditError(`Save failed (HTTP ${res.status})`);
-                        return;
+                      try {
+                        await fetchAPI<Quota>(`/api/quotas/${q.id}`, {
+                          method: "PUT",
+                          body: JSON.stringify(payload),
+                        });
+                        setEditError("");
+                        queryClient.invalidateQueries({ queryKey: ["quotas"] });
+                        setEditingId(null);
+                      } catch (error) {
+                        setEditError(error instanceof Error ? error.message : "Save failed");
                       }
-                      setEditError("");
-                      queryClient.invalidateQueries({ queryKey: ["quotas"] });
-                      setEditingId(null);
                     }} className="btn-primary text-xs">Save</button>
                     <button onClick={() => setEditingId(null)} className="btn-secondary text-xs">Cancel</button>
                   </div>

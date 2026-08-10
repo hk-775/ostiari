@@ -1,9 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Shield, Key, Plus, Trash2, Pencil, X, Loader2, CheckCircle2, XCircle, Eye, EyeOff, Activity } from "lucide-react";
-import { useAuthStore } from "../stores/authStore";
-
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
+import { fetchAPI } from "../lib/api";
 
 interface ProviderResponse {
   name: string;
@@ -60,22 +58,12 @@ const EMPTY_FORM: ProviderCreate = {
   enabled: true,
 };
 
-function getAuthHeaders() {
-  const token = localStorage.getItem("ostiari_token");
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-  return headers;
-}
-
 async function fetchProviders(): Promise<ProviderResponse[]> {
-  const res = await fetch(`${API_BASE}/api/providers`, { headers: getAuthHeaders() });
-  if (!res.ok) throw new Error("Failed to fetch providers");
-  return res.json();
+  return fetchAPI<ProviderResponse[]>("/api/providers");
 }
 
 export function Providers() {
   const queryClient = useQueryClient();
-  const token = useAuthStore((s) => s.token);
   const { data: providers = [], isLoading } = useQuery({ queryKey: ["providers"], queryFn: fetchProviders });
 
   const [showForm, setShowForm] = useState(false);
@@ -85,15 +73,14 @@ export function Providers() {
   const [testResult, setTestResult] = useState<Record<string, { success: boolean; error?: string } | null>>({});
   const [revealedKeys, setRevealedKeys] = useState<Record<string, string>>({});
   const [revealLoading, setRevealLoading] = useState<Record<string, boolean>>({});
-
-  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
+  const [actionError, setActionError] = useState("");
 
   const createMutation = useMutation({
     mutationFn: async (data: ProviderCreate) => {
       const method = editingProvider ? "PUT" : "POST";
-      const url = editingProvider
-        ? `${API_BASE}/api/providers/${editingProvider}`
-        : `${API_BASE}/api/providers`;
+      const path = editingProvider
+        ? `/api/providers/${editingProvider}`
+        : "/api/providers";
       const body = editingProvider
         ? JSON.stringify({
             api_key: data.api_key || undefined,
@@ -104,14 +91,10 @@ export function Providers() {
             enabled: data.enabled,
           })
         : JSON.stringify(data);
-      const res = await fetch(url, { method, headers, body });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: "Request failed" }));
-        throw new Error(err.detail || `HTTP ${res.status}`);
-      }
-      return res.json();
+      return fetchAPI<ProviderResponse>(path, { method, body });
     },
     onSuccess: () => {
+      setActionError("");
       queryClient.invalidateQueries({ queryKey: ["providers"] });
       setShowForm(false);
       setEditingProvider(null);
@@ -120,20 +103,20 @@ export function Providers() {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: async (name: string) => {
-      const res = await fetch(`${API_BASE}/api/providers/${name}`, { method: "DELETE", headers });
-      if (!res.ok) throw new Error("Delete failed");
-      return res.json();
-    },
+    mutationFn: (name: string) => fetchAPI(`/api/providers/${name}`, { method: "DELETE" }),
+    onMutate: () => setActionError(""),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["providers"] }),
+    onError: (error) => setActionError(error instanceof Error ? error.message : "Failed to delete provider"),
   });
 
   const testProvider = async (name: string) => {
     setTestingProvider(name);
     setTestResult((prev) => ({ ...prev, [name]: null }));
     try {
-      const res = await fetch(`${API_BASE}/api/providers/${name}/test`, { method: "POST", headers });
-      const data = await res.json();
+      const data = await fetchAPI<{ success: boolean; error?: string }>(
+        `/api/providers/${name}/test`,
+        { method: "POST" },
+      );
       setTestResult((prev) => ({ ...prev, [name]: { success: data.success, error: data.error } }));
       queryClient.invalidateQueries({ queryKey: ["providers"] });
     } catch (err: any) {
@@ -154,13 +137,12 @@ export function Providers() {
       return;
     }
     setRevealLoading((prev) => ({ ...prev, [name]: true }));
+    setActionError("");
     try {
-      const res = await fetch(`${API_BASE}/api/providers/${name}/key`, { headers });
-      if (!res.ok) throw new Error("Failed to retrieve key");
-      const data = await res.json();
+      const data = await fetchAPI<{ api_key: string }>(`/api/providers/${name}/key`);
       setRevealedKeys((prev) => ({ ...prev, [name]: data.api_key }));
-    } catch {
-      // silently fail
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Failed to retrieve provider key");
     } finally {
       setRevealLoading((prev) => ({ ...prev, [name]: false }));
     }
@@ -208,6 +190,7 @@ export function Providers() {
           <Plus className="h-4 w-4" /> Add Provider
         </button>
       </div>
+      {actionError && <p className="text-sm font-medium text-rose-600">{actionError}</p>}
 
       {/* Add/Edit Form */}
       {showForm && (

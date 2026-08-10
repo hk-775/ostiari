@@ -1,14 +1,38 @@
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
+export const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
 const TOKEN_KEY = "ostiari_token";
 
-async function fetchAPI<T>(path: string, options?: RequestInit): Promise<T> {
+export class APIError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "APIError";
+    this.status = status;
+  }
+}
+
+async function responseError(res: Response): Promise<APIError> {
+  const text = await res.text();
+  let detail = res.statusText || `HTTP ${res.status}`;
+  if (text) {
+    try {
+      const body = JSON.parse(text);
+      detail = body.detail || body.error || body.message || detail;
+    } catch {
+      detail = text;
+    }
+  }
+  return new APIError(res.status, detail);
+}
+
+export async function apiFetch(path: string, options?: RequestInit): Promise<Response> {
   const token = localStorage.getItem(TOKEN_KEY);
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...(options?.headers as Record<string, string>),
-  };
+  const headers = new Headers(options?.headers);
+  if (options?.body && typeof options.body === "string" && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
   if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
+    headers.set("Authorization", `Bearer ${token}`);
   }
 
   const res = await fetch(`${API_BASE}${path}`, {
@@ -18,15 +42,29 @@ async function fetchAPI<T>(path: string, options?: RequestInit): Promise<T> {
 
   if (res.status === 401) {
     localStorage.removeItem(TOKEN_KEY);
-    window.location.href = "/login";
-    throw new Error("Session expired");
+    if (window.location.pathname !== "/login") {
+      window.location.assign("/login");
+    }
+    throw new APIError(401, "Session expired");
   }
 
+  return res;
+}
+
+export async function requireOk(res: Response): Promise<Response> {
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(error.detail || `HTTP ${res.status}`);
+    throw await responseError(res);
   }
-  return res.json();
+  return res;
+}
+
+export async function fetchAPI<T>(path: string, options?: RequestInit): Promise<T> {
+  const res = await requireOk(await apiFetch(path, options));
+  if (res.status === 204) {
+    return undefined as T;
+  }
+  const text = await res.text();
+  return text ? JSON.parse(text) as T : undefined as T;
 }
 
 export interface Gateway {

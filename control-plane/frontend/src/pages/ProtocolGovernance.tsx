@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Network, Save, Check, ShieldAlert, Ban, Activity, ArrowRight, Bot } from "lucide-react";
+import { fetchAPI } from "../lib/api";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
-const GATEWAY_BASE = `${API_BASE}/api/proxy/gateway/crm-agent`;
+const GATEWAY_PATH = "/api/proxy/gateway/crm-agent";
 
 type EdgeState = "allow" | "deny" | "default";
 
@@ -24,9 +24,7 @@ interface DelegationReport {
 
 async function fetchDelegationReport(): Promise<DelegationReport> {
   try {
-    const res = await fetch(`${API_BASE}/api/traces/delegation-report`);
-    if (!res.ok) throw new Error();
-    return await res.json();
+    return await fetchAPI<DelegationReport>("/api/traces/delegation-report");
   } catch {
     return { blocked_delegation_count: 0, distinct_edges: 0, edges: [] };
   }
@@ -50,9 +48,7 @@ interface TrustScores {
 
 async function fetchTrust(): Promise<TrustScores> {
   try {
-    const res = await fetch(`${API_BASE}/api/trust/scores`);
-    if (!res.ok) throw new Error();
-    return await res.json();
+    return await fetchAPI<TrustScores>("/api/trust/scores");
   } catch {
     return { gateway_id: "crm-agent", enforced: false, agents: [], would_change_count: 0, baseline: 50 };
   }
@@ -68,9 +64,7 @@ interface A2AAgent {
 
 async function fetchA2AAgents(): Promise<A2AAgent[]> {
   try {
-    const res = await fetch(`${GATEWAY_BASE}/config/a2a-agents`);
-    if (!res.ok) throw new Error();
-    const data = await res.json();
+    const data = await fetchAPI<{ agents?: A2AAgent[] }>(`${GATEWAY_PATH}/config/a2a-agents`);
     return data.agents ?? [];
   } catch {
     return [];
@@ -96,9 +90,7 @@ const DEMO_AGENTS = ["research", "coder", "db", "payments", "ops"];
 
 async function fetchConfig(): Promise<CrossAgentConfig> {
   try {
-    const res = await fetch(`${GATEWAY_BASE}/config/cross-agent`);
-    if (!res.ok) throw new Error();
-    const data = await res.json();
+    const data = await fetchAPI<CrossAgentConfig>(`${GATEWAY_PATH}/config/cross-agent`);
     return { ...EMPTY, ...data };
   } catch {
     return { ...EMPTY };
@@ -116,6 +108,7 @@ export function ProtocolGovernance() {
   const [cfg, setCfg] = useState<CrossAgentConfig>(EMPTY);
   const [agents, setAgents] = useState<string[]>(DEMO_AGENTS);
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState("");
 
   const { data: report } = useQuery({
     queryKey: ["delegation-report"],
@@ -138,7 +131,7 @@ export function ProtocolGovernance() {
   const applyTrust = useMutation({
     mutationFn: async (enable: boolean) => {
       const path = enable ? "apply" : "disable";
-      await fetch(`${API_BASE}/api/trust/${path}?gateway_id=crm-agent`, { method: "POST" });
+      await fetchAPI(`/api/trust/${path}?gateway_id=crm-agent`, { method: "POST" });
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["trust-scores"] });
@@ -177,15 +170,17 @@ export function ProtocolGovernance() {
     setCfg((prev) => ({ ...prev, trust_scores: { ...prev.trust_scores, [agent]: score } }));
 
   const save = async () => {
+    setSaveError("");
     try {
-      await fetch(`${GATEWAY_BASE}/config/cross-agent`, {
+      await fetchAPI(`${GATEWAY_PATH}/config/cross-agent`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(cfg),
       });
-    } catch { /* gateway may be offline in demo */ }
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Failed to save protocol policy");
+    }
   };
 
   const cellClass = (s: EdgeState) =>
@@ -205,9 +200,12 @@ export function ProtocolGovernance() {
             Control which agents may delegate to which (A2A). Rows delegate → columns.
           </p>
         </div>
-        <button onClick={save} className="btn-sky">
-          {saved ? <Check className="h-4 w-4" /> : <Save className="h-4 w-4" />} {saved ? "Saved" : "Save & Push"}
-        </button>
+        <div className="flex items-center gap-2">
+          {saveError && <span className="text-xs font-medium text-rose-600">{saveError}</span>}
+          <button onClick={save} className="btn-sky">
+            {saved ? <Check className="h-4 w-4" /> : <Save className="h-4 w-4" />} {saved ? "Saved" : "Save & Push"}
+          </button>
+        </div>
       </div>
 
       {/* Global settings */}
@@ -409,6 +407,11 @@ export function ProtocolGovernance() {
             >
               {trust?.enforced ? "Disable enforcement" : "Enable enforcement"}
             </button>
+            {applyTrust.error && (
+              <span className="text-xs font-medium text-rose-600">
+                {applyTrust.error instanceof Error ? applyTrust.error.message : "Trust update failed"}
+              </span>
+            )}
           </div>
         </div>
         <table className="w-full">

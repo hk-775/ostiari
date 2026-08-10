@@ -1,8 +1,7 @@
 import { useState, useEffect } from "react";
-import { useAuthStore, User } from "../stores/authStore";
+import { User } from "../stores/authStore";
 import { UserPlus, Trash2, Users as UsersIcon } from "lucide-react";
-
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
+import { fetchAPI } from "../lib/api";
 
 const ROLE_BADGES: Record<string, string> = {
   admin: "bg-violet-100 text-violet-700 border-violet-200",
@@ -11,7 +10,6 @@ const ROLE_BADGES: Record<string, string> = {
 };
 
 export function Users() {
-  const token = useAuthStore((s) => s.token);
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -27,11 +25,7 @@ export function Users() {
 
   const fetchUsers = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/auth/users`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) throw new Error("Failed to fetch users");
-      const data = await res.json();
+      const data = await fetchAPI<User[]>("/api/auth/users");
       setUsers(data);
     } catch (err: any) {
       setError(err.message);
@@ -49,12 +43,8 @@ export function Users() {
     setFormError("");
     setFormLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/auth/register`, {
+      await fetchAPI<User>("/api/auth/register", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
         body: JSON.stringify({
           email: formEmail,
           name: formName,
@@ -62,10 +52,6 @@ export function Users() {
           role: formRole,
         }),
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: "Registration failed" }));
-        throw new Error(err.detail || `HTTP ${res.status}`);
-      }
       setFormEmail("");
       setFormName("");
       setFormPassword("");
@@ -82,11 +68,7 @@ export function Users() {
   const handleDelete = async (userId: string) => {
     if (!confirm("Are you sure you want to delete this user?")) return;
     try {
-      const res = await fetch(`${API_BASE}/api/auth/users/${userId}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) throw new Error("Failed to delete user");
+      await fetchAPI(`/api/auth/users/${userId}`, { method: "DELETE" });
       fetchUsers();
     } catch (err: any) {
       setError(err.message);
