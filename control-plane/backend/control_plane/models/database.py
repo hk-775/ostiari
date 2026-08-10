@@ -2,7 +2,17 @@
 
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -121,17 +131,37 @@ class McpServer(Base):
 
 class UsageRecord(Base):
     __tablename__ = "usage_records"
+    __table_args__ = (
+        UniqueConstraint(
+            "gateway_id",
+            "event_id",
+            name="uq_usage_records_gateway_event",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     org_id: Mapped[str] = mapped_column(String(64), default=DEFAULT_ORG, index=True, nullable=True)
     gateway_id: Mapped[str] = mapped_column(String(64), ForeignKey("gateways.id"))
+    # Stable gateway-generated identity. Retries of one unconfirmed batch reuse
+    # this value, so usage, pool consumption, and billing are applied once.
+    event_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     agent_id: Mapped[str] = mapped_column(String(128), default="unknown")
     model: Mapped[str] = mapped_column(String(128))
+    # Actual provider that served the model (canonical broker pool name). Older
+    # clients leave this empty and ingestion derives it from the model.
+    provider: Mapped[str] = mapped_column(String(64), default="")
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     total_tokens: Mapped[int] = mapped_column(Integer, default=0)
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
     action: Mapped[str] = mapped_column(String(128), default="")
+    broker_cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    broker_charge_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    billing_status: Mapped[str] = mapped_column(
+        String(20), default="not_applicable"
+    )  # not_applicable | pending | collected | failed
+    billing_ref: Mapped[str] = mapped_column(String(128), default="")
+    billing_error: Mapped[str] = mapped_column(Text, default="")
     timestamp: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

@@ -186,4 +186,13 @@ class PushService:
         # gateway can never be left on a stale shadow setting after a push.
         config["mode"] = (gateway.config or {}).get("mode", "enforce")
 
+        # Token-pool availability is runtime routing state, not operator-authored
+        # gateway config. Add it last so a stale JSON value can never override the
+        # current pool ledger.
+        from control_plane.routers.broker_pilot import pool_snapshot
+
+        config["broker_pools"] = await pool_snapshot(
+            db, gateway.org_id or "default"
+        )
+
         return config

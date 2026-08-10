@@ -106,8 +106,10 @@ class LLMConfigUpdate(BaseModel):
 
 class UsageRecordCreate(BaseModel):
     gateway_id: str
+    event_id: str | None = Field(default=None, max_length=64)
     agent_id: str = "unknown"
     model: str
+    provider: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
@@ -118,13 +120,20 @@ class UsageRecordCreate(BaseModel):
 class UsageRecordResponse(BaseModel):
     id: int
     gateway_id: str
+    event_id: str | None = None
     agent_id: str
     model: str
+    provider: str = ""
     input_tokens: int
     output_tokens: int
     total_tokens: int
     cost_usd: float
     action: str
+    broker_cost_usd: float = 0.0
+    broker_charge_usd: float = 0.0
+    billing_status: str = "not_applicable"
+    billing_ref: str = ""
+    billing_error: str = ""
     timestamp: datetime
 
     model_config = {"from_attributes": True}

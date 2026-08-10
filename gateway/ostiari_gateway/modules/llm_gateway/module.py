@@ -7,6 +7,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
+from ostiari_gateway.modules.llm_gateway.broker_policy import (
+    BrokerPoolDepletedError,
+)
 from ostiari_gateway.modules.llm_gateway.executor import AgenticExecutor
 from ostiari_gateway.modules.llm_gateway.messages_proxy import MessagesProxy
 from ostiari_gateway.modules.llm_gateway.models import InvokeRequest, LLMConfig
@@ -70,9 +73,18 @@ class LLMGatewayModule:
         trace_reporter = context.get("trace_reporter")
         quota_enforcer = context.get("quota_enforcer")
         agent_auth = context.get("agent_auth")
+        broker_policy = context.get("broker_policy")
         llm_config = context.get("llm_config", LLMConfig())
         self._config = llm_config
-        self._executor = AgenticExecutor(config=llm_config, manager=manager, mcp_manager=mcp_manager, trace_reporter=trace_reporter, quota_enforcer=quota_enforcer, agent_auth=agent_auth)
+        self._executor = AgenticExecutor(
+            config=llm_config,
+            manager=manager,
+            mcp_manager=mcp_manager,
+            trace_reporter=trace_reporter,
+            quota_enforcer=quota_enforcer,
+            agent_auth=agent_auth,
+            broker_policy=broker_policy,
+        )
 
         # Claude Code shim: intercept the Anthropic /v1/messages API, govern +
         # route across providers, and stream back. Reuses the executor's router,
@@ -87,6 +99,7 @@ class LLMGatewayModule:
             agent_auth=agent_auth,
             axon=self._executor._axon,
             cost_reporter=self._executor._cost_reporter,
+            broker_policy=broker_policy,
         )
 
         # Codex CLI / OpenAI-SDK shim: /v1/chat/completions in the OpenAI wire
@@ -100,6 +113,7 @@ class LLMGatewayModule:
             trace_reporter=trace_reporter,
             agent_auth=agent_auth,
             cost_reporter=self._executor._cost_reporter,
+            broker_policy=broker_policy,
         )
 
         @app.post("/v1/messages")
@@ -177,6 +191,15 @@ class LLMGatewayModule:
             try:
                 result = await self._executor.invoke(req)
                 return result.model_dump()
+            except BrokerPoolDepletedError as e:
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "blocked": True,
+                        "reason": str(e),
+                        "limit_type": "broker_pool",
+                    },
+                )
             except Exception as e:
                 log.error("Invoke failed: %s", e)
                 return JSONResponse(

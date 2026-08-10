@@ -55,18 +55,22 @@ class AxonResult:
 class AxonRouter:
     """Thin adapter over AxonLLM's GatewayAgent for in-process routed calls."""
 
-    def __init__(self) -> None:
+    def __init__(self, broker_policy: Any = None) -> None:
         self._agent: Any = None
         self._built = False
         self._available = False
         self._error: str = ""
         self._root: str | None = None
         self._disabled = False
+        self._broker_policy = broker_policy
+        self._base_available_providers: frozenset[str] | None = None
+        self._broker_router_id: int | None = None
 
     @property
     def available(self) -> bool:
         """Whether AxonLLM's router could be built (lazy on first use)."""
         self._ensure()
+        self._apply_broker_policy()
         return self._available
 
     @property
@@ -170,11 +174,75 @@ class AxonRouter:
         """
         if not model:
             return False
+        self._ensure()
         try:
             reg = getattr(getattr(self._agent, "router", None), "model_registry", None)
             return bool(reg and model in reg.models)
         except Exception:  # noqa: BLE001
             return False
+
+    def model_available(self, model: str) -> bool:
+        """Whether a known Axon model has at least one non-depleted provider."""
+        self._ensure()
+        self._apply_broker_policy()
+        try:
+            router = getattr(self._agent, "router", None)
+            return bool(router and router.is_model_available(model))
+        except Exception:  # noqa: BLE001
+            return False
+
+    def has_available_models(self) -> bool:
+        """Whether Axon can route any configured model under the pool policy."""
+        self._ensure()
+        self._apply_broker_policy()
+        try:
+            router = getattr(self._agent, "router", None)
+            registry = getattr(router, "model_registry", None)
+            return bool(
+                router
+                and registry
+                and any(router.is_model_available(name) for name in registry.models)
+            )
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _apply_broker_policy(self) -> None:
+        """Intersect Axon's configured providers with funded pool availability."""
+        if not self._available or self._agent is None or self._broker_policy is None:
+            return
+        router = getattr(self._agent, "router", None)
+        registry = getattr(router, "model_registry", None)
+        if router is None or registry is None:
+            return
+
+        router_id = id(router)
+        if self._broker_router_id != router_id:
+            current = getattr(router, "available_providers", None)
+            self._base_available_providers = (
+                frozenset(current) if current is not None else None
+            )
+            self._broker_router_id = router_id
+
+        blocked = self._broker_policy.blocked_providers
+        if not blocked:
+            router.available_providers = self._base_available_providers
+            return
+
+        all_providers = {
+            mapping.provider
+            for model in registry.models.values()
+            for mapping in model.providers
+        }
+        base = (
+            set(self._base_available_providers)
+            if self._base_available_providers is not None
+            else all_providers
+        )
+        router.available_providers = frozenset(
+            provider
+            for provider in base
+            if self._broker_policy.is_provider_available(provider)
+        )
 
     def supports_tools(self) -> bool:
         """Whether AxonLLM can carry tool specs through to the provider.
@@ -233,6 +301,21 @@ class AxonRouter:
         self._ensure()
         if not self._available or self._agent is None:
             raise RuntimeError("AxonLLM router not available")
+        self._apply_broker_policy()
+
+        if self._broker_policy is not None and self._broker_policy.blocked_providers:
+            from ostiari_gateway.modules.llm_gateway.broker_policy import (
+                BrokerPoolDepletedError,
+            )
+
+            if model and self.knows_model(model) and not self.model_available(model):
+                raise BrokerPoolDepletedError(
+                    f"All providers for model '{model}' have depleted token pools"
+                )
+            if (smart or not model or ensemble) and not self.has_available_models():
+                raise BrokerPoolDepletedError(
+                    "All AxonLLM provider routes have depleted token pools"
+                )
 
         if tools and not self.supports_tools():
             raise RuntimeError(
