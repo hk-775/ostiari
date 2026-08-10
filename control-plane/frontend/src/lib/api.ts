@@ -80,6 +80,32 @@ export interface Gateway {
   updated_at: string;
 }
 
+export interface Agent {
+  name: string;
+  framework: string;
+  gateway_id: string;
+  tools: string[];
+  description: string;
+  status: string;
+  model: string;
+}
+
+export interface Quota {
+  id: number;
+  name: string;
+  scope: string;
+  scope_id: string;
+  gateway_id: string;
+  rate_limit_rpm: number | null;
+  budget_limit_usd: number | null;
+  max_tokens_per_request: number | null;
+  allowed_models: string[];
+  allowed_providers: string[];
+  alert_threshold_pct: number;
+  current_spend: number;
+  current_rpm: number;
+}
+
 export interface Tool {
   id: number;
   name: string;
@@ -135,12 +161,45 @@ export const api = {
     pushAll: () => fetchAPI("/api/gateways/push-all", { method: "POST" }),
     health: (id: string) => fetchAPI(`/api/gateways/${id}/health`),
   },
+  agents: {
+    list: () => fetchAPI<Agent[]>("/api/agents"),
+  },
   quotas: {
+    list: (scope?: string) =>
+      fetchAPI<Quota[]>(`/api/quotas${scope ? `?scope=${encodeURIComponent(scope)}` : ""}`),
+    create: (data: Omit<Quota, "id" | "current_spend" | "current_rpm">) =>
+      fetchAPI<Quota>("/api/quotas", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    update: (
+      id: number,
+      data: Partial<Omit<Quota, "id" | "scope" | "scope_id" | "current_spend" | "current_rpm">>,
+    ) =>
+      fetchAPI<Quota>(`/api/quotas/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(data),
+      }),
+    delete: (id: number) =>
+      fetchAPI<{ deleted: number; scope: string; gateway_id: string }>(
+        `/api/quotas/${id}`,
+        { method: "DELETE" },
+      ),
     push: (id: number) =>
-      fetchAPI<{ status: string; gateway?: string; detail?: string }>(
+      fetchAPI<{ status: string; gateway?: string; detail?: string; reason?: string }>(
         `/api/quotas/${id}/push`,
         { method: "POST" },
       ),
+    pushAgents: (gatewayId: string) =>
+      fetchAPI<{
+        status: string;
+        gateway: string;
+        agents: number;
+        detail?: string;
+        reason?: string;
+      }>(`/api/quotas/agents/push?gateway_id=${encodeURIComponent(gatewayId)}`, {
+        method: "POST",
+      }),
   },
   tools: {
     list: (gatewayId?: string) =>

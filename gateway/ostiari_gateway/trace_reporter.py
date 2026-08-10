@@ -154,7 +154,12 @@ class TraceReporter:
             log.debug("Failed to report payment: %s", e)
 
     async def report_budget_alert(
-        self, *, threshold: str, spend_usd: float, budget_usd: float
+        self,
+        *,
+        threshold: str,
+        spend_usd: float,
+        budget_usd: float,
+        agent_id: str = "",
     ) -> None:
         """Report a crossed budget threshold to the control plane.
 
@@ -168,6 +173,7 @@ class TraceReporter:
         try:
             await self._client.post(f"{self._url}/api/quotas/alerts", json={
                 "gateway_id": self._sidecar_id,
+                "agent_id": agent_id,
                 "threshold": threshold,
                 "spend_usd": round(spend_usd, 4),
                 "budget_usd": budget_usd,

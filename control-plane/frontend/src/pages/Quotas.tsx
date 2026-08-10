@@ -18,6 +18,7 @@ interface Quota {
 
 interface BudgetAlert {
   gateway_id: string;
+  agent_id: string;
   threshold: string;
   spend_usd: number;
   budget_usd: number;
@@ -25,7 +26,7 @@ interface BudgetAlert {
 }
 
 async function fetchQuotas(): Promise<Quota[]> {
-  return fetchAPI<Quota[]>("/api/quotas");
+  return fetchAPI<Quota[]>("/api/quotas?scope=gateway");
 }
 
 async function fetchAlerts(): Promise<BudgetAlert[]> {
@@ -35,6 +36,10 @@ async function fetchAlerts(): Promise<BudgetAlert[]> {
 export function Quotas() {
   const queryClient = useQueryClient();
   const { data: quotas = [] } = useQuery({ queryKey: ["quotas"], queryFn: fetchQuotas });
+  const { data: gateways = [] } = useQuery({
+    queryKey: ["gateways"],
+    queryFn: api.gateways.list,
+  });
   // Gateways report threshold crossings as they happen, so poll rather than
   // waiting for a navigation to reveal that a budget blew through 100%.
   const { data: alerts = [] } = useQuery({
@@ -91,13 +96,19 @@ export function Quotas() {
         <form onSubmit={(e) => { e.preventDefault(); createMutation.mutate(form); }} className="card p-6 space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <input placeholder="Quota name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="input" />
-            <select value={form.scope} onChange={(e) => setForm({ ...form, scope: e.target.value })} className="input">
-              <option value="gateway">Per Gateway</option>
-              <option value="agent">Per Agent</option>
-              <option value="project">Per Project</option>
-              <option value="global">Global</option>
+            <select
+              required
+              value={form.scope_id}
+              onChange={(e) => setForm({ ...form, scope_id: e.target.value })}
+              className="input"
+            >
+              <option value="">Select gateway</option>
+              {gateways.map((gateway) => (
+                <option key={gateway.id} value={gateway.id}>
+                  {gateway.name || gateway.id}
+                </option>
+              ))}
             </select>
-            <input placeholder="Scope ID (gateway/agent/project name)" value={form.scope_id} onChange={(e) => setForm({ ...form, scope_id: e.target.value })} className="input" />
             <input placeholder="Rate limit (requests/min)" value={form.rate_limit_rpm} onChange={(e) => setForm({ ...form, rate_limit_rpm: e.target.value })} className="input" />
             <input placeholder="Budget limit (USD)" value={form.budget_limit_usd} onChange={(e) => setForm({ ...form, budget_limit_usd: e.target.value })} className="input" />
             <input placeholder="Max tokens per request" value={form.max_tokens_per_request} onChange={(e) => setForm({ ...form, max_tokens_per_request: e.target.value })} className="input" />
@@ -133,7 +144,9 @@ export function Quotas() {
                       : a.threshold === "90%" ? "bg-orange-50 text-orange-700"
                       : "bg-amber-50 text-amber-700"
                   }`}>{a.threshold || "—"}</span>
-                  <span className="text-sm text-stone-900">{a.gateway_id || "unknown gateway"}</span>
+                  <span className="text-sm text-stone-900">
+                    {a.agent_id ? `${a.agent_id} · ${a.gateway_id}` : a.gateway_id || "unknown gateway"}
+                  </span>
                 </div>
                 <div className="flex items-center gap-4 text-xs text-stone-500">
                   <span>${a.spend_usd.toFixed(4)} / ${a.budget_usd.toFixed(2)}</span>

@@ -1,204 +1,493 @@
 import { useState } from "react";
-import { ShieldCheck, Plus, Trash2, Save, Edit2, X } from "lucide-react";
-import { fetchAPI } from "../lib/api";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  Check,
+  Edit2,
+  LoaderCircle,
+  Plus,
+  Save,
+  ShieldCheck,
+  Trash2,
+  Upload,
+  X,
+} from "lucide-react";
+import { api, type Agent, type Quota } from "../lib/api";
 
-const GATEWAY_PATH = "/api/proxy/gateway/crm-agent";
-
-interface AgentQuota {
+interface QuotaForm {
   agent_id: string;
-  rate_limit_rpm: number | null;
-  budget_limit_usd: number | null;
-  max_tokens_per_request: number | null;
-  allowed_models: string[];
-  allowed_providers: string[];
+  gateway_id: string;
+  rate_limit_rpm: string;
+  budget_limit_usd: string;
+  max_tokens_per_request: string;
+  allowed_models: string;
+  allowed_providers: string;
   alert_threshold_pct: number;
-  spend_usd: number;
 }
 
-const DEFAULT_QUOTAS: AgentQuota[] = [
-  { agent_id: "research-bot", rate_limit_rpm: 30, budget_limit_usd: 5.0, max_tokens_per_request: 2048, allowed_models: ["claude-haiku", "gpt-4o-mini"], allowed_providers: ["anthropic", "openai"], alert_threshold_pct: 90, spend_usd: 1.82 },
-  { agent_id: "ops-bot", rate_limit_rpm: 60, budget_limit_usd: 50.0, max_tokens_per_request: 8192, allowed_models: ["*"], allowed_providers: ["*"], alert_threshold_pct: 80, spend_usd: 12.40 },
-  { agent_id: "devops-bot", rate_limit_rpm: 100, budget_limit_usd: 25.0, max_tokens_per_request: 16384, allowed_models: ["claude-sonnet", "claude-haiku"], allowed_providers: ["anthropic", "bedrock"], alert_threshold_pct: 90, spend_usd: 8.15 },
-  { agent_id: "gov-bot", rate_limit_rpm: 20, budget_limit_usd: 100.0, max_tokens_per_request: 4096, allowed_models: ["*"], allowed_providers: ["bedrock"], alert_threshold_pct: 80, spend_usd: 3.20 },
-  { agent_id: "intern-bot", rate_limit_rpm: 10, budget_limit_usd: 1.0, max_tokens_per_request: 1024, allowed_models: ["claude-haiku", "nova-lite"], allowed_providers: ["bedrock"], alert_threshold_pct: 90, spend_usd: 0.87 },
-  { agent_id: "analytics-bot", rate_limit_rpm: 40, budget_limit_usd: 10.0, max_tokens_per_request: 4096, allowed_models: ["claude-haiku", "gpt-4o-mini", "nova-lite"], allowed_providers: ["anthropic", "openai", "bedrock"], alert_threshold_pct: 90, spend_usd: 4.55 },
-];
+const EMPTY_FORM: QuotaForm = {
+  agent_id: "",
+  gateway_id: "",
+  rate_limit_rpm: "30",
+  budget_limit_usd: "10",
+  max_tokens_per_request: "4096",
+  allowed_models: "*",
+  allowed_providers: "*",
+  alert_threshold_pct: 90,
+};
+
+function optionalInt(value: string): number | null {
+  return value.trim() ? Number.parseInt(value, 10) : null;
+}
+
+function optionalFloat(value: string): number | null {
+  return value.trim() ? Number.parseFloat(value) : null;
+}
+
+function splitList(value: string): string[] {
+  return value.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function quotaToForm(quota: Quota): QuotaForm {
+  return {
+    agent_id: quota.scope_id,
+    gateway_id: quota.gateway_id,
+    rate_limit_rpm: quota.rate_limit_rpm?.toString() ?? "",
+    budget_limit_usd: quota.budget_limit_usd?.toString() ?? "",
+    max_tokens_per_request: quota.max_tokens_per_request?.toString() ?? "",
+    allowed_models: quota.allowed_models.join(", "),
+    allowed_providers: quota.allowed_providers.join(", "),
+    alert_threshold_pct: quota.alert_threshold_pct,
+  };
+}
+
+function agentGateway(agentId: string, agents: Agent[]): string {
+  return agents.find((agent) => agent.name === agentId)?.gateway_id ?? "";
+}
 
 export function AgentQuotas() {
-  const [quotas, setQuotas] = useState<AgentQuota[]>(DEFAULT_QUOTAS);
-  const [editing, setEditing] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const [editingId, setEditingId] = useState<number | null>(null);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState<AgentQuota>({ agent_id: "", rate_limit_rpm: 30, budget_limit_usd: 10, max_tokens_per_request: 4096, allowed_models: [], allowed_providers: [], alert_threshold_pct: 90, spend_usd: 0 });
-  const [saved, setSaved] = useState(false);
-  const [saveError, setSaveError] = useState("");
+  const [form, setForm] = useState<QuotaForm>(EMPTY_FORM);
+  const [statusMessage, setStatusMessage] = useState("");
 
-  const saveAll = async () => {
-    setSaveError("");
-    try {
-      await fetchAPI(`${GATEWAY_PATH}/config/agent-auth`, {
-        method: "POST",
-        body: JSON.stringify({
-          enabled: true,
-          agents: Object.fromEntries(quotas.map(q => [q.agent_id, {
-            allowed_tools: ["*"],
-            allowed_models: q.allowed_models,
-            allowed_providers: q.allowed_providers,
-            budget_usd: q.budget_limit_usd,
-          }])),
-        }),
-      });
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
-    } catch (error) {
-      setSaveError(error instanceof Error ? error.message : "Failed to push quotas");
-    }
-  };
+  const { data: quotas = [], isLoading } = useQuery({
+    queryKey: ["agent-quotas"],
+    queryFn: () => api.quotas.list("agent"),
+    refetchInterval: 15_000,
+  });
+  const { data: agents = [] } = useQuery({
+    queryKey: ["agents"],
+    queryFn: api.agents.list,
+  });
+  const { data: gateways = [] } = useQuery({
+    queryKey: ["gateways"],
+    queryFn: api.gateways.list,
+  });
 
-  const startEdit = (q: AgentQuota) => {
-    setForm({ ...q });
-    setEditing(q.agent_id);
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      const common = {
+        name: `${form.agent_id} limits`,
+        gateway_id: form.gateway_id,
+        rate_limit_rpm: optionalInt(form.rate_limit_rpm),
+        budget_limit_usd: optionalFloat(form.budget_limit_usd),
+        max_tokens_per_request: optionalInt(form.max_tokens_per_request),
+        allowed_models: splitList(form.allowed_models),
+        allowed_providers: splitList(form.allowed_providers),
+        alert_threshold_pct: form.alert_threshold_pct,
+      };
+      let saved: Quota | null = null;
+      try {
+        saved = editingId === null
+          ? await api.quotas.create({
+              ...common,
+              scope: "agent",
+              scope_id: form.agent_id,
+            })
+          : await api.quotas.update(editingId, common);
+        const pushed = await api.quotas.push(saved.id);
+        if (!["pushed", "queued"].includes(pushed.status)) {
+          throw new Error(pushed.detail || pushed.reason || "Gateway rejected agent quotas");
+        }
+        return pushed.status;
+      } catch (error) {
+        // Persistence and delivery are separate operations. If persistence
+        // succeeded, retry must update that record instead of creating a
+        // duplicate after a gateway-side rejection.
+        if (saved) {
+          setEditingId(saved.id);
+          queryClient.invalidateQueries({ queryKey: ["agent-quotas"] });
+          queryClient.invalidateQueries({ queryKey: ["quotas"] });
+        }
+        throw error;
+      }
+    },
+    onSuccess: (status) => {
+      queryClient.invalidateQueries({ queryKey: ["agent-quotas"] });
+      queryClient.invalidateQueries({ queryKey: ["quotas"] });
+      setShowForm(false);
+      setEditingId(null);
+      setStatusMessage(status === "queued" ? "Saved; gateway sync queued" : "Saved and pushed");
+      window.setTimeout(() => setStatusMessage(""), 2500);
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (quota: Quota) => {
+      const result = await api.quotas.delete(quota.id);
+      if (result.gateway_id) {
+        const pushed = await api.quotas.pushAgents(result.gateway_id);
+        if (!["pushed", "queued"].includes(pushed.status)) {
+          throw new Error(pushed.detail || pushed.reason || "Gateway rejected updated agent quotas");
+        }
+      }
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["agent-quotas"] });
+      queryClient.invalidateQueries({ queryKey: ["quotas"] });
+    },
+  });
+
+  const pushAllMutation = useMutation({
+    mutationFn: async () => {
+      const gatewayIds = gateways.map((gateway) => gateway.id);
+      const results = await Promise.all(gatewayIds.map((gatewayId) => api.quotas.pushAgents(gatewayId)));
+      const failed = results.find((result) => !["pushed", "queued"].includes(result.status));
+      if (failed) {
+        throw new Error(failed.detail || failed.reason || `Failed to sync ${failed.gateway}`);
+      }
+      return results.some((result) => result.status === "queued");
+    },
+    onSuccess: (queued) => {
+      setStatusMessage(queued ? "Gateway sync queued" : "All gateways synchronized");
+      window.setTimeout(() => setStatusMessage(""), 2500);
+    },
+  });
+
+  const error = saveMutation.error ?? deleteMutation.error ?? pushAllMutation.error;
+
+  const openNew = () => {
+    const firstAvailable = agents.find(
+      (agent) => !quotas.some(
+        (quota) => quota.scope_id === agent.name && quota.gateway_id === agent.gateway_id,
+      ),
+    );
+    setForm({
+      ...EMPTY_FORM,
+      agent_id: firstAvailable?.name ?? "",
+      gateway_id: firstAvailable?.gateway_id ?? gateways[0]?.id ?? "",
+    });
+    setEditingId(null);
     setShowForm(true);
   };
 
-  const saveForm = () => {
-    if (editing) {
-      setQuotas(prev => prev.map(q => q.agent_id === editing ? { ...form } : q));
-    } else {
-      setQuotas(prev => [...prev, { ...form, spend_usd: 0 }]);
-    }
-    setShowForm(false);
-    setEditing(null);
-  };
-
-  const deleteQuota = (agent_id: string) => {
-    setQuotas(prev => prev.filter(q => q.agent_id !== agent_id));
+  const openEdit = (quota: Quota) => {
+    setForm(quotaToForm(quota));
+    setEditingId(quota.id);
+    setShowForm(true);
   };
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-stone-900">Agent Quotas</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-stone-900">Agent Quotas</h1>
           <p className="mt-1 text-sm text-stone-500">Per-agent rate limits, budgets, and token caps</p>
         </div>
         <div className="flex items-center gap-2">
-          {saveError && <span className="text-xs font-medium text-rose-600">{saveError}</span>}
-          {saved && <span className="text-xs text-emerald-600 font-medium">Saved!</span>}
-          <button onClick={saveAll} className="btn-primary"><Save className="h-4 w-4" /> Push to Gateway</button>
-          <button onClick={() => { setForm({ agent_id: "", rate_limit_rpm: 30, budget_limit_usd: 10, max_tokens_per_request: 4096, allowed_models: [], allowed_providers: [], alert_threshold_pct: 90, spend_usd: 0 }); setEditing(null); setShowForm(true); }} className="btn-primary">
+          {statusMessage && (
+            <span className="flex items-center gap-1 text-xs font-medium text-emerald-700">
+              <Check className="h-3.5 w-3.5" /> {statusMessage}
+            </span>
+          )}
+          <button
+            onClick={() => pushAllMutation.mutate()}
+            disabled={!gateways.length || pushAllMutation.isPending}
+            className="btn-secondary"
+          >
+            {pushAllMutation.isPending
+              ? <LoaderCircle className="h-4 w-4 animate-spin" />
+              : <Upload className="h-4 w-4" />}
+            Push All
+          </button>
+          <button onClick={openNew} className="btn-primary">
             <Plus className="h-4 w-4" /> Add Agent
           </button>
         </div>
       </div>
 
-      {/* Add/Edit Form */}
-      {showForm && (
-        <div className="card p-6 space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-stone-800">{editing ? `Edit: ${editing}` : "Add Agent Quota"}</h3>
-            <button onClick={() => { setShowForm(false); setEditing(null); }} className="text-stone-400 hover:text-stone-600"><X className="h-4 w-4" /></button>
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="text-[10px] font-semibold text-stone-400 uppercase">Agent ID</label>
-              <input value={form.agent_id} onChange={(e) => setForm({ ...form, agent_id: e.target.value })} className="input mt-1" placeholder="e.g., research-bot" disabled={!!editing} />
-            </div>
-            <div>
-              <label className="text-[10px] font-semibold text-stone-400 uppercase">Rate Limit (RPM)</label>
-              <input type="number" value={form.rate_limit_rpm || ""} onChange={(e) => setForm({ ...form, rate_limit_rpm: parseInt(e.target.value) || null })} className="input mt-1" placeholder="60" />
-            </div>
-            <div>
-              <label className="text-[10px] font-semibold text-stone-400 uppercase">Budget ($)</label>
-              <input type="number" step="0.01" value={form.budget_limit_usd || ""} onChange={(e) => setForm({ ...form, budget_limit_usd: parseFloat(e.target.value) || null })} className="input mt-1" placeholder="10.00" />
-            </div>
-            <div>
-              <label className="text-[10px] font-semibold text-stone-400 uppercase">Max Tokens / Request</label>
-              <input type="number" value={form.max_tokens_per_request || ""} onChange={(e) => setForm({ ...form, max_tokens_per_request: parseInt(e.target.value) || null })} className="input mt-1" placeholder="4096" />
-            </div>
-            <div>
-              <label className="text-[10px] font-semibold text-stone-400 uppercase">Alert Threshold (%)</label>
-              <select value={form.alert_threshold_pct} onChange={(e) => setForm({ ...form, alert_threshold_pct: parseInt(e.target.value) })} className="input mt-1">
-                <option value={80}>80%</option>
-                <option value={90}>90%</option>
-                <option value={100}>100% (no warning)</option>
-              </select>
-            </div>
-            <div>
-              <label className="text-[10px] font-semibold text-stone-400 uppercase">Allowed Providers</label>
-              <input value={form.allowed_providers.join(", ")} onChange={(e) => setForm({ ...form, allowed_providers: e.target.value.split(",").map(s => s.trim()).filter(Boolean) })} className="input mt-1" placeholder="* or anthropic, openai, bedrock" />
-            </div>
-            <div className="col-span-2">
-              <label className="text-[10px] font-semibold text-stone-400 uppercase">Allowed Models</label>
-              <input value={form.allowed_models.join(", ")} onChange={(e) => setForm({ ...form, allowed_models: e.target.value.split(",").map(s => s.trim()).filter(Boolean) })} className="input mt-1" placeholder="* or claude-haiku, gpt-4o-mini" />
-            </div>
-          </div>
-          <div className="flex gap-2">
-            <button onClick={saveForm} className="btn-primary">Save</button>
-            <button onClick={() => { setShowForm(false); setEditing(null); }} className="btn-secondary">Cancel</button>
-          </div>
-        </div>
+      {error && (
+        <p className="text-sm font-medium text-rose-600">
+          {error instanceof Error ? error.message : "Agent quota request failed"}
+        </p>
       )}
 
-      {/* Quota cards */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {quotas.map(q => {
-          const budgetPct = q.budget_limit_usd ? Math.min(100, (q.spend_usd / q.budget_limit_usd) * 100) : 0;
-          const barColor = budgetPct >= 90 ? "bg-rose-500" : budgetPct >= 70 ? "bg-amber-500" : "bg-emerald-500";
+      {showForm && (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            saveMutation.mutate();
+          }}
+          className="card space-y-4 p-6"
+        >
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-stone-800">
+              {editingId === null ? "Add Agent Quota" : `Edit ${form.agent_id}`}
+            </h2>
+            <button
+              type="button"
+              onClick={() => setShowForm(false)}
+              title="Close"
+              className="rounded-lg p-1.5 text-stone-400 hover:bg-stone-100 hover:text-stone-700"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
 
-          return (
-            <div key={q.agent_id} className="card p-5 space-y-3">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-semibold text-stone-800">{q.agent_id}</p>
-                <div className="flex items-center gap-1">
-                  <button onClick={() => startEdit(q)} className="rounded-lg p-1.5 text-stone-400 hover:bg-indigo-50 hover:text-indigo-600 transition"><Edit2 className="h-3.5 w-3.5" /></button>
-                  <button onClick={() => deleteQuota(q.agent_id)} className="rounded-lg p-1.5 text-stone-400 hover:bg-rose-50 hover:text-rose-600 transition"><Trash2 className="h-3.5 w-3.5" /></button>
-                </div>
-              </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="text-xs font-medium text-stone-600">
+              Agent
+              <select
+                required
+                disabled={editingId !== null}
+                value={form.agent_id}
+                onChange={(event) => {
+                  const agentId = event.target.value;
+                  setForm({
+                    ...form,
+                    agent_id: agentId,
+                    gateway_id: agentGateway(agentId, agents) || form.gateway_id,
+                  });
+                }}
+                className="input mt-1"
+              >
+                <option value="">Select agent</option>
+                {agents.map((agent) => (
+                  <option
+                    key={agent.name}
+                    value={agent.name}
+                    disabled={quotas.some(
+                      (quota) => quota.id !== editingId
+                        && quota.scope_id === agent.name
+                        && quota.gateway_id === agent.gateway_id,
+                    )}
+                  >
+                    {agent.name}
+                  </option>
+                ))}
+              </select>
+            </label>
 
-              {/* Budget bar */}
-              {q.budget_limit_usd && (
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-[10px] font-semibold text-stone-400 uppercase">Budget</span>
-                    <span className="text-[10px] text-stone-500">${q.spend_usd.toFixed(2)} / ${q.budget_limit_usd.toFixed(2)}</span>
+            <label className="text-xs font-medium text-stone-600">
+              Gateway
+              <select
+                required
+                disabled={editingId !== null}
+                value={form.gateway_id}
+                onChange={(event) => setForm({ ...form, gateway_id: event.target.value })}
+                className="input mt-1"
+              >
+                <option value="">Select gateway</option>
+                {gateways.map((gateway) => (
+                  <option key={gateway.id} value={gateway.id}>{gateway.name || gateway.id}</option>
+                ))}
+              </select>
+            </label>
+
+            <label className="text-xs font-medium text-stone-600">
+              Rate Limit (RPM)
+              <input
+                type="number"
+                min="1"
+                value={form.rate_limit_rpm}
+                onChange={(event) => setForm({ ...form, rate_limit_rpm: event.target.value })}
+                className="input mt-1"
+              />
+            </label>
+
+            <label className="text-xs font-medium text-stone-600">
+              Budget (USD)
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={form.budget_limit_usd}
+                onChange={(event) => setForm({ ...form, budget_limit_usd: event.target.value })}
+                className="input mt-1"
+              />
+            </label>
+
+            <label className="text-xs font-medium text-stone-600">
+              Max Tokens per Request
+              <input
+                type="number"
+                min="1"
+                value={form.max_tokens_per_request}
+                onChange={(event) => setForm({ ...form, max_tokens_per_request: event.target.value })}
+                className="input mt-1"
+              />
+            </label>
+
+            <label className="text-xs font-medium text-stone-600">
+              Alert Threshold
+              <select
+                value={form.alert_threshold_pct}
+                onChange={(event) => setForm({
+                  ...form,
+                  alert_threshold_pct: Number.parseInt(event.target.value, 10),
+                })}
+                className="input mt-1"
+              >
+                <option value={80}>80%</option>
+                <option value={90}>90%</option>
+                <option value={100}>100%</option>
+              </select>
+            </label>
+
+            <label className="text-xs font-medium text-stone-600">
+              Allowed Providers
+              <input
+                value={form.allowed_providers}
+                onChange={(event) => setForm({ ...form, allowed_providers: event.target.value })}
+                className="input mt-1"
+                placeholder="* or anthropic, openai"
+              />
+            </label>
+
+            <label className="text-xs font-medium text-stone-600">
+              Allowed Models
+              <input
+                value={form.allowed_models}
+                onChange={(event) => setForm({ ...form, allowed_models: event.target.value })}
+                className="input mt-1"
+                placeholder="* or claude-haiku, gpt-4o-mini"
+              />
+            </label>
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              disabled={saveMutation.isPending || !form.agent_id || !form.gateway_id}
+              className="btn-primary"
+            >
+              {saveMutation.isPending
+                ? <LoaderCircle className="h-4 w-4 animate-spin" />
+                : <Save className="h-4 w-4" />}
+              Save & Push
+            </button>
+            <button type="button" onClick={() => setShowForm(false)} className="btn-secondary">
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+
+      {isLoading ? (
+        <div className="flex h-40 items-center justify-center text-stone-400">
+          <LoaderCircle className="h-5 w-5 animate-spin" />
+        </div>
+      ) : quotas.length === 0 ? (
+        <div className="flex h-40 items-center justify-center border border-dashed border-stone-300 text-sm text-stone-500">
+          No agent quotas configured
+        </div>
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {quotas.map((quota) => {
+            const budgetPct = quota.budget_limit_usd
+              ? Math.min(100, (quota.current_spend / quota.budget_limit_usd) * 100)
+              : 0;
+            const barColor = budgetPct >= quota.alert_threshold_pct
+              ? "bg-rose-500"
+              : budgetPct >= 70
+                ? "bg-amber-500"
+                : "bg-emerald-500";
+
+            return (
+              <div key={quota.id} className="card space-y-4 p-5">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-teal-50 text-teal-700">
+                      <ShieldCheck className="h-4 w-4" />
+                    </span>
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-stone-900">{quota.scope_id}</p>
+                      <p className="truncate text-xs text-stone-500">{quota.gateway_id}</p>
+                    </div>
                   </div>
-                  <div className="h-2 w-full rounded-full bg-stone-100 overflow-hidden">
-                    <div className={`h-full rounded-full transition-all ${barColor}`} style={{ width: `${budgetPct}%` }} />
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => openEdit(quota)}
+                      title="Edit"
+                      className="rounded-lg p-1.5 text-stone-400 hover:bg-indigo-50 hover:text-indigo-700"
+                    >
+                      <Edit2 className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      onClick={() => deleteMutation.mutate(quota)}
+                      title="Delete"
+                      disabled={deleteMutation.isPending}
+                      className="rounded-lg p-1.5 text-stone-400 hover:bg-rose-50 hover:text-rose-700"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
                   </div>
-                  <p className="text-[10px] text-stone-400 mt-0.5">{budgetPct.toFixed(0)}% used · Alert at {q.alert_threshold_pct}%</p>
                 </div>
-              )}
 
-              {/* Limits */}
-              <div className="grid grid-cols-2 gap-2 text-[10px]">
-                <div className="rounded-lg bg-stone-50 px-2.5 py-1.5">
-                  <span className="text-stone-400">Rate</span>
-                  <p className="font-semibold text-stone-700">{q.rate_limit_rpm || "∞"} RPM</p>
+                {quota.budget_limit_usd !== null && (
+                  <div>
+                    <div className="mb-1 flex items-center justify-between text-[10px] text-stone-500">
+                      <span className="font-semibold uppercase">Budget</span>
+                      <span className="tabular-nums">
+                        ${quota.current_spend.toFixed(4)} / ${quota.budget_limit_usd.toFixed(2)}
+                      </span>
+                    </div>
+                    <div className="h-2 w-full overflow-hidden rounded-full bg-stone-100">
+                      <div className={`h-full ${barColor}`} style={{ width: `${budgetPct}%` }} />
+                    </div>
+                    <p className="mt-1 text-[10px] text-stone-400">
+                      {budgetPct.toFixed(0)}% used · alert at {quota.alert_threshold_pct}%
+                    </p>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="bg-stone-50 px-2.5 py-2 text-xs">
+                    <span className="text-stone-400">Request rate</span>
+                    <p className="font-semibold text-stone-800">
+                      {quota.current_rpm} / {quota.rate_limit_rpm ?? "∞"} RPM
+                    </p>
+                  </div>
+                  <div className="bg-stone-50 px-2.5 py-2 text-xs">
+                    <span className="text-stone-400">Max tokens</span>
+                    <p className="font-semibold text-stone-800">
+                      {quota.max_tokens_per_request?.toLocaleString() ?? "∞"}
+                    </p>
+                  </div>
                 </div>
-                <div className="rounded-lg bg-stone-50 px-2.5 py-1.5">
-                  <span className="text-stone-400">Max Tokens</span>
-                  <p className="font-semibold text-stone-700">{q.max_tokens_per_request?.toLocaleString() || "∞"}</p>
+
+                <div className="space-y-2">
+                  <div className="flex flex-wrap gap-1">
+                    {(quota.allowed_models.length ? quota.allowed_models : ["*"]).slice(0, 4).map((model) => (
+                      <span key={model} className="bg-violet-50 px-2 py-0.5 text-[9px] font-medium text-violet-700">
+                        {model}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {(quota.allowed_providers.length ? quota.allowed_providers : ["*"]).map((provider) => (
+                      <span key={provider} className="bg-sky-50 px-2 py-0.5 text-[9px] font-medium text-sky-700">
+                        {provider}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               </div>
-
-              {/* Models & Providers */}
-              <div className="space-y-1.5">
-                <div className="flex flex-wrap gap-1">
-                  {q.allowed_models.slice(0, 3).map(m => (
-                    <span key={m} className="rounded-full bg-violet-50 text-violet-700 px-2 py-0.5 text-[9px] font-medium">{m}</span>
-                  ))}
-                  {q.allowed_models.length > 3 && <span className="text-[9px] text-stone-400">+{q.allowed_models.length - 3}</span>}
-                </div>
-                <div className="flex flex-wrap gap-1">
-                  {q.allowed_providers.map(p => (
-                    <span key={p} className="rounded-full bg-sky-50 text-sky-700 px-2 py-0.5 text-[9px] font-medium">{p}</span>
-                  ))}
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

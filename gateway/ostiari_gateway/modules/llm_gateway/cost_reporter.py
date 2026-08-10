@@ -52,15 +52,23 @@ class CostReporter:
         total_tokens: int,
         agent_id: str = "unknown",
         action: str = "",
+        cost_usd: float | None = None,
+        record_quota: bool = True,
     ) -> None:
         """Report a single usage record. Buffers and flushes in batches."""
         if not self.enabled:
             return
 
-        # Calculate cost locally using quota enforcer's pricing
-        cost_usd = 0.0
-        if self._quota_enforcer:
-            cost_usd = self._quota_enforcer.calculate_cost(model, input_tokens, output_tokens)
+        # Native /invoke lets this reporter calculate and book cost. The API
+        # shims already settle their own reservations, so they provide the exact
+        # cost and disable the second quota booking while still emitting usage.
+        if cost_usd is None:
+            cost_usd = 0.0
+            if self._quota_enforcer:
+                cost_usd = self._quota_enforcer.calculate_cost(
+                    model, input_tokens, output_tokens
+                )
+        if self._quota_enforcer and record_quota:
             self._quota_enforcer.record_spend(cost_usd)
 
         self._buffer.append({
