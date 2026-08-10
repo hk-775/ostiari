@@ -15,11 +15,12 @@ from fastapi import (
     Request,
     WebSocket,
     WebSocketDisconnect,
+    WebSocketException,
     status,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from control_plane.auth.dependencies import get_current_org
+from control_plane.auth.dependencies import get_current_org, principal_from_token
 from control_plane.database import get_db
 
 log = logging.getLogger("control_plane.traces")
@@ -546,16 +547,24 @@ def _ws_org(websocket: WebSocket) -> str:
     """
     require_auth = os.environ.get("OSTIARI_REQUIRE_AUTH", "").lower() in ("1", "true", "yes", "on")
     if require_auth:
-        from control_plane.auth.service import decode_token
         token = websocket.query_params.get("token", "")
         if not token:
             auth = websocket.headers.get("authorization", "")
             if auth.startswith("Bearer "):
                 token = auth.removeprefix("Bearer ")
+        if not token:
+            raise WebSocketException(
+                code=status.WS_1008_POLICY_VIOLATION,
+                reason="Authentication required",
+            )
         try:
-            return decode_token(token).get("org", DEFAULT_ORG) or DEFAULT_ORG
-        except Exception:  # noqa: BLE001 — invalid token → default org (empty view)
-            return DEFAULT_ORG
+            principal = principal_from_token(token)
+        except Exception:  # noqa: BLE001 — authentication must fail closed
+            raise WebSocketException(
+                code=status.WS_1008_POLICY_VIOLATION,
+                reason="Invalid or expired token",
+            ) from None
+        return principal.tenant_id or DEFAULT_ORG
     return websocket.query_params.get("org", DEFAULT_ORG) or DEFAULT_ORG
 
 
@@ -566,8 +575,8 @@ async def websocket_traces(websocket: WebSocket) -> None:
     Clients connect here to receive real-time tool call events for THEIR org.
     On connect, sends that org's recent history so the UI isn't empty.
     """
-    await websocket.accept()
     org = _ws_org(websocket)
+    await websocket.accept()
     clients = _ws_clients[org]
     clients.add(websocket)
     log.info("Trace viewer connected to org=%s (total: %d)", org, len(clients))

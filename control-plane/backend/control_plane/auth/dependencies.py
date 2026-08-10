@@ -10,6 +10,24 @@ from control_plane.auth.schemas import AuthUser
 from control_plane.auth.service import decode_token
 
 
+def principal_from_token(token: str) -> AuthUser:
+    """Validate a local or OIDC token and return its normalized principal."""
+    validator = oidc.get_validator()
+    if validator is not None:
+        claims = validator.validate(token)
+        return oidc.principal_from_claims(claims)
+
+    payload = decode_token(token)
+    return AuthUser(
+        id=int(payload["sub"]),
+        email=payload["email"],
+        role=payload["role"],
+        subject=str(payload["sub"]),
+        kind="user",
+        tenant_id=payload.get("org", "default"),
+    )
+
+
 async def get_current_user(request: Request) -> AuthUser:
     """Extract and validate a Bearer token, returning the AuthUser principal.
 
@@ -27,34 +45,14 @@ async def get_current_user(request: Request) -> AuthUser:
         )
     token = auth_header.removeprefix("Bearer ")
 
-    validator = oidc.get_validator()
-    if validator is not None:
-        try:
-            claims = validator.validate(token)
-            return oidc.principal_from_claims(claims)
-        except oidc.OIDCError:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid or expired token",
-                headers={"WWW-Authenticate": "Bearer"},
-            ) from None
-
     try:
-        payload = decode_token(token)
-    except JWTError:
+        return principal_from_token(token)
+    except (oidc.OIDCError, JWTError, KeyError, TypeError, ValueError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return AuthUser(
-        id=int(payload["sub"]),
-        email=payload["email"],
-        role=payload["role"],
-        subject=str(payload["sub"]),
-        kind="user",
-        tenant_id=payload.get("org", "default"),
-    )
 
 
 async def get_current_org(request: Request) -> str:

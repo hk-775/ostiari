@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Radio, Pause, Play, Trash2, ChevronDown, ChevronRight } from "lucide-react";
+import { useAuthStore } from "../stores/authStore";
 
 const WS_URL = (import.meta.env.VITE_API_URL || "http://localhost:8400").replace("http", "ws");
 
@@ -57,6 +58,7 @@ function normalizeTrace(t: any): TraceEvent {
 }
 
 export function LiveTraces() {
+  const token = useAuthStore((state) => state.token);
   const [traces, setTraces] = useState<TraceEvent[]>([]);
   const [connected, setConnected] = useState(false);
   const [paused, setPaused] = useState(false);
@@ -68,7 +70,9 @@ export function LiveTraces() {
 
   useEffect(() => {
     const API_BASE = (import.meta.env.VITE_API_URL || "http://localhost:8400");
-    fetch(`${API_BASE}/api/traces/recent`)
+    fetch(`${API_BASE}/api/traces/recent`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
       .then(r => r.json())
       .then(data => {
         if (data.traces && data.traces.length > 0) {
@@ -76,10 +80,11 @@ export function LiveTraces() {
         }
       })
       .catch(() => {});
-  }, []);
+  }, [token]);
 
   useEffect(() => {
-    const ws = new WebSocket(`${WS_URL}/ws/traces`);
+    const query = token ? `?token=${encodeURIComponent(token)}` : "";
+    const ws = new WebSocket(`${WS_URL}/ws/traces${query}`);
     wsRef.current = ws;
 
     ws.onopen = () => setConnected(true);
@@ -104,7 +109,7 @@ export function LiveTraces() {
     };
 
     return () => ws.close();
-  }, [paused]);
+  }, [paused, token]);
 
   useEffect(() => {
     if (scrollRef.current && !paused) {
