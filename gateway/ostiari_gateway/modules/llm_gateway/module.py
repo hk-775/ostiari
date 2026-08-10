@@ -86,6 +86,7 @@ class LLMGatewayModule:
             trace_reporter=trace_reporter,
             agent_auth=agent_auth,
             axon=self._executor._axon,
+            cost_reporter=self._executor._cost_reporter,
         )
 
         # Codex CLI / OpenAI-SDK shim: /v1/chat/completions in the OpenAI wire
@@ -98,6 +99,7 @@ class LLMGatewayModule:
             quota_enforcer=quota_enforcer,
             trace_reporter=trace_reporter,
             agent_auth=agent_auth,
+            cost_reporter=self._executor._cost_reporter,
         )
 
         @app.post("/v1/messages")

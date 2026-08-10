@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
-import { useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Brain, Plus, Trash2, Pencil, X, Wrench, Eye, Server, Shield, Lock, ArrowUp, ArrowDown, Save, Clock } from "lucide-react";
+import { Brain, Plus, Trash2, Pencil, X, Wrench, Eye, Server, ShieldCheck, ArrowUp, ArrowDown, Save, Clock } from "lucide-react";
 import { fetchAPI } from "../lib/api";
 
 interface ProviderMapping {
@@ -24,16 +24,6 @@ interface ModelConfig {
   category: string;
 }
 
-interface AgentAccess {
-  agent: string;
-  models: string[];
-  providers: string[];
-  budget: number;
-  spend: number;
-  alert_threshold: number;
-  note?: string;
-}
-
 interface RoutingRule {
   model: string;
   routing_strategy: string;
@@ -45,54 +35,10 @@ interface BudgetResetConfig {
   next_reset?: string;
 }
 
-const ALL_PROVIDERS = ["anthropic", "openai", "bedrock", "azure", "vertex", "cohere"];
-
 const GATEWAY_PATH = "/api/proxy/gateway/crm-agent";
 
 async function fetchModels(): Promise<ModelConfig[]> {
   return fetchAPI<ModelConfig[]>("/api/models");
-}
-
-async function fetchAgentAccess(): Promise<AgentAccess[]> {
-  try {
-    const data = await fetchAPI<{ enabled: boolean; agents?: Record<string, unknown>[] }>(
-      `${GATEWAY_PATH}/config/agent-auth`,
-    );
-    // The gateway returns { enabled, agents: [{agent_id, allowed_models, ...}] }.
-    // Map it to the page's AgentAccess shape. If disabled/empty, return [] so
-    // the UI falls back to its illustrative defaults.
-    if (!data?.enabled || !Array.isArray(data.agents)) return [];
-    return data.agents.map((a: Record<string, unknown>) => ({
-      agent: (a.agent_id as string) ?? "",
-      models: (a.allowed_models as string[]) ?? ["*"],
-      providers: (a.allowed_providers as string[]) ?? ["*"],
-      budget: (a.budget_usd as number) ?? 0,
-      spend: (a.spend_usd as number) ?? 0,
-      alert_threshold: 90,
-    }));
-  } catch {
-    return [];
-  }
-}
-
-// Persist a per-agent access list to the gateway in its agent-auth schema
-// ({ enabled, agents: { name: { allowed_models, ... } } }). The page holds an
-// AgentAccess[] list; this maps it to what the gateway actually expects.
-async function saveAgentAccess(list: AgentAccess[]): Promise<void> {
-  const agents: Record<string, unknown> = {};
-  for (const a of list) {
-    agents[a.agent] = {
-      allowed_tools: ["*"],
-      allowed_models: a.models,
-      allowed_providers: a.providers,
-      budget_usd: a.budget,
-      description: a.note ?? "",
-    };
-  }
-  await fetchAPI(`${GATEWAY_PATH}/config/agent-auth`, {
-    method: "POST",
-    body: JSON.stringify({ enabled: true, agents }),
-  });
 }
 
 async function fetchBudgetReset(): Promise<BudgetResetConfig> {
@@ -276,7 +222,6 @@ export function Models() {
   const queryClient = useQueryClient();
   const location = useLocation();
   const { data: models = [], isLoading } = useQuery({ queryKey: ["model-config"], queryFn: fetchModels });
-  const { data: agentAccessList = [] } = useQuery({ queryKey: ["agent-access"], queryFn: fetchAgentAccess });
   const { data: budgetResetConfig = { schedule: "manual" as const } } = useQuery({ queryKey: ["budget-reset"], queryFn: fetchBudgetReset });
   const [showForm, setShowForm] = useState(false);
   const [editingModel, setEditingModel] = useState<string | null>(null);
@@ -284,12 +229,6 @@ export function Models() {
   const [modelError, setModelError] = useState("");
 
   useEffect(() => { setShowForm(false); setEditingModel(null); }, [location.key]);
-
-  // Agent access state
-  const [editingAgent, setEditingAgent] = useState<string | null>(null);
-  const [agentForm, setAgentForm] = useState<AgentAccess>({ agent: "", models: [], providers: [], budget: 10, spend: 0, alert_threshold: 90 });
-  const [showAgentForm, setShowAgentForm] = useState(false);
-  const [agentAccessError, setAgentAccessError] = useState("");
 
   // Routing state
   const [routingRules, setRoutingRules] = useState<RoutingRule[]>([]);
@@ -546,247 +485,20 @@ export function Models() {
       )}
 
       {/* Per-Agent Model Access */}
-      <div id="per-agent-access" className="space-y-3 scroll-mt-16">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Shield className="h-5 w-5 text-violet-600" />
-            <h2 className="text-lg font-semibold text-stone-900">Per-Agent Model Access</h2>
-            <span className="badge bg-emerald-50 text-emerald-700 text-xs">Enforcing</span>
+      <div
+        id="per-agent-access"
+        className="flex flex-wrap items-center justify-between gap-3 border-y border-stone-200 py-4 scroll-mt-16"
+      >
+        <div className="flex items-center gap-3">
+          <ShieldCheck className="h-5 w-5 text-violet-700" />
+          <div>
+            <h2 className="text-base font-semibold text-stone-900">Per-Agent Model Access</h2>
+            <p className="text-xs text-stone-500">Managed with each agent's runtime quota.</p>
           </div>
-          <button
-            onClick={() => {
-              setAgentForm({ agent: "", models: [], providers: [], budget: 10, spend: 0, alert_threshold: 90 });
-              setEditingAgent(null);
-              setShowAgentForm(true);
-            }}
-            className="btn-primary"
-          >
-            <Plus className="h-4 w-4" /> Add Agent
-          </button>
         </div>
-        <p className="text-xs text-stone-500">Controls which agents can access which models and providers. Configured via gateway agent-auth.</p>
-        {agentAccessError && <p className="text-xs font-medium text-rose-600">{agentAccessError}</p>}
-
-        {/* Add/Edit Agent Form */}
-        {showAgentForm && (
-          <div className="card p-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-stone-800">{editingAgent ? `Edit: ${editingAgent}` : "Add New Agent Access"}</h3>
-              <button onClick={() => { setShowAgentForm(false); setEditingAgent(null); }} className="text-stone-400 hover:text-stone-600"><X className="h-4 w-4" /></button>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <input
-                placeholder="Agent name (e.g., research-bot)"
-                value={agentForm.agent}
-                onChange={(e) => setAgentForm({ ...agentForm, agent: e.target.value })}
-                className="input"
-                disabled={!!editingAgent}
-              />
-              <input
-                type="number"
-                step="0.01"
-                placeholder="Budget ($)"
-                value={agentForm.budget || ""}
-                onChange={(e) => setAgentForm({ ...agentForm, budget: parseFloat(e.target.value) || 0 })}
-                className="input"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <p className="text-xs font-semibold text-stone-500 uppercase">Alert Threshold</p>
-              <select
-                value={agentForm.alert_threshold}
-                onChange={(e) => setAgentForm({ ...agentForm, alert_threshold: parseInt(e.target.value) })}
-                className="input w-40"
-              >
-                <option value={80}>80%</option>
-                <option value={90}>90%</option>
-                <option value={100}>100%</option>
-              </select>
-            </div>
-
-            <div className="space-y-2">
-              <p className="text-xs font-semibold text-stone-500 uppercase">Allowed Models</p>
-              <div className="flex flex-wrap gap-2">
-                <label className="flex items-center gap-1.5 text-xs text-stone-600">
-                  <input
-                    type="checkbox"
-                    checked={agentForm.models.includes("*")}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        setAgentForm({ ...agentForm, models: ["*"] });
-                      } else {
-                        setAgentForm({ ...agentForm, models: [] });
-                      }
-                    }}
-                    className="rounded"
-                  />
-                  All models (*)
-                </label>
-                {models.map(m => (
-                  <label key={m.name} className="flex items-center gap-1.5 text-xs text-stone-600">
-                    <input
-                      type="checkbox"
-                      checked={agentForm.models.includes(m.name) || agentForm.models.includes("*")}
-                      disabled={agentForm.models.includes("*")}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setAgentForm({ ...agentForm, models: [...agentForm.models, m.name] });
-                        } else {
-                          setAgentForm({ ...agentForm, models: agentForm.models.filter(x => x !== m.name) });
-                        }
-                      }}
-                      className="rounded"
-                    />
-                    {m.name}
-                  </label>
-                ))}
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <p className="text-xs font-semibold text-stone-500 uppercase">Allowed Providers</p>
-              <div className="flex flex-wrap gap-2">
-                <label className="flex items-center gap-1.5 text-xs text-stone-600">
-                  <input
-                    type="checkbox"
-                    checked={agentForm.providers.includes("*")}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        setAgentForm({ ...agentForm, providers: ["*"] });
-                      } else {
-                        setAgentForm({ ...agentForm, providers: [] });
-                      }
-                    }}
-                    className="rounded"
-                  />
-                  All providers (*)
-                </label>
-                {ALL_PROVIDERS.map(p => (
-                  <label key={p} className="flex items-center gap-1.5 text-xs text-stone-600">
-                    <input
-                      type="checkbox"
-                      checked={agentForm.providers.includes(p) || agentForm.providers.includes("*")}
-                      disabled={agentForm.providers.includes("*")}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setAgentForm({ ...agentForm, providers: [...agentForm.providers, p] });
-                        } else {
-                          setAgentForm({ ...agentForm, providers: agentForm.providers.filter(x => x !== p) });
-                        }
-                      }}
-                      className="rounded"
-                    />
-                    {p}
-                  </label>
-                ))}
-              </div>
-            </div>
-
-            <div className="flex gap-2">
-              <button
-                onClick={async () => {
-                  const updatedList = editingAgent
-                    ? agentAccessList.map(a => a.agent === editingAgent ? agentForm : a)
-                    : [...agentAccessList, agentForm];
-                  setAgentAccessError("");
-                  try {
-                    await saveAgentAccess(updatedList);
-                    queryClient.invalidateQueries({ queryKey: ["agent-access"] });
-                    setShowAgentForm(false);
-                    setEditingAgent(null);
-                  } catch (error) {
-                    setAgentAccessError(error instanceof Error ? error.message : "Failed to save agent access");
-                  }
-                }}
-                className="btn-primary"
-              >
-                <Save className="h-4 w-4" /> {editingAgent ? "Save Changes" : "Add Agent"}
-              </button>
-              <button onClick={() => { setShowAgentForm(false); setEditingAgent(null); }} className="btn-secondary">Cancel</button>
-            </div>
-          </div>
-        )}
-
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {(agentAccessList.length > 0 ? agentAccessList : [
-            { agent: "research-bot", models: ["claude-haiku", "gpt-4o-mini"], providers: ["anthropic", "openai"], budget: 5.0, spend: 1.82, alert_threshold: 90 },
-            { agent: "ops-bot", models: ["*"], providers: ["*"], budget: 50.0, spend: 12.40, alert_threshold: 90 },
-            { agent: "devops-bot", models: ["claude-sonnet", "claude-haiku"], providers: ["anthropic", "bedrock"], budget: 25.0, spend: 8.15, alert_threshold: 80 },
-            { agent: "gov-bot", models: ["*"], providers: ["bedrock"], budget: 100.0, spend: 3.20, alert_threshold: 90, note: "AWS only — no data leaves account" },
-            { agent: "intern-bot", models: ["claude-haiku", "nova-lite"], providers: ["bedrock"], budget: 1.0, spend: 0.87, alert_threshold: 80 },
-            { agent: "analytics-bot", models: ["claude-haiku", "gpt-4o-mini", "nova-lite"], providers: ["anthropic", "openai", "bedrock"], budget: 10.0, spend: 4.55, alert_threshold: 90 },
-          ]).map((agent) => {
-            const pct = (agent.spend / agent.budget) * 100;
-            const barColor = pct >= 90 ? "bg-rose-500" : pct >= 70 ? "bg-amber-500" : "bg-emerald-500";
-            return (
-              <div key={agent.agent} className="card p-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <p className="text-sm font-semibold text-stone-800">{agent.agent}</p>
-                  <div className="flex items-center gap-1">
-                    <button
-                      onClick={() => {
-                        setAgentForm({ ...agent, alert_threshold: agent.alert_threshold || 90 });
-                        setEditingAgent(agent.agent);
-                        setShowAgentForm(true);
-                      }}
-                      title="Edit"
-                      className="rounded-lg p-1.5 text-stone-400 hover:bg-indigo-50 hover:text-indigo-600 transition"
-                    >
-                      <Pencil className="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      onClick={async () => {
-                        const updatedList = agentAccessList.filter(a => a.agent !== agent.agent);
-                        setAgentAccessError("");
-                        try {
-                          await saveAgentAccess(updatedList);
-                          queryClient.invalidateQueries({ queryKey: ["agent-access"] });
-                        } catch (error) {
-                          setAgentAccessError(error instanceof Error ? error.message : "Failed to delete agent access");
-                        }
-                      }}
-                      title="Delete"
-                      className="rounded-lg p-1.5 text-stone-400 hover:bg-rose-50 hover:text-rose-600 transition"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                </div>
-                {agent.note && <p className="text-[10px] text-amber-600 font-medium">{agent.note}</p>}
-
-                {/* Budget bar */}
-                <div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] text-stone-400">${agent.spend.toFixed(2)} / ${agent.budget.toFixed(2)}</span>
-                    <span className="text-[10px] text-stone-400">Alert: {agent.alert_threshold || 90}%</span>
-                  </div>
-                  <div className="h-1.5 w-full rounded-full bg-stone-100 overflow-hidden mt-1">
-                    <div className={`h-full rounded-full transition-all ${barColor}`} style={{ width: `${Math.min(100, pct)}%` }} />
-                  </div>
-                  <p className="text-[10px] text-stone-400 mt-0.5">{pct.toFixed(0)}% used · ${(agent.budget - agent.spend).toFixed(2)} remaining</p>
-                </div>
-
-                {/* Models */}
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <Brain className="h-3 w-3 text-stone-400" />
-                  {agent.models.map(m => (
-                    <span key={m} className="rounded-full bg-violet-50 text-violet-700 px-2 py-0.5 text-[10px] font-medium">{m}</span>
-                  ))}
-                </div>
-
-                {/* Providers */}
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <Lock className="h-3 w-3 text-stone-400" />
-                  {agent.providers.map(p => (
-                    <span key={p} className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${PROVIDER_COLORS[p] || "bg-stone-100 text-stone-600"}`}>{p}</span>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-        </div>
+        <Link to="/agent-quotas" className="btn-primary">
+          <ShieldCheck className="h-4 w-4" /> Manage Agent Quotas
+        </Link>
       </div>
 
       {/* LLM Routing Policy */}

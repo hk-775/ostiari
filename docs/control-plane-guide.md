@@ -357,46 +357,45 @@ Metering and the Token Broker to control spend.
 
 **What it is:** rate limits and budget caps. Two granularities:
 
-- **Per gateway** — "this whole gateway may do 1000 calls/min and spend
-  $500/day."
-- **Per agent** — "the payments-agent specifically may spend $50/day."
+- **Per gateway** — "this whole gateway may do 1000 calls/min and spend $500
+  before the next explicit reset."
+- **Per agent** — "the payments-agent specifically may spend $50 before its
+  accounting is reset."
 
 When a quota is hit, the gate returns **429 (too many requests)** and the call is
 refused — the same circuit-breaker mechanism that trips on failures.
 
 **Novice framing:** a quota is a spending/traffic limit, like a prepaid phone
-plan. Run out of minutes → calls stop until the period resets. This protects you
-from a runaway agent looping and burning $10k overnight.
+plan. Run out of minutes → calls stop. This protects you from a runaway agent
+looping and burning $10k overnight.
 
-**Best practice:** set per-agent daily budgets slightly above normal usage so
-they only trip on genuine anomalies. Set a *global* per-gateway cap as a
-backstop. Alerts fire at 80% / 90% / 100% — watch the 80% alerts, they're your
-early warning.
+**Best practice:** choose a per-agent budget for the reset process you actually
+operate, and set a per-gateway cap as a backstop. Agent warning thresholds are
+configurable; gateway alerts remain fixed at 80% / 90% / 100%.
 
 **What to avoid:** setting quotas so tight that normal bursty traffic trips them.
 A quota that cries wolf gets ignored (or raised until it's useless).
 
-**Four things about quotas that the page doesn't tell you:**
+**Four operational details:**
 
-1. **The Push button on this page does not enforce the quota** (§10). Verify with
-   the gateway's `GET /config/quota`.
-2. **"Daily" is your word, not the system's.** There is no billing period and no
-   rollover. Spend accumulates from process start until something calls the
-   gateway's `POST /config/quota/reset-spend`. The *Budget Reset Schedule* control
-   on the Models page stores your choice and no timer reads it — drive the reset
-   from cron if you need one.
-3. **The 80/90/100 thresholds are hardcoded** (`BUDGET_ALERT_THRESHOLDS`) and
-   delivery is in-process: a WARNING log line and any registered callback. There is
-   no webhook and no control-plane alert, so "watch the 80% alerts" means watch the
-   gateway's logs. The per-agent `alert_threshold` field in the UI is not pushed
-   anywhere.
+1. **Agent quotas are control-plane records now.** **Save & Push** persists the
+   record, rebuilds every agent limit for the selected gateway, and sends that
+   complete map to `/config/agent-auth`. Existing tool grants are preserved.
+   Gateway quotas still use their row's Push action and `/config/quota`.
+2. **"Daily" is your word, not the system's.** There is no billing period or
+   automatic rollover. The gateway-level `POST /config/quota/reset-spend`
+   endpoint resets only the gateway counter; there is no scheduled agent-budget
+   reset. The *Budget Reset Schedule* control on the Models page stores your
+   choice and no timer reads it.
+3. **Threshold behavior differs by scope.** Gateway quotas use fixed
+   80/90/100% thresholds. Each agent quota has a configurable warning threshold
+   (plus 100%). Both are reported to `/api/quotas/alerts`; agent alerts retain
+   `agent_id`.
 4. **The control-plane quota store is a per-org dict, not a table.** Quotas aren't
    in the database; they're held in memory and serialized to `state.json` on clean
-   shutdown, so they survive a graceful restart but are lost on a `kill -9`. The
-   `current_spend` shown is a **snapshot** — seeded once from the metered usage
-   rows and never recomputed as traffic flows — and `current_rpm` is always 0
-   because nothing updates it. The live figures are on the gateway's
-   `GET /config/quota`.
+   shutdown, so they survive a graceful restart but are lost on a `kill -9`.
+   Displayed spend and trailing-minute RPM are recomputed from `usage_records`;
+   all three LLM entry points report usage.
 
 ### 5.4 Protocol Governance — agent↔agent (`/protocol-governance`)
 
@@ -934,7 +933,7 @@ A recurring source of confusion, made explicit:
 new value, but the gateway is still enforcing the old one until you push. If a
 change "isn't taking effect," check that you pushed.
 
-### The push has a hole in it — check the gate, not the dashboard
+### Partial pushes still have a hole — use the gate-specific route
 
 Two of those bullets are truer of the *registration/heartbeat* path than of the
 Push button, because they arrive by different routes:
@@ -942,10 +941,10 @@ Push button, because they arrive by different routes:
 - **Gateway registration and heartbeat** deliver a bundle that the gateway applies
   **key by key**, configuring each gate explicitly. Everything in the list above
   really does hot-reload this way.
-- **The Push button** posts to the gateway's `POST /config`, which replaces the
-  whole config document and applies **only tools and policy**. A quota or
-  agent-auth block in that body is stored and echoed back by `GET /config`, but
-  never handed to the enforcer.
+- **Generic `push-config` callers** post to the gateway's `POST /config`, which
+  replaces the whole config document and applies **only tools and policy**.
+- **Quota pages** use `/config/quota` and `/config/agent-auth`, so their limits
+  reach the runtime enforcers directly.
 
 Concretely, today:
 
@@ -953,13 +952,12 @@ Concretely, today:
 |---|---|
 | **Gateways** (Push / Push All) | Tools + policy applied. Fine. |
 | **Policies** | Policy applied — but the gateway's registered **tools are cleared** and `mode` resets to `enforce`, un-shadowing a shadow gateway. |
-| **Quotas** | **The quota is not enforced.** It's stored, the dashboard shows it, `GET /config` echoes it, and the enforcer still has no limit. Tools are cleared too. |
-| **Agent Quotas**, **Models** (per-agent access) | Applied — these call the gateway's `/config/agent-auth` gate endpoint directly. |
+| **Quotas** | Applied through `POST /api/quotas/{id}/push` → `/config/quota`. |
+| **Agent Quotas** | Save & Push rebuilds the complete gateway map and applies it through `/config/agent-auth`; Push All also clears deleted limits. |
 
 So: after pushing a quota, **verify against the gateway's `GET /config/quota`**,
-not the dashboard and not `GET /config`. If `rate_limit_rpm` is `null` there, the
-quota is not in force regardless of what the UI shows. The working route is the API
-endpoint `POST /api/quotas/{id}/push`, which nothing in the UI calls.
+not the dashboard and not `GET /config`. Verify agent limits with
+`GET /config/agent-auth`. The pages call the working gate-specific routes.
 
 Mechanism and reproduction in
 [gateway-architecture.md](gateway-architecture.md#the-config-partial-push-trap).
@@ -1061,7 +1059,7 @@ For a real deployment, in order:
 3. Start every gateway in **shadow** mode.
 4. Write **policies** (deny-by-default for destructive; explicit allow for safe;
    `risk_adjust` for grey areas). Test patterns in the **Sandbox**.
-5. Set **quotas** (per-agent daily budgets a bit above normal; a global backstop).
+5. Set **quotas** (per-agent budgets aligned to your reset process; a gateway backstop).
 6. For agent-to-agent systems, set the **delegation matrix** deny-by-default and
    a `max_chain_depth`.
 7. If you want content controls, enable detection with `injection_mode: flag`

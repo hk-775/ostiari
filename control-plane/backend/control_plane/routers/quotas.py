@@ -3,14 +3,21 @@
 import logging
 import time
 from collections import defaultdict, deque
+from copy import deepcopy
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
+from control_plane.models.database import Gateway, UsageRecord
+from control_plane.models.scoping import get_scoped, scoped
 from control_plane.services.audit_service import actor_of, audit
+from control_plane.services.push_service import gateway_config_headers
 
 log = logging.getLogger("control_plane.quotas")
 
@@ -21,10 +28,13 @@ class QuotaCreate(BaseModel):
     name: str
     scope: str = "gateway"
     scope_id: str = ""
-    rate_limit_rpm: int | None = None
-    budget_limit_usd: float | None = None
-    max_tokens_per_request: int | None = None
+    gateway_id: str = ""
+    rate_limit_rpm: int | None = Field(default=None, gt=0)
+    budget_limit_usd: float | None = Field(default=None, ge=0)
+    max_tokens_per_request: int | None = Field(default=None, gt=0)
     allowed_models: list[str] = Field(default_factory=list)
+    allowed_providers: list[str] = Field(default_factory=list)
+    alert_threshold_pct: int = Field(default=90, ge=1, le=100)
 
 
 class QuotaUpdate(BaseModel):
@@ -39,10 +49,13 @@ class QuotaUpdate(BaseModel):
     """
 
     name: str | None = None
-    rate_limit_rpm: int | None = None
-    budget_limit_usd: float | None = None
-    max_tokens_per_request: int | None = None
+    gateway_id: str | None = None
+    rate_limit_rpm: int | None = Field(default=None, gt=0)
+    budget_limit_usd: float | None = Field(default=None, ge=0)
+    max_tokens_per_request: int | None = Field(default=None, gt=0)
     allowed_models: list[str] | None = None
+    allowed_providers: list[str] | None = None
+    alert_threshold_pct: int | None = Field(default=None, ge=1, le=100)
 
 
 class QuotaResponse(BaseModel):
@@ -50,10 +63,13 @@ class QuotaResponse(BaseModel):
     name: str
     scope: str
     scope_id: str
+    gateway_id: str = ""
     rate_limit_rpm: int | None
     budget_limit_usd: float | None
     max_tokens_per_request: int | None
     allowed_models: list[str]
+    allowed_providers: list[str] = Field(default_factory=list)
+    alert_threshold_pct: int = 90
     current_spend: float
     current_rpm: int
 
@@ -62,6 +78,7 @@ class BudgetAlert(BaseModel):
     """A budget threshold crossing reported by a gateway."""
 
     gateway_id: str = ""
+    agent_id: str = ""
     threshold: str = ""
     spend_usd: float = 0.0
     budget_usd: float = 0.0
@@ -81,9 +98,105 @@ ALERT_HISTORY = 200
 _alerts: dict[str, deque[BudgetAlert]] = defaultdict(lambda: deque(maxlen=ALERT_HISTORY))
 
 
+def _agent_gateway(quota: QuotaResponse, org: str) -> str:
+    """Resolve an agent quota's gateway without making registration mandatory."""
+    if quota.gateway_id:
+        return quota.gateway_id
+    from control_plane.routers.agents import _agents
+
+    agent = _agents[org].get(quota.scope_id)
+    return agent.gateway_id if agent else ""
+
+
+async def _usage_metrics(
+    db: AsyncSession, org: str
+) -> tuple[dict[str, tuple[float, int]], dict[tuple[str, str], tuple[float, int]]]:
+    """Aggregate actual spend and trailing-minute request volume."""
+    since = datetime.now(timezone.utc) - timedelta(minutes=1)
+    spend_rows = (await db.execute(
+        scoped(
+            select(
+                UsageRecord.gateway_id,
+                UsageRecord.agent_id,
+                func.sum(UsageRecord.cost_usd),
+            ).group_by(UsageRecord.gateway_id, UsageRecord.agent_id),
+            UsageRecord,
+            org,
+        )
+    )).all()
+    rpm_rows = (await db.execute(
+        scoped(
+            select(
+                UsageRecord.gateway_id,
+                UsageRecord.agent_id,
+                func.count(UsageRecord.id),
+            ).where(UsageRecord.timestamp >= since)
+            .group_by(UsageRecord.gateway_id, UsageRecord.agent_id),
+            UsageRecord,
+            org,
+        )
+    )).all()
+
+    agent_metrics: dict[tuple[str, str], tuple[float, int]] = {}
+    gateway_metrics: dict[str, tuple[float, int]] = {}
+    rpm_by_agent = {(gateway, agent): int(count) for gateway, agent, count in rpm_rows}
+    for gateway, agent, spend in spend_rows:
+        key = (gateway, agent)
+        cost = float(spend or 0.0)
+        rpm = rpm_by_agent.get(key, 0)
+        agent_metrics[key] = (cost, rpm)
+        gateway_cost, gateway_rpm = gateway_metrics.get(gateway, (0.0, 0))
+        gateway_metrics[gateway] = (gateway_cost + cost, gateway_rpm + rpm)
+
+    # A recent request with zero cost still counts toward RPM.
+    for key, rpm in rpm_by_agent.items():
+        if key not in agent_metrics:
+            agent_metrics[key] = (0.0, rpm)
+        gateway, _agent = key
+        if gateway not in gateway_metrics:
+            gateway_metrics[gateway] = (0.0, rpm)
+    return gateway_metrics, agent_metrics
+
+
+async def _with_actual_metrics(
+    quotas: list[QuotaResponse], db: AsyncSession, org: str
+) -> list[QuotaResponse]:
+    gateway_metrics, agent_metrics = await _usage_metrics(db, org)
+    out: list[QuotaResponse] = []
+    for quota in quotas:
+        if quota.scope == "gateway":
+            spend, rpm = gateway_metrics.get(quota.scope_id, (0.0, 0))
+        elif quota.scope == "agent":
+            gateway_id = _agent_gateway(quota, org)
+            if gateway_id:
+                spend, rpm = agent_metrics.get((gateway_id, quota.scope_id), (0.0, 0))
+            else:
+                matching = [
+                    values for (gateway, agent), values in agent_metrics.items()
+                    if agent == quota.scope_id
+                ]
+                spend = sum(values[0] for values in matching)
+                rpm = sum(values[1] for values in matching)
+        else:
+            spend, rpm = quota.current_spend, quota.current_rpm
+        out.append(quota.model_copy(update={
+            "gateway_id": _agent_gateway(quota, org) if quota.scope == "agent" else quota.gateway_id,
+            "current_spend": round(spend, 6),
+            "current_rpm": rpm,
+        }))
+    return out
+
+
 @router.get("", response_model=list[QuotaResponse])
-async def list_quotas(org: str = Depends(get_current_org)):
-    return list(_quotas[org].values())
+async def list_quotas(
+    scope: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+):
+    quotas = list(_quotas[org].values())
+    if scope:
+        quotas = [quota for quota in quotas if quota.scope == scope]
+    return await _with_actual_metrics(quotas, db, org)
 
 
 @router.post("", response_model=QuotaResponse)
@@ -93,15 +206,44 @@ async def create_quota(
     db: AsyncSession = Depends(get_db),
     org: str = Depends(get_current_org),
 ):
+    gateway_id = body.gateway_id
+    if body.scope == "agent":
+        from control_plane.routers.agents import _agents
+
+        gateway_id = gateway_id or (
+            _agents[org].get(body.scope_id).gateway_id
+            if _agents[org].get(body.scope_id)
+            else ""
+        )
+        if not body.scope_id or not gateway_id:
+            raise HTTPException(
+                status_code=422,
+                detail="Agent quotas require an agent scope_id and gateway_id",
+            )
+        duplicate = next((
+            quota for quota in _quotas[org].values()
+            if quota.scope == "agent"
+            and quota.scope_id == body.scope_id
+            and _agent_gateway(quota, org) == gateway_id
+        ), None)
+        if duplicate:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Agent quota already exists for '{body.scope_id}' on '{gateway_id}'",
+            )
+
     quota = QuotaResponse(
         id=_next_id[org],
         name=body.name,
         scope=body.scope,
         scope_id=body.scope_id,
+        gateway_id=gateway_id,
         rate_limit_rpm=body.rate_limit_rpm,
         budget_limit_usd=body.budget_limit_usd,
         max_tokens_per_request=body.max_tokens_per_request,
         allowed_models=body.allowed_models,
+        allowed_providers=body.allowed_providers,
+        alert_threshold_pct=body.alert_threshold_pct,
         current_spend=0.0,
         current_rpm=0,
     )
@@ -115,6 +257,9 @@ async def create_quota(
         "budget_limit_usd": quota.budget_limit_usd,
         "max_tokens_per_request": quota.max_tokens_per_request,
         "allowed_models": quota.allowed_models,
+        "allowed_providers": quota.allowed_providers,
+        "alert_threshold_pct": quota.alert_threshold_pct,
+        "gateway_id": quota.gateway_id,
     }, org=org)
     await db.commit()
     return quota
@@ -158,6 +303,130 @@ async def clear_budget_alerts(org: str = Depends(get_current_org)):
     return {"cleared": count}
 
 
+async def _push_agent_quotas(
+    gateway_id: str,
+    request: Request,
+    db: AsyncSession,
+    org: str,
+) -> dict[str, Any]:
+    """Persist and deliver the complete per-agent quota map for one gateway."""
+    import httpx
+
+    gateway = await get_scoped(db, Gateway, gateway_id, org)
+    if not gateway:
+        raise HTTPException(status_code=404, detail=f"Gateway '{gateway_id}' not found")
+
+    quotas = [
+        quota for quota in _quotas[org].values()
+        if quota.scope == "agent" and _agent_gateway(quota, org) == gateway_id
+    ]
+    measured = {
+        quota.id: quota
+        for quota in await _with_actual_metrics(quotas, db, org)
+    }
+    gateway_config = gateway.config or {}
+    stored_spend = gateway_config.get("agent_spend", {})
+    # Agent authorization also carries tool grants. Preserve the policy that
+    # existed before quotas began managing runtime limits and layer quota fields
+    # over it; otherwise changing a budget could silently widen allowed_tools to
+    # "*" or delete unrelated agents.
+    base_auth = deepcopy(
+        gateway_config.get("agent_auth_base", gateway_config.get("agent_auth", {}))
+    )
+    base_agents = base_auth.get("agents", {})
+    agents: dict[str, dict[str, Any]] = (
+        deepcopy(base_agents) if isinstance(base_agents, dict) else {}
+    )
+    for quota in quotas:
+        actual = measured[quota.id]
+        base_agent = agents.get(quota.scope_id, {})
+        agents[quota.scope_id] = {
+            **base_agent,
+            "allowed_tools": base_agent.get(
+                "allowed_tools", base_auth.get("default_grants", [])
+            ),
+            "allowed_models": quota.allowed_models or ["*"],
+            "allowed_providers": quota.allowed_providers or ["*"],
+            "budget_usd": quota.budget_limit_usd,
+            "spend_usd": max(
+                actual.current_spend,
+                float(stored_spend.get(quota.scope_id, 0.0) or 0.0),
+            ),
+            "rate_limit_rpm": quota.rate_limit_rpm,
+            "max_tokens_per_request": quota.max_tokens_per_request,
+            "alert_threshold_pct": quota.alert_threshold_pct,
+            "description": quota.name,
+        }
+
+    payload = {
+        "enabled": bool(base_auth.get("enabled", False)),
+        "quota_enabled": bool(quotas) or bool(
+            base_auth.get("quota_enabled", base_auth.get("enabled", False))
+        ),
+        "default_grants": base_auth.get("default_grants", []),
+        "default_models": base_auth.get("default_models", ["*"]),
+        "default_providers": base_auth.get("default_providers", ["*"]),
+        "agents": agents,
+    }
+    gateway.config = {
+        **gateway_config,
+        "agent_auth_base": base_auth,
+        "agent_auth": payload,
+    }
+    await audit.log(
+        db,
+        actor_of(request),
+        "push",
+        "agent_quotas",
+        gateway_id,
+        {"gateway_id": gateway_id, "agents": sorted(agents)},
+        org=org,
+    )
+    await db.commit()
+
+    async with httpx.AsyncClient(
+        timeout=10.0, headers=gateway_config_headers()
+    ) as client:
+        try:
+            response = await client.post(
+                f"{gateway.endpoint}/config/agent-auth", json=payload
+            )
+        except (httpx.ConnectError, httpx.TimeoutException):
+            return {
+                "status": "queued",
+                "gateway": gateway_id,
+                "agents": len(agents),
+                "reason": "gateway_offline",
+            }
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    if response.status_code == 200:
+        return {
+            "status": "pushed",
+            "gateway": gateway_id,
+            "agents": len(agents),
+            "agent_auth": response.json(),
+        }
+    return {
+        "status": "error",
+        "gateway": gateway_id,
+        "agents": len(agents),
+        "detail": response.text[:200],
+    }
+
+
+@router.post("/agents/push")
+async def push_agent_quotas(
+    gateway_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+):
+    """Push every persisted agent quota assigned to a gateway."""
+    return await _push_agent_quotas(gateway_id, request, db, org)
+
+
 @router.put("/{quota_id}", response_model=QuotaResponse)
 async def update_quota(
     quota_id: int,
@@ -186,7 +455,32 @@ async def update_quota(
     changes = body.model_dump(exclude_unset=True)
     if not changes:
         return quota
+    if (
+        quota.scope == "agent"
+        and "gateway_id" in changes
+        and changes["gateway_id"] != quota.gateway_id
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Move an agent quota by deleting and recreating it on the new gateway",
+        )
     updated = quota.model_copy(update=changes)
+    if updated.scope == "agent" and not _agent_gateway(updated, org):
+        raise HTTPException(status_code=422, detail="Agent quotas require a gateway_id")
+    if updated.scope == "agent":
+        duplicate = next((
+            other for other in _quotas[org].values()
+            if other.id != quota_id
+            and other.scope == "agent"
+            and other.scope_id == updated.scope_id
+            and _agent_gateway(other, org) == _agent_gateway(updated, org)
+        ), None)
+        if duplicate:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Agent quota already exists for '{updated.scope_id}' on "
+                       f"'{_agent_gateway(updated, org)}'",
+            )
     _quotas[org][quota_id] = updated
 
     # Audited for the same reason create and delete are: these are spend and rate
@@ -210,9 +504,17 @@ async def delete_quota(
         raise HTTPException(status_code=404, detail="Quota not found")
     del _quotas[org][quota_id]
     await audit.log(db, actor_of(request), "delete", "quota", str(quota_id),
-                    {"name": quota.name, "scope_id": quota.scope_id}, org=org)
+                    {
+                        "name": quota.name,
+                        "scope_id": quota.scope_id,
+                        "gateway_id": _agent_gateway(quota, org),
+                    }, org=org)
     await db.commit()
-    return {"deleted": quota_id}
+    return {
+        "deleted": quota_id,
+        "scope": quota.scope,
+        "gateway_id": _agent_gateway(quota, org),
+    }
 
 
 @router.post("/{quota_id}/push")
@@ -228,14 +530,15 @@ async def push_quota(
     quota = _quotas[org].get(quota_id)
     if not quota:
         raise HTTPException(status_code=404, detail="Quota not found")
+    if quota.scope == "agent":
+        gateway_id = _agent_gateway(quota, org)
+        if not gateway_id:
+            raise HTTPException(status_code=422, detail="Agent quota has no gateway")
+        return await _push_agent_quotas(gateway_id, request, db, org)
     if quota.scope != "gateway" or not quota.scope_id:
-        return {"status": "skipped", "reason": "Only gateway-scoped quotas can be pushed directly"}
+        return {"status": "skipped", "reason": "Quota scope cannot be pushed directly"}
 
     # Get gateway endpoint from the database
-    from control_plane.models.database import Gateway
-    from control_plane.models.scoping import get_scoped
-    from control_plane.services.push_service import gateway_config_headers
-
     gateway = await get_scoped(db, Gateway, quota.scope_id, org)
     if not gateway:
         raise HTTPException(status_code=404, detail=f"Gateway '{quota.scope_id}' not found")
@@ -279,4 +582,4 @@ async def push_quota(
                 return {"status": "pushed", "gateway": quota.scope_id, "quota": resp.json()}
             return {"status": "error", "detail": resp.text[:200]}
         except Exception as e:
-            raise HTTPException(status_code=502, detail=str(e))
+            raise HTTPException(status_code=502, detail=str(e)) from e

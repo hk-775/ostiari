@@ -78,6 +78,7 @@ class MessagesProxy:
         trace_reporter: Any = None,
         agent_auth: Any = None,
         axon: Any = None,
+        cost_reporter: Any = None,
     ) -> None:
         self._config = config
         self._provider = provider          # llm_gateway LLMProvider (holds creds + SDK calls)
@@ -87,6 +88,7 @@ class MessagesProxy:
         self._trace = trace_reporter
         self._agent_auth = agent_auth
         self._axon = axon                  # AxonLLM router (single routing authority)
+        self._cost_reporter = cost_reporter
 
     # ── credentials / endpoints ──────────────────────────────────────────
     def _anthropic_key(self) -> str:
@@ -118,22 +120,35 @@ class MessagesProxy:
         # Flatten content once for detection + routing (never mutates the body).
         flat = self._flatten(body.get("system"), body.get("messages", []))
 
-        # ── Gate 1: agent authorization (endpoint + model/provider/budget) ──
+        # ── Gate 1: agent authorization (endpoint + model/provider/quota) ──
+        agent_reservation_id: int | None = None
         if self._agent_auth:
             allowed, reason = self._agent_auth.check(agent_id, "/v1/messages")
             if not allowed:
                 await self._report(agent_id, framework, session_id, requested_model,
                                     tier="block", reason=reason, limit_type="agent_authorization")
                 return _err(403, "permission_error", reason or "Agent not authorized")
-            # Enforce per-agent model/provider grants + budget on the requested
-            # model (the agent explicitly asked for it). Without this, an agent
-            # restricted to one model/provider or a $ cap could use any.
-            allowed, reason = self._agent_auth.authorize_llm(
-                agent_id, requested_model, _provider_of(requested_model))
-            if not allowed:
+            estimated_cost = 0.0
+            if self._quota is not None:
+                try:
+                    estimated_cost = self._quota.estimate_cost(requested_model)
+                except Exception as e:  # noqa: BLE001
+                    log.debug("Agent cost estimate failed: %s", e)
+            agent_decision = self._agent_auth.check_llm(
+                agent_id,
+                requested_model,
+                _provider_of(requested_model),
+                estimated_cost=estimated_cost,
+                reserve=True,
+            )
+            if not agent_decision.allowed:
                 await self._report(agent_id, framework, session_id, requested_model,
-                                    tier="block", reason=reason, limit_type="agent_authorization")
-                return _err(403, "permission_error", reason)
+                                    tier="block", reason=agent_decision.reason,
+                                    limit_type=f"agent_{agent_decision.limit_type}")
+                status = 429 if agent_decision.limit_type in {"rate_limit", "budget"} else 403
+                error_type = "rate_limit_error" if status == 429 else "permission_error"
+                return _err(status, error_type, agent_decision.reason)
+            agent_reservation_id = agent_decision.reservation_id
 
         # ── Gate 2: security (injection detection + PII) — FAIL-CLOSED ───
         # Runs over the flattened text view. If an enabled control is
@@ -147,7 +162,8 @@ class MessagesProxy:
                 reason = meta.get("block_reason") or "PII detected in prompt"
                 limit_type = "prompt_injection" if meta.get("injection_detected") else "pii"
                 await self._report(agent_id, framework, session_id, requested_model,
-                                    tier="block", reason=reason, limit_type=limit_type)
+                                    tier="block", reason=reason, limit_type=limit_type,
+                                    agent_reservation_id=agent_reservation_id)
                 return _err(403, "permission_error", f"Request blocked by Ostiari: {reason}")
 
         # ── Ostiari-side quota gate (pre-call budget guard) ──────────────
@@ -161,12 +177,24 @@ class MessagesProxy:
                                              reserve=True)
                 if not decision.allowed:
                     await self._report(agent_id, framework, session_id, requested_model,
-                                        tier="block", reason=decision.reason, limit_type="quota")
+                                        tier="block", reason=decision.reason, limit_type="quota",
+                                        agent_reservation_id=agent_reservation_id)
                     return _err(429, "rate_limit_error", f"Request blocked by quota: {decision.reason}")
                 reservation_id = decision.reservation_id
                 self._quota.record_request()
             except Exception as e:  # noqa: BLE001
                 log.debug("Quota check failed: %s", e)
+
+        requested_max_tokens = int(
+            body.get("max_tokens", getattr(self._config, "max_tokens", 4096))
+        )
+        if self._quota is not None:
+            requested_max_tokens = self._quota.cap_max_tokens(requested_max_tokens)
+        if self._agent_auth is not None:
+            requested_max_tokens = self._agent_auth.cap_max_tokens(
+                agent_id, requested_max_tokens
+            )
+        body = {**body, "max_tokens": requested_max_tokens}
 
         # ── Dispatch: AxonLLM is the routing authority when available ────
         # It selects the model + provider, enforces model access, tracks cost,
@@ -181,7 +209,8 @@ class MessagesProxy:
         if (self._axon is not None and self._axon.available
                 and not (_wants_tools and not self._axon.supports_tools())):
             return await self._forward_axon(request, body, requested_model, agent_id,
-                                            session_id, framework, streaming, reservation_id)
+                                            session_id, framework, streaming, reservation_id,
+                                            agent_reservation_id)
         if _wants_tools and self._axon is not None and self._axon.available:
             log.warning("AxonLLM predates tool pass-through — using the direct provider "
                         "path for %d tool(s); routing governance and cost tracking are "
@@ -193,7 +222,8 @@ class MessagesProxy:
         routed = model != requested_model
         provider = _provider_of(model)
         meta = {"agent_id": agent_id, "framework": framework, "session_id": session_id,
-                "model": model, "routed": routed, "reservation_id": reservation_id}
+                "model": model, "routed": routed, "reservation_id": reservation_id,
+                "agent_reservation_id": agent_reservation_id}
         if provider == "anthropic":
             return await self._forward_anthropic(request, body, model, streaming, meta)
         return await self._forward_translated(body, model, provider, streaming, meta)
@@ -230,6 +260,17 @@ class MessagesProxy:
     ) -> Any:
         key = self._anthropic_key()
         if not key:
+            await self._report(
+                meta["agent_id"],
+                meta["framework"],
+                meta["session_id"],
+                model,
+                tier="block",
+                reason="missing Anthropic credential",
+                limit_type="provider",
+                reservation_id=meta.get("reservation_id"),
+                agent_reservation_id=meta.get("agent_reservation_id"),
+            )
             return _err(500, "api_error",
                         "Ostiari has no Anthropic credential (config.credentials.anthropic or "
                         "ANTHROPIC_API_KEY).")
@@ -248,6 +289,12 @@ class MessagesProxy:
                 try:
                     resp = await client.post(url, headers=headers, json=body)
                 except Exception as e:  # noqa: BLE001
+                    await self._report(
+                        meta["agent_id"], meta["framework"], meta["session_id"], model,
+                        tier="block", reason=f"upstream error: {e}", limit_type="provider",
+                        reservation_id=meta.get("reservation_id"),
+                        agent_reservation_id=meta.get("agent_reservation_id"),
+                    )
                     return _err(502, "api_error", f"Upstream call failed: {e}")
             payload = resp.json() if resp.content else {}
             await self._report(meta["agent_id"], meta["framework"], meta["session_id"], model,
@@ -255,7 +302,8 @@ class MessagesProxy:
                                 usage=payload.get("usage", {}) if isinstance(payload, dict) else {},
                                 routed=meta["routed"],
                                 reason=None if resp.status_code == 200 else "upstream error",
-                                reservation_id=meta.get("reservation_id"))
+                                reservation_id=meta.get("reservation_id"),
+                                agent_reservation_id=meta.get("agent_reservation_id"))
             return JSONResponse(status_code=resp.status_code, content=payload)
 
         # streaming: relay raw SSE bytes untouched, scrape usage from the tail
@@ -265,6 +313,12 @@ class MessagesProxy:
             resp = await cm.__aenter__()
         except Exception as e:  # noqa: BLE001
             await client.aclose()
+            await self._report(
+                meta["agent_id"], meta["framework"], meta["session_id"], model,
+                tier="block", reason=f"upstream error: {e}", limit_type="provider",
+                reservation_id=meta.get("reservation_id"),
+                agent_reservation_id=meta.get("agent_reservation_id"),
+            )
             return _err(502, "api_error", f"Upstream call failed: {e}")
         if resp.status_code != 200:
             data = await resp.aread()
@@ -276,7 +330,8 @@ class MessagesProxy:
                 content = {"type": "error", "error": {"type": "api_error", "message": "upstream error"}}
             await self._report(meta["agent_id"], meta["framework"], meta["session_id"], model,
                                 tier="block", reason="upstream error", routed=meta["routed"],
-                                reservation_id=meta.get("reservation_id"))
+                                reservation_id=meta.get("reservation_id"),
+                                agent_reservation_id=meta.get("agent_reservation_id"))
             return JSONResponse(status_code=resp.status_code, content=content)
 
         proxy = self
@@ -295,7 +350,8 @@ class MessagesProxy:
                 await client.aclose()
                 await proxy._report(meta["agent_id"], meta["framework"], meta["session_id"], model,
                                     tier="allow", usage=_scrape_usage(scan), routed=meta["routed"],
-                                    reservation_id=meta.get("reservation_id"))
+                                    reservation_id=meta.get("reservation_id"),
+                                    agent_reservation_id=meta.get("agent_reservation_id"))
 
         return StreamingResponse(relay(), media_type="text/event-stream")
 
@@ -305,6 +361,12 @@ class MessagesProxy:
     ) -> Any:
         """Translate Anthropic -> provider, call it, translate back to Anthropic (+SSE)."""
         if self._provider is None:
+            await self._report(
+                meta["agent_id"], meta["framework"], meta["session_id"], model,
+                tier="block", reason="No LLM provider configured", limit_type="provider",
+                reservation_id=meta.get("reservation_id"),
+                agent_reservation_id=meta.get("agent_reservation_id"),
+            )
             return _err(500, "api_error", "No LLM provider configured for cross-provider routing.")
 
         try:
@@ -313,13 +375,15 @@ class MessagesProxy:
             log.warning("Cross-provider call to %s (%s) failed: %s", model, provider, e)
             await self._report(meta["agent_id"], meta["framework"], meta["session_id"], model,
                                 tier="block", reason=f"provider error: {e}", routed=meta["routed"],
-                                reservation_id=meta.get("reservation_id"))
+                                reservation_id=meta.get("reservation_id"),
+                                agent_reservation_id=meta.get("agent_reservation_id"))
             return _err(502, "api_error", f"Upstream provider call failed: {e}")
 
         usage = anthropic_msg.get("usage", {})
         await self._report(meta["agent_id"], meta["framework"], meta["session_id"], model,
                            tier="allow", usage=usage, routed=meta["routed"],
-                           reservation_id=meta.get("reservation_id"))
+                           reservation_id=meta.get("reservation_id"),
+                           agent_reservation_id=meta.get("agent_reservation_id"))
 
         if not streaming:
             return JSONResponse(status_code=200, content=anthropic_msg)
@@ -336,7 +400,9 @@ class MessagesProxy:
     # ── AxonLLM target: single routing authority ─────────────────────────
     async def _forward_axon(
         self, request: Request, body: dict[str, Any], requested_model: str, agent_id: str,
-        session_id: str, framework: str, streaming: bool, reservation_id: int | None = None,
+        session_id: str, framework: str, streaming: bool,
+        reservation_id: int | None = None,
+        agent_reservation_id: int | None = None,
     ) -> Any:
         """Route via AxonLLM (selection + access + cost + fallback), translate to Anthropic.
 
@@ -383,7 +449,8 @@ class MessagesProxy:
             model = requested_model or getattr(self._config, "default_model", "") or "claude-sonnet-4-6"
             provider = _provider_of(model)
             meta = {"agent_id": agent_id, "framework": framework, "session_id": session_id,
-                    "model": model, "routed": False, "reservation_id": reservation_id}
+                    "model": model, "routed": False, "reservation_id": reservation_id,
+                    "agent_reservation_id": agent_reservation_id}
             if provider == "anthropic":
                 return await self._forward_anthropic(request, body, model, streaming, meta)
             return await self._forward_translated(body, model, provider, streaming, meta)
@@ -394,7 +461,8 @@ class MessagesProxy:
         await self._report(agent_id, framework, session_id, res.model or requested_model,
                            tier="allow",
                            usage={"input_tokens": res.input_tokens, "output_tokens": res.output_tokens},
-                           routed=routed, reservation_id=reservation_id)
+                           routed=routed, reservation_id=reservation_id,
+                           agent_reservation_id=agent_reservation_id)
 
         if not streaming:
             return JSONResponse(status_code=200, content=anthropic_msg)
@@ -499,12 +567,13 @@ class MessagesProxy:
         self, agent_id: str, framework: str, session_id: str, model: str,
         *, tier: str, usage: dict[str, Any] | None = None, reason: str | None = None,
         routed: bool = False, limit_type: str = "", reservation_id: int | None = None,
+        agent_reservation_id: int | None = None,
     ) -> None:
         in_tok = int((usage or {}).get("input_tokens", 0) or 0)
         out_tok = int((usage or {}).get("output_tokens", 0) or 0)
 
+        cost = 0.0
         if tier == "allow" and (in_tok or out_tok):
-            cost = 0.0
             if self._quota is not None:
                 try:
                     cost = self._quota.calculate_cost(model, in_tok, out_tok)
@@ -513,13 +582,38 @@ class MessagesProxy:
                     log.debug("Spend accounting failed: %s", e)
         elif self._quota is not None and reservation_id is not None:
             self._quota.release_reservation(reservation_id)
-            # Record spend against the agent's own budget so per-agent budget
-            # caps (authorize_llm -> check_budget) actually decrement.
-            if self._agent_auth is not None and cost:
-                try:
-                    self._agent_auth.record_agent_spend(agent_id, cost)
-                except Exception as e:  # noqa: BLE001
-                    log.debug("Agent spend accounting failed: %s", e)
+        if self._agent_auth is not None:
+            try:
+                if tier == "allow":
+                    self._agent_auth.record_agent_spend(
+                        agent_id, cost, reservation_id=agent_reservation_id
+                    )
+                else:
+                    self._agent_auth.release_agent_reservation(
+                        agent_id, agent_reservation_id
+                    )
+            except Exception as e:  # noqa: BLE001
+                log.debug("Agent spend accounting failed: %s", e)
+
+        if (
+            self._cost_reporter is not None
+            and tier == "allow"
+            and (in_tok or out_tok)
+        ):
+            try:
+                await self._cost_reporter.report(
+                    model=model,
+                    input_tokens=in_tok,
+                    output_tokens=out_tok,
+                    total_tokens=in_tok + out_tok,
+                    agent_id=agent_id,
+                    action="messages",
+                    cost_usd=cost,
+                    record_quota=False,
+                )
+                await self._cost_reporter.flush()
+            except Exception as e:  # noqa: BLE001
+                log.debug("Cost report failed: %s", e)
 
         if self._trace is not None:
             try:
