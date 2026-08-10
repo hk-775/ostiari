@@ -52,13 +52,14 @@ class ChatProxy:
 
     def __init__(self, config: Any, axon: Any = None, security: Any = None,
                  quota_enforcer: Any = None, trace_reporter: Any = None,
-                 agent_auth: Any = None) -> None:
+                 agent_auth: Any = None, cost_reporter: Any = None) -> None:
         self._config = config
         self._axon = axon
         self._security = security
         self._quota = quota_enforcer
         self._trace = trace_reporter
         self._agent_auth = agent_auth
+        self._cost_reporter = cost_reporter
 
     async def handle(self, request: Request) -> Any:
         try:
@@ -76,19 +77,35 @@ class ChatProxy:
         streaming = bool(body.get("stream", False))
         messages = body.get("messages", [])
 
-        # ── Gate 1: agent authorization (endpoint + model/provider/budget) ──
+        # ── Gate 1: agent authorization (endpoint + model/provider/quota) ──
+        agent_reservation_id: int | None = None
         if self._agent_auth:
             allowed, reason = self._agent_auth.check(agent_id, "/v1/chat/completions")
             if not allowed:
                 await self._report(agent_id, framework, session_id, requested_model,
                                     tier="block", reason=reason, limit_type="agent_authorization")
                 return _err(403, reason or "Agent not authorized", "permission_error")
-            allowed, reason = self._agent_auth.authorize_llm(
-                agent_id, requested_model, _provider_of(requested_model))
-            if not allowed:
+            estimated_cost = 0.0
+            if self._quota is not None:
+                try:
+                    estimated_cost = self._quota.estimate_cost(requested_model)
+                except Exception as e:  # noqa: BLE001
+                    log.debug("Agent cost estimate failed: %s", e)
+            agent_decision = self._agent_auth.check_llm(
+                agent_id,
+                requested_model,
+                _provider_of(requested_model),
+                estimated_cost=estimated_cost,
+                reserve=True,
+            )
+            if not agent_decision.allowed:
                 await self._report(agent_id, framework, session_id, requested_model,
-                                    tier="block", reason=reason, limit_type="agent_authorization")
-                return _err(403, reason, "permission_error")
+                                    tier="block", reason=agent_decision.reason,
+                                    limit_type=f"agent_{agent_decision.limit_type}")
+                status = 429 if agent_decision.limit_type in {"rate_limit", "budget"} else 403
+                error_type = "rate_limit_error" if status == 429 else "permission_error"
+                return _err(status, agent_decision.reason, error_type)
+            agent_reservation_id = agent_decision.reservation_id
 
         # ── Gate 2: security (injection/PII), fail-closed ───────────────────
         if self._security is not None:
@@ -99,7 +116,8 @@ class ChatProxy:
                 reason = meta.get("block_reason") or "PII detected in prompt"
                 limit_type = "prompt_injection" if meta.get("injection_detected") else "pii"
                 await self._report(agent_id, framework, session_id, requested_model,
-                                    tier="block", reason=reason, limit_type=limit_type)
+                                    tier="block", reason=reason, limit_type=limit_type,
+                                    agent_reservation_id=agent_reservation_id)
                 return _err(403, f"Request blocked by Ostiari: {reason}", "permission_error")
 
         # ── Gate 3: Ostiari quota ceiling ───────────────────────────────────
@@ -114,7 +132,8 @@ class ChatProxy:
                                              reserve=True)
                 if not decision.allowed:
                     await self._report(agent_id, framework, session_id, requested_model,
-                                        tier="block", reason=decision.reason, limit_type="quota")
+                                        tier="block", reason=decision.reason, limit_type="quota",
+                                        agent_reservation_id=agent_reservation_id)
                     return _err(429, f"Request blocked by quota: {decision.reason}", "rate_limit_error")
                 reservation_id = decision.reservation_id
                 self._quota.record_request()
@@ -123,6 +142,17 @@ class ChatProxy:
 
         # ── Route via AxonLLM (single-response; no ensemble on the shim) ────
         if self._axon is None or not self._axon.available:
+            await self._report(
+                agent_id,
+                framework,
+                session_id,
+                requested_model,
+                tier="block",
+                reason="LLM router unavailable",
+                limit_type="router",
+                reservation_id=reservation_id,
+                agent_reservation_id=agent_reservation_id,
+            )
             return _err(503, "LLM router unavailable", "api_error")
 
         # AxonLLM carries tool specs now, so this is a version guard rather than a
@@ -131,21 +161,30 @@ class ChatProxy:
         # shim, this path has no direct-provider fallback to hand the call to — so
         # refuse rather than return that answer. Codex surfaces a 501 to the user.
         if body.get("tools") and not self._axon.supports_tools():
-            if self._quota is not None:
-                self._quota.release_reservation(reservation_id)
             await self._report(agent_id, framework, session_id, requested_model,
                                tier="block", reason="tool calling unsupported by router",
-                               limit_type="router")
+                               limit_type="router", reservation_id=reservation_id,
+                               agent_reservation_id=agent_reservation_id)
             return _err(501, "Tool calling is not supported on this endpoint: the "
                              "configured LLM router cannot forward tool definitions.",
                         "api_error")
+
+        requested_max_tokens = int(
+            body.get("max_tokens", getattr(self._config, "max_tokens", 4096))
+        )
+        if self._quota is not None:
+            requested_max_tokens = self._quota.cap_max_tokens(requested_max_tokens)
+        if self._agent_auth is not None:
+            requested_max_tokens = self._agent_auth.cap_max_tokens(
+                agent_id, requested_max_tokens
+            )
 
         axon_model = requested_model if self._axon_knows(requested_model) else ""
         try:
             res = await self._axon.route(
                 messages=messages,
                 model=axon_model,
-                max_tokens=int(body.get("max_tokens", getattr(self._config, "max_tokens", 4096))),
+                max_tokens=requested_max_tokens,
                 # Pass through only what the caller actually sent. Defaulting to a
                 # number here made every request carry `temperature`, which newer
                 # models reject outright (Mantle Claude: 400 "`temperature` is
@@ -160,17 +199,18 @@ class ChatProxy:
             )
         except Exception as e:  # noqa: BLE001
             log.warning("Codex shim route failed: %s", e)
-            if self._quota is not None:
-                self._quota.release_reservation(reservation_id)
             await self._report(agent_id, framework, session_id, requested_model,
-                                tier="block", reason=f"router error: {e}", limit_type="router")
+                                tier="block", reason=f"router error: {e}", limit_type="router",
+                                reservation_id=reservation_id,
+                                agent_reservation_id=agent_reservation_id)
             return _err(502, f"Upstream routing failed: {e}", "api_error")
 
         await self._report(agent_id, framework, session_id, res.model or requested_model,
                            tier="allow",
                            usage={"input_tokens": res.input_tokens, "output_tokens": res.output_tokens},
                            routed=(res.model or "") != requested_model,
-                           reservation_id=reservation_id)
+                           reservation_id=reservation_id,
+                           agent_reservation_id=agent_reservation_id)
 
         completion = _openai_completion(res)
         if not streaming:
@@ -194,21 +234,49 @@ class ChatProxy:
     async def _report(self, agent_id: str, framework: str, session_id: str, model: str,
                       *, tier: str, usage: dict[str, Any] | None = None,
                       reason: str | None = None, routed: bool = False,
-                      limit_type: str = "", reservation_id: int | None = None) -> None:
+                      limit_type: str = "", reservation_id: int | None = None,
+                      agent_reservation_id: int | None = None) -> None:
         in_tok = int((usage or {}).get("input_tokens", 0) or 0)
         out_tok = int((usage or {}).get("output_tokens", 0) or 0)
+        cost = 0.0
         if self._quota is not None and tier == "allow" and (in_tok or out_tok):
             try:
                 cost = self._quota.calculate_cost(model, in_tok, out_tok)
                 self._quota.record_spend(cost, reservation_id=reservation_id)
-                if self._agent_auth is not None and cost:
-                    self._agent_auth.record_agent_spend(agent_id, cost)
             except Exception as e:  # noqa: BLE001
                 log.debug("Spend accounting failed: %s", e)
         elif self._quota is not None and reservation_id is not None:
             # Not recording spend on this path — release the reservation so it
             # doesn't linger until TTL.
             self._quota.release_reservation(reservation_id)
+        if self._agent_auth is not None:
+            if tier == "allow":
+                self._agent_auth.record_agent_spend(
+                    agent_id, cost, reservation_id=agent_reservation_id
+                )
+            else:
+                self._agent_auth.release_agent_reservation(
+                    agent_id, agent_reservation_id
+                )
+        if (
+            self._cost_reporter is not None
+            and tier == "allow"
+            and (in_tok or out_tok)
+        ):
+            try:
+                await self._cost_reporter.report(
+                    model=model,
+                    input_tokens=in_tok,
+                    output_tokens=out_tok,
+                    total_tokens=in_tok + out_tok,
+                    agent_id=agent_id,
+                    action="chat",
+                    cost_usd=cost,
+                    record_quota=False,
+                )
+                await self._cost_reporter.flush()
+            except Exception as e:  # noqa: BLE001
+                log.debug("Cost report failed: %s", e)
         if self._trace is not None:
             try:
                 await self._trace.report(

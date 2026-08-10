@@ -275,7 +275,8 @@ handler (`module.py`) runs first:
 Then `LLMExecutor.invoke` runs, in this order:
 
 4. `select_model` (routing policy → A/B → rules → smart → default) + resolve the fallback chain
-5. `authorize_llm(agent_id, model, provider)` — budget, then model, then provider
+5. `check_llm(agent_id, model, provider)` — model/provider allowlists plus one
+   request from the agent's rolling RPM window
 6. Build tool specs
 7. Security: injection detection + PII redaction, fail-closed
 8. `cap_max_tokens` — a silent cap, never a rejection
@@ -289,9 +290,10 @@ Note that steps 5–10 return a **200** with `response: "Request blocked: …"` 
 client that checks `resp.status_code` alone will read a quota or PII block as
 success; check the response body.
 
-There is no single in-flight budget reservation across the loop. Spend is booked
-per round via the cost reporter, so the concurrency window is one round rather
-than the whole call — unlike the shims, which do hold a reservation.
+There is no single in-flight gateway-budget reservation across the loop. Gateway
+spend is booked per round via the cost reporter. Agent budgets reserve each actual
+LLM round separately and settle the reservation with provider usage, so cached
+tool plans cost nothing and concurrent calls cannot all spend the same remainder.
 
 ### Key Design Decisions
 
@@ -459,17 +461,14 @@ UI calls:
 |---|---|---|
 | Gateways page → **Push** / **Push All** | `push_service` → `POST /config` | Tools + policy only. The bundle it builds carries no `quota`/`agent_auth`, so nothing is silently cleared beyond the replace semantics. |
 | Policies page → **Push** | `POST /api/gateways/{id}/push-config` → `POST /config` with `{policy}` | Policy applies; **registered tools are cleared** and `mode` resets to enforce. |
-| Quotas page → **Push** | same, with `{quota: {...}}` | **Nothing.** Stored, echoed by `GET /config`, never enforced. Tools are cleared as a side effect. |
-| Quotas API → `POST /api/quotas/{id}/push` | `POST /config/quota` | Works — this is the gate endpoint. |
-| Agent Quotas / Models pages | `POST /config/agent-auth` | Works — gate endpoint. |
+| Quotas page → **Push** | `POST /api/quotas/{id}/push` → `POST /config/quota` | Works — the page uses the quota gate endpoint. |
+| Agent Quotas → **Save & Push** / **Push All** | quota API → `POST /config/agent-auth` | Works — the control plane rebuilds the complete map for each gateway and preserves tool grants. |
 | Gateway registration + heartbeat | `_apply_bundle` (not `/config`) | Works — it configures each gate explicitly and touches only the keys present, including `mode` and `ab_experiments`. |
 
-So the Quotas page's **Push** button does not enforce the quota it just pushed,
-and nothing in the UI calls `POST /api/quotas/{id}/push` — the endpoint that
-*would* work is reachable only from the API. Until this is reconciled, push a
-quota with `POST /api/quotas/{id}/push`, or call the gateway's `/config/quota`
-directly. Verify with `GET /config/quota`, not `GET /config`, because the latter
-echoes back a stored value the enforcer never saw.
+The remaining trap is the generic `push-config` route used by partial callers such
+as the Policies page. Quota pages avoid it. Verify gateway limits with
+`GET /config/quota` and agent limits with `GET /config/agent-auth`; `GET /config`
+only shows the stored whole-document configuration.
 
 > **Rule of thumb: `/config` is for a full bundle from a system that owns the
 > whole document. Use the `/config/<gate>` endpoints for anything partial.** The
@@ -2377,26 +2376,19 @@ sequenceDiagram
     GW-->>Agent: Response
 ```
 
-The reporter buffers up to 20 records before auto-flushing, but the executor also
-`await`s an explicit `flush()` on **every** `/invoke` return path
-(`executor.py:262` and `:387`), so in practice the buffer never spans requests and
-each `/invoke` posts its own batch of one. `close()` flushes on shutdown.
+The reporter buffers up to 20 records before auto-flushing, but `/invoke`,
+`/v1/messages`, and `/v1/chat/completions` explicitly flush after successful
+provider usage, so in practice each completed LLM call normally posts a batch of
+one. `close()` flushes on shutdown.
 
-Three caveats to "fire-and-forget":
+Two caveats to "fire-and-forget":
 
-- **The post is on the request's critical path.** Every `/invoke` awaits the flush
-  before returning, on a client with a 5s timeout. A control plane that is slow
-  rather than down adds that latency to every LLM call.
-- **A failed post is dropped, not retried.** `flush()` clears the buffer *before*
-  the `try`, and the exception is logged at **debug**. Cost records lost to a
-  control-plane outage are gone, silently.
-- **`report` is called from the `/invoke` executor only** (`executor.py:242`). The
-  Claude Code and Codex shims book spend locally (`quota.record_spend`,
-  `agent_auth.record_agent_spend`) and report a trace, but never post a usage
-  record. So shim traffic enforces budgets correctly and is **invisible in the
-  Cost Dashboard**. If your agents drive Claude Code or Codex, read that dashboard
-  as "`/invoke` cost", not "total cost", and take the real figure from the
-  gateway's own quota status (`GET /health` → `quota`).
+- **The post is on the request's critical path.** Each path awaits the flush on a
+  client with a 5s timeout. A control plane that is slow rather than down adds
+  that latency to the LLM response.
+- **Retries are memory-backed.** A failed HTTP or transport delivery remains in
+  the buffer and is retried on the next flush, but a process crash before a
+  successful retry still loses that in-memory batch.
 
 **Cost is computed in the gateway, not the control plane.** `report_usage` calls
 `quota_enforcer.calculate_cost(...)`, books the spend locally with
@@ -2510,12 +2502,12 @@ This ladder runs where `select_model` runs: `/v1/messages` and `/invoke` only.
 A/B does not apply on `/v1/chat/completions` (see
 [codex-shim.md](codex-shim.md)).
 
-Results are computed in the control plane from the usage records collected by the
-cost reporter. That inherits the reporter's scope: **only `/invoke` posts usage
-records**, so an experiment running over `/v1/messages` assigns variants and
-returns them in the response, but produces no cost data for the control plane to
-compare. `ab_experiment`/`ab_variant` are surfaced on `InvokeResponse` only; the
-shims route to the assigned model without reporting which variant they used.
+Results are computed in the control plane from usage records collected from all
+three LLM entry points. Experiment identity is still not stored on those records:
+results aggregate traffic for the experiment's models on the gateway, including
+unrelated calls. `ab_experiment`/`ab_variant` are surfaced on `InvokeResponse`
+only; the shims route to the assigned model without reporting which variant they
+used.
 
 ---
 
@@ -2608,7 +2600,7 @@ estimate atomically (no `await` between projection and booking) and
 self-expire after a 120s TTL, so a request that dies before `record_spend` leaves
 the projection briefly conservative rather than leaking budget.
 
-Two scoping caveats:
+Two gateway-quota scoping caveats:
 
 - **The shims reserve; `/invoke` deliberately does not.** `/invoke` is a multi-round
   loop that books real spend per round via the cost reporter, so its concurrency
@@ -2620,6 +2612,9 @@ Two scoping caveats:
   shared store makes budget fleet-wide (atomic reserve/adjust in one Lua op) —
   `GET /config/quota` reports which you have as `spend_scope: "fleet" | "process"`.
   Gateways sharing a `budget_key` (default `"gateway"`) share one budget.
+
+Agent quotas use the same shared store when configured, keyed by gateway and
+agent. Without Redis their rate windows and reservations are process-local.
 
 ### Budget Alert Thresholds
 
@@ -2842,10 +2837,11 @@ omitted limit is simply not enforced:
 | `pricing` | Per-model override of `DEFAULT_PRICING`. |
 | `budget_key` | Redis key for the budget (default `"gateway"`). Gateways sharing a key share one fleet-wide budget; distinct keys partition it. Only meaningful with `OSTIARI_REDIS_URL` set. |
 
-Two things the older shape implied that aren't there: **there is no `period` field**
+Two things the older gateway shape implied that aren't there: **there is no `period` field**
 (the window is not calendar-based — spend accumulates until someone calls `POST
 /config/quota/reset-spend`), and **alert thresholds are not configurable** —
-`BUDGET_ALERT_THRESHOLDS` is the fixed list `[0.8, 0.9, 1.0]`.
+`BUDGET_ALERT_THRESHOLDS` is the fixed list `[0.8, 0.9, 1.0]`. Agent quotas have
+their own configurable warning threshold plus a mandatory 100% crossing.
 
 > **`/config/budget-reset` does not reset anything on a schedule.** It's a
 > dashboard-backing key/value store: `POST` writes
@@ -2859,12 +2855,11 @@ Two things the older shape implied that aren't there: **there is no `period` fie
 
 ### Quota push from control plane
 
-The control plane has **two** quota-push routes, and only one of them enforces
-anything. `POST /api/quotas/{id}/push` calls the gateway's `/config/quota` gate
-endpoint and works; the Quotas page's Push button instead calls
-`/api/gateways/{id}/push-config`, which lands on `POST /config` and — as
-[the partial-push trap](#the-config-partial-push-trap) explains — stores the quota
-without configuring the enforcer. Nothing in the UI calls the working route.
+The control plane uses dedicated quota gates. A gateway-scoped
+`POST /api/quotas/{id}/push` calls `/config/quota`. An agent-scoped push rebuilds
+every persisted agent quota for that gateway, layers the quota fields over the
+existing tool authorization policy, stores that complete bundle for reconnects,
+and calls `/config/agent-auth`. The Quotas and Agent Quotas pages use these routes.
 
 The route that works:
 
@@ -2883,11 +2878,10 @@ sequenceDiagram
     Note over GW: All subsequent requests<br/>subject to quota enforcement
 ```
 
-Four things to know about the push:
+Four things to know about gateway-quota pushes:
 
-- **Only `scope: "gateway"` quotas push.** Any other scope returns
-  `200 {"status": "skipped", "reason": "Only gateway-scoped quotas can be pushed
-  directly"}` — a success status for a no-op, so check the body.
+- **`scope: "gateway"` and `scope: "agent"` both push.** Other scopes return a
+  skipped response because no runtime enforcer owns them.
 - **`null` fields are omitted from the payload, and omission does not clear.**
   `configure()` replaces the whole `QuotaConfig`, so a push that omits
   `budget_limit_usd` sets it to `None` and **removes** the budget limit. That's
@@ -3198,11 +3192,11 @@ All providers use the same unified interface internally. The gateway (via AxonLL
 | **A/B experiments** | Percentage-based traffic split between models | Yes — /api/experiments |
 | **PII redaction** | Replaces sensitive values before the LLM and restores them in the response — **on `/invoke`; the shims 403 instead** | Yes — security config (unvalidated dict) |
 | **Injection detection** | Regex-scored; blocks or flags above `injection_threshold` | Yes — security config (unvalidated dict) |
-| **Cost reporting** | Reports token usage to the control plane — **`/invoke` only; shim traffic is absent from the Cost Dashboard** | Automatic when LLM Gateway active |
+| **Cost reporting** | Reports token usage from `/invoke`, `/v1/messages`, and `/v1/chat/completions`; failed batches stay buffered for retry | Automatic when LLM Gateway active |
 | **Local cost calculation** | Computes cost per request using per-model pricing table | Pricing pushed via /config/quota |
 | **Pre-request budget projection** | Estimates cost before the LLM call, blocks if over budget; reservations close the concurrent-overshoot window | Yes — budget config in quota |
-| **Budget alert thresholds** | Logs a WARNING at 80/90/100% and reports each crossing to the control plane (`GET /api/quotas/alerts`) | No — `BUDGET_ALERT_THRESHOLDS` is a fixed constant, not configurable |
-| **Quota enforcement** | Rate limits, budget caps, model allowlist, max_tokens | Yes — /api/quotas + push (in-memory store, lost on restart) |
+| **Budget alert thresholds** | Gateway: fixed 80/90/100%. Agent: configurable warning threshold plus 100%. Crossings include `agent_id` when applicable | Agent threshold managed by `/api/quotas` |
+| **Quota enforcement** | Gateway and agent rate limits, projected budget caps, model/provider allowlists, and max_tokens | Yes — `/api/quotas` + push; definitions persist in the control plane and agent spend is snapshotted/restored |
 | **Max tokens silent cap** | Caps output tokens without rejecting the request | Yes — max_tokens in quota |
 | **Budget period rollover** | **Does not exist.** Spend is a running total; `/config/budget-reset` stores a schedule nothing reads | Drive `POST /config/quota/reset-spend` from cron |
 | **Live traces** | Reports every governed call in real time (`/tool/{action}`, `/invoke` tool loop, both shims) | Automatic when `control_plane_url` set |
@@ -3253,12 +3247,13 @@ claim to be `admin-agent`. Least privilege here is only as strong as that header
 
 ### Configuration (Pushed from Control Plane)
 
-Grants cover four things, not just tools: `allowed_tools`, `allowed_models`,
-`allowed_providers`, and a per-agent `budget_usd`.
+Per-agent state covers tool grants, model/provider allowlists, a rolling RPM
+limit, projected budget, max output tokens, spend restoration, and alert threshold.
 
 ```yaml
 agent_auth:
   enabled: true
+  quota_enabled: true           # may be true while tool auth remains disabled
   default_grants: []          # tools for unregistered agents; empty = deny ALL
   default_models: ["*"]       # models for unregistered agents
   default_providers: ["*"]    # providers for unregistered agents
@@ -3266,7 +3261,12 @@ agent_auth:
     research-agent:
       allowed_tools: ["web_search", "file_read", "db_query"]
       allowed_models: ["claude-haiku-4-5-20251001", "gpt-4o-mini"]
+      allowed_providers: ["anthropic", "openai"]
       budget_usd: 10.00       # hard cap; spend survives config hot-reload
+      spend_usd: 2.50         # restored floor from control-plane accounting
+      rate_limit_rpm: 30
+      max_tokens_per_request: 4096
+      alert_threshold_pct: 80
       description: "Cheap models only, can search and read, not modify"
     ops-agent:
       allowed_tools: ["db_query", "db_delete", "send_email", "github.*"]
@@ -3282,25 +3282,24 @@ Note the asymmetry in defaults: **omitting** `allowed_models` or
 everything), while omitting `allowed_tools` yields an empty set and denies
 everything. Tools are deny-by-default; models and providers are allow-by-default.
 
-`budget_usd` is enforced by `authorize_llm`, which runs **budget → model →
-provider** and returns the first failure. Spend accumulates in
-`AgentGrants.spend_usd`, is preserved across a config push (`configure` carries
-old spend forward), logs a warning at 90%, and can be snapshotted/restored via
-`get_spend_snapshot` / `restore_spend`. It is **in-process memory** — a gateway
-restart without a control-plane restore resets every agent's spend to zero.
+`check_llm` enforces the model/provider allowlists, rolling RPM, and projected
+budget before the provider call. It books an in-flight estimate and reconciles it
+to actual provider cost. Spend is preserved across hot reload, pushed to the
+control plane every 30 seconds and on clean shutdown, restored on startup, and
+also rebuilt from usage records when quotas are pushed. With Redis, rate and
+budget state is fleet-wide; otherwise live windows and reservations are per
+process.
 
-Two gaps in the per-agent budget worth knowing before relying on it:
+Two boundaries in the per-agent budget:
 
 - **`budget_usd` only binds registered agents.** `check_budget` returns
   `(True, "")` for any `agent_id` with no entry under `agents:`, so
   `default_grants` gives unregistered agents tool access with **no budget cap at
   all**. There is no `default_budget_usd`. If you use defaults, the fleet-wide
   `budget_limit_usd` in the quota config is your only ceiling for those agents.
-- **It's a post-hoc check, not a reservation.** `check_budget` tests
-  `spend_usd < budget_usd`, and spend is booked after the call returns, so the call
-  that crosses the line completes in full and the *next* one is refused. An agent
-  with $0.01 left can still issue one expensive request. The quota enforcer's
-  reservation mechanism is not used here.
+- **There is no automatic period reset.** Agent spend is cumulative until the
+  stored accounting is reset; calling the gateway-level reset endpoint does not
+  define a daily or monthly agent billing window.
 
 ### Grant Patterns
 

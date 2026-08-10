@@ -117,13 +117,14 @@ interchangeable:
 |---|---|---|---|
 | Gateways page ↑ icon | `POST /api/gateways/{id}/push` | built from the DB by `push_service._build_config` | yes — it *is* the stored state |
 | Policies page **Push** | `POST /api/gateways/{id}/push-config` | `{"policy": …}` supplied by the browser | **no** |
-| Quotas page **Push** | `POST /api/gateways/{id}/push-config` | `{"quota": …}` supplied by the browser | **no**, and not enforced either |
+| Quotas page **Push** | `POST /api/quotas/{id}/push` | stored gateway quota | yes |
+| Agent Quotas **Save & Push** | `POST /api/quotas/{id}/push` | complete stored agent-quota map for the gateway | yes |
 
 `push-config` forwards whatever body it's given to the gateway's `POST /config`,
 which is a **whole-document replace** that applies only tools + policy. So the
 Policies page's Push clears the gateway's tool registry and resets its enforcement
-mode to `enforce`, and the Quotas page's Push does nothing at all. Full detail and
-reproductions: [gateway-architecture.md → The /config partial-push
+mode to `enforce`. Quota pages bypass this route and call the dedicated runtime
+gates. Full detail and reproductions: [gateway-architecture.md → The /config partial-push
 trap](gateway-architecture.md#the-config-partial-push-trap).
 
 Prefer the **Gateways page** Push (or `POST /api/gateways/push-all`): it rebuilds

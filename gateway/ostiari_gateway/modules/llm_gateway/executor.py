@@ -123,16 +123,21 @@ class AgenticExecutor:
         model = request.model_override or self._router.select_model(router_context)
         fallback_chain = self._router.get_fallback_chain(model)
 
-        # Per-agent model/provider/budget authorization on the selected model.
-        # Without this, an agent restricted to certain models/providers or a $ cap
-        # could use any via /invoke.
+        # Authorize the selected model/provider and consume one request from the
+        # agent's rolling RPM window. Budget is projected per actual LLM round
+        # below because /invoke can make several provider calls.
         agent_id = request.context.get("agent_id", "")
         if self._agent_auth is not None:
-            allowed, reason = self._agent_auth.authorize_llm(
-                agent_id, model, _provider_of(model))
-            if not allowed:
+            agent_decision = self._agent_auth.check_llm(
+                agent_id,
+                model,
+                _provider_of(model),
+                estimated_cost=0.0,
+                count_request=True,
+            )
+            if not agent_decision.allowed:
                 return InvokeResponse(
-                    response=f"Request blocked: {reason}",
+                    response=f"Request blocked: {agent_decision.reason}",
                     model_used=model, total_tokens=0, rounds=0,
                 )
 
@@ -160,6 +165,10 @@ class AgenticExecutor:
         effective_max_tokens = self._config.max_tokens
         if self._quota_enforcer:
             effective_max_tokens = self._quota_enforcer.cap_max_tokens(effective_max_tokens)
+        if self._agent_auth:
+            effective_max_tokens = self._agent_auth.cap_max_tokens(
+                agent_id, effective_max_tokens
+            )
 
         # Pre-request budget projection: estimate cost and check quota before calling LLM.
         # NOTE: unlike the interactive chat/messages shims, /invoke is a multi-round
@@ -212,10 +221,42 @@ class AgenticExecutor:
             else:
                 # CACHE MISS or subsequent rounds: call LLM (AxonLLM router if
                 # available, else direct provider fallback).
-                llm_response = await self._call_llm(
-                    model, fallback_chain, messages, tool_specs, effective_max_tokens,
-                    context=request.context,
-                )
+                agent_reservation_id: int | None = None
+                if self._agent_auth is not None:
+                    estimated_agent_cost = 0.0
+                    if self._quota_enforcer is not None:
+                        estimated_agent_cost = self._quota_enforcer.estimate_cost(model)
+                    agent_round = self._agent_auth.check_llm(
+                        agent_id,
+                        model,
+                        _provider_of(model),
+                        estimated_cost=estimated_agent_cost,
+                        reserve=True,
+                        count_request=False,
+                    )
+                    if not agent_round.allowed:
+                        await self._cost_reporter.flush()
+                        return InvokeResponse(
+                            response=f"Request blocked by agent quota: {agent_round.reason}",
+                            model_used=model,
+                            tool_calls=all_tool_calls,
+                            blocked_actions=blocked_actions,
+                            total_tokens=total_tokens,
+                            rounds=round_num,
+                            cache_hit=served_from_cache,
+                        )
+                    agent_reservation_id = agent_round.reservation_id
+                try:
+                    llm_response = await self._call_llm(
+                        model, fallback_chain, messages, tool_specs, effective_max_tokens,
+                        context=request.context,
+                    )
+                except Exception:
+                    if self._agent_auth is not None:
+                        self._agent_auth.release_agent_reservation(
+                            agent_id, agent_reservation_id
+                        )
+                    raise
                 total_tokens += llm_response.tokens_used
                 model_used = llm_response.model
 
@@ -248,15 +289,26 @@ class AgenticExecutor:
                     action="invoke",
                 )
 
-                # Decrement the agent's own budget so per-agent budget caps
-                # (authorize_llm -> check_budget) actually enforce over a session.
-                if self._agent_auth is not None and agent_id and self._quota_enforcer:
+                # Settle the per-round agent reservation with actual provider
+                # usage. This closes the concurrency window without charging a
+                # cached tool plan, which skipped the LLM entirely.
+                if self._agent_auth is not None and agent_id:
+                    cost = 0.0
                     try:
-                        cost = self._quota_enforcer.calculate_cost(model_used, in_tok, out_tok)
-                        if cost:
-                            self._agent_auth.record_agent_spend(agent_id, cost)
+                        if self._quota_enforcer is not None:
+                            cost = self._quota_enforcer.calculate_cost(
+                                model_used, in_tok, out_tok
+                            )
+                        self._agent_auth.record_agent_spend(
+                            agent_id,
+                            cost,
+                            reservation_id=agent_reservation_id,
+                        )
                     except Exception as e:  # noqa: BLE001
                         log.debug("Agent spend accounting failed: %s", e)
+                        self._agent_auth.release_agent_reservation(
+                            agent_id, agent_reservation_id
+                        )
 
             if not llm_response.has_tool_calls:
                 await self._cost_reporter.flush()

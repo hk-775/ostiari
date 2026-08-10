@@ -60,7 +60,7 @@ graph TB
 | **Policy Management** | Create/edit/push safety policies (allow/block/risk-adjust). The demo creates `block-destructive` (crm-agent) and `ops-guard` (ops-agent) |
 | **MCP Server Management** | Configure MCP servers (embedded, remote HTTP, or stdio subprocess) with tool auto-discovery. The demo seeds two *real* stdio servers (draw.io + filesystem, via `npx`) |
 | **Model Configuration** | Central registry of LLM models — 18 pre-seeded from AxonLLM. CRUD with inline routing strategy editing. Shows providers, pricing, capabilities (tools/vision), and category (reasoning/general/speed) |
-| **Quotas (Runtime Enforced)** | Rate limits, budget caps, model allowlists, and `max_tokens` caps per gateway. Push to the gateway for active enforcement — not just informational. The demo seeds one quota per gateway (4), with spend summed from real usage records |
+| **Quotas (Runtime Enforced)** | Per-gateway and per-agent rate limits, budget caps, model/provider allowlists, and `max_tokens` caps. Agent quotas persist in the control plane, push as a complete gateway bundle, restore measured spend after restart, and use actual usage records for dashboard spend/RPM |
 | **Approvals (HITL)** | Human-in-the-loop queue for calls that score *intervene*. The gateway answers 202 with an approval id; a human decides here; the caller re-submits with `X-Approval-Id` |
 | **Sandbox** | Four-tab testing environment: Chat (invoke an LLM via the gateway), Scenarios (one-click allow/block demos), Code (write and run agent code), A2A (discover + send tasks). Uses the gateway proxy to eliminate CORS |
 | **Cost Dashboard** | Track LLM spend broken down by model, gateway, agent, and day |
@@ -167,7 +167,7 @@ Authoritative source: `http://localhost:8400/docs` (generated from the app).
 | `/api/gateways/{gateway_id}` | PATCH | Update a gateway |
 | `/api/gateways/{gateway_id}` | DELETE | Remove a gateway |
 | `/api/gateways/{gateway_id}/push` | POST | Push the full config bundle, rebuilt from stored state. **Prefer this** — it's the Gateways page's ↑ button and can't clear anything |
-| `/api/gateways/{gateway_id}/push-config` | POST | Forward an arbitrary caller-supplied body to the gateway's `POST /config`. **Not persisted, and `/config` is a whole-document replace applying only tools + policy** — the Policies and Quotas page buttons use this |
+| `/api/gateways/{gateway_id}/push-config` | POST | Forward an arbitrary caller-supplied body to the gateway's `POST /config`. **Not persisted, and `/config` is a whole-document replace applying only tools + policy** — use the quota-specific push routes for limits |
 | `/api/gateways/{gateway_id}/config-bundle` | GET | Fetch the config a gateway would receive |
 | `/api/gateways/{gateway_id}/register` | POST | Self-registration (called by the gateway on boot) |
 | `/api/gateways/{gateway_id}/heartbeat` | POST | Liveness ping (called by the gateway) |
@@ -222,11 +222,12 @@ Models are keyed by **name**, not a numeric id.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/quotas` | GET | List all quotas |
-| `/api/quotas` | POST | Create a quota (rate limit, budget, model allowlist, `max_tokens`) |
+| `/api/quotas` | GET | List quotas; optional `scope=gateway|agent|...` filter. Spend and trailing-minute RPM are aggregated from usage records |
+| `/api/quotas` | POST | Create a gateway or agent quota (rate limit, budget, model/provider allowlists, `max_tokens`, alert threshold) |
 | `/api/quotas/{quota_id}` | PUT | Update a quota's limits (partial — omitted fields are untouched, an explicit `null` clears one) |
 | `/api/quotas/{quota_id}` | DELETE | Remove a quota |
-| `/api/quotas/{quota_id}/push` | POST | **Push quota to the gateway** — activates runtime enforcement |
+| `/api/quotas/{quota_id}/push` | POST | **Push quota to the gateway** — agent scope rebuilds the complete agent quota map for that gateway |
+| `/api/quotas/agents/push?gateway_id=...` | POST | Push all persisted agent quotas for a gateway (also removes deleted limits) |
 | `/api/quotas/alerts` | POST | Record a budget threshold crossing (80/90/100%) — called by the gateway |
 | `/api/quotas/alerts` | GET | Budget alerts from this org's gateways, newest first |
 | `/api/quotas/alerts` | DELETE | Acknowledge (clear) this org's alerts; returns the count cleared |
@@ -236,31 +237,21 @@ Models are keyed by **name**, not a numeric id.
 > `usage_records`. They are saved to `state.json` on shutdown and restored on
 > startup, like quotas themselves: the cap bounds the store, but a control-plane
 > bounce should not erase the record that a gateway crossed 100% of its budget.
-> Ingest is an unauthenticated gateway path like payments and approvals, so the
+> Ingest is a service-key machine path when production auth is enabled, and the
 > org comes from the reporting gateway's row rather than the payload. The
 > **Quotas** page shows them, newest first, with an Acknowledge-all button.
 >
 > **Editing a quota does not enforce the change** — push it afterwards, same as a
 > newly created one.
 
-> **Important:** Creating a quota only saves it in the control plane. You must
-> call `/api/quotas/{id}/push` to activate enforcement — that route forwards to
-> the gateway's `/config/quota`, which begins enforcing rate limits, budgets,
-> model restrictions, and token caps immediately. It only works for
-> **gateway-scoped** quotas; anything else returns
-> `{"status": "skipped"}`.
->
-> **The Quotas page's Push button is a different route and does not enforce.** It
-> calls `POST /api/gateways/{id}/push-config` with `{"quota": …}`, and the
-> gateway's `POST /config` applies only tools and policy. The quota is stored and
-> echoed back by `GET /config`, so it *looks* applied, but no enforcer ever sees
-> it. Use `/api/quotas/{id}/push`, or the Gateways page's Push, which rebuilds the
-> whole bundle from stored state. See
-> [`../docs/Ostiari-Configure-Orchestrate-Lifecycle.md`](../docs/Ostiari-Configure-Orchestrate-Lifecycle.md) §4.
-
-Per-**agent** quotas are configured directly on the gateway (the Quotas
-(per agent) page talks to `/api/proxy/gateway/{gateway_id}/config/agent-auth`),
-so they have no control-plane CRUD of their own.
+> **Important:** Creating or editing through the API saves the quota; call
+> `/api/quotas/{id}/push` to activate it. The Agent Quotas page combines these as
+> **Save & Push**. Gateway quotas are sent to `/config/quota`. Agent quotas are
+> layered over the gateway's existing tool grants and sent together to
+> `/config/agent-auth`, so changing one agent cannot erase another or widen its
+> tool access. The same bundle is stored on the gateway record and is returned
+> during registration/reconnect. Tool authorization and quota enforcement have
+> separate enable switches, so adding a quota does not turn on tool restrictions.
 
 ### Approvals (HITL)
 
@@ -509,10 +500,11 @@ graph LR
 ```
 
 When you push a quota, the gateway:
-1. Loads the quota config into its in-memory enforcer
-2. Checks every incoming request against rate limits, budgets, model allowlists, and token caps
-3. Rejects requests that would exceed limits (429 for rate/budget, 403 for model restrictions)
+1. Loads the gateway quota or complete per-agent quota map into its enforcers
+2. Checks every LLM request against rate, projected budget, model/provider, and token limits
+3. Rejects agent rate/budget failures with 429 on the API shims (the `/invoke` response carries a blocked result)
 4. Silently caps `max_tokens` without rejecting (agent gets shorter responses, not errors)
+5. Reports actual usage from `/invoke`, `/v1/messages`, and `/v1/chat/completions` so control-plane spend survives gateway restarts
 
 The gateway calculates cost locally using per-model pricing tables (no round-trip
 to the control plane needed). Pre-request budget projection estimates cost BEFORE

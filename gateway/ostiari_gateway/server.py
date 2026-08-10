@@ -437,6 +437,7 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
         control_plane_url=(initial_config.control_plane_url if initial_config else ""),
         sidecar_id=(initial_config.sidecar_id if initial_config else ""),
     )
+    trace_reporter.set_agent_auth(agent_auth)
 
     # Budget alerts (80/90/100%) reach the control plane. QuotaEnforcer fires this
     # from record_spend(), which is sync, so bridge to the async reporter via the
@@ -465,6 +466,33 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
         task.add_done_callback(_alert_tasks.discard)
 
     quota_enforcer.on_budget_alert(_on_budget_alert)
+
+    def _on_agent_budget_alert(
+        label: str, agent_id: str, spend: float, budget: float
+    ) -> None:
+        if not trace_reporter.enabled:
+            return
+        try:
+            loop = _asyncio.get_running_loop()
+        except RuntimeError:
+            log.debug(
+                "Agent budget alert %s for %s not reported: no running event loop",
+                label,
+                agent_id,
+            )
+            return
+        task = loop.create_task(
+            trace_reporter.report_budget_alert(
+                threshold=label,
+                agent_id=agent_id,
+                spend_usd=spend,
+                budget_usd=budget,
+            )
+        )
+        _alert_tasks.add(task)
+        task.add_done_callback(_alert_tasks.discard)
+
+    agent_auth.on_budget_alert(_on_agent_budget_alert)
 
     # Apply quota from initial config
     if initial_config and hasattr(initial_config, "quota") and initial_config.quota:
@@ -615,6 +643,7 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
                     await _connect_mcp_servers(bundle["mcp_servers"])
                 if bundle.get("a2a_agents"):
                     await _connect_a2a_agents(bundle["a2a_agents"])
+                await trace_reporter.start_spend_persistence()
                 await lifecycle.start_heartbeat(interval=30)
             except Exception as e:
                 # If the control plane is unreachable, the gateway never received
@@ -649,6 +678,10 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
     from ostiari_gateway.shared_store import get_shared_store
     shared_store = get_shared_store()
     quota_enforcer.attach_shared_store(shared_store)
+    agent_auth.attach_shared_store(
+        shared_store,
+        initial_config.sidecar_id if initial_config else "gateway",
+    )
     payment_gate.attach_shared_store(shared_store)
 
     # DoS guards: reject oversized bodies, and per-caller rate limiting
