@@ -1,10 +1,13 @@
 """Cost reporter — sends usage data to the control plane after each LLM call.
 
 Calculates cost locally using the quota enforcer's pricing table,
-then reports to the control plane with actual cost (not 0.0).
+then reports to the control plane with actual cost (not 0.0). Failed batches
+remain buffered and are retried on the next flush.
 """
 
+import asyncio
 import logging
+import os
 from typing import Any
 
 import httpx
@@ -16,7 +19,7 @@ class CostReporter:
     """Reports LLM usage to the control plane's cost API.
 
     Calculates cost locally using the quota enforcer's pricing,
-    then fires-and-forgets to the control plane.
+    then buffers records until the control plane confirms receipt.
     """
 
     def __init__(self, control_plane_url: str = "", sidecar_id: str = "", quota_enforcer: Any = None) -> None:
@@ -26,6 +29,12 @@ class CostReporter:
         self._client: httpx.AsyncClient | None = None
         self._buffer: list[dict[str, Any]] = []
         self._buffer_max = 20
+        self._flush_lock = asyncio.Lock()
+
+    @staticmethod
+    def _service_headers() -> dict[str, str]:
+        token = os.environ.get("OSTIARI_SERVICE_TOKEN", "").strip()
+        return {"X-Ostiari-Service-Key": token} if token else {}
 
     def configure(self, control_plane_url: str, sidecar_id: str) -> None:
         self._url = control_plane_url.rstrip("/")
@@ -71,23 +80,36 @@ class CostReporter:
             await self.flush()
 
     async def flush(self) -> None:
-        """Send buffered records to the control plane."""
+        """Send buffered records, retaining the batch until a 2xx response."""
         if not self._buffer or not self.enabled:
             return
 
-        records = self._buffer[:]
-        self._buffer.clear()
+        async with self._flush_lock:
+            if not self._buffer or not self.enabled:
+                return
 
-        if self._client is None:
-            self._client = httpx.AsyncClient(timeout=5.0)
+            records = self._buffer[:]
+            if self._client is None:
+                self._client = httpx.AsyncClient(timeout=5.0)
 
-        try:
-            await self._client.post(
-                f"{self._url}/api/costs/record/batch",
-                json=records,
-            )
-        except Exception as e:
-            log.debug("Failed to report cost to control plane: %s", e)
+            try:
+                response = await self._client.post(
+                    f"{self._url}/api/costs/record/batch",
+                    json=records,
+                    headers=self._service_headers(),
+                )
+                response.raise_for_status()
+            except Exception as e:
+                log.warning(
+                    "Failed to report %d cost record(s); retained for retry: %s",
+                    len(records),
+                    e,
+                )
+                return
+
+            # Records may have been appended while the request was in flight.
+            # Remove only the confirmed snapshot and leave newer entries queued.
+            del self._buffer[:len(records)]
 
     async def close(self) -> None:
         await self.flush()
