@@ -119,6 +119,74 @@ class TestSimulatedSettler:
 
 
 class TestX402Settler:
+    def test_build_http_client_uses_v218_selector_contract(self):
+        captured = {}
+
+        class Client:
+            def __init__(self, payment_requirements_selector=None):
+                captured["selector"] = payment_requirements_selector
+                self.registrations = []
+
+            def register(self, network, scheme):
+                self.registrations.append((network, scheme))
+
+        class HttpClient:
+            def __init__(self, client):
+                self.client = client
+
+        class Signer:
+            def __init__(self, private_key):
+                self.private_key = private_key
+
+        class Scheme:
+            scheme = "exact"
+
+            def __init__(self, signer):
+                self.signer = signer
+
+        settler = X402Settler(private_key="test-key", requester=lambda **_kwargs: None)
+        settler._sdk = (Client, HttpClient, Signer, Scheme)
+        quote = Quote(
+            action="premium",
+            amount_usdc=0.005,
+            atomic_amount=5000,
+            pay_to="0xmerchant",
+            asset=_BASE_USDC,
+            network="eip155:8453",
+            scheme="exact",
+            source="tool_402",
+        )
+
+        paid_http = settler._build_http_client(quote)
+
+        assert paid_http.client.registrations[0][0] == "eip155:*"
+        selector = captured["selector"]
+        selected = selector(2, [{
+            "amount": "5000",
+            "network": "eip155:8453",
+            "payTo": "0xmerchant",
+            "scheme": "exact",
+            "asset": _BASE_USDC,
+        }])
+        assert selected["amount"] == "5000"
+
+    async def test_installed_x402_sdk_builds_http_client(self):
+        pytest.importorskip("x402")
+        settler = X402Settler(private_key="0x" + ("11" * 32))
+        quote = Quote(
+            action="premium",
+            amount_usdc=0.005,
+            atomic_amount=5000,
+            pay_to="0xmerchant",
+            asset=_BASE_USDC,
+            network="eip155:8453",
+            scheme="exact",
+            source="tool_402",
+        )
+
+        paid_http = settler._build_http_client(quote)
+        await paid_http.aclose()
+
     async def test_authorizes_passthrough_then_confirms_payment_response(self):
         async def requester(**_kwargs):
             return httpx.Response(

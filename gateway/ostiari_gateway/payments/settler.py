@@ -224,8 +224,7 @@ class X402Settler:
         x402_client_cls, httpx_client_cls, signer_cls, scheme_cls = self._sdk
         signer = signer_cls(self._private_key)
         client = x402_client_cls(
-            max_amount=max(quote.atomic_amount, 1),
-            payment_selector=self._selector_for(quote),
+            payment_requirements_selector=self._selector_for(quote),
         )
         client.register("eip155:*", scheme_cls(signer))
         return httpx_client_cls(client)
