@@ -210,15 +210,15 @@ async def get_experiment_results(
             select(UsageRecord).where(
                 UsageRecord.timestamp >= since,
                 UsageRecord.gateway_id == exp.gateway_id,
-                UsageRecord.model.in_([exp.model_a, exp.model_b]),
+                UsageRecord.experiment_name == name,
             ),
             UsageRecord, org,
         )
     )
     records = result.scalars().all()
 
-    model_a_records = [r for r in records if r.model == exp.model_a]
-    model_b_records = [r for r in records if r.model == exp.model_b]
+    model_a_records = [r for r in records if r.experiment_variant == "A"]
+    model_b_records = [r for r in records if r.experiment_variant == "B"]
 
     def _stats(recs: list) -> dict:
         if not recs:

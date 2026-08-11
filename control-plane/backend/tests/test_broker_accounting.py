@@ -163,6 +163,26 @@ class TestBatchAccounting:
         assert pools[0]["consumed_tokens"] == 950
         assert len(broker.calls) == 1
 
+    async def test_reused_event_id_cannot_change_experiment_assignment(
+        self, client, broker
+    ):
+        await _fund(client, tokens=10_000, threshold=0)
+        attributed = _usage(
+            experiment_name="checkout-test",
+            experiment_variant="A",
+        )
+        assert (
+            await client.post("/api/costs/record/batch", json=[attributed])
+        ).status_code == 200
+
+        conflict = await client.post(
+            "/api/costs/record/batch",
+            json=[{**attributed, "experiment_variant": "B"}],
+        )
+
+        assert conflict.status_code == 409
+        assert len(broker.calls) == 1
+
     async def test_failed_billing_retries_without_second_pool_debit(
         self, client, broker, monkeypatch
     ):

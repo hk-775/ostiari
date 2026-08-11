@@ -2503,11 +2503,14 @@ A/B does not apply on `/v1/chat/completions` (see
 [codex-shim.md](codex-shim.md)).
 
 Results are computed in the control plane from usage records collected from all
-three LLM entry points. Experiment identity is still not stored on those records:
-results aggregate traffic for the experiment's models on the gateway, including
-unrelated calls. `ab_experiment`/`ab_variant` are surfaced on `InvokeResponse`
-only; the shims route to the assigned model without reporting which variant they
-used.
+three LLM entry points. Usage selected by Ostiari's experiment router records the
+experiment name and assigned variant. Results filter on that identity and group
+by assignment, so unrelated calls to the same models are excluded and a provider
+fallback remains in its original cohort. `/invoke` also returns
+`ab_experiment`/`ab_variant`; direct `/v1/messages` traffic records the same
+assignment in usage and traces. Axon-only shim traffic and
+`/v1/chat/completions` remain unattributed because they do not pass through
+Ostiari's experiment selector.
 
 ---
 

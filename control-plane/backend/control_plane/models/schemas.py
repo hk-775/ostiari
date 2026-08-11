@@ -109,6 +109,8 @@ class UsageRecordCreate(BaseModel):
     event_id: str | None = Field(default=None, max_length=64)
     agent_id: str = "unknown"
     model: str
+    experiment_name: str = Field(default="", max_length=128)
+    experiment_variant: str = Field(default="", max_length=8)
     provider: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
@@ -123,6 +125,8 @@ class UsageRecordResponse(BaseModel):
     event_id: str | None = None
     agent_id: str
     model: str
+    experiment_name: str = ""
+    experiment_variant: str = ""
     provider: str = ""
     input_tokens: int
     output_tokens: int
