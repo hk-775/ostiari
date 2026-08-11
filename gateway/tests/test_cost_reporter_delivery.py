@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json as jsonlib
+
 import httpx
 import pytest
-
+from ostiari_gateway.modules.llm_gateway.broker_policy import BrokerPoolPolicy
 from ostiari_gateway.modules.llm_gateway.cost_reporter import CostReporter
 
 pytestmark = pytest.mark.anyio
@@ -22,7 +24,10 @@ async def _buffer_one(reporter: CostReporter) -> None:
 
 
 class _Client:
-    def __init__(self, outcomes: list[int | Exception]) -> None:
+    def __init__(
+        self,
+        outcomes: list[int | tuple[int, dict] | Exception],
+    ) -> None:
         self.outcomes = outcomes
         self.calls: list[dict] = []
 
@@ -31,6 +36,14 @@ class _Client:
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
+        if isinstance(outcome, tuple):
+            status, body = outcome
+            return httpx.Response(
+                status,
+                content=jsonlib.dumps(body),
+                headers={"content-type": "application/json"},
+                request=httpx.Request("POST", url),
+            )
         return httpx.Response(outcome, request=httpx.Request("POST", url))
 
     async def aclose(self) -> None:
@@ -51,6 +64,7 @@ class TestCostReporterDelivery:
             "X-Ostiari-Service-Key": "service-secret"
         }
         assert client.calls[0]["url"] == "http://cp.local/api/costs/record/batch"
+        assert client.calls[0]["json"][0]["event_id"]
         assert reporter._buffer == []
 
     async def test_http_failure_retains_and_retries_same_batch(self):
@@ -77,3 +91,43 @@ class TestCostReporterDelivery:
         await reporter.flush()
 
         assert len(reporter._buffer) == 1
+
+    async def test_pool_snapshot_applies_even_on_retryable_billing_failure(self):
+        policy = BrokerPoolPolicy()
+        reporter = CostReporter(
+            "http://cp.local",
+            "crm-agent",
+            broker_policy=policy,
+        )
+        depleted = {
+            "broker_pools": {
+                "crm-agent": [
+                    {"provider": "openai", "status": "depleted"}
+                ]
+            }
+        }
+        active = {
+            "broker_pools": {
+                "crm-agent": [
+                    {"provider": "openai", "status": "active"}
+                ]
+            }
+        }
+        client = _Client([(503, depleted), (200, active)])
+        reporter._client = client  # type: ignore[assignment]
+        await reporter.report(
+            model="gpt-4o",
+            provider="openai",
+            input_tokens=10,
+            output_tokens=5,
+            total_tokens=15,
+        )
+
+        await reporter.flush()
+        assert policy.blocked_providers == {"openai"}
+        assert len(reporter._buffer) == 1
+
+        await reporter.flush()
+        assert policy.blocked_providers == set()
+        assert reporter._buffer == []
+        assert client.calls[0]["json"][0]["provider"] == "openai"

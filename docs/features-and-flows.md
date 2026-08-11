@@ -318,10 +318,14 @@ flowchart LR
 ```
 
 The control plane manages wallets, funding, limits, pricing, ledger views, and
-summaries. The token broker adds pool inventory, configurable markup, low-water
-tracking, and reconciliation reports. External money movement in the demo is
-simulated. The included `X402Settler` is a stub, so live USDC settlement requires
-implementing the facilitator and signer integration.
+summaries. The token broker adds idempotent usage accounting and customer
+charging, provider-pool inventory, configurable markup, low-water routing
+enforcement, and reconciliation reports. Gateways receive pool state in usage
+responses and heartbeats, reroute when another funded provider is available, and
+return `503` before calling an explicitly depleted provider when none is
+available. External money movement in the demo is simulated. The included
+`X402Settler` is a stub, so live USDC settlement requires implementing the
+facilitator and signer integration.
 
 ## 12. Tracing, Audit, and Reporting
 

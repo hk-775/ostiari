@@ -1,19 +1,26 @@
 """Cost and usage tracking API."""
 
+import logging
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from control_plane import broker_pilot
 from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
 from control_plane.models.database import DEFAULT_ORG, UsageRecord
 from control_plane.models.schemas import CostSummary, UsageRecordCreate, UsageRecordResponse
-from control_plane.models.scoping import org_of_gateway, scoped, stamp
+from control_plane.models.scoping import org_of_gateway, scoped
 
 router = APIRouter(prefix="/api/costs", tags=["costs"])
+log = logging.getLogger("control_plane.costs")
 
 MODEL_PRICING: dict[str, dict[str, float]] = {
     "claude-sonnet-4-6": {"input": 3.0 / 1_000_000, "output": 15.0 / 1_000_000},
@@ -39,77 +46,231 @@ def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
 @router.post("/record", response_model=UsageRecordResponse)
 async def record_usage(body: UsageRecordCreate, db: AsyncSession = Depends(get_db)):
     """Record a usage event from a gateway (called after each LLM invocation)."""
-    cost = body.cost_usd
-    if cost == 0.0 and body.total_tokens > 0:
-        cost = _estimate_cost(body.model, body.input_tokens, body.output_tokens)
-
-    record = UsageRecord(
-        gateway_id=body.gateway_id,
-        agent_id=body.agent_id,
-        model=body.model,
-        input_tokens=body.input_tokens,
-        output_tokens=body.output_tokens,
-        total_tokens=body.total_tokens,
-        cost_usd=cost,
-        action=body.action,
-    )
-    # Without this the column default silently files EVERY tenant's usage under
-    # the "default" org, so a real tenant's ledger reads empty while its spend
-    # piles up in someone else's.
     org = await org_of_gateway(db, body.gateway_id)
-    stamp(record, org)
-    db.add(record)
-    # Broker pilot: draw the consumed tokens down against the provider pool, at
-    # our bulk cost (retail x (1 - discount)). Best-effort; no-op if unprovisioned.
-    # Same org as the usage record — the pool that gets burned must be the one
-    # belonging to the tenant whose traffic burned it.
-    await _broker_drawdown(db, model=body.model, tokens=body.total_tokens,
-                           retail_cost=cost, org=org)
+    record, created = await _upsert_usage(db, body, org)
+    if created:
+        await _broker_account(db, record, org)
     await db.commit()
     await db.refresh(record)
+
+    error = await _collect_broker_charge(record, org)
+    await db.commit()
+    if error:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Usage recorded; broker billing remains pending: {error}",
+        )
     return record
 
 
-async def _broker_drawdown(db, *, model: str, tokens: int, retail_cost: float,
-                           org: str = DEFAULT_ORG) -> None:
-    """Decrement the broker token pool for this usage (pilot). Never raises."""
-    if tokens <= 0:
+def _usage_values(body: UsageRecordCreate, org: str) -> dict[str, Any]:
+    cost = body.cost_usd
+    if cost == 0.0 and body.total_tokens > 0:
+        cost = _estimate_cost(body.model, body.input_tokens, body.output_tokens)
+    provider = broker_pilot.canonical_provider(
+        body.provider or broker_pilot.provider_for(body.model)
+    )
+    return {
+        "org_id": org,
+        "gateway_id": body.gateway_id,
+        "event_id": body.event_id,
+        "agent_id": body.agent_id,
+        "model": body.model,
+        "provider": provider,
+        "input_tokens": body.input_tokens,
+        "output_tokens": body.output_tokens,
+        "total_tokens": body.total_tokens,
+        "cost_usd": cost,
+        "action": body.action,
+    }
+
+
+def _same_usage(record: UsageRecord, values: dict[str, Any]) -> bool:
+    exact_fields = (
+        "org_id",
+        "gateway_id",
+        "event_id",
+        "agent_id",
+        "model",
+        "provider",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "action",
+    )
+    return all(getattr(record, field) == values[field] for field in exact_fields) and (
+        abs(float(record.cost_usd) - float(values["cost_usd"])) < 1e-12
+    )
+
+
+async def _upsert_usage(
+    db: AsyncSession,
+    body: UsageRecordCreate,
+    org: str,
+) -> tuple[UsageRecord, bool]:
+    """Insert one usage event, or return its identical prior retry."""
+    values = _usage_values(body, org)
+    if not body.event_id:
+        record = UsageRecord(**values)
+        db.add(record)
+        await db.flush()
+        return record, True
+
+    dialect = db.get_bind().dialect.name
+    insert_fn = postgresql_insert if dialect == "postgresql" else sqlite_insert
+    stmt = (
+        insert_fn(UsageRecord)
+        .values(**values)
+        .on_conflict_do_nothing(
+            index_elements=[UsageRecord.gateway_id, UsageRecord.event_id]
+        )
+        .returning(UsageRecord.id)
+    )
+    record_id = (await db.execute(stmt)).scalar_one_or_none()
+    if record_id is not None:
+        record = await db.get(UsageRecord, record_id)
+        if record is None:  # pragma: no cover - defensive against a broken driver
+            raise RuntimeError("Inserted usage record could not be reloaded")
+        return record, True
+
+    record = (
+        await db.execute(
+            select(UsageRecord).where(
+                UsageRecord.gateway_id == body.gateway_id,
+                UsageRecord.event_id == body.event_id,
+            )
+        )
+    ).scalar_one()
+    if not _same_usage(record, values):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Usage event '{body.event_id}' was already recorded with "
+                "different data"
+            ),
+        )
+    return record, False
+
+
+async def _broker_account(
+    db: AsyncSession,
+    record: UsageRecord,
+    org: str = DEFAULT_ORG,
+) -> None:
+    """Atomically debit a provisioned pool and stage its customer charge."""
+    if record.total_tokens <= 0:
         return
+
+    from control_plane.routers.broker_pilot import draw_down
+    from control_plane.routers.token_broker import _config as broker_config
+
+    config = broker_config[org]
+    our_cost = float(record.cost_usd) * (
+        1 - float(config.get("bulk_discount", 0.0))
+    )
+    pool = await draw_down(
+        db,
+        model=record.model,
+        provider=record.provider,
+        tokens=record.total_tokens,
+        our_cost_usd=our_cost,
+        org=org,
+    )
+    if pool is None:
+        return
+
+    record.broker_cost_usd = our_cost
+    record.broker_charge_usd = our_cost * (
+        1 + float(config.get("markup", 0.0))
+    )
+    record.billing_status = "pending"
+    record.billing_error = ""
+
+
+async def _collect_broker_charge(record: UsageRecord, org: str) -> str | None:
+    """Collect one staged charge; failures stay persisted for retry."""
+    if record.billing_status not in {"pending", "failed"}:
+        return None
+
+    from control_plane.routers.broker_pilot import _collector
+
+    idempotency_key = record.event_id or f"usage:{record.gateway_id}:{record.id}"
     try:
-        from control_plane.routers.broker_pilot import draw_down
-        from control_plane.routers.token_broker import _config as _tb
-        our_cost = retail_cost * (1 - _tb[org].get("bulk_discount", 0.0))
-        await draw_down(db, model=model, tokens=tokens, our_cost_usd=our_cost, org=org)
-    except Exception:  # noqa: BLE001 — pool accounting must never block usage recording
-        pass
+        result = await _collector.collect(
+            customer=org,
+            amount_usd=float(record.broker_charge_usd),
+            model=record.model,
+            idempotency_key=idempotency_key,
+        )
+        if not result.get("collected"):
+            raise RuntimeError("collector did not confirm the charge")
+    except Exception as exc:  # noqa: BLE001 - persisted and retried by the gateway
+        record.billing_status = "failed"
+        record.billing_error = str(exc)
+        log.warning(
+            "Broker billing failed for usage event %s: %s",
+            idempotency_key,
+            exc,
+        )
+        return str(exc)
+
+    record.billing_status = "collected"
+    record.billing_ref = str(result.get("ref", ""))[:128]
+    record.billing_error = ""
+    return None
 
 
 @router.post("/record/batch")
 async def record_usage_batch(records: list[UsageRecordCreate], db: AsyncSession = Depends(get_db)):
-    """Record a batch of usage events (for efficiency)."""
+    """Record, debit, and bill a retry-safe batch of usage events."""
     created = 0
+    duplicates = 0
     org_cache: dict[str, str] = {}  # one gateway lookup per batch, not per record
+    processed: dict[int, tuple[UsageRecord, str]] = {}
     for body in records:
-        cost = body.cost_usd
-        if cost == 0.0 and body.total_tokens > 0:
-            cost = _estimate_cost(body.model, body.input_tokens, body.output_tokens)
-        record = UsageRecord(
-            gateway_id=body.gateway_id,
-            agent_id=body.agent_id,
-            model=body.model,
-            input_tokens=body.input_tokens,
-            output_tokens=body.output_tokens,
-            total_tokens=body.total_tokens,
-            cost_usd=cost,
-            action=body.action,
-        )
         if body.gateway_id not in org_cache:
             org_cache[body.gateway_id] = await org_of_gateway(db, body.gateway_id)
-        stamp(record, org_cache[body.gateway_id])
-        db.add(record)
-        created += 1
+        org = org_cache[body.gateway_id]
+        record, was_created = await _upsert_usage(db, body, org)
+        if was_created:
+            await _broker_account(db, record, org)
+            created += 1
+        else:
+            duplicates += 1
+        processed[record.id] = (record, org)
+
+    # Usage and pool debits land before calling an external collector. If the
+    # process exits during billing, the next gateway retry finds these rows and
+    # retries only the still-pending charge without debiting the pool again.
     await db.commit()
-    return {"recorded": created}
+
+    billing_failures: list[dict[str, str]] = []
+    for record, org in processed.values():
+        error = await _collect_broker_charge(record, org)
+        if error:
+            billing_failures.append(
+                {
+                    "event_id": record.event_id or f"usage:{record.id}",
+                    "error": error,
+                }
+            )
+    await db.commit()
+
+    from control_plane.routers.broker_pilot import pool_snapshot
+
+    broker_pools = {
+        gateway_id: await pool_snapshot(db, org)
+        for gateway_id, org in org_cache.items()
+    }
+    response: dict[str, Any] = {"recorded": created}
+    if duplicates:
+        response["duplicates"] = duplicates
+    if any(broker_pools.values()):
+        response["broker_pools"] = broker_pools
+    if billing_failures:
+        response["billing_failures"] = billing_failures
+        return JSONResponse(status_code=503, content=response)
+    return response
 
 
 @router.get("/summary", response_model=CostSummary)

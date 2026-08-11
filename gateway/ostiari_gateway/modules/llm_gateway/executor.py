@@ -89,6 +89,7 @@ class AgenticExecutor:
     def __init__(
         self, config: LLMConfig, manager: ConfigManager, mcp_manager: Any = None,
         trace_reporter: Any = None, quota_enforcer: Any = None, agent_auth: Any = None,
+        broker_policy: Any = None,
     ) -> None:
         self._config = config
         self._manager = manager
@@ -96,18 +97,20 @@ class AgenticExecutor:
         self._trace_reporter = trace_reporter
         self._quota_enforcer = quota_enforcer
         self._agent_auth = agent_auth
+        self._broker_policy = broker_policy
         self._router = ModelRouter(config)
         self._provider = LLMProvider(config.credentials)
         # AxonLLM as the embedded LLM router (health-aware fallback, smart, ensemble,
         # multi-provider) — used when available; otherwise the direct provider path.
         from ostiari_gateway.modules.llm_gateway.axon_router import AxonRouter
-        self._axon = AxonRouter()
+        self._axon = AxonRouter(broker_policy=broker_policy)
         self._security = SecurityLayer(config.security if hasattr(config, "security") else None)
         self._intent_cache = IntentCache(ttl_seconds=300.0, max_entries=200)
         self._cost_reporter = CostReporter(
             control_plane_url=manager.config.control_plane_url,
             sidecar_id=manager.config.sidecar_id,
             quota_enforcer=quota_enforcer,
+            broker_policy=broker_policy,
         )
 
     def update_config(self, config: LLMConfig) -> None:
@@ -287,6 +290,7 @@ class AgenticExecutor:
                     total_tokens=llm_response.tokens_used,
                     agent_id=request.context.get("agent_id", "unknown"),
                     action="invoke",
+                    provider=llm_response.provider,
                 )
 
                 # Settle the per-round agent reservation with actual provider
@@ -505,6 +509,7 @@ class AgenticExecutor:
                     content=res.content or None,
                     tool_calls=tcs,
                     model=res.model or primary,
+                    provider=res.provider,
                     input_tokens=res.input_tokens,
                     output_tokens=res.output_tokens,
                 )
@@ -524,6 +529,8 @@ class AgenticExecutor:
         """Try primary model, fall through to fallback chain on failure."""
         effective_max_tokens = max_tokens or self._config.max_tokens
         models = [primary, *fallback_chain]
+        if self._broker_policy is not None:
+            models = self._broker_policy.require_direct_route(models)
         last_error: Exception | None = None
 
         for model in models:

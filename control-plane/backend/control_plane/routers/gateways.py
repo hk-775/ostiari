@@ -330,10 +330,21 @@ async def gateway_heartbeat(gateway_id: str, db: AsyncSession = Depends(get_db))
         response["reason"] = "reconnect"
         log.info(f"Gateway {gateway_id} reconnected — sending full config")
 
-    # Drain queued config
+    # Drain queued config. Pool availability is included on every heartbeat so
+    # all gateways in an org converge after another gateway depletes or funds a
+    # pool; the reporting gateway also receives the same state immediately in
+    # the cost-ingestion response.
     queued = config_queue.pop(gateway_id, [])
-    if queued:
-        response["config_updates"] = queued
+    from control_plane.routers.broker_pilot import pool_snapshot
+
+    queued.append(
+        {
+            "broker_pools": await pool_snapshot(
+                db, gateway.org_id or "default"
+            )
+        }
+    )
+    response["config_updates"] = queued
 
     return response
 
