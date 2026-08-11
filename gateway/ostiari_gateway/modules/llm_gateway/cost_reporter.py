@@ -61,6 +61,8 @@ class CostReporter:
         agent_id: str = "unknown",
         action: str = "",
         provider: str = "",
+        experiment_name: str = "",
+        experiment_variant: str = "",
         cost_usd: float | None = None,
         record_quota: bool = True,
     ) -> None:
@@ -90,6 +92,8 @@ class CostReporter:
             "gateway_id": self._sidecar_id,
             "agent_id": agent_id,
             "model": model,
+            "experiment_name": experiment_name,
+            "experiment_variant": experiment_variant,
             "provider": provider,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,

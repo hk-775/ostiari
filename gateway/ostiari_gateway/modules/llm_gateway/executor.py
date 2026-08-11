@@ -123,7 +123,14 @@ class AgenticExecutor:
         """Run the full agentic loop."""
         # Pass messages to router context for smart routing (task classification)
         router_context = {**request.context, "messages": request.messages}
+        # These keys are router output, not caller input. Clear any forged values
+        # before model selection so usage cannot be attributed to an experiment
+        # the request never entered (especially when model_override skips routing).
+        router_context.pop("_ab_experiment", None)
+        router_context.pop("_ab_variant", None)
         model = request.model_override or self._router.select_model(router_context)
+        experiment_name = str(router_context.get("_ab_experiment", "") or "")
+        experiment_variant = str(router_context.get("_ab_variant", "") or "")
         fallback_chain = self._router.get_fallback_chain(model)
 
         # Authorize the selected model/provider and consume one request from the
@@ -142,6 +149,8 @@ class AgenticExecutor:
                 return InvokeResponse(
                     response=f"Request blocked: {agent_decision.reason}",
                     model_used=model, total_tokens=0, rounds=0,
+                    ab_experiment=experiment_name or None,
+                    ab_variant=experiment_variant or None,
                 )
 
         # Build tool specs from registered tools
@@ -158,6 +167,8 @@ class AgenticExecutor:
                 model_used=model,
                 total_tokens=0,
                 rounds=0,
+                ab_experiment=experiment_name or None,
+                ab_variant=experiment_variant or None,
             )
 
         all_tool_calls: list[dict[str, Any]] = []
@@ -189,6 +200,8 @@ class AgenticExecutor:
                     model_used=model,
                     total_tokens=0,
                     rounds=0,
+                    ab_experiment=experiment_name or None,
+                    ab_variant=experiment_variant or None,
                 )
 
         # Intent Cache: check if we've seen this intent before in this agent's session
@@ -247,6 +260,8 @@ class AgenticExecutor:
                             total_tokens=total_tokens,
                             rounds=round_num,
                             cache_hit=served_from_cache,
+                            ab_experiment=experiment_name or None,
+                            ab_variant=experiment_variant or None,
                         )
                     agent_reservation_id = agent_round.reservation_id
                 try:
@@ -291,6 +306,8 @@ class AgenticExecutor:
                     agent_id=request.context.get("agent_id", "unknown"),
                     action="invoke",
                     provider=llm_response.provider,
+                    experiment_name=experiment_name,
+                    experiment_variant=experiment_variant,
                 )
 
                 # Settle the per-round agent reservation with actual provider
@@ -320,8 +337,8 @@ class AgenticExecutor:
                     response=llm_response.content or "",
                     model_used=model_used,
                     tool_calls=all_tool_calls,
-                    ab_experiment=request.context.get("_ab_experiment"),
-                    ab_variant=request.context.get("_ab_variant"),
+                    ab_experiment=experiment_name or None,
+                    ab_variant=experiment_variant or None,
                     blocked_actions=blocked_actions,
                     total_tokens=total_tokens,
                     rounds=round_num + 1,
@@ -449,6 +466,8 @@ class AgenticExecutor:
             total_tokens=total_tokens,
             rounds=self._config.max_tool_rounds,
             cache_hit=served_from_cache,
+            ab_experiment=experiment_name or None,
+            ab_variant=experiment_variant or None,
         )
 
     async def _call_llm(

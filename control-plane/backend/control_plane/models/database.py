@@ -147,6 +147,11 @@ class UsageRecord(Base):
     event_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     agent_id: Mapped[str] = mapped_column(String(128), default="unknown")
     model: Mapped[str] = mapped_column(String(128))
+    # Assignment made by Ostiari's A/B router. These stay attached to the usage
+    # event even when provider fallback serves a model other than the variant's
+    # configured model, so results use intention-to-treat cohorts.
+    experiment_name: Mapped[str] = mapped_column(String(128), default="")
+    experiment_variant: Mapped[str] = mapped_column(String(8), default="")
     # Actual provider that served the model (canonical broker pool name). Older
     # clients leave this empty and ingestion derives it from the model.
     provider: Mapped[str] = mapped_column(String(64), default="")

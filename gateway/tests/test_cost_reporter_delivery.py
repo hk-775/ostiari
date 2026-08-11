@@ -20,6 +20,8 @@ async def _buffer_one(reporter: CostReporter) -> None:
         total_tokens=15,
         agent_id="billing-test",
         action="invoke",
+        experiment_name="latency-test",
+        experiment_variant="B",
     )
 
 
@@ -64,7 +66,10 @@ class TestCostReporterDelivery:
             "X-Ostiari-Service-Key": "service-secret"
         }
         assert client.calls[0]["url"] == "http://cp.local/api/costs/record/batch"
-        assert client.calls[0]["json"][0]["event_id"]
+        record = client.calls[0]["json"][0]
+        assert record["event_id"]
+        assert record["experiment_name"] == "latency-test"
+        assert record["experiment_variant"] == "B"
         assert reporter._buffer == []
 
     async def test_http_failure_retains_and_retries_same_batch(self):

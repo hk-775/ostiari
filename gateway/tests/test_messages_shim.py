@@ -286,3 +286,50 @@ class TestCrossProviderRouting:
         assert "event: message_start" in body
         assert "streamed" in body
         assert "event: message_stop" in body
+
+    def test_direct_route_reports_experiment_assignment(self):
+        from ostiari_gateway.modules.llm_gateway.cost_reporter import CostReporter
+        from ostiari_gateway.modules.llm_gateway.messages_proxy import MessagesProxy
+
+        client = _app(llm={
+            "default_model": "claude-sonnet-4-6",
+            "ab_experiments": [{
+                "name": "shim-quality",
+                "model_a": "claude-sonnet-4-6",
+                "model_b": "gpt-4o",
+                "traffic_pct_b": 100,
+            }],
+        })
+        reported = []
+
+        async def capture_report(_self, **kwargs):
+            reported.append(kwargs)
+
+        async def no_flush(_self):
+            return None
+
+        fake = SimpleNamespace(
+            id="cmpl_exp",
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(content="treatment", tool_calls=None),
+                finish_reason="stop",
+            )],
+            usage=SimpleNamespace(prompt_tokens=11, completion_tokens=4),
+        )
+        with patch.object(MessagesProxy, "_openai_like_call", return_value=fake), \
+             patch.object(CostReporter, "report", new=capture_report), \
+             patch.object(CostReporter, "flush", new=no_flush):
+            response = client.post(
+                "/v1/messages",
+                headers={"X-Agent-Id": "experiment-agent"},
+                json={
+                    "model": "claude-sonnet-4-6",
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "stream": False,
+                },
+            )
+
+        assert response.status_code == 200
+        assert reported[0]["experiment_name"] == "shim-quality"
+        assert reported[0]["experiment_variant"] == "B"
+        assert reported[0]["model"] == "gpt-4o"
