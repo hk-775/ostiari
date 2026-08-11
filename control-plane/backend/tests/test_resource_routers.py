@@ -12,6 +12,34 @@ async def _make_gateway(client, gid="gw1"):
     })
 
 
+@pytest.fixture
+def policy_pushes(monkeypatch):
+    from control_plane.services import push_service
+
+    calls = []
+
+    class _Response:
+        status_code = 200
+        text = ""
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, json):
+            calls.append({"url": url, "json": json})
+            return _Response()
+
+    monkeypatch.setattr(push_service.httpx, "AsyncClient", _Client)
+    return calls
+
+
 # ─── Gateways (DB-backed) ────────────────────────────────────────────────────
 
 class TestGateways:
@@ -111,6 +139,73 @@ class TestPolicies:
 
     async def test_push_missing_404(self, client):
         assert (await client.post("/api/policies/99999/push")).status_code == 404
+
+    async def test_gateway_push_uses_effective_merged_policy(
+        self, client, policy_pushes
+    ):
+        await _make_gateway(client)
+        await client.post("/api/policies", json={
+            "name": "global-policy",
+            "content": {"allow": ["search"], "threshold": 0.5},
+        })
+        specific = await client.post("/api/policies", json={
+            "name": "gateway-policy",
+            "gateway_id": "gw1",
+            "content": {"block": ["delete"], "threshold": 0.8},
+        })
+
+        response = await client.post(
+            f"/api/policies/{specific.json()['id']}/push"
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "results": [
+                {"gateway_id": "gw1", "status": "success", "message": ""}
+            ],
+            "total": 1,
+            "succeeded": 1,
+            "failed": 0,
+        }
+        assert policy_pushes == [{
+            "url": "http://localhost:9001/config/policy",
+            "json": {
+                "allow": ["search"],
+                "block": ["delete"],
+                "threshold": 0.8,
+            },
+        }]
+
+    async def test_global_policy_pushes_each_gateway_effective_policy(
+        self, client, policy_pushes
+    ):
+        await _make_gateway(client, "gw1")
+        await _make_gateway(client, "gw2")
+        global_policy = await client.post("/api/policies", json={
+            "name": "global-push",
+            "content": {"block": ["dangerous"], "threshold": 0.4},
+        })
+        await client.post("/api/policies", json={
+            "name": "gw1-override",
+            "gateway_id": "gw1",
+            "content": {"threshold": 0.9},
+        })
+
+        response = await client.post(
+            f"/api/policies/{global_policy.json()['id']}/push"
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["total"] == 2
+        assert response.json()["succeeded"] == 2
+        payloads = {
+            call["json"]["threshold"]: call["json"]
+            for call in policy_pushes
+        }
+        assert payloads == {
+            0.9: {"block": ["dangerous"], "threshold": 0.9},
+            0.4: {"block": ["dangerous"], "threshold": 0.4},
+        }
 
 
 # ─── Model config (in-memory) ────────────────────────────────────────────────
