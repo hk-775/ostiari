@@ -39,6 +39,7 @@ def anyio_backend() -> str:
 
 def _reset_in_memory_state() -> None:
     """Clear module-level state used by in-memory routers between tests."""
+    from control_plane.auth import sso, sso_router
     from control_plane.routers import (
         agent_routing,
         agents,
@@ -51,6 +52,7 @@ def _reset_in_memory_state() -> None:
     )
 
     for mod, attr in (
+        (sso_router, "_pending_states"),
         (agents, "_agents"),
         (approvals, "_pending"),
         (agent_routing, "_policies"),
@@ -69,6 +71,7 @@ def _reset_in_memory_state() -> None:
         obj = getattr(mod, attr, None)
         if obj is not None and hasattr(obj, "clear"):
             obj.clear()
+    sso.clear_caches()
 
 
 @pytest.fixture
