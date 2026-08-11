@@ -78,6 +78,75 @@ class TestExperiments:
         })
         assert r.status_code == 422  # ge=1, le=99
 
+    async def test_results_use_recorded_variant_not_serving_model(self, client):
+        created = await client.post("/api/experiments", json={
+            "name": "precise-results",
+            "model_a": "model-a",
+            "model_b": "model-b",
+            "traffic_pct_b": 50,
+            "gateway_id": "gw1",
+        })
+        assert created.status_code == 200, created.text
+
+        records = [
+            {
+                "event_id": "exp-a-fallback",
+                "model": "fallback-model",
+                "experiment_name": "precise-results",
+                "experiment_variant": "A",
+                "total_tokens": 100,
+                "cost_usd": 0.10,
+            },
+            {
+                "event_id": "exp-b",
+                "model": "model-b",
+                "experiment_name": "precise-results",
+                "experiment_variant": "B",
+                "total_tokens": 200,
+                "cost_usd": 0.20,
+            },
+            {
+                "event_id": "same-model-unrelated",
+                "model": "model-b",
+                "total_tokens": 900,
+                "cost_usd": 9.00,
+            },
+            {
+                "event_id": "different-experiment",
+                "model": "model-a",
+                "experiment_name": "other-experiment",
+                "experiment_variant": "A",
+                "total_tokens": 800,
+                "cost_usd": 8.00,
+            },
+        ]
+        for record in records:
+            response = await client.post(
+                "/api/costs/record",
+                json={"gateway_id": "gw1", "agent_id": "agent-1", **record},
+            )
+            assert response.status_code == 200, response.text
+
+        results = (
+            await client.get("/api/experiments/precise-results/results")
+        ).json()
+        assert results["model_a"] == {
+            "model": "model-a",
+            "requests": 1,
+            "total_tokens": 100,
+            "total_cost": 0.1,
+            "avg_tokens": 100,
+            "avg_cost": 0.1,
+        }
+        assert results["model_b"] == {
+            "model": "model-b",
+            "requests": 1,
+            "total_tokens": 200,
+            "total_cost": 0.2,
+            "avg_tokens": 200,
+            "avg_cost": 0.2,
+        }
+
 
 # ─── Providers (in-memory, admin-gated) ──────────────────────────────────────
 

@@ -223,7 +223,14 @@ class MessagesProxy:
                         len(body.get("tools") or []))
 
         # ── Fallback: no AxonLLM — Ostiari's own ModelRouter + direct call ─
-        model = self._route(agent_id, requested_model, flat, session_id)
+        routing_meta: dict[str, str] = {}
+        model = self._route(
+            agent_id,
+            requested_model,
+            flat,
+            session_id,
+            routing_meta=routing_meta,
+        )
         try:
             model = self._direct_model(model)
         except BrokerPoolDepletedError as e:
@@ -243,22 +250,38 @@ class MessagesProxy:
         provider = _provider_of(model)
         meta = {"agent_id": agent_id, "framework": framework, "session_id": session_id,
                 "model": model, "routed": routed, "reservation_id": reservation_id,
-                "agent_reservation_id": agent_reservation_id}
+                "agent_reservation_id": agent_reservation_id, **routing_meta}
         if provider == "anthropic":
             return await self._forward_anthropic(request, body, model, streaming, meta)
         return await self._forward_translated(body, model, provider, streaming, meta)
 
     # ── routing ──────────────────────────────────────────────────────────
-    def _route(self, agent_id: str, requested_model: str, flat: list[dict[str, str]],
-               session_id: str = "") -> str:
+    def _route(
+        self,
+        agent_id: str,
+        requested_model: str,
+        flat: list[dict[str, str]],
+        session_id: str = "",
+        *,
+        routing_meta: dict[str, str] | None = None,
+    ) -> str:
         if self._router is None:
             return requested_model
+        context = {
+            "agent_id": agent_id,
+            "messages": flat,
+            "session_id": session_id,
+        }
         try:
-            selected = self._router.select_model(
-                {"agent_id": agent_id, "messages": flat, "session_id": session_id})
+            selected = self._router.select_model(context)
         except Exception as e:  # noqa: BLE001 — routing must never break the call
             log.debug("Routing failed, using requested model: %s", e)
             return requested_model
+        if routing_meta is not None:
+            routing_meta.update({
+                "experiment_name": str(context.get("_ab_experiment", "") or ""),
+                "experiment_variant": str(context.get("_ab_variant", "") or ""),
+            })
         if selected and selected != requested_model:
             log.info("Content routing: %s -> %s (agent=%s)", requested_model or "?", selected, agent_id)
             return selected
@@ -339,7 +362,9 @@ class MessagesProxy:
                                 provider="anthropic",
                                 reason=None if resp.status_code == 200 else "upstream error",
                                 reservation_id=meta.get("reservation_id"),
-                                agent_reservation_id=meta.get("agent_reservation_id"))
+                                agent_reservation_id=meta.get("agent_reservation_id"),
+                                experiment_name=meta.get("experiment_name", ""),
+                                experiment_variant=meta.get("experiment_variant", ""))
             return JSONResponse(status_code=resp.status_code, content=payload)
 
         # streaming: relay raw SSE bytes untouched, scrape usage from the tail
@@ -388,7 +413,9 @@ class MessagesProxy:
                                     tier="allow", usage=_scrape_usage(scan), routed=meta["routed"],
                                     provider="anthropic",
                                     reservation_id=meta.get("reservation_id"),
-                                    agent_reservation_id=meta.get("agent_reservation_id"))
+                                    agent_reservation_id=meta.get("agent_reservation_id"),
+                                    experiment_name=meta.get("experiment_name", ""),
+                                    experiment_variant=meta.get("experiment_variant", ""))
 
         return StreamingResponse(relay(), media_type="text/event-stream")
 
@@ -421,7 +448,9 @@ class MessagesProxy:
                            tier="allow", usage=usage, routed=meta["routed"],
                            provider=provider,
                            reservation_id=meta.get("reservation_id"),
-                           agent_reservation_id=meta.get("agent_reservation_id"))
+                           agent_reservation_id=meta.get("agent_reservation_id"),
+                           experiment_name=meta.get("experiment_name", ""),
+                           experiment_variant=meta.get("experiment_variant", ""))
 
         if not streaming:
             return JSONResponse(status_code=200, content=anthropic_msg)
@@ -664,6 +693,8 @@ class MessagesProxy:
         routed: bool = False, provider: str = "", limit_type: str = "",
         reservation_id: int | None = None,
         agent_reservation_id: int | None = None,
+        experiment_name: str = "",
+        experiment_variant: str = "",
     ) -> None:
         in_tok = int((usage or {}).get("input_tokens", 0) or 0)
         out_tok = int((usage or {}).get("output_tokens", 0) or 0)
@@ -705,6 +736,8 @@ class MessagesProxy:
                     agent_id=agent_id,
                     action="messages",
                     provider=provider,
+                    experiment_name=experiment_name,
+                    experiment_variant=experiment_variant,
                     cost_usd=cost,
                     record_quota=False,
                 )
@@ -719,7 +752,9 @@ class MessagesProxy:
                     agent_id=agent_id, framework=framework, endpoint=f"llm://{model}",
                     session_id=session_id, model=model, blocked_reason=reason, limit_type=limit_type,
                     params={"input_tokens": in_tok, "output_tokens": out_tok,
-                            "routed": routed, "provider": provider},
+                            "routed": routed, "provider": provider,
+                            "experiment_name": experiment_name,
+                            "experiment_variant": experiment_variant},
                 )
             except Exception as e:  # noqa: BLE001
                 log.debug("Trace report failed: %s", e)

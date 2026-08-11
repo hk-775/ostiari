@@ -177,6 +177,105 @@ class TestLLMGatewayInvoke:
             assert data["model_used"] == "claude-sonnet-4-6"
             assert data["rounds"] == 1
 
+    def test_invoke_reports_experiment_assignment_across_fallback(
+        self, client_with_mock_llm
+    ):
+        from ostiari_gateway.modules.llm_gateway.cost_reporter import CostReporter
+        from ostiari_gateway.modules.llm_gateway.providers import LLMResponse
+
+        configured = client_with_mock_llm.post(
+            "/config/ab-experiments",
+            json={
+                "ab_experiments": [{
+                    "name": "quality-test",
+                    "model_a": "model-a",
+                    "model_b": "model-b",
+                    "traffic_pct_b": 100,
+                }],
+            },
+        )
+        assert configured.status_code == 200, configured.text
+        reported = []
+
+        async def capture_report(_self, **kwargs):
+            reported.append(kwargs)
+
+        async def no_flush(_self):
+            return None
+
+        fallback_response = LLMResponse(
+            content="served by fallback",
+            model="fallback-model",
+            provider="openai",
+            input_tokens=10,
+            output_tokens=5,
+        )
+        with patch(
+            "ostiari_gateway.modules.llm_gateway.executor.AgenticExecutor._call_with_fallback",
+            return_value=fallback_response,
+        ), patch.object(CostReporter, "report", new=capture_report), patch.object(
+            CostReporter, "flush", new=no_flush
+        ):
+            response = client_with_mock_llm.post(
+                "/invoke",
+                json={
+                    "messages": [{"role": "user", "content": "Run experiment"}],
+                    "context": {"agent_id": "experiment-agent"},
+                },
+            )
+
+        assert response.status_code == 200
+        assert response.json()["ab_experiment"] == "quality-test"
+        assert response.json()["ab_variant"] == "B"
+        assert response.json()["model_used"] == "fallback-model"
+        assert reported[0]["experiment_name"] == "quality-test"
+        assert reported[0]["experiment_variant"] == "B"
+        assert reported[0]["model"] == "fallback-model"
+
+    def test_invoke_rejects_forged_experiment_context(
+        self, client_with_mock_llm
+    ):
+        from ostiari_gateway.modules.llm_gateway.cost_reporter import CostReporter
+        from ostiari_gateway.modules.llm_gateway.providers import LLMResponse
+
+        reported = []
+
+        async def capture_report(_self, **kwargs):
+            reported.append(kwargs)
+
+        async def no_flush(_self):
+            return None
+
+        with patch(
+            "ostiari_gateway.modules.llm_gateway.executor.AgenticExecutor._call_with_fallback",
+            return_value=LLMResponse(
+                content="not attributed",
+                model="model-override",
+                input_tokens=2,
+                output_tokens=1,
+            ),
+        ), patch.object(CostReporter, "report", new=capture_report), patch.object(
+            CostReporter, "flush", new=no_flush
+        ):
+            response = client_with_mock_llm.post(
+                "/invoke",
+                json={
+                    "model_override": "model-override",
+                    "messages": [{"role": "user", "content": "Spoof experiment"}],
+                    "context": {
+                        "agent_id": "caller",
+                        "_ab_experiment": "forged",
+                        "_ab_variant": "B",
+                    },
+                },
+            )
+
+        assert response.status_code == 200
+        assert response.json()["ab_experiment"] is None
+        assert response.json()["ab_variant"] is None
+        assert reported[0]["experiment_name"] == ""
+        assert reported[0]["experiment_variant"] == ""
+
     def test_invoke_with_tool_call(self, client_with_mock_llm):
         """Test the full agentic loop: LLM → tool call → result → final response."""
         from ostiari_gateway.modules.llm_gateway.providers import LLMResponse, ToolCall

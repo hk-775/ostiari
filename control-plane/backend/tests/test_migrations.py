@@ -52,6 +52,10 @@ def test_upgrade_head_creates_org_schema():
             for t in ("gateways", "tools", "policies", "wallets", "usage_records", "audit_logs", "users"):
                 cols = {r[1] for r in con.execute(f"PRAGMA table_info({t})")}
                 assert "org_id" in cols, f"{t} missing org_id"
+            usage_cols = {
+                r[1] for r in con.execute("PRAGMA table_info(usage_records)")
+            }
+            assert {"experiment_name", "experiment_variant"} <= usage_cols
             con.close()
         finally:
             _restore_env(prev)
