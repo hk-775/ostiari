@@ -335,7 +335,7 @@ Optional. Set per-agent wallets and paywalled-tool pricing so tool calls settle 
 curl -X POST http://localhost:8421/config/payments \
   -H "Content-Type: application/json" \
   -d '{
-    "mode": "simulated",
+    "mode": "metered",
     "default": 0.0,
     "overrides": {"premium_search": 0.005},
     "wallets": [
@@ -344,7 +344,32 @@ curl -X POST http://localhost:8421/config/payments \
   }'
 ```
 
-`mode` is `off` | `simulated` | `passthrough`; `overrides` maps tool name → USDC price; `wallets` is a list of per-agent wallets.
+`mode` is `off` | `metered` | `passthrough`; `overrides` maps tool name → USDC
+price; `wallets` is a list of per-agent policy wallets. The default settlement
+backend is simulated.
+
+For real downstream x402 v2 payments, install the payment extra and run the
+gateway in `passthrough` mode:
+
+```bash
+pip install -e "gateway/[payments]"
+export OSTIARI_X402_MODE=live
+export OSTIARI_X402_PRIVATE_KEY='0x...'
+```
+
+The downstream tool must return a standard `PAYMENT-REQUIRED` challenge using
+the `exact` scheme on an EVM network and must return `PAYMENT-RESPONSE` after
+settlement. Ostiari pins the fresh retry challenge to the amount, payee, network,
+scheme, and token contract it approved. Base mainnet and Base Sepolia USDC are
+allowed by default. Add other 6-decimal USDC contracts with
+`OSTIARI_X402_ALLOWED_ASSETS='{"eip155:<chain-id>":["0x..."]}'`. Live `metered`
+mode is rejected because that seller flow requires a caller-supplied payment
+signature; use `metered` with the simulated ledger or `passthrough` for live
+x402.
+
+The private key is the gateway's shared payer. Inject it from your deployment
+secret manager; do not put it in YAML, the control-plane database, or source
+control. Per-agent Ostiari wallets remain policy allowances around that payer.
 
 ### 1.3.9 Enforcement mode (enforce vs shadow)
 

@@ -166,6 +166,11 @@ export function TokenBroker() {
             <span className="text-xs font-normal text-stone-400">
               billing: {collector?.mode ?? "…"}
             </span>
+            {collector?.mode === "live" && collector.configured === false && (
+              <span className="inline-flex items-center gap-1 text-xs font-medium text-rose-600">
+                <AlertTriangle className="h-3 w-3" /> Stripe not configured
+              </span>
+            )}
           </h2>
         </div>
         <table className="w-full">

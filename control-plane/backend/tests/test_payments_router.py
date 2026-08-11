@@ -173,6 +173,89 @@ class TestIngest:
         w = next(x for x in (await client.get("/api/payments/wallets")).json() if x["agent_id"] == "a")
         assert w["status"] == "paused"
 
+    async def test_identical_retry_is_recorded_and_debited_once(self, client):
+        await _wallet(client, agent_id="a", balance=1.0)
+        event = {
+            "event_id": "pay-evt-1",
+            "agent_id": "a",
+            "gateway_id": "crm-agent",
+            "action": "premium_search",
+            "amount_usdc": 0.005,
+            "settled": True,
+            "tx_hash": "0xtx",
+            "mode": "live",
+            "source": "tool_402",
+        }
+
+        first = await client.post("/api/payments/ingest", json=event)
+        retry = await client.post("/api/payments/ingest", json=event)
+
+        assert first.status_code == 200
+        assert first.json()["recorded"] is True
+        assert retry.status_code == 200
+        assert retry.json()["duplicate"] is True
+        assert len((await client.get("/api/payments/ledger")).json()) == 1
+        wallet = (await client.get("/api/payments/wallets")).json()[0]
+        assert wallet["balance_usdc"] == pytest.approx(0.995)
+
+    async def test_reused_event_id_with_different_payment_conflicts(self, client):
+        event = {
+            "event_id": "pay-evt-1",
+            "agent_id": "a",
+            "gateway_id": "crm-agent",
+            "action": "premium_search",
+            "amount_usdc": 0.005,
+            "settled": False,
+        }
+        assert (await client.post("/api/payments/ingest", json=event)).status_code == 200
+
+        conflict = await client.post(
+            "/api/payments/ingest",
+            json={**event, "amount_usdc": 0.006},
+        )
+
+        assert conflict.status_code == 409
+        assert len((await client.get("/api/payments/ledger")).json()) == 1
+
+    async def test_negative_payment_is_rejected(self, client):
+        response = await client.post(
+            "/api/payments/ingest",
+            json={
+                "event_id": "negative",
+                "agent_id": "a",
+                "amount_usdc": -1,
+            },
+        )
+        assert response.status_code == 422
+
+    async def test_unconfirmed_live_attempt_keeps_wallet_allowance_consumed(self, client):
+        await _wallet(client, agent_id="a", balance=1.0)
+        response = await client.post(
+            "/api/payments/ingest",
+            json={
+                "event_id": "live-unconfirmed",
+                "agent_id": "a",
+                "gateway_id": "crm-agent",
+                "action": "premium_search",
+                "amount_usdc": 0.005,
+                "settled": False,
+                "wallet_debited": True,
+                "mode": "live",
+                "source": "tool_402",
+                "reason": "PAYMENT-RESPONSE missing",
+            },
+        )
+        assert response.status_code == 200
+        wallet = (await client.get("/api/payments/wallets")).json()[0]
+        assert wallet["balance_usdc"] == pytest.approx(0.995)
+        ledger = (await client.get("/api/payments/ledger")).json()[0]
+        assert ledger["settled"] is False
+        assert ledger["wallet_debited"] is True
+        assert ledger["reason"] == "PAYMENT-RESPONSE missing"
+        summary = (await client.get("/api/payments/summary")).json()
+        assert summary["settled_count"] == 0
+        assert summary["blocked_count"] == 1
+
 
 class TestPush:
     async def test_push_missing_gateway_404(self, client):

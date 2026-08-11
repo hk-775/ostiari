@@ -44,7 +44,7 @@ the gateway or control plane.
 | A2A | Agent cards, JSON-RPC tasks, peer registration, delegation policy, trust reports | `gateway/ostiari_gateway/a2a/`, control-plane A2A and trust routers |
 | Human approval | Asynchronous intervene queue and decision resubmission | Gateway HITL path, `/api/approvals` |
 | Cost control | RPM limits, token caps, model allowlists, projected budgets, alerts, optional Redis sharing | `quota_enforcer.py`, `/api/quotas` |
-| Payments | Tool pricing, wallets, limits, ledger, simulated settlement, and a live-settlement extension point | `gateway/ostiari_gateway/payments/`, `/api/payments` |
+| Payments | Tool pricing, wallets, limits, retry-safe ledger, simulated settlement, and live x402 v2 passthrough | `gateway/ostiari_gateway/payments/`, `/api/payments` |
 | Observability | Governance traces, spans, WebSocket stream, OTLP export, shadow and delegation reports | Trace reporter, `/api/traces/*`, `/ws/traces` |
 | Fleet operations | Registration, heartbeat, config bundles, immediate push, queued push | Gateway lifecycle, `/api/gateways/*` |
 | Administration | Local login, users, roles, optional OIDC SSO, provider credentials | Control-plane auth and provider routers |
@@ -311,8 +311,10 @@ flowchart LR
     Price --> Limits[Wallet, per-call, daily limits]
     Limits --> Settle{Settlement mode}
     Settle -->|simulated| Ledger[Record simulated debit]
-    Settle -->|custom live adapter| External[External settlement]
-    Settle -->|passthrough 402| Upstream[Forward payment challenge]
+    Settle -->|live passthrough| Challenge[Validate PAYMENT-REQUIRED]
+    Challenge --> Sign[Official x402 SDK signs and retries]
+    Sign --> Confirm[Require PAYMENT-RESPONSE]
+    Confirm --> External[On-chain settlement]
     Ledger --> Execute[Execute tool]
     External --> Execute
 ```
@@ -323,9 +325,10 @@ charging, provider-pool inventory, configurable markup, low-water routing
 enforcement, and reconciliation reports. Gateways receive pool state in usage
 responses and heartbeats, reroute when another funded provider is available, and
 return `503` before calling an explicitly depleted provider when none is
-available. External money movement in the demo is simulated. The included
-`X402Settler` is a stub, so live USDC settlement requires implementing the
-facilitator and signer integration.
+available. External money movement in the demo remains simulated. Production
+gateways can install the `payments` extra and enable the live x402 v2 buyer for
+`passthrough` tools. Broker billing can emit retry-safe Stripe Meter Events;
+customer mapping and meter configuration remain deployment responsibilities.
 
 ## 12. Tracing, Audit, and Reporting
 

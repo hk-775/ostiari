@@ -34,6 +34,8 @@ class TraceReporter:
         self._spend_task: asyncio.Task | None = None
         self._agent_auth: Any = None
         self._pending_reset_at: str | None = None
+        self._payment_buffer: list[dict[str, Any]] = []
+        self._payment_flush_lock = asyncio.Lock()
 
     @staticmethod
     def _service_headers() -> dict[str, str]:
@@ -137,23 +139,56 @@ class TraceReporter:
         tx_hash: str = "",
         mode: str = "simulated",
         source: str = "policy",
+        reason: str = "",
+        event_id: str = "",
+        wallet_debited: bool | None = None,
     ) -> None:
         """Report an x402 charge (settled or blocked) to the control-plane ledger.
 
-        Fire-and-forget, like trace reporting — never blocks the response.
+        Failed deliveries remain queued with the same event id and retry on the
+        next payment, persistence tick, or graceful shutdown.
         """
         if not self.enabled:
             return
-        if self._client is None:
-            self._client = httpx.AsyncClient(timeout=3.0)
-        try:
-            await self._client.post(f"{self._url}/api/payments/ingest", json={
-                "agent_id": agent_id, "gateway_id": self._sidecar_id, "action": action,
-                "amount_usdc": amount_usdc, "settled": settled, "tx_hash": tx_hash,
-                "mode": mode, "source": source,
-            }, headers=self._service_headers())
-        except Exception as e:
-            log.debug("Failed to report payment: %s", e)
+        self._payment_buffer.append({
+            "event_id": event_id or uuid.uuid4().hex,
+            "agent_id": agent_id,
+            "gateway_id": self._sidecar_id,
+            "action": action,
+            "amount_usdc": amount_usdc,
+            "settled": settled,
+            "wallet_debited": settled if wallet_debited is None else wallet_debited,
+            "tx_hash": tx_hash,
+            "mode": mode,
+            "source": source,
+            "reason": reason,
+        })
+        await self.flush_payments()
+
+    async def flush_payments(self) -> None:
+        """Deliver queued ledger events in order, retaining failed events."""
+        if not self.enabled or not self._payment_buffer:
+            return
+        async with self._payment_flush_lock:
+            if self._client is None:
+                self._client = httpx.AsyncClient(timeout=3.0)
+            while self._payment_buffer:
+                event = self._payment_buffer[0]
+                try:
+                    response = await self._client.post(
+                        f"{self._url}/api/payments/ingest",
+                        json=event,
+                        headers=self._service_headers(),
+                    )
+                    response.raise_for_status()
+                except Exception as e:
+                    log.warning(
+                        "Failed to report payment %s; retained for retry: %s",
+                        event["event_id"],
+                        e,
+                    )
+                    return
+                del self._payment_buffer[0]
 
     async def report_budget_alert(
         self,
@@ -251,6 +286,7 @@ class TraceReporter:
             while True:
                 await asyncio.sleep(interval_seconds)
                 await self.push_spend_snapshot()
+                await self.flush_payments()
 
         self._spend_task = asyncio.create_task(_loop())
         log.info("Spend persistence started (every %.0fs)", interval_seconds)
@@ -261,6 +297,7 @@ class TraceReporter:
             self._spend_task = None
         if self._agent_auth:
             await self.push_spend_snapshot()
+        await self.flush_payments()
         if self._client:
             await self._client.aclose()
             self._client = None

@@ -10,6 +10,7 @@ data:
   OSTIARI_CONTROL_PLANE_URL: {{ .Values.gateway.controlPlaneUrl | quote }}
   OSTIARI_PORT: {{ .Values.gateway.port | quote }}
   OSTIARI_ENV: {{ .Values.gateway.env | default "" | quote }}
+  OSTIARI_X402_MODE: {{ .Values.payments.x402Mode | default "simulated" | quote }}
   # "on"/"off" rather than "true"/"false": the gateway parses this itself and
   # accepts either, but YAML would render the bare boolean unquoted and k8s
   # ConfigMap values must be strings.

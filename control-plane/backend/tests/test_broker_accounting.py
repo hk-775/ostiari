@@ -116,7 +116,7 @@ class TestBatchAccounting:
 
         assert len(broker.calls) == 1
         assert broker.calls[0]["amount_usd"] == pytest.approx(0.84)
-        assert broker.calls[0]["idempotency_key"] == "evt-1"
+        assert broker.calls[0]["idempotency_key"] == "broker-gw:evt-1"
 
         records = (await client.get("/api/costs/records")).json()
         assert len(records) == 1
@@ -202,8 +202,8 @@ class TestBatchAccounting:
         assert retry.json()["duplicates"] == 1
 
         assert [call["idempotency_key"] for call in collector.calls] == [
-            "evt-1",
-            "evt-1",
+            "broker-gw:evt-1",
+            "broker-gw:evt-1",
         ]
         pools = (await client.get("/api/token-broker/pilot/pools")).json()
         assert pools[0]["consumed_tokens"] == 950
