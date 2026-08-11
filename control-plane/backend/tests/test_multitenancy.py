@@ -96,6 +96,29 @@ class TestPoliciesIsolation:
         assert "pol-a" in a_names and "pol-b" not in a_names
         assert "pol-b" in b_names and "pol-a" not in b_names
 
+    async def test_policy_cannot_target_another_orgs_gateway(self, client):
+        await client.post(
+            "/api/gateways",
+            headers=ORG_A,
+            json={
+                "id": "a-policy-gw",
+                "name": "A",
+                "endpoint": "http://a:8421",
+                "description": "",
+            },
+        )
+        response = await client.post(
+            "/api/policies",
+            headers=ORG_B,
+            json={
+                "name": "cross-org-policy",
+                "gateway_id": "a-policy-gw",
+                "content": {"block": ["*"]},
+            },
+        )
+
+        assert response.status_code == 404
+
 
 class TestWalletsIsolation:
     async def test_wallets_isolated(self, client):

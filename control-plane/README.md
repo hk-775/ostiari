@@ -193,7 +193,7 @@ Authoritative source: `http://localhost:8400/docs` (generated from the app).
 | `/api/policies/{policy_id}` | GET | Get a policy |
 | `/api/policies/{policy_id}` | PATCH | Update a policy |
 | `/api/policies/{policy_id}` | DELETE | Remove a policy |
-| `/api/policies/{policy_id}/push` | POST | Push policy to its assigned gateway |
+| `/api/policies/{policy_id}/push` | POST | Push the effective policy set to its assigned gateway, or every org gateway for a global policy |
 
 ### MCP Servers
 

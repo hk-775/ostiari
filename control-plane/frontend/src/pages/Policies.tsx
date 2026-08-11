@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Trash2, Upload, FileText, Pencil, Check, Clock } from "lucide-react";
+import { Plus, Trash2, Upload, FileText, Pencil, Check, Clock, CircleAlert } from "lucide-react";
 import { api, Policy } from "../lib/api";
 
 export function Policies() {
@@ -12,6 +12,7 @@ export function Policies() {
   const [editContent, setEditContent] = useState("");
   const [editError, setEditError] = useState("");
   const [pushStatus, setPushStatus] = useState<Record<number, string>>({});
+  const [pushMessage, setPushMessage] = useState<Record<number, string>>({});
 
   const createMutation = useMutation({
     mutationFn: (data: { name: string; content: string }) =>
@@ -88,30 +89,44 @@ export function Policies() {
                   <Pencil className="h-4 w-4" />
                 </button>
                 <button onClick={async () => {
-                  const gatewayId = p.gateway_id || "";
-                  if (!gatewayId) {
-                    setPushStatus(prev => ({ ...prev, [p.id]: "error" }));
-                    setTimeout(() => setPushStatus(prev => ({ ...prev, [p.id]: "" })), 2000);
-                    return;
-                  }
                   setPushStatus(prev => ({ ...prev, [p.id]: "pushing" }));
+                  setPushMessage(prev => ({ ...prev, [p.id]: "" }));
                   try {
-                    const res = await api.gateways.pushConfig(gatewayId, { policy: p.content });
-                    if (res.status === "applied") {
+                    const res = await api.policies.push(p.id);
+                    if (res.total > 0 && res.failed === 0) {
                       setPushStatus(prev => ({ ...prev, [p.id]: "done" }));
-                    } else if (res.status === "queued") {
-                      setPushStatus(prev => ({ ...prev, [p.id]: "queued" }));
+                    } else if (res.succeeded > 0) {
+                      setPushStatus(prev => ({ ...prev, [p.id]: "partial" }));
+                      setPushMessage(prev => ({
+                        ...prev,
+                        [p.id]: `${res.failed} of ${res.total} gateways failed`,
+                      }));
                     } else {
                       setPushStatus(prev => ({ ...prev, [p.id]: "error" }));
+                      setPushMessage(prev => ({
+                        ...prev,
+                        [p.id]: res.results[0]?.message || "No gateways accepted the policy",
+                      }));
                     }
-                    setTimeout(() => setPushStatus(prev => ({ ...prev, [p.id]: "" })), 3000);
-                  } catch {
+                    setTimeout(() => {
+                      setPushStatus(prev => ({ ...prev, [p.id]: "" }));
+                      setPushMessage(prev => ({ ...prev, [p.id]: "" }));
+                    }, 3000);
+                  } catch (error) {
                     setPushStatus(prev => ({ ...prev, [p.id]: "error" }));
-                    setTimeout(() => setPushStatus(prev => ({ ...prev, [p.id]: "" })), 2000);
+                    setPushMessage(prev => ({
+                      ...prev,
+                      [p.id]: error instanceof Error ? error.message : "Policy push failed",
+                    }));
+                    setTimeout(() => {
+                      setPushStatus(prev => ({ ...prev, [p.id]: "" }));
+                      setPushMessage(prev => ({ ...prev, [p.id]: "" }));
+                    }, 3000);
                   }
-                }} title="Push to gateway" className="rounded-xl p-2 text-stone-400 hover:bg-violet-50 hover:text-violet-600 transition">
+                }} disabled={pushStatus[p.id] === "pushing"} title={p.gateway_id ? "Push to gateway" : "Push to all gateways"} className="rounded-xl p-2 text-stone-400 hover:bg-violet-50 hover:text-violet-600 transition disabled:opacity-50">
                   {pushStatus[p.id] === "done" ? <Check className="h-4 w-4 text-emerald-600" /> :
-                   pushStatus[p.id] === "queued" ? <Clock className="h-4 w-4 text-amber-500" /> :
+                   pushStatus[p.id] === "partial" ? <Clock className="h-4 w-4 text-amber-500" /> :
+                   pushStatus[p.id] === "error" ? <CircleAlert className="h-4 w-4 text-rose-600" /> :
                    <Upload className="h-4 w-4" />}
                 </button>
                 <button onClick={() => deleteMutation.mutate(p.id)} title="Delete" className="rounded-xl p-2 text-stone-400 hover:bg-rose-50 hover:text-rose-600 transition">
@@ -119,6 +134,11 @@ export function Policies() {
                 </button>
               </div>
             </div>
+            {pushMessage[p.id] && (
+              <p className={`mt-2 text-xs font-medium ${pushStatus[p.id] === "partial" ? "text-amber-600" : "text-rose-600"}`}>
+                {pushMessage[p.id]}
+              </p>
+            )}
             {editingId === p.id ? (
               <div className="mt-3 space-y-2">
                 <textarea value={editContent} onChange={(e) => setEditContent(e.target.value)} rows={8} className="input w-full font-mono text-xs" />

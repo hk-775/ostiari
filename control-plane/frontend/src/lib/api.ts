@@ -127,6 +127,19 @@ export interface Policy {
   updated_at: string;
 }
 
+export interface PushResult {
+  gateway_id: string;
+  status: string;
+  message: string;
+}
+
+export interface PushResponse {
+  results: PushResult[];
+  total: number;
+  succeeded: number;
+  failed: number;
+}
+
 export interface McpServer {
   id: number;
   name: string;
@@ -240,7 +253,8 @@ export const api = {
     update: (id: number, data: Partial<Policy>) =>
       fetchAPI<Policy>(`/api/policies/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
     delete: (id: number) => fetchAPI(`/api/policies/${id}`, { method: "DELETE" }),
-    push: (id: number) => fetchAPI(`/api/policies/${id}/push`, { method: "POST" }),
+    push: (id: number) =>
+      fetchAPI<PushResponse>(`/api/policies/${id}/push`, { method: "POST" }),
   },
   mcpServers: {
     list: (gatewayId?: string) =>
