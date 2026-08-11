@@ -3014,7 +3014,7 @@ graph LR
     subgraph "Sandbox (Control Plane UI)"
         CHAT[Chat Tab<br/>Interactive LLM conversation]
         SCEN[Scenarios Tab<br/>One-click pre-built demos]
-        CODE[Code Tab<br/>Editor + fixed demo call]
+        CODE[Code Tab<br/>Isolated JavaScript Worker]
         A2A[A2A Tab<br/>Discover and task agents]
     end
 
@@ -3025,7 +3025,7 @@ graph LR
 
     CHAT -->|"sends messages"| INV
     SCEN -->|"calls tools"| TOOL
-    CODE -->|"calls db_query"| TOOL
+    CODE -->|"bounded ostiari.tool bridge"| TOOL
     A2A -->|"agent registry + tasks"| INV
 ```
 
@@ -3039,21 +3039,16 @@ The Sandbox sends real requests to a real gateway — it is not a mock or simula
 
 This makes the Sandbox a true integration testing environment, not just a playground.
 
-**It reaches the gateway through the control plane, and the target is hardcoded.**
-Every call goes to `${API_BASE}/api/proxy/gateway/crm-agent` — the browser never
-talks to the gateway directly (see the Gateway Proxy in
-[control-plane/docs/getting-started.md](../control-plane/docs/getting-started.md)),
-and the gateway id `crm-agent` is a constant in `Sandbox.tsx:5`, not a picker. A
-deployment whose gateway is registered under any other id gets 404s from the
-proxy on every tab.
+All requests reach gateways through the control plane; the browser never talks
+to a gateway directly. Chat, Scenarios, and A2A retain the demo
+`crm-agent` target. The Code tab lists registered gateways and binds each run to
+the selected tenant-owned gateway.
 
 Each tab and scenario sends its own fixed `X-Agent-Id` — `sandbox-chat`,
 `sandbox-scenario`, `sandbox-multistep`, `sandbox-blocked`, `sandbox-mcp`,
 `sandbox-code`, and `sandbox-a2a` (that last one also sends
 `X-Framework: a2a`) — so with `agent_auth` enabled all **seven** ids need grants or
-the corresponding tab is uniformly 403. The `sandbox-agent` id visible in the Code
-tab's template is an eighth string that is never actually sent, because the
-template isn't executed.
+the corresponding tab is uniformly 403.
 
 ### Chat Tab
 
@@ -3092,39 +3087,28 @@ Note the "Multi-Step Plan" card is described in the UI as "10 steps" but runs si
 
 ### Code Tab
 
-A code editor whose **tool calls are issued for real** — but whose code is not
-interpreted. `runCode` scans the editor for `/tool/<name>` calls, extracts each
-one's JSON body, and issues them sequentially through the gateway as
-`X-Agent-Id: sandbox-code`, streaming each response as it lands. There is no
-backend executor, so this is deliberately not `eval`: adding one would mean a
-remote-code endpoint on the control plane.
+The Code tab executes JavaScript in a dedicated Worker created inside a
+sandboxed iframe. The iframe has an opaque origin and a CSP with
+`connect-src 'none'`; the Worker receives no DOM, browser storage, bearer token,
+cookies, or filesystem. Removing the iframe terminates the run.
 
-What that boundary means in practice: the calls you write are the calls that
-happen, and they travel the full gate chain — but loops, conditionals, variables,
-and `print()` are not evaluated. A call inside an `if False:` is still issued. For
-real agent logic, run it locally against the gateway.
+The only privileged API is:
 
-Because the calls are governed, a refusal is a **result**, not a failure: `403`
-renders as `✗ BLOCKED` and `429` as `✗ QUOTA`, which is the distinction the
-scenario cards above get wrong. Body extraction handles `requests.post(json={...})`,
-`httpx`, `fetch(body: JSON.stringify({...}))`, and `curl -d '{...}'`, tolerating
-Python literals (`True`/`False`/`None`, single quotes), unquoted JS object keys, and
-trailing commas. A body it can't parse becomes `{}` rather than skipping the call.
-
-The default template exercises both outcomes:
-
-```python
-import requests
-
-GATEWAY = "/api/proxy/gateway/crm-agent"
-
-resp = requests.post(f"{GATEWAY}/tool/db_query", json={"sql": "SELECT * FROM users"})
-print(resp.status_code, resp.json())
-
-# A tool the default policy blocks — expect 403.
-resp = requests.post(f"{GATEWAY}/tool/db_delete", json={"table": "users"})
-print(resp.status_code, resp.json())
+```javascript
+const response = await ostiari.tool("db_query", { sql: "SELECT * FROM users" });
+console.log(response.status, response.body);
 ```
+
+Each call crosses the authenticated control-plane run API, which atomically
+counts it, validates tenant ownership and payload size, and forwards only
+sanitized `sandbox-code` headers to the selected gateway. The response returns
+to JavaScript as `{status, ok, body}`, including policy and quota refusals, so
+loops and branches execute normally.
+
+The backend never receives source code. It persists a SHA-256 digest and bounded
+run metadata, with tamper-evident start/completion/timeout audit entries. Limits
+cover source size, wall-clock runtime, output, tool payloads, calls per run, and
+active runs per tenant.
 
 ### A2A Tab
 

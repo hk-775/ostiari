@@ -62,7 +62,7 @@ graph TB
 | **Model Configuration** | Central registry of LLM models — 18 pre-seeded from AxonLLM. CRUD with inline routing strategy editing. Shows providers, pricing, capabilities (tools/vision), and category (reasoning/general/speed) |
 | **Quotas (Runtime Enforced)** | Per-gateway and per-agent rate limits, budget caps, model/provider allowlists, and `max_tokens` caps. Agent quotas persist in the control plane, push as a complete gateway bundle, restore measured spend after restart, and use actual usage records for dashboard spend/RPM |
 | **Approvals (HITL)** | Human-in-the-loop queue for calls that score *intervene*. The gateway answers 202 with an approval id; a human decides here; the caller re-submits with `X-Approval-Id` |
-| **Sandbox** | Four-tab testing environment: Chat (invoke an LLM via the gateway), Scenarios (one-click allow/block demos), Code (write and run agent code), A2A (discover + send tasks). Uses the gateway proxy to eliminate CORS |
+| **Sandbox** | Four-tab testing environment: Chat, governed scenarios, browser-isolated JavaScript with a metered tool bridge, and A2A tasks. Code runs in an opaque-origin worker; source never reaches the backend |
 | **Cost Dashboard** | Track LLM spend broken down by model, gateway, agent, and day |
 | **Metering** | Per-agent token/cost rollups with CSV/JSON export |
 | **Payments (x402)** | Per-agent USDC wallets with balance, per-call and daily limits, a payment ledger, and per-tool pricing. External money movement is simulated behind a clean seam |
@@ -466,6 +466,43 @@ API clients that send IdP bearer tokens directly.
 
 > The proxy looks up the gateway's registered endpoint and forwards the full
 > request. The browser never talks to gateways directly.
+
+### Sandbox execution
+
+The Code tab runs JavaScript inside a disposable Worker created by an
+opaque-origin sandboxed iframe. Its CSP denies network access; the worker receives
+no bearer token, cookies, storage, DOM, or filesystem. The only privileged
+operation is `await ostiari.tool(name, params)`, which crosses the authenticated
+control-plane API and then the selected gateway's normal policy, quota, approval,
+and trace chain.
+
+Only metadata is persisted: source SHA-256, byte count, limits, status, tool-call
+count, and timestamps. Source and output are never stored by the backend.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/sandbox/runs` | POST | Start a bounded run for a tenant-owned gateway |
+| `/api/sandbox/runs/{id}` | GET, DELETE | Read metadata or cancel a run |
+| `/api/sandbox/runs/{id}/tools/{tool}` | POST | Execute one metered governed tool call |
+| `/api/sandbox/runs/{id}/complete` | POST | Record terminal status and audit evidence |
+
+Optional server limits:
+
+| Variable | Default | Range |
+|----------|---------|-------|
+| `OSTIARI_SANDBOX_MAX_SOURCE_BYTES` | `32768` | 1 KiB–128 KiB |
+| `OSTIARI_SANDBOX_TIMEOUT_MS` | `10000` | 1–60 seconds |
+| `OSTIARI_SANDBOX_MAX_TOOL_CALLS` | `20` | 1–100 |
+| `OSTIARI_SANDBOX_MAX_OUTPUT_BYTES` | `65536` | 1–256 KiB |
+| `OSTIARI_SANDBOX_MAX_TOOL_PAYLOAD_BYTES` | `16384` | 256 B–64 KiB |
+| `OSTIARI_SANDBOX_MAX_ACTIVE_RUNS` | `4` | 1–20 per tenant |
+
+Gateway responses are streamed under the run deadline and each response is
+capped by `OSTIARI_SANDBOX_MAX_OUTPUT_BYTES`. The bridge forwards a validated
+caller's bearer token with the matching gateway agent identity. To use a
+dedicated least-privilege credential instead, set
+`OSTIARI_SANDBOX_GATEWAY_TOKEN` and its matching
+`OSTIARI_SANDBOX_GATEWAY_AGENT_ID`.
 
 ### Health
 
