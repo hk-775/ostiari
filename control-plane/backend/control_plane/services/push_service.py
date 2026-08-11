@@ -78,28 +78,73 @@ class PushService:
             failed=len(results) - succeeded,
         )
 
-    async def push_policy(self, db: AsyncSession, gateway_id: str, policy: Policy) -> PushResult:
-        """Push only policy to a gateway."""
-        gateway = await db.get(Gateway, gateway_id)
-        if gateway is None:
-            return PushResult(gateway_id=gateway_id, status="error", message="Gateway not found")
+    async def push_policy(self, db: AsyncSession, gateway: Gateway) -> PushResult:
+        """Push the gateway's effective active policy document.
 
+        The caller supplies an already tenant-scoped gateway. The payload is
+        rebuilt from the database because sending only the selected policy row
+        would erase global controls or sibling policy keys on the gateway.
+        """
+        payload = await self._build_policy(db, gateway)
         async with httpx.AsyncClient(
             timeout=self._timeout, headers=gateway_config_headers()
         ) as client:
             try:
                 resp = await client.post(
-                    f"{gateway.endpoint}/config/policy", json=policy.content,
+                    f"{gateway.endpoint}/config/policy", json=payload,
                 )
                 if resp.status_code == 200:
-                    return PushResult(gateway_id=gateway_id, status="success")
+                    return PushResult(gateway_id=gateway.id, status="success")
                 else:
                     return PushResult(
-                        gateway_id=gateway_id, status="error",
+                        gateway_id=gateway.id, status="error",
                         message=f"HTTP {resp.status_code}"
                     )
             except Exception as e:
-                return PushResult(gateway_id=gateway_id, status="error", message=str(e))
+                return PushResult(
+                    gateway_id=gateway.id,
+                    status="error",
+                    message=str(e),
+                )
+
+    async def push_policy_to_all(
+        self,
+        db: AsyncSession,
+        org: str,
+    ) -> PushResponse:
+        """Push effective policies to every gateway owned by one organization."""
+        result = await db.execute(select(Gateway).where(Gateway.org_id == org))
+        gateways = result.scalars().all()
+        results = [
+            await self.push_policy(db, gateway)
+            for gateway in gateways
+        ]
+        succeeded = sum(1 for item in results if item.status == "success")
+        return PushResponse(
+            results=results,
+            total=len(results),
+            succeeded=succeeded,
+            failed=len(results) - succeeded,
+        )
+
+    async def _build_policy(
+        self,
+        db: AsyncSession,
+        gateway: Gateway,
+    ) -> dict[str, Any]:
+        """Merge active global policies, then gateway-specific overrides."""
+        result = await db.execute(
+            select(Policy).where(
+                (Policy.gateway_id == gateway.id) | (Policy.gateway_id.is_(None)),
+                Policy.is_active.is_(True),
+                Policy.org_id == gateway.org_id,
+            )
+        )
+        policies = result.scalars().all()
+        merged_policy: dict[str, Any] = {}
+        for item in sorted(policies, key=lambda row: row.gateway_id is not None):
+            merged_policy.update(item.content)
+        return merged_policy
 
     async def _build_config(self, db: AsyncSession, gateway: Gateway) -> dict[str, Any]:
         """Build the full gateway config from database state."""
@@ -109,20 +154,7 @@ class PushService:
         ))
         tools = result.scalars().all()
 
-        # Get active policy for this gateway
-        result = await db.execute(
-            select(Policy).where(
-                (Policy.gateway_id == gateway.id) | (Policy.gateway_id.is_(None)),
-                Policy.is_active.is_(True),
-                Policy.org_id == gateway.org_id,
-            )
-        )
-        policies = result.scalars().all()
-
-        # Merge policies (gateway-specific overrides global)
-        merged_policy: dict[str, Any] = {}
-        for p in sorted(policies, key=lambda x: x.gateway_id is not None):
-            merged_policy.update(p.content)
+        merged_policy = await self._build_policy(db, gateway)
 
         # Get MCP servers for this gateway
         result = await db.execute(select(McpServer).where(
