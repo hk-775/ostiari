@@ -460,13 +460,13 @@ UI calls:
 | Path | Endpoint | Applies |
 |---|---|---|
 | Gateways page → **Push** / **Push All** | `push_service` → `POST /config` | Tools + policy only. The bundle it builds carries no `quota`/`agent_auth`, so nothing is silently cleared beyond the replace semantics. |
-| Policies page → **Push** | `POST /api/gateways/{id}/push-config` → `POST /config` with `{policy}` | Policy applies; **registered tools are cleared** and `mode` resets to enforce. |
+| Policies page → **Push** | `POST /api/policies/{id}/push` → `POST /config/policy` | Works — the control plane rebuilds the effective active policy set. Global policies fan out to every gateway in the caller's organization. |
 | Quotas page → **Push** | `POST /api/quotas/{id}/push` → `POST /config/quota` | Works — the page uses the quota gate endpoint. |
 | Agent Quotas → **Save & Push** / **Push All** | quota API → `POST /config/agent-auth` | Works — the control plane rebuilds the complete map for each gateway and preserves tool grants. |
 | Gateway registration + heartbeat | `_apply_bundle` (not `/config`) | Works — it configures each gate explicitly and touches only the keys present, including `mode` and `ab_experiments`. |
 
-The remaining trap is the generic `push-config` route used by partial callers such
-as the Policies page. Quota pages avoid it. Verify gateway limits with
+The remaining trap is the generic `push-config` route for custom partial callers;
+the first-party Policies and Quotas pages avoid it. Verify gateway limits with
 `GET /config/quota` and agent limits with `GET /config/agent-auth`; `GET /config`
 only shows the stored whole-document configuration.
 

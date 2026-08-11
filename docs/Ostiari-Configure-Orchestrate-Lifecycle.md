@@ -116,14 +116,14 @@ interchangeable:
 | UI | Route | Body | Persisted? |
 |---|---|---|---|
 | Gateways page ↑ icon | `POST /api/gateways/{id}/push` | built from the DB by `push_service._build_config` | yes — it *is* the stored state |
-| Policies page **Push** | `POST /api/gateways/{id}/push-config` | `{"policy": …}` supplied by the browser | **no** |
+| Policies page **Push** | `POST /api/policies/{id}/push` | effective active policy set rebuilt from stored state | yes |
 | Quotas page **Push** | `POST /api/quotas/{id}/push` | stored gateway quota | yes |
 | Agent Quotas **Save & Push** | `POST /api/quotas/{id}/push` | complete stored agent-quota map for the gateway | yes |
 
-`push-config` forwards whatever body it's given to the gateway's `POST /config`,
-which is a **whole-document replace** that applies only tools + policy. So the
-Policies page's Push clears the gateway's tool registry and resets its enforcement
-mode to `enforce`. Quota pages bypass this route and call the dedicated runtime
+`push-config` forwards whatever body a custom caller gives it to the gateway's
+`POST /config`, which is a **whole-document replace** that applies only tools +
+policy. The first-party Policies and Quotas pages bypass this route and call the
+dedicated runtime
 gates. Full detail and reproductions: [gateway-architecture.md → The /config partial-push
 trap](gateway-architecture.md#the-config-partial-push-trap).
 
@@ -286,23 +286,23 @@ If a gateway isn't running:
 ```
 Operator changes policy in UI
   → Control Plane saves to database
-  → If gateway healthy: Push immediately
-      · Policies page Push → POST /config       (whole-document replace)
+  → Operator pushes immediately
+      · Policies page Push → POST /config/policy (effective stored policy)
+      · Global policy → every gateway in the caller's organization
       · Gateways page Push → POST /config       (rebuilt from stored state)
-      · POST /api/policies/{id}/push → POST /config/policy  (partial, safe)
-  → If gateway offline: queue (delivered on the next heartbeat, not on register)
+  → If a gateway is offline: that target is reported failed for explicit retry
   → Gateway applies immediately (hot-reload, no restart)
   → Next tool call uses new policy
   → Trace shows new policy decision
   → Operator sees result in Live Traces
 ```
 
-Only `POST /api/policies/{id}/push` hits the gateway's *partial* `/config/policy`
-endpoint — the one that changes policy and nothing else. Neither Push button in the
-UI uses it.
+`POST /api/policies/{id}/push` hits the gateway's partial `/config/policy`
+endpoint — the one that changes policy and nothing else. The Policies page uses
+this route and reports complete, partial, or failed fan-out.
 
 Total propagation time (healthy gateway): **< 1 second**
-Total propagation time (reconnecting gateway): **≤ heartbeat interval (30s)**
+Offline gateways require an explicit retry after reconnecting.
 
 ---
 

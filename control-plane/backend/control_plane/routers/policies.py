@@ -6,8 +6,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
-from control_plane.models.database import Policy
-from control_plane.models.schemas import PolicyCreate, PolicyResponse, PolicyUpdate
+from control_plane.models.database import Gateway, Policy
+from control_plane.models.schemas import (
+    PolicyCreate,
+    PolicyResponse,
+    PolicyUpdate,
+    PushResponse,
+)
 from control_plane.models.scoping import get_scoped, scoped, stamp
 from control_plane.services.audit_service import actor_of, audit
 from control_plane.services.push_service import PushService
@@ -24,6 +29,10 @@ async def list_policies(db: AsyncSession = Depends(get_db), org: str = Depends(g
 
 @router.post("", response_model=PolicyResponse)
 async def create_policy(body: PolicyCreate, request: Request, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+    if body.gateway_id and not await get_scoped(
+        db, Gateway, body.gateway_id, org
+    ):
+        raise HTTPException(status_code=404, detail="Gateway not found")
     policy = Policy(
         name=body.name, description=body.description,
         content=body.content, gateway_id=body.gateway_id,
@@ -69,15 +78,38 @@ async def delete_policy(policy_id: int, request: Request, db: AsyncSession = Dep
     return {"deleted": policy_id}
 
 
-@router.post("/{policy_id}/push")
+@router.post("/{policy_id}/push", response_model=PushResponse)
 async def push_policy(policy_id: int, request: Request, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
-    """Push this policy to its assigned gateway (or all if global)."""
+    """Push the effective policy set to the assigned gateway, or all if global."""
     policy = await get_scoped(db, Policy, policy_id, org)
     if not policy:
         raise HTTPException(status_code=404, detail="Policy not found")
     if policy.gateway_id:
-        result = await push_service.push_policy(db, policy.gateway_id, policy)
-        await audit.log(db, actor_of(request), "push", "policy", str(policy_id), {"gateway_id": policy.gateway_id}, org=org)
-        await db.commit()
-        return result
-    return {"status": "global_policy", "message": "Use push-all to sync global policies"}
+        gateway = await get_scoped(db, Gateway, policy.gateway_id, org)
+        if not gateway:
+            raise HTTPException(status_code=404, detail="Gateway not found")
+        result = await push_service.push_policy(db, gateway)
+        response = PushResponse(
+            results=[result],
+            total=1,
+            succeeded=int(result.status == "success"),
+            failed=int(result.status != "success"),
+        )
+    else:
+        response = await push_service.push_policy_to_all(db, org)
+    await audit.log(
+        db,
+        actor_of(request),
+        "push",
+        "policy",
+        str(policy_id),
+        {
+            "gateway_id": policy.gateway_id,
+            "total": response.total,
+            "succeeded": response.succeeded,
+            "failed": response.failed,
+        },
+        org=org,
+    )
+    await db.commit()
+    return response
