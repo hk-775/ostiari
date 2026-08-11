@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 
 pytestmark = pytest.mark.anyio
@@ -304,6 +306,47 @@ class TestAgentQuotaPush:
 
         snapshot = (await client.get("/api/gateways/gw-agent/spend")).json()["spend"]
         assert snapshot == {"research": 4.0, "ops": 1.5}
+
+    async def test_explicit_period_reset_replaces_snapshot(self, client):
+        await _gateway(client)
+        await client.post("/api/gateways/gw-agent/spend", json={
+            "spend": {"research": 4.0, "ops": 1.0},
+        })
+        reset_at = datetime.now(timezone.utc).isoformat()
+        response = await client.post("/api/gateways/gw-agent/spend", json={
+            "spend": {"research": 0.0, "ops": 0.0},
+            "reset": True,
+            "reset_at": reset_at,
+        })
+        assert response.status_code == 200
+        assert response.json()["reset"] is True
+        snapshot = (await client.get("/api/gateways/gw-agent/spend")).json()["spend"]
+        assert snapshot == {"research": 0.0, "ops": 0.0}
+        bundle = (await client.get("/api/gateways/gw-agent/config-bundle")).json()
+        assert bundle["budget_reset"]["last_reset_at"] == reset_at
+
+    async def test_usage_before_reset_epoch_is_not_current_period_spend(self, client):
+        await _gateway(client)
+        await _agent(client, "research")
+        await _quota(client, "research")
+        response = await client.post("/api/costs/record", json={
+            "gateway_id": "gw-agent",
+            "agent_id": "research",
+            "model": "gpt-4o-mini",
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "total_tokens": 15,
+            "cost_usd": 2.0,
+        })
+        assert response.status_code == 200
+        await client.post("/api/gateways/gw-agent/spend", json={
+            "spend": {"research": 0.0},
+            "reset": True,
+            "reset_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        quota = (await client.get("/api/quotas?scope=agent")).json()[0]
+        assert quota["current_spend"] == 0.0
 
 
 class TestAgentBudgetAlerts:

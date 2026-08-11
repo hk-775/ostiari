@@ -68,8 +68,9 @@ class ModelRouter:
         1. Per-agent routing policy (round-robin across LLMs)
         2. A/B experiments (percentage-based split)
         3. Explicit control plane rules (condition matching)
-        4. AxonLLM smart routing (task classification) if available
-        5. Default model
+        4. Operator-defined keyword classification
+        5. AxonLLM smart routing (task classification) if available
+        6. Default model
         """
         # Per-agent model-rotation policy takes precedence: an operator opting an
         # agent into round-robin means "spread this agent across these LLMs".
@@ -88,6 +89,10 @@ class ModelRouter:
                 log.debug("Routing rule matched: %s → %s", rule.condition, rule.model)
                 return rule.model
 
+        classified = self._check_task_classification(context)
+        if classified is not None:
+            return classified
+
         # Try AxonLLM smart routing based on message content
         if self._task_classifier and "messages" in context:
             messages = context["messages"]
@@ -101,6 +106,50 @@ class ModelRouter:
                         return model
 
         return self._config.default_model
+
+    def _check_task_classification(self, context: dict[str, Any]) -> str | None:
+        """Apply configured keyword categories to the latest user message."""
+        config = self._config.task_classification
+        if not config.rules or not config.model_mapping:
+            return None
+
+        messages = context.get("messages")
+        if not isinstance(messages, list) or not messages:
+            return None
+        last = messages[-1]
+        content = last.get("content", "") if isinstance(last, dict) else ""
+        if isinstance(content, list):
+            content = " ".join(
+                str(block.get("text", ""))
+                for block in content
+                if isinstance(block, dict)
+            )
+        prompt = str(content).lower()
+        if not prompt:
+            return None
+
+        best_category = ""
+        best_score = 0
+        for category, keywords in config.rules.items():
+            score = sum(
+                1
+                for keyword in keywords
+                if keyword.strip() and keyword.strip().lower() in prompt
+            )
+            if score > best_score:
+                best_category = category
+                best_score = score
+
+        model = config.model_mapping.get(best_category, "")
+        if model:
+            log.debug(
+                "Task classification matched category=%s score=%d → %s",
+                best_category,
+                best_score,
+                model,
+            )
+            return model
+        return None
 
     def _check_agent_routing(self, context: dict[str, Any]) -> str | None:
         """Apply a per-agent round-robin model policy, if one is configured.

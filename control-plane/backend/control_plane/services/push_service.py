@@ -214,6 +214,16 @@ class PushService:
         if gateway.config:
             config.update(gateway.config)
 
+        # These registries have dedicated sources of truth. Add them after the
+        # generic gateway JSON so a stale ad-hoc push cannot override them.
+        from control_plane.routers.agent_routing import _by_gateway
+        from control_plane.routers.model_config import runtime_catalog
+
+        config["agent_routing"] = _by_gateway(
+            gateway.org_id or "default", gateway.id
+        )
+        config["model_registry"] = runtime_catalog(gateway.org_id or "default")
+
         # Enforcement mode is always sent explicitly (defaults to enforce) so a
         # gateway can never be left on a stale shadow setting after a push.
         config["mode"] = (gateway.config or {}).get("mode", "enforce")

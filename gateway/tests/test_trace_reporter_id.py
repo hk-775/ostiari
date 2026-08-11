@@ -54,6 +54,50 @@ async def test_reporter_sends_ingest_and_service_credentials(monkeypatch):
     assert calls[1][1] == {"X-Ostiari-Service-Key": "service-secret"}
 
 
+@pytest.mark.anyio
+async def test_spend_reset_marker_retries_even_with_no_agents():
+    calls: list[dict] = []
+
+    class _AgentAuth:
+        def get_spend_snapshot(self, *, include_zero=False):
+            assert include_zero is True
+            return {}
+
+    class _Client(httpx.AsyncClient):
+        async def post(self, url, json=None, **kw):  # type: ignore[override]
+            calls.append(json)
+            return httpx.Response(
+                500 if len(calls) == 1 else 200,
+                request=httpx.Request("POST", url),
+                json={"status": "ok"},
+            )
+
+    tr = TraceReporter(control_plane_url="http://cp.local", sidecar_id="gw1")
+    tr.set_agent_auth(_AgentAuth())
+    tr._client = _Client()
+
+    await tr.push_spend_snapshot(
+        reset=True,
+        reset_at="2026-08-11T12:00:00+00:00",
+    )
+    await tr.push_spend_snapshot()
+
+    assert calls == [
+        {
+            "spend": {},
+            "reset": True,
+            "reset_at": "2026-08-11T12:00:00+00:00",
+        },
+        {
+            "spend": {},
+            "reset": True,
+            "reset_at": "2026-08-11T12:00:00+00:00",
+        },
+    ]
+    assert tr._pending_reset_at is None
+    await tr._client.aclose()
+
+
 def test_gateway_lifecycle_starts_agent_spend_persistence(monkeypatch):
     from ostiari_gateway.lifecycle import LifecycleManager
     from ostiari_gateway.models import SidecarConfig

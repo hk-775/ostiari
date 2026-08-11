@@ -37,6 +37,49 @@ class TestFallbackWithoutAxon:
         r._task_classifier = None
         assert r.select_model({"tier": "premium"}) == "opus"
 
+    def test_operator_keyword_rules_route_without_axon(self):
+        cfg = LLMConfig(
+            default_model="default",
+            task_classification={
+                "rules": {
+                    "coding": ["code", "function"],
+                    "analysis": ["analyze"],
+                },
+                "model_mapping": {
+                    "coding": "code-model",
+                    "analysis": "analysis-model",
+                },
+            },
+        )
+        router = ModelRouter(cfg)
+        router._task_classifier = None
+        assert router.select_model({
+            "messages": [{"role": "user", "content": "Implement a function in code"}],
+        }) == "code-model"
+
+    def test_category_with_most_keyword_matches_wins(self):
+        cfg = LLMConfig(
+            default_model="default",
+            task_classification={
+                "rules": {
+                    "coding": ["code", "function"],
+                    "analysis": ["analyze"],
+                },
+                "model_mapping": {
+                    "coding": "code-model",
+                    "analysis": "analysis-model",
+                },
+            },
+        )
+        router = ModelRouter(cfg)
+        router._task_classifier = None
+        assert router.select_model({
+            "messages": [{
+                "role": "user",
+                "content": "Analyze this code function",
+            }],
+        }) == "code-model"
+
 
 @requires_axon
 class TestSmartRouting:

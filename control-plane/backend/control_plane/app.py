@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from control_plane.auth.middleware import AuthMiddleware
 from control_plane.auth.router import router as auth_router
 from control_plane.auth.sso_router import router as sso_router
 from control_plane.database import engine
@@ -30,11 +31,13 @@ from control_plane.routers import (
     proxy,
     quotas,
     roi,
+    routing_controls,
     token_broker,
     tools,
     traces,
     trust,
 )
+from ostiari.http_limits import BodySizeLimitMiddleware
 
 
 @asynccontextmanager
@@ -87,6 +90,14 @@ async def lifespan(app: FastAPI):
             org = _org_of(m)
             data = {k: v for k, v in m.items() if k != "_org"}
             _models[org][data["name"]] = ModelConfig(**data)
+
+    if "agent_routing" in state:
+        from control_plane.routers.agent_routing import RoutingPolicy, _policies
+        for item in state["agent_routing"]:
+            org = _org_of(item)
+            data = {k: v for k, v in item.items() if k != "_org"}
+            policy = RoutingPolicy(**data)
+            _policies[(org, policy.gateway_id, policy.agent_id)] = policy
 
     if "providers" in state:
         from control_plane.routers.providers import _ProviderRecord, _providers
@@ -153,6 +164,7 @@ async def lifespan(app: FastAPI):
     stop_health_check()
 
     # Save in-memory state before shutdown
+    from control_plane.routers.agent_routing import _policies
     from control_plane.routers.experiments import _experiments
     from control_plane.routers.model_config import _models
     from control_plane.routers.providers import _providers
@@ -187,6 +199,10 @@ async def lifespan(app: FastAPI):
         "budget_alerts": _dump_seq(_alerts),
         "experiments": _dump(_experiments),
         "models": _dump(_models),
+        "agent_routing": [
+            {**policy.model_dump(), "_org": org}
+            for (org, _gateway_id, _agent_id), policy in _policies.items()
+        ],
         "providers": _dump(_providers),
         "roi_cost_model": dict(_cost_model),
         "token_broker_config": dict(_tb_config),
@@ -201,10 +217,6 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
-
-from ostiari.http_limits import BodySizeLimitMiddleware
-
-from control_plane.auth.middleware import AuthMiddleware
 
 # Coarse API authentication gate (no-op unless OSTIARI_REQUIRE_AUTH is set).
 # Added before CORS so it runs after CORS in the response path.
@@ -246,6 +258,7 @@ app.include_router(discovery.router)
 app.include_router(approvals.router)
 app.include_router(experiments.router)
 app.include_router(model_config.router)
+app.include_router(routing_controls.router)
 app.include_router(providers.router)
 app.include_router(quotas.router)
 app.include_router(proxy.router)
