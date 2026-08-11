@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -322,11 +323,23 @@ class SandboxRun(Base):
     """
 
     __tablename__ = "sandbox_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id",
+            "active_slot",
+            name="uq_sandbox_runs_org_active_slot",
+        ),
+        CheckConstraint(
+            "status != 'running' OR active_slot IS NOT NULL",
+            name="ck_sandbox_runs_running_has_slot",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     org_id: Mapped[str] = mapped_column(
         String(64), default=DEFAULT_ORG, index=True, nullable=False
     )
+    active_slot: Mapped[int | None] = mapped_column(Integer, nullable=True)
     actor: Mapped[str] = mapped_column(String(128), default="system")
     gateway_id: Mapped[str] = mapped_column(String(64), index=True)
     language: Mapped[str] = mapped_column(String(20), default="javascript")

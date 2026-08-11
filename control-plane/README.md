@@ -497,6 +497,13 @@ Optional server limits:
 | `OSTIARI_SANDBOX_MAX_TOOL_PAYLOAD_BYTES` | `16384` | 256 B–64 KiB |
 | `OSTIARI_SANDBOX_MAX_ACTIVE_RUNS` | `4` | 1–20 per tenant |
 
+Gateway responses are streamed under the run deadline and each response is
+capped by `OSTIARI_SANDBOX_MAX_OUTPUT_BYTES`. The bridge forwards a validated
+caller's bearer token with the matching gateway agent identity. To use a
+dedicated least-privilege credential instead, set
+`OSTIARI_SANDBOX_GATEWAY_TOKEN` and its matching
+`OSTIARI_SANDBOX_GATEWAY_AGENT_ID`.
+
 ### Health
 
 | Endpoint | Method | Description |
