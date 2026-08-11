@@ -18,10 +18,10 @@ RUN pip install --no-cache-dir ./core
 COPY control-plane/backend/pyproject.toml ./
 COPY control-plane/backend/control_plane/ control_plane/
 COPY control-plane/backend/main.py ./
-# Install the package plus aiosqlite so the default SQLite backend works out of
-# the box (aiosqlite lives in the dev extra; production Postgres pulls asyncpg,
-# which is already a core dependency).
-RUN pip install --no-cache-dir . "aiosqlite>=0.19"
+# Install the AWS discovery extra plus aiosqlite so both the production
+# collectors and default SQLite backend work in the shipped image. Production
+# Postgres pulls asyncpg, which is already a core dependency.
+RUN pip install --no-cache-dir ".[aws]" "aiosqlite>=0.19"
 
 # Everything this app writes goes under /data — the SQLite database and
 # persistence.STATE_FILE (the in-memory stores flushed on shutdown).
