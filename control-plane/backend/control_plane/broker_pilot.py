@@ -17,6 +17,11 @@ from typing import Protocol
 
 # Which provider's pool a model draws from. Prefix match, first hit wins.
 _MODEL_PROVIDER = [
+    ("bedrock/", "bedrock"),
+    ("bedrock-mantle", "bedrock"),
+    ("azure/", "azure"),
+    ("vertex/", "google"),
+    ("google_ai", "google"),
     ("claude", "anthropic"),
     ("gpt", "openai"),
     ("o1", "openai"),
@@ -29,12 +34,27 @@ _MODEL_PROVIDER = [
 DEFAULT_PROVIDER = "other"
 
 
+_PROVIDER_ALIASES = {
+    "aws-bedrock": "bedrock",
+    "bedrock-mantle": "bedrock",
+    "google_ai": "google",
+    "vertex": "google",
+    "vertex_ai": "google",
+}
+
+
+def canonical_provider(provider: str) -> str:
+    """Normalize runtime provider names to broker pool identities."""
+    value = (provider or "").strip().lower()
+    return _PROVIDER_ALIASES.get(value, value or DEFAULT_PROVIDER)
+
+
 def provider_for(model: str) -> str:
     """Map a model name to the provider pool it draws from."""
     m = (model or "").lower()
     for prefix, provider in _MODEL_PROVIDER:
         if prefix in m:
-            return provider
+            return canonical_provider(provider)
     return DEFAULT_PROVIDER
 
 
@@ -51,7 +71,14 @@ class Collector(Protocol):
     @property
     def mode(self) -> str: ...
 
-    async def collect(self, *, customer: str, amount_usd: float, model: str) -> dict:
+    async def collect(
+        self,
+        *,
+        customer: str,
+        amount_usd: float,
+        model: str,
+        idempotency_key: str = "",
+    ) -> dict:
         """Record/collect a charge. Returns {collected, ref, mode}."""
         ...
 
@@ -63,10 +90,24 @@ class SimulatedCollector:
 
     def __init__(self) -> None:
         self._n = 0
+        self._refs: dict[str, str] = {}
 
-    async def collect(self, *, customer: str, amount_usd: float, model: str) -> dict:
-        self._n += 1
-        return {"collected": True, "ref": f"sim-bill-{customer}-{self._n}", "mode": self.mode}
+    async def collect(
+        self,
+        *,
+        customer: str,
+        amount_usd: float,
+        model: str,
+        idempotency_key: str = "",
+    ) -> dict:
+        if idempotency_key and idempotency_key in self._refs:
+            ref = self._refs[idempotency_key]
+        else:
+            self._n += 1
+            ref = f"sim-bill-{customer}-{self._n}"
+            if idempotency_key:
+                self._refs[idempotency_key] = ref
+        return {"collected": True, "ref": ref, "mode": self.mode}
 
 
 class StripeCollector:
@@ -85,7 +126,14 @@ class StripeCollector:
         self._api_key = api_key
         self._price_id = price_id
 
-    async def collect(self, *, customer: str, amount_usd: float, model: str) -> dict:
+    async def collect(
+        self,
+        *,
+        customer: str,
+        amount_usd: float,
+        model: str,
+        idempotency_key: str = "",
+    ) -> dict:
         raise NotImplementedError(
             "StripeCollector is a stub. Provide a Stripe client + price id to collect for real."
         )

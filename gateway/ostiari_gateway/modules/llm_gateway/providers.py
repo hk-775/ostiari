@@ -40,6 +40,7 @@ class LLMResponse:
         tool_calls: list[ToolCall] | None = None,
         tokens_used: int = 0,
         model: str = "",
+        provider: str = "",
         input_tokens: int = 0,
         output_tokens: int = 0,
     ) -> None:
@@ -51,6 +52,7 @@ class LLMResponse:
         self.output_tokens = output_tokens or (tokens_used // 2)
         self.tokens_used = tokens_used or (self.input_tokens + self.output_tokens)
         self.model = model
+        self.provider = provider
 
     @property
     def has_tool_calls(self) -> bool:
@@ -287,6 +289,10 @@ class LLMProvider:
             tool_calls=tool_calls,
             tokens_used=tokens,
             model=model,
+            provider=(
+                getattr(response, "provider", "")
+                or self._detect_provider(model)
+            ),
         )
 
     def _convert_tools_to_openai_format(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -359,6 +365,7 @@ class LLMProvider:
         in_tok = response.usage.input_tokens or 0
         out_tok = response.usage.output_tokens or 0
         return LLMResponse(content=content or None, tool_calls=tool_calls, model=model,
+                           provider="anthropic",
                            input_tokens=in_tok, output_tokens=out_tok)
 
     def _call_openai(self, model, messages, tools, max_tokens, temperature) -> LLMResponse:
@@ -406,6 +413,7 @@ class LLMProvider:
         in_tok = getattr(response.usage, "prompt_tokens", 0) or 0 if response.usage else 0
         out_tok = getattr(response.usage, "completion_tokens", 0) or 0 if response.usage else 0
         return LLMResponse(content=msg.content, tool_calls=tool_calls, model=model,
+                           provider="openai",
                            input_tokens=in_tok, output_tokens=out_tok)
 
     def _call_bedrock(self, model, messages, tools, max_tokens, temperature) -> LLMResponse:
@@ -451,6 +459,7 @@ class LLMProvider:
 
         usage = response.get("usage", {})
         return LLMResponse(content=content or None, tool_calls=tool_calls, model=model,
+                           provider="bedrock",
                            input_tokens=usage.get("inputTokens", 0),
                            output_tokens=usage.get("outputTokens", 0))
 
@@ -490,6 +499,7 @@ class LLMProvider:
         in_tok = getattr(response.usage, "prompt_tokens", 0) or 0 if response.usage else 0
         out_tok = getattr(response.usage, "completion_tokens", 0) or 0 if response.usage else 0
         return LLMResponse(content=msg.content, tool_calls=tool_calls, model=model,
+                           provider="azure",
                            input_tokens=in_tok, output_tokens=out_tok)
 
     def _call_cohere(self, model, messages, tools, max_tokens, temperature) -> LLMResponse:
@@ -529,6 +539,7 @@ class LLMProvider:
         in_tok = (response.usage.input_tokens or 0) if response.usage else 0
         out_tok = (response.usage.output_tokens or 0) if response.usage else 0
         return LLMResponse(content=content, tool_calls=tool_calls, model=model,
+                           provider="cohere",
                            input_tokens=in_tok, output_tokens=out_tok)
 
     def _call_vertex(self, model, messages, tools, max_tokens, temperature) -> LLMResponse:
@@ -561,4 +572,10 @@ class LLMProvider:
 
         content = response.text if response.text else ""
         tokens = response.usage_metadata.total_token_count if hasattr(response, "usage_metadata") else 0
-        return LLMResponse(content=content, tool_calls=[], tokens_used=tokens, model=model)
+        return LLMResponse(
+            content=content,
+            tool_calls=[],
+            tokens_used=tokens,
+            model=model,
+            provider="google",
+        )

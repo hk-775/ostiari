@@ -66,7 +66,7 @@ graph TB
 | **Cost Dashboard** | Track LLM spend broken down by model, gateway, agent, and day |
 | **Metering** | Per-agent token/cost rollups with CSV/JSON export |
 | **Payments (x402)** | Per-agent USDC wallets with balance, per-call and daily limits, a payment ledger, and per-tool pricing. External money movement is simulated behind a clean seam |
-| **Token Broker** | Bulk-buy/resell margin reporting, pool inventory with low-water marks, and invoice reconciliation against tracked spend |
+| **Token Broker** | Retry-safe pool drawdown and customer charging, depleted-provider routing controls, margin reporting, and invoice reconciliation |
 | **A/B Experiments** | Percentage-based traffic splitting between models with side-by-side results comparison. 3 seeded in the demo |
 | **Live Trace Viewer** | Real-time WebSocket feed of tool calls across all gateways, with session/plan/step grouping, tool parameters, and a model badge per trace |
 | **Shadow Report** | What a gateway in `shadow` mode *would* have blocked — try before you enforce |
@@ -300,11 +300,18 @@ Models are keyed by **name**, not a numeric id.
 | `/api/token-broker/config` | GET/POST | Bulk discount and markup settings |
 | `/api/token-broker/config/reset` | POST | Restore defaults |
 | `/api/token-broker/report` | GET | Margin report (retail vs. wholesale) |
-| `/api/token-broker/pilot/pools` | GET | Pool inventory with low-water status |
+| `/api/token-broker/pilot/pools` | GET | Pool inventory and gateway-enforced low-water status |
 | `/api/token-broker/pilot/pools/fund` | POST | Buy tokens into a pool |
 | `/api/token-broker/pilot/collector` | GET | Collector state |
 | `/api/token-broker/pilot/reconcile` | POST | Reconcile a provider invoice |
 | `/api/token-broker/pilot/reconciliations` | GET | Reconciliation history |
+
+Gateway cost batches carry a stable `event_id` and the provider that actually
+served each request. The control plane uses `(gateway_id, event_id)` to apply the
+usage row, pool debit, and customer charge once. A billing failure returns `503`
+after persisting the usage and debit; the gateway retains and retries that exact
+batch with the same event IDs. Pool state is returned with ingestion responses
+and heartbeats so gateways reroute away from, or block, depleted providers.
 
 ### A/B Experiments
 
