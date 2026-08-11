@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 
-import httpx
 import pytest
 from control_plane.auth.service import create_access_token
 from control_plane.database import async_session
@@ -56,6 +56,8 @@ class _GatewayClient:
     calls: list[dict] = []
     status = 200
     body = {"result": {"ok": True}}
+    chunks: list[bytes] | None = None
+    chunk_delay = 0.0
 
     def __init__(self, *args, **kwargs):
         self.timeout = kwargs.get("timeout")
@@ -66,20 +68,51 @@ class _GatewayClient:
     async def __aexit__(self, *exc):
         return False
 
-    async def post(self, url, content=None, headers=None):
+    def stream(self, method, url, content=None, headers=None):
         self.calls.append(
             {
+                "method": method,
                 "url": url,
                 "content": content,
                 "headers": headers or {},
                 "timeout": self.timeout,
             }
         )
-        return httpx.Response(
-            self.status,
-            json=self.body,
-            headers={"content-type": "application/json"},
+        chunks = self.chunks
+        if chunks is None:
+            chunks = [json.dumps(self.body, separators=(",", ":")).encode()]
+        return _GatewayStream(
+            _GatewayResponse(
+                self.status,
+                chunks,
+                self.chunk_delay,
+            )
         )
+
+
+class _GatewayResponse:
+    def __init__(self, status: int, chunks: list[bytes], chunk_delay: float):
+        self.status_code = status
+        self.headers = {"content-type": "application/json"}
+        self._chunks = chunks
+        self._chunk_delay = chunk_delay
+
+    async def aiter_bytes(self, chunk_size=None):
+        for chunk in self._chunks:
+            if self._chunk_delay:
+                await asyncio.sleep(self._chunk_delay)
+            yield chunk
+
+
+class _GatewayStream:
+    def __init__(self, response: _GatewayResponse):
+        self.response = response
+
+    async def __aenter__(self):
+        return self.response
+
+    async def __aexit__(self, *exc):
+        return False
 
 
 @pytest.fixture
@@ -89,6 +122,8 @@ def gateway_client(monkeypatch):
     _GatewayClient.calls = []
     _GatewayClient.status = 200
     _GatewayClient.body = {"result": {"ok": True}}
+    _GatewayClient.chunks = None
+    _GatewayClient.chunk_delay = 0.0
     monkeypatch.setattr(sandbox.httpx, "AsyncClient", _GatewayClient)
     return _GatewayClient
 
@@ -142,9 +177,33 @@ class TestRunLifecycle:
     async def test_active_run_limit(self, client, monkeypatch):
         monkeypatch.setenv("OSTIARI_SANDBOX_MAX_ACTIVE_RUNS", "1")
         await _gateway(client)
-        assert (await _start(client)).status_code == 201
+        first = await _start(client)
+        assert first.status_code == 201
         response = await _start(client, source_digest="b" * 64)
         assert response.status_code == 429
+        await client.delete(f"/api/sandbox/runs/{first.json()['id']}")
+        assert (await _start(client, source_digest="c" * 64)).status_code == 201
+
+    async def test_active_run_admission_is_atomic(self, client, monkeypatch):
+        monkeypatch.setenv("OSTIARI_SANDBOX_MAX_ACTIVE_RUNS", "1")
+        await _gateway(client)
+
+        responses = await asyncio.gather(*(_start(client) for _ in range(20)))
+        assert [response.status_code for response in responses].count(201) == 1
+        assert [response.status_code for response in responses].count(429) == 19
+
+        async with async_session() as db:
+            rows = (
+                (
+                    await db.execute(
+                        select(SandboxRun).where(SandboxRun.status == "running")
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert len(rows) == 1
+            assert rows[0].active_slot == 0
 
     async def test_complete_clamps_output_and_is_idempotent(self, client, monkeypatch):
         monkeypatch.setenv("OSTIARI_SANDBOX_MAX_OUTPUT_BYTES", "1024")
@@ -201,6 +260,66 @@ class TestRunLifecycle:
         assert response.json()["status"] == "cancelled"
         assert response.json()["completed_at"] is not None
 
+    async def test_terminal_transition_is_atomic(self, client):
+        await _gateway(client)
+        run = (await _start(client)).json()
+        path = f"/api/sandbox/runs/{run['id']}"
+        requests = [
+            client.post(
+                f"{path}/complete",
+                json={
+                    "status": "completed" if index % 2 == 0 else "error",
+                    "duration_ms": 25 + index,
+                    "output_bytes": index,
+                    "error": "" if index % 2 == 0 else f"error-{index}",
+                },
+            )
+            if index % 3
+            else client.delete(path)
+            for index in range(12)
+        ]
+
+        responses = await asyncio.gather(*requests)
+        assert all(response.status_code == 200 for response in responses)
+        terminal_statuses = {response.json()["status"] for response in responses}
+        assert len(terminal_statuses) == 1
+
+        async with async_session() as db:
+            row = await db.get(SandboxRun, run["id"])
+            assert row is not None
+            assert row.status in terminal_statuses
+            assert row.active_slot is None
+            actions = (
+                (
+                    await db.execute(
+                        select(AuditLog.action)
+                        .where(
+                            AuditLog.resource_type == "sandbox_run",
+                            AuditLog.resource_id == run["id"],
+                        )
+                        .order_by(AuditLog.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert actions[0] == "start"
+            assert len(actions) == 2
+            assert actions[1] == row.status
+
+    async def test_cancel_expires_stale_run_before_building_response(self, client):
+        await _gateway(client)
+        run = (await _start(client)).json()
+        async with async_session() as db:
+            row = await db.get(SandboxRun, run["id"])
+            row.started_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+            await db.commit()
+
+        response = await client.delete(f"/api/sandbox/runs/{run['id']}")
+        assert response.status_code == 200
+        assert response.json()["status"] == "timed_out"
+        assert response.json()["error"] == "Execution deadline elapsed"
+
     async def test_get_lazily_expires_stale_run(self, client, monkeypatch):
         monkeypatch.setenv("OSTIARI_SANDBOX_TIMEOUT_MS", "1000")
         await _gateway(client)
@@ -232,7 +351,9 @@ class TestRunLifecycle:
 
 
 class TestToolBridge:
-    async def test_proxies_with_only_sandbox_headers(self, client, gateway_client, admin_headers):
+    async def test_proxies_with_controlled_headers_and_caller_token(
+        self, client, gateway_client, admin_headers
+    ):
         await _gateway(client, headers=admin_headers)
         run = (await _start(client, headers=admin_headers)).json()
         gateway_client.status = 403
@@ -249,13 +370,90 @@ class TestToolBridge:
         assert call["url"] == "http://gateway.internal:8421/tool/db_delete"
         assert call["headers"] == {
             "Content-Type": "application/json",
-            "X-Agent-Id": "sandbox-code",
+            "X-Agent-Id": "1",
             "X-Session-Id": f"sandbox-code:{run['id']}",
             "X-Plan": "Sandbox code execution",
             "X-Step": "1/20",
+            "Authorization": admin_headers["Authorization"],
         }
         assert call["content"] == b'{"table":"users"}'
         assert call["timeout"] <= 10
+
+    async def test_downstream_401_is_not_returned_as_session_401(
+        self, client, gateway_client, admin_headers
+    ):
+        await _gateway(client, headers=admin_headers)
+        run = (await _start(client, headers=admin_headers)).json()
+        gateway_client.status = 401
+        gateway_client.body = {"error": "authentication required"}
+
+        response = await client.post(
+            f"/api/sandbox/runs/{run['id']}/tools/db_query",
+            headers=admin_headers,
+            json={},
+        )
+        assert response.status_code == 502
+        assert response.json() == {
+            "detail": "Gateway rejected Sandbox credentials",
+            "gateway_status": 401,
+        }
+        assert gateway_client.calls[-1]["headers"]["Authorization"] == admin_headers[
+            "Authorization"
+        ]
+
+    async def test_dedicated_gateway_token_overrides_caller_token(
+        self, client, gateway_client, admin_headers, monkeypatch
+    ):
+        monkeypatch.setenv("OSTIARI_SANDBOX_GATEWAY_TOKEN", "service-token")
+        monkeypatch.setenv("OSTIARI_SANDBOX_GATEWAY_AGENT_ID", "sandbox-service")
+        await _gateway(client, headers=admin_headers)
+        run = (await _start(client, headers=admin_headers)).json()
+
+        response = await client.post(
+            f"/api/sandbox/runs/{run['id']}/tools/db_query",
+            headers=admin_headers,
+            json={},
+        )
+        assert response.status_code == 200
+        headers = gateway_client.calls[-1]["headers"]
+        assert headers["Authorization"] == "Bearer service-token"
+        assert headers["X-Agent-Id"] == "sandbox-service"
+
+    async def test_gateway_response_size_is_bounded(
+        self, client, gateway_client, monkeypatch
+    ):
+        monkeypatch.setenv("OSTIARI_SANDBOX_MAX_OUTPUT_BYTES", "1024")
+        await _gateway(client)
+        run = (await _start(client)).json()
+        gateway_client.chunks = [b"x" * 700, b"y" * 700]
+
+        response = await client.post(
+            f"/api/sandbox/runs/{run['id']}/tools/db_query",
+            json={},
+        )
+        assert response.status_code == 502
+        assert response.json()["detail"] == "Gateway response exceeds 1024 byte limit"
+
+    async def test_gateway_stream_has_absolute_run_deadline(
+        self, client, gateway_client, monkeypatch
+    ):
+        monkeypatch.setenv("OSTIARI_SANDBOX_TIMEOUT_MS", "1000")
+        await _gateway(client)
+        run = (await _start(client)).json()
+        async with async_session() as db:
+            row = await db.get(SandboxRun, run["id"])
+            row.started_at = datetime.now(timezone.utc) - timedelta(milliseconds=400)
+            await db.commit()
+        gateway_client.chunks = [b"x"] * 5
+        gateway_client.chunk_delay = 0.2
+
+        response = await client.post(
+            f"/api/sandbox/runs/{run['id']}/tools/db_query",
+            json={},
+        )
+        assert response.status_code == 504
+        current = await client.get(f"/api/sandbox/runs/{run['id']}")
+        assert current.json()["status"] == "timed_out"
 
     async def test_tool_count_is_atomic_and_limited(self, client, gateway_client, monkeypatch):
         monkeypatch.setenv("OSTIARI_SANDBOX_MAX_TOOL_CALLS", "2")

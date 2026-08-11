@@ -133,6 +133,8 @@ sam deploy --guided
 | `OSTIARI_INGEST_KEY` | _(none)_ | Gates `POST /api/traces/ingest` with an `X-Ingest-Key` header; unset in production, every trace ingest is 401. **Read the caveats before setting it** — see below. |
 | `OSTIARI_SERVICE_TOKEN` | _(none)_ | Shared machine credential for the restricted gateway lifecycle/ingest routes. Required when `OSTIARI_REQUIRE_AUTH=true`; set the same value on every trusted gateway. |
 | `OSTIARI_CONFIG_ADMIN_KEY` | _(none)_ | Credential the control plane sends on gateway `/config/*` calls. Set the same value on the control plane and gateways. |
+| `OSTIARI_SANDBOX_GATEWAY_TOKEN` | _(caller bearer)_ | Optional dedicated bearer credential for Sandbox Code tool calls to protected gateways. Store it as a secret. |
+| `OSTIARI_SANDBOX_GATEWAY_AGENT_ID` | `sandbox-code` | Gateway agent identity asserted with the dedicated Sandbox bearer token; it must match the token's identity claim. |
 | `OSTIARI_ENCRYPTION_KEY` | _(ephemeral)_ | Encrypts stored provider API keys. Unset, a new key is minted per process — stored keys become unreadable after restart. |
 | `OIDC_ISSUER` / `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | _(none)_ | Enable the dashboard's browser SSO authorization-code flow. |
 | `OIDC_REDIRECT_URI` | `http://localhost:8400/api/auth/sso/callback` | Public backend callback URL registered verbatim with the identity provider. |

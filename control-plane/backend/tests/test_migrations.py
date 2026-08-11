@@ -62,6 +62,7 @@ def test_upgrade_head_creates_org_schema():
             }
             assert {
                 "org_id",
+                "active_slot",
                 "gateway_id",
                 "source_digest",
                 "status",
