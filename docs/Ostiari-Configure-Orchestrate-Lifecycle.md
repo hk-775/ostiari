@@ -26,10 +26,11 @@ All config lives in the Control Plane — policies, quotas, models, agent-auth, 
 
 If a gateway restarts, it doesn't lose config: registration returns the full bundle
 and the gateway applies it — tools, policy, MCP servers, payments, quotas,
-agent-auth, A/B experiments, and the enforcement mode. Anything left in the
+agent-auth, A/B experiments, agent routing, task classification, the model
+registry, budget-reset schedules, and the enforcement mode. Anything left in the
 pending-push queue arrives beside the bundle as `config_updates` and is applied
-after it (§2, Caveat 2). What is *not* recoverable is a `push-config` body that was
-never persisted; clicking Push on the Gateways page re-sends stored state.
+after it (§2, Caveat 2). What is *not* recoverable is a `push-config` body that
+was never persisted; clicking Push on the Gateways page re-sends stored state.
 
 ### 2. Push is Best-Effort, Not Required
 
@@ -63,7 +64,8 @@ What was at risk was narrow but real: the register bundle carries the current st
 config anyway, so a queued policy edit that was also persisted arrived via
 `bundle["policy"]`. Only a delta that was *never* stored was lost — which is exactly
 what `POST /{id}/push-config` sends, since it forwards an arbitrary operator-supplied
-body without persisting it. That's the Policies and Quotas page Push buttons (see §4).
+body without persisting it. First-party pages use persisted, dedicated routes;
+this caveat applies to custom callers of `push-config`.
 
 ### 3. Gateway Lifecycle
 
@@ -72,7 +74,8 @@ Gateway starts
   → POST /api/gateways/{id}/register (announces itself, advertising callback_url)
   → CP auto-creates the record if it doesn't exist, marks healthy
   → CP responds with full config bundle (tools, policy, mode, quotas,
-    agent_auth, mcp_servers, and a2a_agents when any are stored)
+    agent_auth, mcp_servers, a2a_agents, agent_routing, model_registry,
+    task_classification, and budget_reset when configured)
   → Gateway applies config, reconnects MCP servers + A2A peers, begins serving
 
 Running
@@ -119,12 +122,15 @@ interchangeable:
 | Policies page **Push** | `POST /api/policies/{id}/push` | effective active policy set rebuilt from stored state | yes |
 | Quotas page **Push** | `POST /api/quotas/{id}/push` | stored gateway quota | yes |
 | Agent Quotas **Save & Push** | `POST /api/quotas/{id}/push` | complete stored agent-quota map for the gateway | yes |
+| Models page **Push Registry** | `POST /api/models/push` | tenant model/provider catalog for each LLM-enabled gateway | yes |
+| Models page routing controls | `PUT /api/routing-controls/{id}/...` | stored task rules or reset schedule | yes |
+| Agents **Save & Push** | `POST /api/agent-routing` | stored per-agent model policy | yes |
 
 `push-config` forwards whatever body a custom caller gives it to the gateway's
-`POST /config`, which is a **whole-document replace** that applies only tools +
-policy. The first-party Policies and Quotas pages bypass this route and call the
-dedicated runtime
-gates. Full detail and reproductions: [gateway-architecture.md → The /config partial-push
+`POST /config`. Tools, policy, mode, and the base document use replacement
+semantics; explicitly present runtime gates are applied live. First-party pages
+use dedicated partial endpoints for individual controls. Full detail and
+reproductions: [gateway-architecture.md → The /config partial-push
 trap](gateway-architecture.md#the-config-partial-push-trap).
 
 Prefer the **Gateways page** Push (or `POST /api/gateways/push-all`): it rebuilds
@@ -228,7 +234,8 @@ Gateway 3 goes down:
 
 Gateway 3 restarts:
   → Registers → gets full config bundle (tools, policy, mode, quotas,
-    agent_auth, ab_experiments, …) plus the drained queue as config_updates
+    agent_auth, ab_experiments, agent_routing, model_registry,
+    task_classification, budget_reset, …) plus the drained queue as config_updates
   → Applies the bundle, then each queued change on top (§2, Caveat 2)
   → Starts heartbeating → green dot again
 ```
@@ -275,9 +282,10 @@ If a gateway isn't running:
 - Health shows red after 90s
 - Traces stop (obviously)
 - Config changes written through the *stored* state (Policies/Quotas/Tools CRUD,
-  mode) are persisted and arrive in the next register bundle. A `push-config` body
-  is not stored, so it survives only via the pending-push queue — and only if the
-  control plane doesn't restart first. See §2, Caveats 1 and 2.
+  mode, model registry, agent routing, task rules, reset schedule) are persisted
+  and arrive in the next register bundle. A `push-config` body is not stored, so
+  it survives only via the pending-push queue — and only if the control plane
+  doesn't restart first. See §2, Caveats 1 and 2.
 
 ---
 

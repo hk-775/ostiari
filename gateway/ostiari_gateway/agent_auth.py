@@ -592,9 +592,24 @@ class AgentAuthPolicy:
                 except Exception as exc:  # noqa: BLE001
                     log.debug("Agent budget alert callback failed: %s", exc)
 
-    def get_spend_snapshot(self) -> dict[str, float]:
+    def reset_spend(self) -> int:
+        """Start a new budget period for every configured agent."""
+        for grants in self._grants.values():
+            grants.spend_usd = 0.0
+            grants.reservations.clear()
+            grants.alerted_thresholds.clear()
+            if self._store is not None:
+                self._store.budget_reset(self._budget_key(grants.agent_id))
+        self._shared_reservations.clear()
+        return len(self._grants)
+
+    def get_spend_snapshot(self, *, include_zero: bool = False) -> dict[str, float]:
         """Get current spend for all agents (for persistence)."""
-        return {aid: g.spend_usd for aid, g in self._grants.items() if g.spend_usd > 0}
+        return {
+            aid: g.spend_usd
+            for aid, g in self._grants.items()
+            if include_zero or g.spend_usd > 0
+        }
 
     def restore_spend(self, snapshot: dict[str, float]) -> None:
         """Restore spend from a persisted snapshot (e.g., from Control Plane)."""

@@ -23,8 +23,9 @@ across different LLMs" only makes sense here.
 1. **Per-agent routing policy** (this feature) ← highest
 2. A/B experiments
 3. Explicit routing rules
-4. Smart routing (task classification)
-5. Default model
+4. Operator keyword classification
+5. AxonLLM task classification
+6. Default model
 
 So an agent opted into round-robin always rotates, regardless of other rules.
 
@@ -43,8 +44,8 @@ specific entry. A single-model list acts as a pin.
 
 ## Configure it
 
-**Control plane UI:** Agents page → **LLM Round-Robin (live)** → pick agent,
-gateway, scope, add models, **Save & Push**.
+**Control plane UI:** Agents page → **Per-Agent Model Routing** → pick agent,
+scope, add models, **Save & Push**.
 
 **HTTP (control plane, persists + pushes to the gateway):**
 
@@ -75,9 +76,9 @@ gateway's provider credentials.
   translates to/from Anthropic format — but for an interactive coding agent,
   rotating across *families* can produce inconsistent behavior; prefer
   `session` scope or same-family models there.
-- Control-plane policies are held in memory (like the other config routers), so
-  they need re-applying after a control-plane restart. They are keyed per org, so
-  a policy set in one tenant doesn't leak into another.
+- Control-plane policies are serialized with the other desired-state registries
+  and included in registration/reconnect bundles. They are keyed per org, so a
+  policy set in one tenant doesn't leak into another.
 - The **Codex shim** (`POST /v1/chat/completions`) does not apply per-agent
   routing — it forwards the requested model to AxonLLM as-is. Only `/v1/messages`
   and `/invoke` go through `ModelRouter.select_model`.

@@ -367,21 +367,18 @@ Always present (`server.py`):
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/config` | GET/POST | View or apply full configuration. **`POST` is a whole-document replace, and it only applies tools + policy** — see [the partial-push trap](#the-config-partial-push-trap) |
+| `/config` | GET/POST | View or apply a full configuration document; present runtime-gate fields are applied live |
 | `/config/tools` | POST | Replace all tool definitions |
 | `/config/tools/{name}` | POST/DELETE | Add, update, or remove a single tool |
 | `/config/tools/import-openapi` | POST | Generate tools from an OpenAPI spec ([openapi-import.md](openapi-import.md)) |
 | `/config/policy` | POST | Replace the policy |
 | `/config/quota` | GET/POST | View or apply quota (rate limits, budget, max_tokens) |
-| `/config/quota/reset-spend` | POST | Reset spend counter |
-| `/config/budget-reset` | GET/POST | Scheduled budget-reset window |
+| `/config/quota/reset-spend` | POST | Start a new gateway + per-agent budget period |
+| `/config/budget-reset` | GET/POST | Live UTC budget-reset schedule and next boundary |
 | `/config/agent-auth` | GET/POST | Per-agent tool/model/provider grants and budgets |
 | `/config/cross-agent` | GET/POST | A2A delegation policy |
 | `/config/a2a-agents` | GET/POST, DELETE `{name}` | A2A peer registry |
 | `/config/mcp-servers` | GET/POST, DELETE `{name}`, POST `{name}/refresh` | MCP server connections + re-discovery |
-| `/config/llm` | GET/POST | LLM routing, models, credentials |
-| `/config/routing-overrides` | GET/POST | Manual routing overrides |
-| `/config/task-classification` | GET/POST | Task-classifier settings |
 | `/config/payments` | GET/POST | Payment/metering config |
 | `/config/mode` | GET/POST | `enforce` vs `shadow` |
 | `/tool/{action}` | POST | Governed tool call (PATH 1) |
@@ -401,7 +398,9 @@ Registered only when `llm_gateway: true` (`modules/llm_gateway/module.py`):
 | `/cache/stats` | GET | Intent cache hit/miss stats |
 | `/cache/clear` | POST | Flush cached plans |
 | `/config/agent-routing` | GET/POST | Per-agent model-rotation policies |
-| `/config/llm` | POST | Same path as above; the module re-registers it so a push resyncs the live router |
+| `/config/task-classification` | GET/POST | Keyword categories and their target models |
+| `/config/model-registry` | GET/POST | AxonLLM model/provider mappings and routing strategies |
+| `/config/llm` | GET/POST | Whole-document LLM config; GET omits credentials |
 
 Every path starting with `/config` is gated by `OSTIARI_CONFIG_ADMIN_KEY` when
 it's set — present it as `X-Config-Admin-Key` or `Authorization: Bearer <key>`,
@@ -433,33 +432,28 @@ $ curl -s $GW/health | jq .tools_registered          # 0   ← tools gone
 $ curl -s $GW/config/mode                            # {"mode":"enforce"}  ← un-shadowed
 ```
 
-**2. `apply_config` only wires up tools and policy.** It stores the whole config
-object, but the quota, agent-auth, cross-agent, and payment gates are configured
-*outside* it — at startup from `initial_config`, in `_apply_bundle` for the
-lifecycle path, and in the dedicated `/config/<gate>` endpoints. Nothing in
-`apply_config` calls `quota_enforcer.configure()` or its siblings, so those keys
-are **stored and not applied**:
+**2. Runtime gates are applied only when their key is present.** The server
+applies explicitly supplied quota, agent-auth, cross-agent, payment, broker,
+budget-reset, agent-routing, task-classification, and model-registry fields after
+`ConfigManager.apply_config()`. A partial body therefore has mixed semantics:
+tools/policy/mode take document defaults, while an omitted runtime gate keeps its
+current live state. Use the dedicated endpoint when changing one gate:
 
 ```
 $ curl -sX POST $GW/config -d '{"quota":{"rate_limit_rpm":1},
                                 "agent_auth":{"enabled":true,"agents":{"a1":{"allowed_tools":["x"]}}},
                                 "payments":{"mode":"metered"}}'
-$ curl -s $GW/config/quota       | jq .rate_limit_rpm   # null   ← not enforced
-$ curl -s $GW/config/agent-auth  | jq .enabled          # false  ← not enforced
-$ curl -s $GW/config/payments    | jq .mode             # "off"  ← not enforced
-$ curl -s $GW/config             | jq .quota            # {"rate_limit_rpm":1}  ← but stored
+$ curl -s $GW/config/quota       | jq .rate_limit_rpm   # 1
+$ curl -s $GW/config/agent-auth  | jq .enabled          # true
+$ curl -s $GW/config/payments    | jq .mode             # "metered"
 ```
-
-`GET /config` echoes the values back, so the gateway *reports* a quota it is not
-enforcing. That's the dangerous half: the config surface and the enforcement
-surface disagree and only the gate endpoints tell the truth.
 
 **Which control-plane paths are affected.** The distinction is which endpoint the
 UI calls:
 
 | Path | Endpoint | Applies |
 |---|---|---|
-| Gateways page → **Push** / **Push All** | `push_service` → `POST /config` | Tools + policy only. The bundle it builds carries no `quota`/`agent_auth`, so nothing is silently cleared beyond the replace semantics. |
+| Gateways page → **Push** / **Push All** | `push_service` → `POST /config` | Stored full bundle, including model registry, agent routing, task rules, and reset schedule when configured. |
 | Policies page → **Push** | `POST /api/policies/{id}/push` → `POST /config/policy` | Works — the control plane rebuilds the effective active policy set. Global policies fan out to every gateway in the caller's organization. |
 | Quotas page → **Push** | `POST /api/quotas/{id}/push` → `POST /config/quota` | Works — the page uses the quota gate endpoint. |
 | Agent Quotas → **Save & Push** / **Push All** | quota API → `POST /config/agent-auth` | Works — the control plane rebuilds the complete map for each gateway and preserves tool grants. |
@@ -2676,12 +2670,12 @@ a log line plus the control-plane report:
 }
 ```
 
-> **There is no billing period.** `budget_limit_usd` is a running total with no
-> automatic rollover — nothing resets it on a daily or monthly boundary. Spend
-> accumulates until someone calls `POST /config/quota/reset-spend` (unauthenticated
-> unless `OSTIARI_CONFIG_ADMIN_KEY` is set) or the process restarts, which drops
-> in-process spend to zero and reopens the full budget. If you want a daily budget,
-> schedule that call.
+`budget_limit_usd` applies to the current budget period. The Models page stores a
+manual, daily, weekly, or monthly UTC schedule per gateway. The gateway scheduler
+resets gateway and agent counters at the boundary, persists an explicit zero
+snapshot and reset epoch to the control plane, and catches up after a boundary it
+missed while offline. `POST /config/quota/reset-spend` starts a new period
+immediately.
 
 ### Local Pricing Table
 
@@ -2840,21 +2834,15 @@ omitted limit is simply not enforced:
 | `pricing` | Per-model override of `DEFAULT_PRICING`. |
 | `budget_key` | Redis key for the budget (default `"gateway"`). Gateways sharing a key share one fleet-wide budget; distinct keys partition it. Only meaningful with `OSTIARI_REDIS_URL` set. |
 
-Two things the older gateway shape implied that aren't there: **there is no `period` field**
-(the window is not calendar-based — spend accumulates until someone calls `POST
-/config/quota/reset-spend`), and **alert thresholds are not configurable** —
+There is no `period` field inside the quota document; the calendar schedule is a
+separate `/config/budget-reset` control. Gateway alert thresholds are not configurable —
 `BUDGET_ALERT_THRESHOLDS` is the fixed list `[0.8, 0.9, 1.0]`. Agent quotas have
 their own configurable warning threshold plus a mandatory 100% crossing.
 
-> **`/config/budget-reset` does not reset anything on a schedule.** It's a
-> dashboard-backing key/value store: `POST` writes
-> `{"schedule": "daily"}` into an in-memory dict and `GET` reads it back. No timer
-> reads that value, and nothing calls `reset_spend()` from it — so setting it to
-> `daily` and expecting a nightly rollover leaves the budget accumulating forever.
-> Drive the reset from outside (cron → `POST /config/quota/reset-spend`) and treat
-> `/config/budget-reset` as a record of your intent, not a mechanism. The whole
-> `runtime_config` dict it lives in is process-lifetime only and is lost on
-> restart.
+`/config/budget-reset` reports `schedule`, `configured_at`, `last_reset_at`, and
+`next_reset`. The control plane stores the desired schedule in the gateway row,
+so registration/reconnect restores it. Usage before `last_reset_at` is excluded
+from current-period quota spend.
 
 ### Quota push from control plane
 
@@ -2900,10 +2888,8 @@ Four things to know about gateway-quota pushes:
 - **The control-plane quota store is a per-org dict, not a table** (`_quotas`).
   It's serialized to `state.json` in `lifespan`'s shutdown half and reloaded on
   boot, so quotas survive a *graceful* restart and are lost on `kill -9`. The
-  `current_spend` on `QuotaResponse` is a snapshot the demo seeder computes once
-  from the `UsageRecord` rows, and `current_rpm` is hardcoded to 0; neither is
-  recomputed as traffic flows. Read live numbers from the gateway's
-  `GET /config/quota`, not from the quota record.
+  `current_spend` and `current_rpm` are recomputed from `UsageRecord` rows when
+  quotas are listed; spend is bounded by each gateway's latest reset epoch.
 
 ### What happens when limits are hit
 
@@ -3201,7 +3187,7 @@ All providers use the same unified interface internally. The gateway (via AxonLL
 | **Budget alert thresholds** | Gateway: fixed 80/90/100%. Agent: configurable warning threshold plus 100%. Crossings include `agent_id` when applicable | Agent threshold managed by `/api/quotas` |
 | **Quota enforcement** | Gateway and agent rate limits, projected budget caps, model/provider allowlists, and max_tokens | Yes — `/api/quotas` + push; definitions persist in the control plane and agent spend is snapshotted/restored |
 | **Max tokens silent cap** | Caps output tokens without rejecting the request | Yes — max_tokens in quota |
-| **Budget period rollover** | **Does not exist.** Spend is a running total; `/config/budget-reset` stores a schedule nothing reads | Drive `POST /config/quota/reset-spend` from cron |
+| **Budget period rollover** | Gateway scheduler resets gateway + agent spend on daily/weekly/monthly UTC boundaries and persists the reset epoch | Yes — Models → Budget Reset Schedule |
 | **Live traces** | Reports every governed call in real time (`/tool/{action}`, `/invoke` tool loop, both shims) | Automatic when `control_plane_url` set |
 | **Session/plan/step context** | Groups traces by session, annotates with the agent's plan | Agent sends X-Session-Id, X-Plan, X-Step headers |
 | **Params in traces** | Tool call parameters included verbatim, **unredacted** | Automatic |

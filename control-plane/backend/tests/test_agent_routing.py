@@ -58,3 +58,42 @@ class TestAgentRouting:
 
     async def test_delete_missing_404(self, client):
         assert (await client.request("DELETE", "/api/agent-routing/gw1/ghost")).status_code == 404
+
+    async def test_policy_is_in_restart_bundle(self, client):
+        await _make_gateway(client)
+        await client.post("/api/agent-routing", json={
+            "agent_id": "a1",
+            "gateway_id": "gw1",
+            "models": ["m1", "m2"],
+            "scope": "session",
+        })
+        bundle = (await client.get("/api/gateways/gw1/config-bundle")).json()
+        assert bundle["agent_routing"] == {
+            "a1": {
+                "strategy": "round_robin",
+                "models": ["m1", "m2"],
+                "scope": "session",
+            },
+        }
+
+    async def test_authoritative_registries_override_stale_gateway_json(self, client):
+        await _make_gateway(client)
+        await client.patch("/api/gateways/gw1", json={
+            "config": {
+                "agent_routing": {"stale": {"models": ["old"]}},
+                "model_registry": {"models": [{"name": "stale"}]},
+            },
+        })
+        await client.post("/api/agent-routing", json={
+            "agent_id": "current",
+            "gateway_id": "gw1",
+            "models": ["current-model"],
+        })
+
+        bundle = (await client.get("/api/gateways/gw1/config-bundle")).json()
+
+        assert set(bundle["agent_routing"]) == {"current"}
+        assert all(
+            model["name"] != "stale"
+            for model in bundle["model_registry"]["models"]
+        )

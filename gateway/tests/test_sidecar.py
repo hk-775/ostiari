@@ -241,31 +241,22 @@ class TestToolProxy:
 
 
 class TestRuntimeConfigEndpoints:
-    """The dashboard reads/writes these gateway config endpoints."""
+    """Runtime controls exposed by the core gateway."""
 
     def test_budget_reset_roundtrip(self, client):
-        assert client.get("/config/budget-reset").json() == {"schedule": "manual"}
-        r = client.post("/config/budget-reset", json={"schedule": "weekly"})
+        assert client.get("/config/budget-reset").json()["schedule"] == "manual"
+        r = client.post("/config/budget-reset", json={
+            "schedule": "weekly",
+            "configured_at": "2026-08-11T12:00:00+00:00",
+        })
         assert r.status_code == 200
         assert client.get("/config/budget-reset").json()["schedule"] == "weekly"
 
-    def test_task_classification_roundtrip(self, client):
-        body = {"rules": [{"keyword": "code", "category": "reasoning"}],
-                "model_mapping": {"reasoning": "claude-opus"}}
-        assert client.post("/config/task-classification", json=body).status_code == 200
-        back = client.get("/config/task-classification").json()
-        assert back["rules"] == body["rules"]
-        assert back["model_mapping"] == body["model_mapping"]
-
-    def test_llm_roundtrip(self, client):
-        body = {"routing_rules": [{"if": "tokens>1000", "use": "claude-sonnet"}]}
-        assert client.post("/config/llm", json=body).status_code == 200
-        assert client.get("/config/llm").json()["routing_rules"] == body["routing_rules"]
-
-    def test_routing_overrides_roundtrip(self, client):
-        body = {"overrides": [{"agent": "crm", "model": "gpt-4o"}]}
-        assert client.post("/config/routing-overrides", json=body).status_code == 200
-        assert client.get("/config/routing-overrides").json()["overrides"] == body["overrides"]
+    def test_unsupported_routing_overrides_are_not_stored(self, client):
+        assert client.post(
+            "/config/routing-overrides",
+            json={"overrides": [{"agent": "crm", "model": "gpt-4o"}]},
+        ).status_code == 404
 
 
 class TestShadowMode:

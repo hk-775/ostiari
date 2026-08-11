@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Brain, Plus, Trash2, Pencil, X, Wrench, Eye, Server, ShieldCheck, ArrowUp, ArrowDown, Save, Clock } from "lucide-react";
-import { fetchAPI } from "../lib/api";
+import { Brain, Plus, Trash2, Pencil, X, Wrench, Eye, ShieldCheck, Save, Clock, RotateCcw, Upload } from "lucide-react";
+import { api, fetchAPI } from "../lib/api";
 
 interface ProviderMapping {
   provider: string;
@@ -24,29 +24,34 @@ interface ModelConfig {
   category: string;
 }
 
-interface RoutingRule {
-  model: string;
-  routing_strategy: string;
-  providers: { provider: string; weight: number; fallback_order: number }[];
+interface TaskClassificationConfig {
+  rules: Record<string, string[]>;
+  model_mapping: Record<string, string>;
 }
 
 interface BudgetResetConfig {
   schedule: "manual" | "daily" | "weekly" | "monthly";
-  next_reset?: string;
+  last_reset_at?: string | null;
+  configured_at?: string | null;
+  next_reset?: string | null;
 }
 
-const GATEWAY_PATH = "/api/proxy/gateway/crm-agent";
+interface RoutingControls {
+  gateway_id: string;
+  task_classification: TaskClassificationConfig;
+  budget_reset: BudgetResetConfig;
+}
+
+interface PushResult {
+  models: number;
+  gateways: number;
+  pushed: number;
+  failed: number;
+  skipped: number;
+}
 
 async function fetchModels(): Promise<ModelConfig[]> {
   return fetchAPI<ModelConfig[]>("/api/models");
-}
-
-async function fetchBudgetReset(): Promise<BudgetResetConfig> {
-  try {
-    return await fetchAPI<BudgetResetConfig>(`${GATEWAY_PATH}/config/budget-reset`);
-  } catch {
-    return { schedule: "manual" };
-  }
 }
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -60,6 +65,10 @@ const PROVIDER_COLORS: Record<string, string> = {
   bedrock: "bg-orange-50 text-orange-700",
   openai: "bg-emerald-50 text-emerald-700",
   vertex: "bg-blue-50 text-blue-700",
+  google_ai: "bg-blue-50 text-blue-700",
+  azure: "bg-sky-50 text-sky-700",
+  xai: "bg-stone-100 text-stone-700",
+  together: "bg-rose-50 text-rose-700",
   "bedrock-mantle": "bg-purple-50 text-purple-700",
 };
 
@@ -86,7 +95,15 @@ const TASK_CATEGORY_COLORS: Record<string, string> = {
   data: "bg-amber-50 text-amber-700 border-amber-200",
 };
 
-function TaskClassificationRules({ models }: { models: ModelConfig[] }) {
+function TaskClassificationRules({
+  models,
+  gatewayId,
+  initial,
+}: {
+  models: ModelConfig[];
+  gatewayId: string;
+  initial?: TaskClassificationConfig;
+}) {
   const [rules, setRules] = useState<Record<string, string[]>>(DEFAULT_CLASSIFICATION_RULES);
   const [modelMapping, setModelMapping] = useState<Record<string, string>>({
     code_generation: "claude-sonnet",
@@ -99,6 +116,18 @@ function TaskClassificationRules({ models }: { models: ModelConfig[] }) {
   const [newCategory, setNewCategory] = useState("");
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState("");
+
+  useEffect(() => {
+    if (!initial) return;
+    setRules(Object.keys(initial.rules).length ? initial.rules : DEFAULT_CLASSIFICATION_RULES);
+    setModelMapping(Object.keys(initial.model_mapping).length ? initial.model_mapping : {
+      code_generation: "claude-sonnet",
+      creative: "claude-sonnet",
+      analysis: "claude-opus",
+      simple_qa: "claude-haiku",
+      data: "gpt-4o-mini",
+    });
+  }, [gatewayId, initial]);
 
   const addKeyword = (category: string) => {
     const kw = (newKeyword[category] || "").trim();
@@ -127,10 +156,17 @@ function TaskClassificationRules({ models }: { models: ModelConfig[] }) {
   const saveRules = async () => {
     setSaveError("");
     try {
-      await fetchAPI(`${GATEWAY_PATH}/config/task-classification`, {
-        method: "POST",
+      const result = await fetchAPI<{ pushed: boolean; push_error?: string }>(
+        `/api/routing-controls/${encodeURIComponent(gatewayId)}/task-classification`,
+        {
+        method: "PUT",
         body: JSON.stringify({ rules, model_mapping: modelMapping }),
-      });
+        },
+      );
+      if (!result.pushed) {
+        setSaveError(`Saved, but gateway push failed: ${result.push_error || "unknown error"}`);
+        return;
+      }
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (error) {
@@ -152,8 +188,6 @@ function TaskClassificationRules({ models }: { models: ModelConfig[] }) {
           <button onClick={saveRules} className="btn-primary"><Save className="h-4 w-4" /> Save Rules</button>
         </div>
       </div>
-      <p className="text-xs text-stone-500">When a model uses "Smart Routing", prompts are classified by keywords and routed to the best model for that task type.</p>
-
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {Object.entries(rules).map(([category, keywords]) => {
           const colors = TASK_CATEGORY_COLORS[category] || "bg-stone-50 text-stone-600 border-stone-200";
@@ -222,40 +256,34 @@ export function Models() {
   const queryClient = useQueryClient();
   const location = useLocation();
   const { data: models = [], isLoading } = useQuery({ queryKey: ["model-config"], queryFn: fetchModels });
-  const { data: budgetResetConfig = { schedule: "manual" as const } } = useQuery({ queryKey: ["budget-reset"], queryFn: fetchBudgetReset });
+  const { data: gateways = [] } = useQuery({ queryKey: ["gateways"], queryFn: api.gateways.list });
+  const [gatewayId, setGatewayId] = useState("");
+  const selectedGateway = gatewayId || gateways[0]?.id || "";
+  const { data: controls } = useQuery({
+    queryKey: ["routing-controls", selectedGateway],
+    queryFn: () => fetchAPI<RoutingControls>(
+      `/api/routing-controls/${encodeURIComponent(selectedGateway)}`,
+    ),
+    enabled: Boolean(selectedGateway),
+  });
   const [showForm, setShowForm] = useState(false);
   const [editingModel, setEditingModel] = useState<string | null>(null);
   const [form, setForm] = useState<ModelConfig>({ ...EMPTY_FORM });
   const [modelError, setModelError] = useState("");
+  const [pushStatus, setPushStatus] = useState("");
 
   useEffect(() => { setShowForm(false); setEditingModel(null); }, [location.key]);
-
-  // Routing state
-  const [routingRules, setRoutingRules] = useState<RoutingRule[]>([]);
-  const [routingSaved, setRoutingSaved] = useState(false);
-  const [routingError, setRoutingError] = useState("");
 
   // Budget reset state
   const [budgetReset, setBudgetReset] = useState<BudgetResetConfig>({ schedule: "manual" });
   const [budgetResetError, setBudgetResetError] = useState("");
 
-  // Sync routing rules from models
-  useEffect(() => {
-    if (models.length > 0) {
-      setRoutingRules(models.map(m => ({
-        model: m.name,
-        routing_strategy: m.routing_strategy,
-        providers: m.providers.map(p => ({ provider: p.provider, weight: p.weight, fallback_order: p.fallback_order })),
-      })));
-    }
-  }, [models]);
-
   // Sync budget reset from fetched config
   useEffect(() => {
-    if (budgetResetConfig) {
-      setBudgetReset(budgetResetConfig);
+    if (controls?.budget_reset) {
+      setBudgetReset(controls.budget_reset);
     }
-  }, [budgetResetConfig]);
+  }, [controls]);
 
   const createMutation = useMutation({
     mutationFn: async (data: ModelConfig) => {
@@ -300,9 +328,32 @@ export function Models() {
           <h1 className="text-2xl font-bold tracking-tight text-stone-900">Agent Models</h1>
           <p className="mt-1 text-sm text-stone-500">Per-agent model access, provider restrictions, budgets, and routing</p>
         </div>
-        <button onClick={() => { setForm({ ...EMPTY_FORM }); setEditingModel(null); setShowForm(true); }} className="btn-indigo">
-          <Plus className="h-4 w-4" /> Add Model
-        </button>
+        <div className="flex items-center gap-2">
+          {pushStatus && <span className="text-xs text-stone-600">{pushStatus}</span>}
+          <button
+            onClick={async () => {
+              setPushStatus("");
+              try {
+                const result = await fetchAPI<PushResult>("/api/models/push", { method: "POST" });
+                setPushStatus(
+                  result.failed
+                    ? `${result.pushed}/${result.gateways - result.skipped} LLM gateways updated`
+                    : result.pushed
+                      ? `${result.models} models pushed to ${result.pushed} gateway${result.pushed === 1 ? "" : "s"}`
+                      : "No LLM gateways available",
+                );
+              } catch (error) {
+                setPushStatus(error instanceof Error ? error.message : "Registry push failed");
+              }
+            }}
+            className="btn-secondary"
+          >
+            <Upload className="h-4 w-4" /> Push Registry
+          </button>
+          <button onClick={() => { setForm({ ...EMPTY_FORM }); setEditingModel(null); setShowForm(true); }} className="btn-indigo">
+            <Plus className="h-4 w-4" /> Add Model
+          </button>
+        </div>
       </div>
       {modelError && <p className="text-sm font-medium text-rose-600">{modelError}</p>}
 
@@ -327,8 +378,6 @@ export function Models() {
               <option value="least-latency">Least Latency</option>
               <option value="cost-optimized">Cost Optimized</option>
               <option value="weighted">Weighted</option>
-                    <option value="smart-routing">Smart Routing (task classification)</option>
-                    <option value="ensemble">Ensemble (multi-model consensus)</option>
             </select>
             <input type="number" step="0.0001" placeholder="Input cost / 1k tokens" value={form.input_cost_per_1k || ""} onChange={(e) => setForm({ ...form, input_cost_per_1k: parseFloat(e.target.value) || 0 })} className="input" />
             <input type="number" step="0.0001" placeholder="Output cost / 1k tokens" value={form.output_cost_per_1k || ""} onChange={(e) => setForm({ ...form, output_cost_per_1k: parseFloat(e.target.value) || 0 })} className="input" />
@@ -350,18 +399,41 @@ export function Models() {
               <button type="button" onClick={addProvider} className="text-xs text-indigo-600 hover:text-indigo-700">+ Add provider</button>
             </div>
             {form.providers.map((p, i) => (
-              <div key={i} className="flex gap-2 items-center">
+              <div key={i} className="flex flex-wrap gap-2 items-center">
                 <select value={p.provider} onChange={(e) => { const providers = [...form.providers]; providers[i] = { ...p, provider: e.target.value }; setForm({ ...form, providers }); }} className="input w-36">
                   <option value="anthropic">Anthropic</option>
                   <option value="openai">OpenAI</option>
                   <option value="bedrock">Bedrock</option>
                   <option value="vertex">Vertex AI</option>
+                  <option value="google_ai">Google AI</option>
                   <option value="bedrock-mantle">Bedrock Mantle</option>
-                  <option value="azure">Azure</option>
+                  <option value="azure">Azure OpenAI</option>
                   <option value="cohere">Cohere</option>
+                  <option value="xai">xAI</option>
+                  <option value="groq">Groq</option>
+                  <option value="together">Together</option>
+                  <option value="fireworks">Fireworks</option>
+                  <option value="ai21">AI21</option>
                 </select>
-                <input placeholder="Model ID" value={p.model_id} onChange={(e) => { const providers = [...form.providers]; providers[i] = { ...p, model_id: e.target.value }; setForm({ ...form, providers }); }} className="input flex-1" />
+                <input placeholder="Model ID" value={p.model_id} onChange={(e) => { const providers = [...form.providers]; providers[i] = { ...p, model_id: e.target.value }; setForm({ ...form, providers }); }} className="input min-w-48 flex-1" />
                 <input type="number" step="0.1" placeholder="Weight" value={p.weight} onChange={(e) => { const providers = [...form.providers]; providers[i] = { ...p, weight: parseFloat(e.target.value) || 1 }; setForm({ ...form, providers }); }} className="input w-20" />
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  aria-label="Fallback order"
+                  title="Fallback order"
+                  value={p.fallback_order}
+                  onChange={(e) => {
+                    const providers = [...form.providers];
+                    providers[i] = {
+                      ...p,
+                      fallback_order: Math.max(0, parseInt(e.target.value, 10) || 0),
+                    };
+                    setForm({ ...form, providers });
+                  }}
+                  className="input w-20"
+                />
                 {form.providers.length > 1 && (
                   <button onClick={() => removeProvider(i)} className="rounded-lg p-2 text-stone-400 hover:bg-rose-50 hover:text-rose-600 transition">
                     <X className="h-3.5 w-3.5" />
@@ -446,8 +518,6 @@ export function Models() {
                     <option value="least-latency">Least Latency</option>
                     <option value="cost-optimized">Cost Optimized</option>
                     <option value="weighted">Weighted</option>
-                    <option value="smart-routing">Smart Routing (task classification)</option>
-                    <option value="ensemble">Ensemble (multi-model consensus)</option>
                   </select>
                 </td>
                 <td className="px-6 py-4">
@@ -479,11 +549,6 @@ export function Models() {
         )}
       </div>
 
-      {/* Task Classification Rules — shown when any model uses smart-routing */}
-      {models.some(m => m.routing_strategy === "smart-routing") && (
-        <TaskClassificationRules models={models} />
-      )}
-
       {/* Per-Agent Model Access */}
       <div
         id="per-agent-access"
@@ -501,141 +566,31 @@ export function Models() {
         </Link>
       </div>
 
-      {/* LLM Routing Policy */}
-      <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Server className="h-5 w-5 text-emerald-600" />
-            <h2 className="text-lg font-semibold text-stone-900">LLM Routing Policy</h2>
+            <Brain className="h-5 w-5 text-indigo-600" />
+            <h2 className="text-lg font-semibold text-stone-900">Gateway Routing Controls</h2>
           </div>
-          <button
-            onClick={async () => {
-              setRoutingError("");
-              try {
-                await fetchAPI(`${GATEWAY_PATH}/config/llm`, {
-                  method: "POST",
-                  body: JSON.stringify({ routing_rules: routingRules }),
-                });
-                setRoutingSaved(true);
-                setTimeout(() => setRoutingSaved(false), 2000);
-              } catch (error) {
-                setRoutingError(error instanceof Error ? error.message : "Failed to save routing policy");
-              }
-            }}
-            className="btn-primary"
-          >
-            <Save className="h-4 w-4" /> Save Routing
-            {routingSaved && <span className="ml-2 text-xs text-emerald-200">Saved!</span>}
-          </button>
         </div>
-        {routingError && <p className="text-xs font-medium text-rose-600">{routingError}</p>}
-        <p className="text-xs text-stone-500">Configure routing strategies, provider fallback order, and weight distribution for A/B testing.</p>
-
-        <div className="space-y-3">
-          {routingRules.map((rule, ruleIdx) => (
-            <div key={rule.model} className="card p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Brain className="h-4 w-4 text-violet-600" />
-                  <p className="text-sm font-semibold text-stone-800">{rule.model}</p>
-                </div>
-                <select
-                  value={rule.routing_strategy}
-                  onChange={(e) => {
-                    const updated = [...routingRules];
-                    updated[ruleIdx] = { ...rule, routing_strategy: e.target.value };
-                    setRoutingRules(updated);
-                  }}
-                  className="rounded-lg border border-stone-200 bg-white px-2 py-1 text-xs text-stone-700 cursor-pointer hover:border-indigo-300 focus:border-indigo-400 focus:outline-none focus:ring-1 focus:ring-indigo-100"
-                >
-                  <option value="least-latency">Least Latency</option>
-                  <option value="cost-optimized">Cost Optimized</option>
-                  <option value="round-robin">Round Robin</option>
-                  <option value="weighted">Weighted</option>
-                    <option value="smart-routing">Smart Routing (task classification)</option>
-                    <option value="ensemble">Ensemble (multi-model consensus)</option>
-                </select>
-              </div>
-
-              {/* Provider list with fallback order and weights */}
-              <div className="space-y-1.5">
-                <p className="text-[10px] font-semibold text-stone-500 uppercase">Provider Fallback Order & Weights</p>
-                {rule.providers
-                  .sort((a, b) => a.fallback_order - b.fallback_order)
-                  .map((prov, provIdx) => (
-                  <div key={prov.provider + provIdx} className="flex items-center gap-2">
-                    <span className="text-xs text-stone-400 w-4 text-center">{provIdx + 1}</span>
-                    <span className={`badge text-xs ${PROVIDER_COLORS[prov.provider] || "bg-stone-100 text-stone-600"}`}>{prov.provider}</span>
-
-                    {/* Weight slider */}
-                    <div className="flex items-center gap-1 flex-1 ml-2">
-                      <span className="text-[10px] text-stone-400 w-10">w: {prov.weight.toFixed(1)}</span>
-                      <input
-                        type="range"
-                        min="0"
-                        max="2"
-                        step="0.1"
-                        value={prov.weight}
-                        onChange={(e) => {
-                          const updated = [...routingRules];
-                          const providers = [...updated[ruleIdx].providers];
-                          providers[provIdx] = { ...providers[provIdx], weight: parseFloat(e.target.value) };
-                          updated[ruleIdx] = { ...updated[ruleIdx], providers };
-                          setRoutingRules(updated);
-                        }}
-                        className="flex-1 h-1.5 accent-violet-600"
-                      />
-                    </div>
-
-                    {/* Reorder buttons */}
-                    <div className="flex gap-0.5">
-                      <button
-                        disabled={provIdx === 0}
-                        onClick={() => {
-                          const updated = [...routingRules];
-                          const providers = [...updated[ruleIdx].providers].sort((a, b) => a.fallback_order - b.fallback_order);
-                          // Swap fallback_order with previous
-                          const temp = providers[provIdx].fallback_order;
-                          providers[provIdx] = { ...providers[provIdx], fallback_order: providers[provIdx - 1].fallback_order };
-                          providers[provIdx - 1] = { ...providers[provIdx - 1], fallback_order: temp };
-                          updated[ruleIdx] = { ...updated[ruleIdx], providers };
-                          setRoutingRules(updated);
-                        }}
-                        className="rounded p-1 text-stone-400 hover:bg-stone-100 hover:text-stone-600 disabled:opacity-30 disabled:cursor-not-allowed transition"
-                      >
-                        <ArrowUp className="h-3 w-3" />
-                      </button>
-                      <button
-                        disabled={provIdx === rule.providers.length - 1}
-                        onClick={() => {
-                          const updated = [...routingRules];
-                          const providers = [...updated[ruleIdx].providers].sort((a, b) => a.fallback_order - b.fallback_order);
-                          // Swap fallback_order with next
-                          const temp = providers[provIdx].fallback_order;
-                          providers[provIdx] = { ...providers[provIdx], fallback_order: providers[provIdx + 1].fallback_order };
-                          providers[provIdx + 1] = { ...providers[provIdx + 1], fallback_order: temp };
-                          updated[ruleIdx] = { ...updated[ruleIdx], providers };
-                          setRoutingRules(updated);
-                        }}
-                        className="rounded p-1 text-stone-400 hover:bg-stone-100 hover:text-stone-600 disabled:opacity-30 disabled:cursor-not-allowed transition"
-                      >
-                        <ArrowDown className="h-3 w-3" />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+        <select
+          value={selectedGateway}
+          onChange={(event) => setGatewayId(event.target.value)}
+          className="input w-56"
+        >
+          {gateways.map((gateway) => (
+            <option key={gateway.id} value={gateway.id}>{gateway.name}</option>
           ))}
-        </div>
-
-        {routingRules.length === 0 && (
-          <div className="card p-8 flex flex-col items-center gap-2">
-            <Server className="h-6 w-6 text-stone-300" />
-            <p className="text-sm text-stone-500">No models configured for routing</p>
-          </div>
-        )}
+        </select>
       </div>
+
+      {selectedGateway && (
+        <TaskClassificationRules
+          models={models}
+          gatewayId={selectedGateway}
+          initial={controls?.task_classification}
+        />
+      )}
 
       {/* Budget Reset Schedule */}
       <div className="space-y-3">
@@ -643,10 +598,9 @@ export function Models() {
           <Clock className="h-5 w-5 text-amber-600" />
           <h2 className="text-lg font-semibold text-stone-900">Budget Reset Schedule</h2>
         </div>
-        <p className="text-xs text-stone-500">Configure when agent budgets reset. Spend counters will be zeroed at the scheduled interval.</p>
 
         <div className="card p-4">
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center gap-4">
             <div className="flex items-center gap-2">
               <label className="text-sm text-stone-600 font-medium">Reset Frequency:</label>
               <select
@@ -665,11 +619,9 @@ export function Models() {
               <div className="flex items-center gap-2 text-xs text-stone-500">
                 <Clock className="h-3.5 w-3.5" />
                 <span>
-                  Next reset: {budgetReset.next_reset || (
-                    budgetReset.schedule === "daily" ? "Tomorrow 00:00 UTC" :
-                    budgetReset.schedule === "weekly" ? "Next Monday 00:00 UTC" :
-                    "1st of next month 00:00 UTC"
-                  )}
+                  Next reset: {budgetReset.next_reset
+                    ? new Date(budgetReset.next_reset).toLocaleString()
+                    : "Pending schedule save"}
                 </span>
               </div>
             )}
@@ -678,16 +630,49 @@ export function Models() {
               onClick={async () => {
                 setBudgetResetError("");
                 try {
-                  await fetchAPI(`${GATEWAY_PATH}/config/budget-reset`, {
-                    method: "POST",
-                    body: JSON.stringify(budgetReset),
-                  });
-                  queryClient.invalidateQueries({ queryKey: ["budget-reset"] });
+                  await fetchAPI(
+                    `/api/routing-controls/${encodeURIComponent(selectedGateway)}/reset-spend`,
+                    { method: "POST" },
+                  );
+                  await queryClient.invalidateQueries({ queryKey: ["routing-controls", selectedGateway] });
+                } catch (error) {
+                  setBudgetResetError(error instanceof Error ? error.message : "Budget reset failed");
+                }
+              }}
+              disabled={!selectedGateway}
+              className="btn-secondary ml-auto"
+              title="Reset spend now"
+            >
+              <RotateCcw className="h-4 w-4" /> Reset Now
+            </button>
+            <button
+              onClick={async () => {
+                setBudgetResetError("");
+                try {
+                  const result = await fetchAPI<{
+                    pushed: boolean;
+                    push_error?: string;
+                    config: BudgetResetConfig;
+                  }>(
+                    `/api/routing-controls/${encodeURIComponent(selectedGateway)}/budget-reset`,
+                    {
+                      method: "PUT",
+                      body: JSON.stringify({ schedule: budgetReset.schedule }),
+                    },
+                  );
+                  setBudgetReset(result.config);
+                  if (!result.pushed) {
+                    setBudgetResetError(
+                      `Saved, but gateway push failed: ${result.push_error || "unknown error"}`,
+                    );
+                  }
+                  await queryClient.invalidateQueries({ queryKey: ["routing-controls", selectedGateway] });
                 } catch (error) {
                   setBudgetResetError(error instanceof Error ? error.message : "Failed to save budget reset");
                 }
               }}
-              className="btn-primary ml-auto"
+              disabled={!selectedGateway}
+              className="btn-primary"
             >
               <Save className="h-4 w-4" /> Save Schedule
             </button>
