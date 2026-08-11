@@ -1,12 +1,17 @@
-import { useState, useRef } from "react";
-import { Play, Send, Beaker, Code2, MessageSquare, Loader2, CheckCircle, XCircle, Wrench, Users2, Plus, Trash2 } from "lucide-react";
-import { apiFetch } from "../lib/api";
+import { useEffect, useRef, useState } from "react";
+import { Play, Send, Beaker, Code2, MessageSquare, Loader2, CheckCircle, XCircle, Wrench, Users2, Plus, Trash2, Square } from "lucide-react";
+import { api, apiFetch } from "../lib/api";
+import {
+  sha256Source,
+  startSandboxExecution,
+  type SandboxExecution,
+  type SandboxOutputStream,
+} from "../lib/sandboxRunner";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
 const GATEWAY_PROXY_PATH = "/api/proxy/gateway/crm-agent";
-const GATEWAY_PROXY = `${API_BASE}${GATEWAY_PROXY_PATH}`;
 
 type Tab = "chat" | "scenarios" | "code" | "a2a";
+type CodeRunStatus = "idle" | "starting" | "running" | "completed" | "error" | "cancelled" | "timed_out";
 
 interface ChatMessage {
   role: "user" | "assistant" | "system";
@@ -28,91 +33,20 @@ const SCENARIOS = [
   { id: "mcp", name: "MCP Tool Discovery", description: "Use GitHub + Draw.io MCP tools", icon: "🔌", color: "bg-teal-50 border-teal-200" },
 ];
 
-const CODE_TEMPLATE = `import requests
+const CODE_TEMPLATE = `const query = await ostiari.tool("db_query", {
+  sql: "SELECT * FROM users",
+});
+console.log("query", query.status, query.body);
 
-GATEWAY = "${GATEWAY_PROXY}"
+if (query.ok) {
+  const deletion = await ostiari.tool("db_delete", {
+    table: "users",
+  });
+  console.log("delete", deletion.status, deletion.body);
+}
 
-# Every /tool/<name> call below is extracted and really issued through the
-# gateway, in order. Edit the tool names and bodies and re-run.
-
-resp = requests.post(f"{GATEWAY}/tool/db_query", json={"sql": "SELECT * FROM users"})
-print(resp.status_code, resp.json())
-
-# A tool the default policy blocks — expect 403.
-resp = requests.post(f"{GATEWAY}/tool/db_delete", json={"table": "users"})
-print(resp.status_code, resp.json())
+return { queryAllowed: query.ok };
 `;
-
-/** A tool call extracted from the Code tab's editor. */
-interface ParsedCall {
-  tool: string;
-  body: Record<string, any>;
-}
-
-/**
- * Extract the gateway tool calls from editor text.
- *
- * The Code tab is not a Python interpreter and deliberately isn't one — running
- * arbitrary user code would mean a remote-eval endpoint on the control plane.
- * Instead we pull out each `/tool/<name>` call and its JSON body and issue those
- * for real, so the request travels the actual governance path (policy, quota,
- * approval, trace) and editing the code changes what runs.
- *
- * Understood forms (Python `requests` and JS `fetch`):
- *   requests.post(f"{GATEWAY}/tool/db_query", json={"sql": "SELECT 1"})
- *   fetch(`${GATEWAY}/tool/db_query`, { body: JSON.stringify({sql: "SELECT 1"}) })
- * A call with no parseable body runs with `{}` rather than being skipped —
- * plenty of tools take no arguments.
- */
-export function parseToolCalls(source: string): ParsedCall[] {
-  const calls: ParsedCall[] = [];
-  // Find each /tool/<name>, then scan forward for the first balanced {...} on
-  // the same statement. Regex alone can't match nested braces.
-  const toolRe = /\/tool\/([A-Za-z0-9_.:-]+)/g;
-  let m: RegExpExecArray | null;
-  while ((m = toolRe.exec(source)) !== null) {
-    const tool = m[1];
-    // Stop at the end of the statement so the next call's body isn't captured.
-    const rest = source.slice(m.index + m[0].length);
-    const stmtEnd = rest.search(/\n\s*\n|\n(?=[A-Za-z_#])/);
-    const stmt = stmtEnd === -1 ? rest : rest.slice(0, stmtEnd);
-    calls.push({ tool, body: firstJsonObject(stmt) ?? {} });
-  }
-  return calls;
-}
-
-/** The first balanced `{...}` in `text`, parsed leniently. null if none parses. */
-function firstJsonObject(text: string): Record<string, any> | null {
-  for (let start = text.indexOf("{"); start !== -1; start = text.indexOf("{", start + 1)) {
-    let depth = 0;
-    for (let i = start; i < text.length; i++) {
-      if (text[i] === "{") depth++;
-      else if (text[i] === "}") {
-        depth--;
-        if (depth === 0) {
-          const raw = text.slice(start, i + 1);
-          try {
-            // Things JSON rejects that both languages write freely: Python's
-            // single quotes and True/False/None, trailing commas, and JS's
-            // unquoted object keys. The key rule only fires right after `{` or
-            // `,`, so it can't touch a colon inside a string value.
-            const normalized = raw
-              .replace(/'/g, '"')
-              .replace(/\bTrue\b/g, "true")
-              .replace(/\bFalse\b/g, "false")
-              .replace(/\bNone\b/g, "null")
-              .replace(/([{,]\s*)([A-Za-z_$][\w$]*)(\s*:)/g, '$1"$2"$3')
-              .replace(/,(\s*[}\]])/g, "$1");
-            const parsed = JSON.parse(normalized);
-            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
-          } catch { /* not this one — try the next opening brace */ }
-          break;
-        }
-      }
-    }
-  }
-  return null;
-}
 
 export function Sandbox() {
   const [tab, setTab] = useState<Tab>("chat");
@@ -123,6 +57,12 @@ export function Sandbox() {
   const [code, setCode] = useState(CODE_TEMPLATE);
   const [codeOutput, setCodeOutput] = useState("");
   const [codeRunning, setCodeRunning] = useState(false);
+  const [codeStatus, setCodeStatus] = useState<CodeRunStatus>("idle");
+  const [codeGateways, setCodeGateways] = useState<{ id: string; name: string; status: string }[]>([]);
+  const [codeGatewayId, setCodeGatewayId] = useState("crm-agent");
+  const codeExecutionRef = useRef<SandboxExecution | null>(null);
+  const codeCancelRequestedRef = useRef(false);
+  const mountedRef = useRef(true);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   // A2A state
@@ -133,6 +73,30 @@ export function Sandbox() {
   const [a2aSelectedAgent, setA2aSelectedAgent] = useState("");
   const [a2aTaskResult, setA2aTaskResult] = useState<{ state: string; messages: { role: string; text: string }[] } | null>(null);
   const [a2aTaskRunning, setA2aTaskRunning] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    mountedRef.current = true;
+    void api.gateways.list().then((gateways) => {
+      if (!active) return;
+      setCodeGateways(gateways.map(({ id, name, status }) => ({ id, name, status })));
+      if (gateways.length === 0) {
+        setCodeGatewayId("");
+      } else if (!gateways.some((gateway) => gateway.id === codeGatewayId)) {
+        setCodeGatewayId(gateways[0].id);
+      }
+    }).catch(() => {
+      if (active) {
+        setCodeGateways([]);
+        setCodeGatewayId("");
+      }
+    });
+    return () => {
+      active = false;
+      mountedRef.current = false;
+      codeExecutionRef.current?.cancel();
+    };
+  }, []);
 
   const sendChat = async () => {
     if (!chatInput.trim() || chatLoading) return;
@@ -225,45 +189,128 @@ export function Sandbox() {
   };
 
   const runCode = async () => {
+    if (
+      codeRunning
+      || !codeGatewayId
+      || !codeGateways.some((gateway) => gateway.id === codeGatewayId)
+    ) return;
+    codeCancelRequestedRef.current = false;
     setCodeRunning(true);
-    setCodeOutput("Running...\n");
-    const calls = parseToolCalls(code);
-    if (calls.length === 0) {
-      setCodeOutput(
-        "No gateway tool calls found in the editor.\n\n" +
-        "This runner is not a Python interpreter — it extracts the tool calls your\n" +
-        "code makes and issues each one through the gateway, so the governance path\n" +
-        "(policy, quota, approval, trace) is the real one. Write calls like:\n\n" +
-        '  requests.post(f"{GATEWAY}/tool/db_query", json={"sql": "SELECT 1"})'
-      );
-      setCodeRunning(false);
-      return;
-    }
-    const lines: string[] = [`Executing ${calls.length} tool call${calls.length !== 1 ? "s" : ""} via ${GATEWAY_PROXY}`, ""];
-    setCodeOutput(lines.join("\n"));
-    for (const call of calls) {
-      try {
-        const resp = await apiFetch(`${GATEWAY_PROXY_PATH}/tool/${call.tool}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Agent-Id": "sandbox-code" },
-          body: JSON.stringify(call.body),
-        });
-        const text = await resp.text();
-        let pretty = text;
-        try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch { /* not JSON — show raw */ }
-        // A block is a result, not a failure: 403/429 is the gateway doing its job,
-        // so label it rather than reporting it as an error.
-        const verdict = resp.ok ? "✓" : resp.status === 403 ? "✗ BLOCKED" : resp.status === 429 ? "✗ QUOTA" : "✗";
-        lines.push(`${verdict} POST /tool/${call.tool}  →  ${resp.status}`);
-        lines.push(`  request:  ${JSON.stringify(call.body)}`);
-        lines.push(pretty.split("\n").map((l) => `  ${l}`).join("\n"), "");
-      } catch (e: any) {
-        lines.push(`✗ POST /tool/${call.tool}  →  ${e.message}`,
-                   `  Is the gateway reachable at ${GATEWAY_PROXY}?`, "");
+    setCodeStatus("starting");
+    setCodeOutput("");
+    let runId = "";
+    const appendOutput = (text: string) => {
+      if (mountedRef.current) setCodeOutput((current) => current + text);
+    };
+    const writeOutput = (stream: SandboxOutputStream, text: string) => {
+      if (stream === "stderr") appendOutput(`[stderr] ${text}`);
+      else if (stream === "system") appendOutput(`[sandbox] ${text}`);
+      else if (stream === "result") appendOutput(`[result] ${text}`);
+      else appendOutput(text);
+    };
+
+    try {
+      const source = await sha256Source(code);
+      const run = await api.sandbox.start({
+        gateway_id: codeGatewayId,
+        language: "javascript",
+        source_digest: source.digest,
+        source_bytes: source.bytes,
+      });
+      runId = run.id;
+      if (!mountedRef.current || codeCancelRequestedRef.current) {
+        await api.sandbox.cancel(run.id);
+        if (mountedRef.current) {
+          setCodeStatus("cancelled");
+          appendOutput("[sandbox] Execution cancelled.\n");
+        }
+        return;
       }
-      setCodeOutput(lines.join("\n"));
+      setCodeStatus("running");
+      appendOutput(
+        `[sandbox] run ${run.id.slice(0, 8)} · ${run.timeout_ms} ms · `
+        + `${run.max_tool_calls} tool calls\n\n`,
+      );
+
+      const execution = startSandboxExecution({
+        code,
+        timeoutMs: run.timeout_ms,
+        maxToolCalls: run.max_tool_calls,
+        maxOutputBytes: run.max_output_bytes,
+        maxToolPayloadBytes: run.max_tool_payload_bytes,
+        onOutput: writeOutput,
+        executeTool: async (name, params, signal) => {
+          appendOutput(`\n[tool] → ${name} ${JSON.stringify(params)}\n`);
+          const response = await apiFetch(
+            `/api/sandbox/runs/${encodeURIComponent(run.id)}/tools/${encodeURIComponent(name)}`,
+            {
+              method: "POST",
+              body: JSON.stringify(params),
+              signal,
+            },
+          );
+          const text = await response.text();
+          let body: unknown = text;
+          if (text) {
+            try { body = JSON.parse(text); } catch { /* Preserve non-JSON tool output. */ }
+          } else {
+            body = null;
+          }
+          const verdict = response.ok
+            ? "allowed"
+            : response.status === 403
+              ? "blocked"
+              : response.status === 429
+                ? "quota"
+                : "failed";
+          appendOutput(`[tool] ← ${name} ${response.status} ${verdict}\n`);
+          return { status: response.status, ok: response.ok, body };
+        },
+      });
+      codeExecutionRef.current = execution;
+      const result = await execution.result;
+      codeExecutionRef.current = null;
+      if (mountedRef.current) setCodeStatus(result.status);
+
+      try {
+        await api.sandbox.complete(run.id, {
+          status: result.status,
+          duration_ms: result.durationMs,
+          output_bytes: result.outputBytes,
+          error: result.error,
+        });
+      } catch (error) {
+        appendOutput(
+          `\n[control plane] ${
+            error instanceof Error ? error.message : String(error)
+          }\n`,
+        );
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (mountedRef.current) {
+        setCodeStatus("error");
+        appendOutput(`[sandbox] ${message}\n`);
+      }
+      if (runId) {
+        try {
+          await api.sandbox.complete(runId, {
+            status: "error",
+            duration_ms: 0,
+            output_bytes: 0,
+            error: message.slice(0, 512),
+          });
+        } catch { /* Preserve the original execution error. */ }
+      }
+    } finally {
+      codeExecutionRef.current = null;
+      if (mountedRef.current) setCodeRunning(false);
     }
-    setCodeRunning(false);
+  };
+
+  const stopCode = () => {
+    codeCancelRequestedRef.current = true;
+    codeExecutionRef.current?.cancel();
   };
 
   return (
@@ -387,34 +434,81 @@ export function Sandbox() {
 
       {/* Code Tab */}
       {tab === "code" && (
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           <div className="card flex flex-col">
-            <div className="card-header flex items-center justify-between">
+            <div className="card-header flex flex-wrap items-center justify-between gap-3">
               <div>
                 <span className="text-xs font-semibold text-stone-500">Agent Code</span>
-                <p className="text-[10px] text-stone-400">
-                  Each <code>/tool/&lt;name&gt;</code> call is issued for real through the gateway — not a Python interpreter
-                </p>
+                <p className="text-[10px] text-stone-400">JavaScript · isolated runtime</p>
               </div>
-              <button onClick={runCode} disabled={codeRunning} className="btn-primary text-xs px-3 py-1.5">
-                {codeRunning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-                Run
-              </button>
+              <div className="flex items-center gap-2">
+                <select
+                  value={codeGatewayId}
+                  onChange={(event) => setCodeGatewayId(event.target.value)}
+                  disabled={codeRunning || codeGateways.length === 0}
+                  aria-label="Execution gateway"
+                  className="input max-w-48 py-1.5 text-xs"
+                >
+                  {codeGateways.length === 0 && <option value="">No gateways</option>}
+                  {codeGateways.map((gateway) => (
+                    <option key={gateway.id} value={gateway.id}>
+                      {gateway.name || gateway.id}
+                    </option>
+                  ))}
+                </select>
+                {codeRunning ? (
+                  <button
+                    onClick={stopCode}
+                    className="btn-danger p-2"
+                    title="Stop execution"
+                    aria-label="Stop execution"
+                  >
+                    <Square className="h-3.5 w-3.5" />
+                  </button>
+                ) : (
+                  <button
+                    onClick={runCode}
+                    disabled={!codeGatewayId || codeGateways.length === 0}
+                    className="btn-primary px-3 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Play className="h-3.5 w-3.5" />
+                    Run
+                  </button>
+                )}
+              </div>
             </div>
             <textarea
               value={code}
               onChange={(e) => setCode(e.target.value)}
+              disabled={codeRunning}
               className="flex-1 p-4 font-mono text-xs text-stone-800 bg-stone-50 resize-none focus:outline-none"
-              style={{ minHeight: "300px" }}
+              style={{ minHeight: "360px" }}
               spellCheck={false}
             />
           </div>
           <div className="card flex flex-col">
-            <div className="card-header">
+            <div className="card-header flex items-center justify-between">
               <span className="text-xs font-semibold text-stone-500">Output</span>
+              <span className={`text-[10px] font-semibold uppercase ${
+                codeStatus === "completed"
+                  ? "text-emerald-600"
+                  : codeStatus === "error" || codeStatus === "timed_out"
+                    ? "text-rose-600"
+                    : codeStatus === "cancelled"
+                      ? "text-amber-600"
+                      : codeRunning
+                        ? "text-violet-600"
+                        : "text-stone-400"
+              }`}>
+                {codeStatus}
+              </span>
             </div>
-            <pre className="flex-1 p-4 font-mono text-xs text-stone-700 bg-stone-50 overflow-auto" style={{ minHeight: "300px" }}>
-              {codeOutput || "Click Run to execute..."}
+            <pre
+              aria-live="polite"
+              className="flex-1 overflow-auto whitespace-pre-wrap break-words bg-stone-950 p-4 font-mono text-xs text-stone-200"
+              style={{ minHeight: "360px" }}
+            >
+              {codeOutput || "Ready."}
             </pre>
           </div>
         </div>

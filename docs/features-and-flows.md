@@ -364,7 +364,9 @@ The React UI and FastAPI backend provide these operator surfaces:
 | Admin | Providers, users, local authentication, OIDC SSO |
 
 The Sandbox exercises real gateway routes. Its Chat tab requires configured LLM
-credentials; tool scenarios and the other fleet views do not.
+credentials; tool scenarios do not. The Code tab executes JavaScript in a
+network-denied opaque-origin Worker and exposes only a bounded, authenticated
+`ostiari.tool` bridge to the selected gateway.
 
 ## 14. Security and Production Posture
 

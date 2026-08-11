@@ -32,6 +32,7 @@ from control_plane.routers import (
     quotas,
     roi,
     routing_controls,
+    sandbox,
     token_broker,
     tools,
     traces,
@@ -272,6 +273,7 @@ app.include_router(routing_controls.router)
 app.include_router(providers.router)
 app.include_router(quotas.router)
 app.include_router(proxy.router)
+app.include_router(sandbox.router)
 app.include_router(traces.router)
 app.include_router(audit.router)
 app.include_router(compliance.router)
