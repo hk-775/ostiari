@@ -1304,6 +1304,8 @@ caring whether it resolves to Anthropic or Bedrock today. See
 2. View all registered models with their pricing, provider, and capabilities
 3. Click a model to edit its routing strategy, pricing, or capabilities
 4. Click **Add Model** to register a custom or fine-tuned model
+5. Click **Push Registry** to validate the catalog and replace the embedded
+   AxonLLM registry on each reachable LLM-enabled tenant gateway
 
 ### Via the API
 
@@ -1348,6 +1350,9 @@ curl -X PUT http://localhost:8400/api/models/my-fine-tuned-model \
 
 # Delete a model
 curl -X DELETE http://localhost:8400/api/models/my-fine-tuned-model
+
+# Validate and push the complete tenant registry to every gateway
+curl -X POST http://localhost:8400/api/models/push
 ```
 
 > The registry is **in-memory**, keyed per org, and re-seeded at import time —
@@ -1367,15 +1372,19 @@ are the values the Models page offers (`frontend/src/pages/Models.tsx`):
 | `least-latency` | Prefer the fastest-responding provider | Latency-sensitive paths (seeded on `claude-opus`) |
 | `cost-optimized` | Prefer the cheapest provider that can serve the request | Cost-sensitive paths (seeded on `claude-sonnet`) |
 | `weighted` | Split by each provider's `weight` | Gradual provider migration, capacity splitting |
-| `smart-routing` | Let AxonLLM's TaskClassifier pick per prompt | Mixed workloads; also reveals the Task Classification Rules panel in the UI |
-| `ensemble` | Fan out to several models and reconcile | Consensus / high-stakes answers |
 
 Provider *transport* is not a routing strategy — it comes from each entry in the
 model's `providers` list (`bedrock`, `anthropic`, `openai`, `vertex`, `xai`,
 `together`), and fallback is expressed by `fallback_order` on those entries
-rather than by a `fallback` strategy. The backend types the field as a bare
-`str`, so the API accepts any value without validating it; stick to the six
-above.
+rather than by a `fallback` strategy. The API rejects any provider-routing
+strategy outside the four listed above. Public `vertex` and `azure` provider
+names are translated to AxonLLM's `vertex_ai` and `azure_openai` identifiers
+when the registry is pushed.
+
+Prompt classification is a separate, gateway-scoped control. The Models page
+stores keyword categories and target models through
+`PUT /api/routing-controls/{gateway_id}/task-classification`; the gateway checks
+those rules before AxonLLM's built-in classifier.
 
 ### How model pricing feeds cost enforcement
 
@@ -1390,6 +1399,11 @@ the same unit the enforcer wants, so no conversion happens in between.
 So editing a model's `input_cost_per_1k` in the Models page changes both what the
 **control plane** reports (the Costs dashboard's `_estimate_cost`) and — after the
 next quota push — what the **gateway** uses to project a budget.
+
+**Push Registry** separately updates AxonLLM's live provider mappings, routing
+strategy, capabilities, and per-token pricing. The catalog is also included in
+registration and reconnect bundles, so a gateway restart restores the tenant
+registry.
 
 Models priced at `0.0` on both sides are **omitted** from the pushed table rather
 than sent as free. A missing model means "fall back to `DEFAULT_PRICING`" in the
@@ -1767,45 +1781,22 @@ In this example, Model B (gpt-4o-mini) costs 20x less per request. If quality is
 `period_days` is capped at 30. Both blocks come back as all-zeros
 (`{"requests": 0, "total_tokens": 0, ...}`) when no `usage_records` match — which
 is what you'll see if the gateway isn't recording usage, or if the experiment was
-only created in the control plane (see the note above). Results are computed
-purely from `usage_records` filtered by `gateway_id` + the two model names, so
-they include traffic that had nothing to do with the experiment.
-
-### Making the split actually happen
-
-Until the push path exists, configure the experiment on the gateway directly:
-
-```bash
-curl -X POST http://localhost:8421/config/llm \
-  -H "Content-Type: application/json" \
-  -d '{
-    "default_model": "claude-sonnet-4-6",
-    "ab_experiments": [{
-      "name": "sonnet-vs-mini",
-      "model_a": "claude-sonnet-4-6",
-      "model_b": "gpt-4o-mini",
-      "traffic_pct_b": 10,
-      "enabled": true,
-      "agents": []
-    }]
-  }'
-```
-
-> **`POST /config/llm` is a whole-document replace**, not a merge: the body is
-> passed straight to `LLMConfig(**body)`, so any field you omit reverts to its
-> default — including `credentials`, `fallback_chain`, and `security`. Send the
-> full config, or use `POST /config/agent-routing`, which is the one genuinely
-> partial LLM-config endpoint (it preserves everything else and replaces only
-> `agent_routing`).
+only created while its gateway was unreachable. Results use the immutable
+`experiment_id` and `experiment_variant` written into each usage event, so
+unrelated traffic using either model is excluded and fallback calls stay in the
+cohort originally assigned.
 
 ### Managing experiments
 
 ```bash
-# Toggle an experiment on/off (control-plane record only)
+# Toggle an experiment on/off and push the gateway's complete experiment set
 curl -X PATCH http://localhost:8400/api/experiments/sonnet-vs-mini/toggle
 
-# Delete an experiment
+# Delete an experiment and push its absence
 curl -X DELETE http://localhost:8400/api/experiments/sonnet-vs-mini
+
+# Retry a push after an offline gateway reconnects
+curl -X POST http://localhost:8400/api/experiments/sonnet-vs-mini/push
 
 # List all experiments
 curl http://localhost:8400/api/experiments

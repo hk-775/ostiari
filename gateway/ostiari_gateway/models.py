@@ -52,6 +52,10 @@ class SidecarConfig(BaseModel):
     cross_agent: dict = Field(default_factory=dict)
     payments: dict = Field(default_factory=dict)
     broker_pools: list[dict] = Field(default_factory=list)
+    budget_reset: dict = Field(default_factory=dict)
+    task_classification: dict = Field(default_factory=dict)
+    model_registry: dict = Field(default_factory=dict)
+    agent_routing: dict = Field(default_factory=dict)
     sidecar_id: str = ""
     control_plane_url: str = ""
     # URL the control plane uses to reach THIS gateway for config pushes.

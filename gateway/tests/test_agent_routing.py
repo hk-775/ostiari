@@ -94,3 +94,25 @@ class TestGatewayEndpoint:
             "cc": {"models": ["a", "b"]}}})
         # default_model still intact (not wiped by the partial update)
         assert c.get("/models").json()["default_model"] == "claude-sonnet-4-6"
+
+    def test_task_classification_endpoint_updates_live_router(self):
+        c = self._client()
+        body = {
+            "rules": {"coding": ["code", "function"]},
+            "model_mapping": {"coding": "gpt-4o"},
+        }
+        response = c.post("/config/task-classification", json=body)
+        assert response.status_code == 200, response.text
+        assert c.get("/config/task-classification").json() == body
+        module = c.app.state.module_registry.get("llm_gateway")
+        module._executor._router._task_classifier = None
+        assert module._executor._router.select_model({
+            "messages": [{"role": "user", "content": "write code"}],
+        }) == "gpt-4o"
+
+    def test_llm_config_get_is_live_and_redacted(self):
+        c = self._client()
+        response = c.get("/config/llm")
+        assert response.status_code == 200
+        assert response.json()["default_model"] == "claude-sonnet-4-6"
+        assert "credentials" not in response.json()

@@ -382,11 +382,11 @@ A quota that cries wolf gets ignored (or raised until it's useless).
    record, rebuilds every agent limit for the selected gateway, and sends that
    complete map to `/config/agent-auth`. Existing tool grants are preserved.
    Gateway quotas still use their row's Push action and `/config/quota`.
-2. **"Daily" is your word, not the system's.** There is no billing period or
-   automatic rollover. The gateway-level `POST /config/quota/reset-spend`
-   endpoint resets only the gateway counter; there is no scheduled agent-budget
-   reset. The *Budget Reset Schedule* control on the Models page stores your
-   choice and no timer reads it.
+2. **Budget periods are gateway-scoped.** The Models page stores a manual,
+   daily, weekly, or monthly UTC schedule on the selected gateway. Its scheduler
+   resets gateway and agent counters together, persists the reset epoch, and
+   catches up after a boundary missed while offline. **Reset Now** starts a new
+   period immediately.
 3. **Threshold behavior differs by scope.** Gateway quotas use fixed
    80/90/100% thresholds. Each agent quota has a configurable warning threshold
    (plus 100%). Both are reported to `/api/quotas/alerts`; agent alerts retain

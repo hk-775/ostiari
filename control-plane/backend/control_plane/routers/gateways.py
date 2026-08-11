@@ -431,13 +431,29 @@ async def set_gateway_spend(
     if not isinstance(spend, dict):
         raise HTTPException(status_code=422, detail="spend must be an object")
     existing = (gateway.config or {}).get("agent_spend", {})
-    merged = {
-        agent_id: max(
-            float(existing.get(agent_id, 0.0) or 0.0),
-            float(amount or 0.0),
-        )
-        for agent_id, amount in {**existing, **spend}.items()
-    }
-    gateway.config = {**(gateway.config or {}), "agent_spend": merged}
+    reset = bool(body.get("reset")) if isinstance(body, dict) else False
+    if reset:
+        merged = {
+            agent_id: max(0.0, float(amount or 0.0))
+            for agent_id, amount in spend.items()
+        }
+    else:
+        merged = {
+            agent_id: max(
+                float(existing.get(agent_id, 0.0) or 0.0),
+                float(amount or 0.0),
+            )
+            for agent_id, amount in {**existing, **spend}.items()
+        }
+
+    config = {**(gateway.config or {}), "agent_spend": merged}
+    if reset:
+        reset_at = body.get("reset_at") or datetime.now(timezone.utc).isoformat()
+        budget_reset = {
+            **config.get("budget_reset", {}),
+            "last_reset_at": reset_at,
+        }
+        config["budget_reset"] = budget_reset
+    gateway.config = config
     await db.commit()
-    return {"status": "stored", "agents": len(merged)}
+    return {"status": "stored", "agents": len(merged), "reset": reset}

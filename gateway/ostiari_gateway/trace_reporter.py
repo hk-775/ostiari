@@ -9,6 +9,7 @@ import logging
 import os
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -32,6 +33,7 @@ class TraceReporter:
         self._client: httpx.AsyncClient | None = None
         self._spend_task: asyncio.Task | None = None
         self._agent_auth: Any = None
+        self._pending_reset_at: str | None = None
 
     @staticmethod
     def _service_headers() -> dict[str, str]:
@@ -182,23 +184,40 @@ class TraceReporter:
         except Exception as e:
             log.debug("Failed to report budget alert: %s", e)
 
-    async def push_spend_snapshot(self) -> None:
+    async def push_spend_snapshot(
+        self,
+        *,
+        reset: bool = False,
+        reset_at: str | None = None,
+    ) -> None:
         """Push current per-agent spend to the Control Plane for persistence."""
         if not self.enabled or not self._agent_auth:
             return
         if self._client is None:
             self._client = httpx.AsyncClient(timeout=3.0)
 
-        snapshot = self._agent_auth.get_spend_snapshot()
-        if not snapshot:
+        if reset:
+            self._pending_reset_at = reset_at or datetime.now(timezone.utc).isoformat()
+        pending_reset_at = self._pending_reset_at
+        snapshot = self._agent_auth.get_spend_snapshot(
+            include_zero=pending_reset_at is not None
+        )
+        if not snapshot and pending_reset_at is None:
             return
 
         try:
-            await self._client.post(
+            response = await self._client.post(
                 f"{self._url}/api/gateways/{self._sidecar_id}/spend",
-                json={"spend": snapshot},
+                json={
+                    "spend": snapshot,
+                    "reset": pending_reset_at is not None,
+                    "reset_at": pending_reset_at,
+                },
                 headers=self._service_headers(),
             )
+            response.raise_for_status()
+            if self._pending_reset_at == pending_reset_at:
+                self._pending_reset_at = None
             log.debug("Pushed spend snapshot: %d agents", len(snapshot))
         except Exception as e:
             log.debug("Failed to push spend snapshot: %s", e)

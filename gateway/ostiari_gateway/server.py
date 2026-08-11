@@ -404,6 +404,7 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
     _check_production_posture()
 
     from ostiari_gateway.agent_auth import AgentAuthPolicy
+    from ostiari_gateway.budget_reset import BudgetResetScheduler
     from ostiari_gateway.mcp import MCPManager
     from ostiari_gateway.modules import ModuleRegistry
     from ostiari_gateway.modules.llm_gateway.broker_policy import BrokerPoolPolicy
@@ -440,6 +441,21 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
         sidecar_id=(initial_config.sidecar_id if initial_config else ""),
     )
     trace_reporter.set_agent_auth(agent_auth)
+
+    async def _reset_budget_period(reset_at: Any) -> None:
+        quota_enforcer.reset_spend()
+        agents_reset = agent_auth.reset_spend()
+        await trace_reporter.push_spend_snapshot(
+            reset=True,
+            reset_at=reset_at.isoformat(),
+        )
+        log.info(
+            "Budget period reset at %s (gateway + %d agents)",
+            reset_at.isoformat(),
+            agents_reset,
+        )
+
+    budget_reset_scheduler = BudgetResetScheduler(_reset_budget_period)
 
     # Budget alerts (80/90/100%) reach the control plane. QuotaEnforcer fires this
     # from record_spend(), which is sync, so bridge to the async reporter via the
@@ -583,13 +599,44 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
             if "broker_pools" in bundle:
                 broker_policy.configure(bundle["broker_pools"] or [])
 
-            # Apply A/B experiments to the LLM module, so an experiment the
-            # operator started survives a gateway restart. Applied as a partial
-            # update (not through the whole-document LLM config) so provider
-            # credentials loaded at startup are preserved.
-            if "ab_experiments" in bundle:
-                llm_mod = module_registry.get("llm_gateway")
-                if llm_mod is not None and hasattr(llm_mod, "apply_ab_experiments"):
+            if "budget_reset" in bundle:
+                try:
+                    budget_reset_scheduler.configure(bundle["budget_reset"] or {})
+                except Exception as e:  # noqa: BLE001
+                    log.warning("Failed to apply budget reset schedule from bundle: %s", e)
+
+            llm_mod = module_registry.get("llm_gateway")
+            if llm_mod is not None:
+                # Each path is a partial update. Whole-document LLM replacement
+                # would erase provider credentials loaded from the gateway.
+                if "agent_routing" in bundle and hasattr(
+                    llm_mod, "apply_agent_routing"
+                ):
+                    try:
+                        llm_mod.apply_agent_routing(bundle["agent_routing"] or {})
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("Failed to apply agent routing from bundle: %s", e)
+                if "task_classification" in bundle and hasattr(
+                    llm_mod, "apply_task_classification"
+                ):
+                    try:
+                        llm_mod.apply_task_classification(
+                            bundle["task_classification"] or {}
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        log.warning(
+                            "Failed to apply task classification from bundle: %s", e
+                        )
+                if "model_registry" in bundle and hasattr(
+                    llm_mod, "apply_model_registry"
+                ):
+                    try:
+                        llm_mod.apply_model_registry(bundle["model_registry"] or {"models": []})
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("Failed to apply model registry from bundle: %s", e)
+                if "ab_experiments" in bundle and hasattr(
+                    llm_mod, "apply_ab_experiments"
+                ):
                     try:
                         llm_mod.apply_ab_experiments(bundle["ab_experiments"] or [])
                     except Exception as e:  # noqa: BLE001
@@ -637,6 +684,9 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: Any) -> Any:
+        if initial_config and initial_config.budget_reset:
+            budget_reset_scheduler.configure(initial_config.budget_reset)
+
         # Initialize MCP servers from a local config file, if any.
         if initial_config and hasattr(initial_config, "mcp_servers"):
             await _connect_mcp_servers(initial_config.mcp_servers)
@@ -675,6 +725,7 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
         # Shutdown lifecycle
         if lifecycle:
             await lifecycle.stop()
+        await budget_reset_scheduler.close()
         await trace_reporter.close()
         await mcp_manager.shutdown()
         await a2a_manager.shutdown()
@@ -718,7 +769,12 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
     if initial_config and initial_config.modules.llm_gateway:
         from ostiari_gateway.modules.llm_gateway.models import LLMConfig
 
-        llm_config = LLMConfig(**initial_config.llm) if initial_config.llm else LLMConfig()
+        llm_data = dict(initial_config.llm)
+        if initial_config.task_classification:
+            llm_data["task_classification"] = initial_config.task_classification
+        if initial_config.agent_routing:
+            llm_data["agent_routing"] = initial_config.agent_routing
+        llm_config = LLMConfig(**llm_data) if llm_data else LLMConfig()
         module_registry.activate(
             "llm_gateway",
             app,
@@ -732,6 +788,10 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
                 "broker_policy": broker_policy,
             },
         )
+        if initial_config.model_registry:
+            llm_mod = module_registry.get("llm_gateway")
+            if llm_mod is not None:
+                llm_mod.apply_model_registry(initial_config.model_registry)
         _check_axon(module_registry)
 
     # ─── Tool Execution Endpoints ─────────────────────────────────────────
@@ -1249,11 +1309,30 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
 
     @app.post("/config")
     async def apply_full_config(request: Request) -> Any:
-        """Apply full sidecar configuration (tools + policy)."""
+        """Apply a full sidecar document and its explicitly supplied gates."""
         body = await request.json()
         config = SidecarConfig(**body)
         result = manager.apply_config(config)
-        broker_policy.configure(config.broker_pools)
+        if "quota" in config.model_fields_set:
+            quota_enforcer.configure(config.quota)
+        if "agent_auth" in config.model_fields_set:
+            agent_auth.configure(config.agent_auth)
+        if "cross_agent" in config.model_fields_set:
+            cross_agent.configure(config.cross_agent)
+        if "payments" in config.model_fields_set:
+            payment_gate.configure(config.payments)
+        if "broker_pools" in config.model_fields_set:
+            broker_policy.configure(config.broker_pools)
+        if "budget_reset" in config.model_fields_set:
+            budget_reset_scheduler.configure(config.budget_reset)
+        llm_mod = module_registry.get("llm_gateway")
+        if llm_mod is not None:
+            if "agent_routing" in config.model_fields_set:
+                llm_mod.apply_agent_routing(config.agent_routing)
+            if "task_classification" in config.model_fields_set:
+                llm_mod.apply_task_classification(config.task_classification)
+            if "model_registry" in config.model_fields_set:
+                llm_mod.apply_model_registry(config.model_registry)
         # Update trace reporter if control_plane_url changed
         if config.control_plane_url:
             trace_reporter.configure(config.control_plane_url, config.sidecar_id)
@@ -1438,70 +1517,25 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
 
     @app.post("/config/quota/reset-spend")
     async def reset_quota_spend() -> Any:
-        """Reset the spend counter."""
-        quota_enforcer.reset_spend()
-        return {"status": "reset", "current_spend": 0}
+        """Start a new budget period for gateway and agent quotas."""
+        state = await budget_reset_scheduler.trigger_now()
+        return {"status": "reset", "current_spend": 0, **state}
 
-    # ─── Routing / Budget / Classification Config Endpoints ─────────────────
-    # In-memory config the dashboard reads and writes. Persists for the
-    # process lifetime (same model as agent_auth / quota above).
-    runtime_config: dict[str, Any] = {
-        "budget_reset": {"schedule": "manual"},
-        "task_classification": {"rules": [], "model_mapping": {}},
-        "llm": {"routing_rules": []},
-        "routing_overrides": {"overrides": []},
-    }
+    # ─── Budget Period Configuration ───────────────────────────────────────
 
     @app.get("/config/budget-reset")
     async def get_budget_reset() -> Any:
-        """Return the current budget-reset schedule."""
-        return runtime_config["budget_reset"]
+        return budget_reset_scheduler.status()
 
     @app.post("/config/budget-reset")
     async def set_budget_reset(request: Request) -> Any:
-        """Set the budget-reset schedule (manual | daily | weekly | monthly)."""
+        """Set the live budget reset schedule."""
         body = await request.json()
-        runtime_config["budget_reset"] = body
-        return {"status": "applied", **body}
-
-    @app.get("/config/task-classification")
-    async def get_task_classification() -> Any:
-        """Return task-classification rules and model mapping."""
-        return runtime_config["task_classification"]
-
-    @app.post("/config/task-classification")
-    async def set_task_classification(request: Request) -> Any:
-        """Set task-classification rules and per-category model mapping."""
-        body = await request.json()
-        runtime_config["task_classification"] = {
-            "rules": body.get("rules", []),
-            "model_mapping": body.get("model_mapping", {}),
-        }
-        return {"status": "applied", **runtime_config["task_classification"]}
-
-    @app.get("/config/llm")
-    async def get_llm_config() -> Any:
-        """Return LLM routing policy (routing rules)."""
-        return runtime_config["llm"]
-
-    @app.post("/config/llm")
-    async def set_llm_config(request: Request) -> Any:
-        """Set LLM routing policy (routing rules)."""
-        body = await request.json()
-        runtime_config["llm"] = {"routing_rules": body.get("routing_rules", [])}
-        return {"status": "applied", **runtime_config["llm"]}
-
-    @app.get("/config/routing-overrides")
-    async def get_routing_overrides() -> Any:
-        """Return per-agent routing overrides."""
-        return runtime_config["routing_overrides"]
-
-    @app.post("/config/routing-overrides")
-    async def set_routing_overrides(request: Request) -> Any:
-        """Set per-agent routing overrides."""
-        body = await request.json()
-        runtime_config["routing_overrides"] = {"overrides": body.get("overrides", [])}
-        return {"status": "applied", **runtime_config["routing_overrides"]}
+        try:
+            state = budget_reset_scheduler.configure(body)
+        except ValueError as exc:
+            return JSONResponse(status_code=422, content={"error": str(exc)})
+        return {"status": "applied", **state}
 
     # ─── MCP Server Config Endpoints ────────────────────────────────────────
 
@@ -1630,6 +1664,7 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
     app.state.agent_auth = agent_auth
     app.state.broker_policy = broker_policy
     app.state.quota_enforcer = quota_enforcer
+    app.state.budget_reset_scheduler = budget_reset_scheduler
     app.state.module_registry = module_registry
     # The control-plane bundle applier, when one is wired (it only exists with a
     # control_plane_url). Exposed so the bundle path is directly testable rather

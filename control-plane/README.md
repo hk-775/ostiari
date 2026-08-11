@@ -167,7 +167,7 @@ Authoritative source: `http://localhost:8400/docs` (generated from the app).
 | `/api/gateways/{gateway_id}` | PATCH | Update a gateway |
 | `/api/gateways/{gateway_id}` | DELETE | Remove a gateway |
 | `/api/gateways/{gateway_id}/push` | POST | Push the full config bundle, rebuilt from stored state. **Prefer this** — it's the Gateways page's ↑ button and can't clear anything |
-| `/api/gateways/{gateway_id}/push-config` | POST | Forward an arbitrary caller-supplied body to the gateway's `POST /config`. **Not persisted, and `/config` is a whole-document replace applying only tools + policy** — use the quota-specific push routes for limits |
+| `/api/gateways/{gateway_id}/push-config` | POST | Forward an arbitrary caller-supplied body to the gateway's `POST /config`. **Not persisted**; tools/policy/base fields use replacement semantics while explicitly present runtime gates apply live. Prefer dedicated routes for individual controls |
 | `/api/gateways/{gateway_id}/config-bundle` | GET | Fetch the config a gateway would receive |
 | `/api/gateways/{gateway_id}/register` | POST | Self-registration (called by the gateway on boot) |
 | `/api/gateways/{gateway_id}/heartbeat` | POST | Liveness ping (called by the gateway) |
@@ -217,6 +217,7 @@ Models are keyed by **name**, not a numeric id.
 | `/api/models/{name}` | GET | Get model details (pricing, capabilities, routing strategy) |
 | `/api/models/{name}` | PUT | Update a model's configuration |
 | `/api/models/{name}` | DELETE | Remove a model from the registry |
+| `/api/models/push` | POST | Validate and push the tenant model/provider catalog to each reachable gateway with the LLM module active |
 
 ### Quotas
 
@@ -345,6 +346,10 @@ and heartbeats so gateways reroute away from, or block, depleted providers.
 | `/api/agent-routing` | GET/POST | Per-gateway agent routing rules |
 | `/api/agent-routing/{gateway_id}` | GET | Rules for one gateway |
 | `/api/agent-routing/{gateway_id}/{agent_id}` | DELETE | Remove a rule |
+| `/api/routing-controls/{gateway_id}` | GET | Read stored task-classification and budget-period controls |
+| `/api/routing-controls/{gateway_id}/task-classification` | PUT | Persist and push keyword categories and target models |
+| `/api/routing-controls/{gateway_id}/budget-reset` | PUT | Persist and push the UTC budget-reset schedule |
+| `/api/routing-controls/{gateway_id}/reset-spend` | POST | Start a new gateway and per-agent budget period immediately |
 | `/api/trust/scores` | GET | Trust scores per agent |
 | `/api/trust/apply` | POST | Apply trust-based gating |
 | `/api/trust/disable` | POST | Turn trust gating off |

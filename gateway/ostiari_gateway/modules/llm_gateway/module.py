@@ -58,6 +58,34 @@ class LLMGatewayModule:
         self._resync_proxy()
         log.info("A/B experiments applied: %d", len(self._config.ab_experiments))
 
+    def apply_task_classification(self, config: dict[str, Any]) -> None:
+        """Replace keyword classification rules without touching credentials."""
+        data = self._config.model_dump()
+        data["task_classification"] = config
+        self._config = LLMConfig(**data)
+        if self._executor:
+            self._executor.update_config(self._config)
+        self._resync_proxy()
+        log.info(
+            "Task classification applied: %d categories",
+            len(self._config.task_classification.rules),
+        )
+
+    def apply_agent_routing(self, routing: dict[str, Any]) -> None:
+        """Replace per-agent model policies without touching credentials."""
+        data = self._config.model_dump()
+        data["agent_routing"] = routing
+        self._config = LLMConfig(**data)
+        if self._executor:
+            self._executor.update_config(self._config)
+        self._resync_proxy()
+
+    def apply_model_registry(self, config: dict[str, Any]) -> dict[str, Any]:
+        """Apply the control-plane model catalog to the embedded Axon router."""
+        if self._executor is None:
+            raise RuntimeError("LLM Gateway not initialized")
+        return self._executor._axon.configure_model_registry(config)
+
     @property
     def name(self) -> str:
         return "llm_gateway"
@@ -234,6 +262,17 @@ class LLMGatewayModule:
         # closure (the control-plane config bundle) can apply config too.
         _resync_proxy = self._resync_proxy
 
+        @app.get("/config/llm")
+        async def get_llm_config() -> Any:
+            """Return non-secret LLM routing state."""
+            return {
+                "default_model": self._config.default_model,
+                "fallback_chain": self._config.fallback_chain,
+                "routing_rules": [
+                    rule.model_dump() for rule in self._config.routing_rules
+                ],
+            }
+
         @app.post("/config/llm")
         async def update_llm_config(request: Request) -> Any:
             """Hot-reload LLM configuration."""
@@ -255,13 +294,7 @@ class LLMGatewayModule:
             """
             body = await request.json()
             routing = body.get("agent_routing", body)
-            # Rebuild config preserving everything else; only replace agent_routing.
-            data = self._config.model_dump()
-            data["agent_routing"] = routing
-            self._config = LLMConfig(**data)
-            if self._executor:
-                self._executor.update_config(self._config)
-            _resync_proxy()
+            self.apply_agent_routing(routing)
             return {"status": "applied",
                     "agent_routing": {k: v.model_dump() for k, v in self._config.agent_routing.items()}}
 
@@ -270,6 +303,44 @@ class LLMGatewayModule:
             """Return the current per-agent routing policies."""
             return {"agent_routing": {k: v.model_dump()
                                       for k, v in self._config.agent_routing.items()}}
+
+        @app.post("/config/task-classification")
+        async def update_task_classification(request: Request) -> Any:
+            """Hot-reload operator-defined task categories and model mapping."""
+            body = await request.json()
+            try:
+                self.apply_task_classification(body)
+            except ValidationError as exc:
+                return JSONResponse(
+                    status_code=422,
+                    content={"error": "Invalid task classification", "detail": exc.errors()},
+                )
+            return {
+                "status": "applied",
+                **self._config.task_classification.model_dump(),
+            }
+
+        @app.get("/config/task-classification")
+        async def get_task_classification() -> Any:
+            return self._config.task_classification.model_dump()
+
+        @app.post("/config/model-registry")
+        async def update_model_registry(request: Request) -> Any:
+            """Replace the embedded AxonLLM model/provider routing catalog."""
+            body = await request.json()
+            try:
+                result = self.apply_model_registry(body)
+            except (RuntimeError, ValueError) as exc:
+                return JSONResponse(status_code=422, content={"error": str(exc)})
+            if result.get("status") != "applied":
+                return JSONResponse(status_code=503, content=result)
+            return result
+
+        @app.get("/config/model-registry")
+        async def get_model_registry() -> Any:
+            if self._executor is None:
+                return {"models": []}
+            return self._executor._axon.model_registry_config()
 
         @app.post("/config/ab-experiments")
         async def update_ab_experiments(request: Request) -> Any:
@@ -296,6 +367,7 @@ class LLMGatewayModule:
 
         log.info("LLM Gateway module registered: POST /v1/messages, POST /invoke, "
                  "GET /models, POST /config/llm, POST /config/agent-routing, "
+                 "POST /config/task-classification, POST /config/model-registry, "
                  "POST /config/ab-experiments")
 
     def shutdown(self) -> None:
