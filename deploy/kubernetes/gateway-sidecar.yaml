@@ -13,6 +13,7 @@ data:
   # Fail-closed posture. Also requires OSTIARI_ADMIN_PASSWORD and
   # OSTIARI_INGEST_KEY on the control plane.
   OSTIARI_ENV: "production"
+  OSTIARI_X402_MODE: "simulated"
   # Human-in-the-loop for the *intervene* tier: 202 instead of executing, a human
   # decides in the Approvals page, caller re-submits with X-Approval-Id. On
   # because production is fail-closed, where an unresolvable intervene is REFUSED
@@ -76,6 +77,12 @@ spec:
             secretKeyRef:
               name: ostiari-secrets
               key: openai-api-key
+              optional: true
+        - name: OSTIARI_X402_PRIVATE_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ostiari-secrets
+              key: x402-private-key
               optional: true
       readinessProbe:
         httpGet:

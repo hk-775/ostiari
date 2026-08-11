@@ -57,6 +57,12 @@ spec:
                   name: {{ .Values.secrets.existingSecret }}
                   key: openai-api-key
                   optional: true
+            - name: OSTIARI_X402_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: x402-private-key
+                  optional: true
             {{- end }}
           readinessProbe:
             httpGet:

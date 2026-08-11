@@ -563,11 +563,27 @@ dashboard shows balances, a transaction ledger, and fees captured.
 
 **Simulated vs. real (important for evaluators):** the demo runs a
 **SimulatedSettler** — real wallet logic, real gate, real ledger, but no
-blockchain. Going live is one config flip (`OSTIARI_X402_MODE=live`) plus a
-funded on-chain wallet and a settlement "facilitator." The governance/UX is
-production code; only the on-chain settlement is swapped in. **What no code can
-create: the actual funded wallets and provider relationships** — those are
-business setup.
+blockchain. For live downstream payments, install `ostiari-gateway[payments]`,
+set `OSTIARI_X402_MODE=live`, inject `OSTIARI_X402_PRIVATE_KEY` from a secret
+manager, and use `passthrough`. The tool must speak x402 v2 using
+`PAYMENT-REQUIRED` / `PAYMENT-RESPONSE`, the `exact` scheme, and an EVM network.
+The official SDK signs the retry, while Ostiari pins the amount, payee, network,
+scheme, and token contract and withholds tool output until settlement is
+confirmed. Base mainnet and Base Sepolia USDC are allowed by default; additional
+6-decimal USDC contracts require an explicit `OSTIARI_X402_ALLOWED_ASSETS`
+mapping.
+
+The Ostiari per-agent wallet is a policy allowance around the gateway payer, not
+a private key store. An unconfirmed live attempt is shown separately from a
+settled or blocked charge; its consumed allowance remains visible so a missing
+response cannot silently restore spend. Payment reports retain a stable event
+ID across retries, so the ledger and wallet mirror update once.
+
+Live `metered` mode is deliberately rejected: Ostiari is the seller in that
+flow, which requires a caller-supplied payment signature. Use simulated
+`metered` pricing when monetizing governed calls, or live `passthrough` when
+paying an external x402 resource. **What no code can create: the actual funded
+wallet and provider relationships** — those are deployment and business setup.
 
 **Best practice:** give each agent a per-call *and* daily limit. Start balances
 small. Use passthrough for genuinely paywalled external tools; use metered when
@@ -605,6 +621,11 @@ customer saves *and* you profit. The page warns if your markup eats the discount
 - **Retry-safe charging** — every gateway usage event has a stable ID. Usage,
   pool drawdown, and the customer charge are applied once even when a gateway
   retries after a timeout or billing failure.
+- **Stripe Billing** — `OSTIARI_BROKER_BILLING=live` emits one Meter Event per
+  usage event. Values are integer micro-USD and the stable gateway identity is
+  also the Stripe idempotency identity. Configure `STRIPE_API_KEY`,
+  `STRIPE_METER_EVENT_NAME`, and either `STRIPE_CUSTOMER_ID` or a JSON
+  `STRIPE_CUSTOMER_MAP`; the Stripe meter must treat 1,000,000 units as $1.00.
 - **Reconciliation** — compare *our computed* consumption cost against the
   *provider's actual invoice* each period, and flag the drift. This is the part
   that keeps a broker from silently losing money.

@@ -69,6 +69,11 @@ redis:
   endpoint: "ostiari-redis"
   port: 6379
 
+payments:
+  # "simulated" for the demo; set "live" only with passthrough pricing and an
+  # x402-private-key entry in secrets.existingSecret.
+  x402Mode: "simulated"
+
 resources:
   requests:
     cpu: 250m

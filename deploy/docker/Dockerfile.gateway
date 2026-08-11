@@ -19,7 +19,7 @@ RUN pip install --no-cache-dir .
 # Install the gateway package.
 COPY gateway/pyproject.toml gateway/
 COPY gateway/ostiari_gateway/ gateway/ostiari_gateway/
-RUN pip install --no-cache-dir ./gateway
+RUN pip install --no-cache-dir "./gateway[payments]"
 
 EXPOSE 8421
 

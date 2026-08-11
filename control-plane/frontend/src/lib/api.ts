@@ -318,7 +318,7 @@ export const api = {
     reconcile: (provider: string, invoiced_cost_usd: number, period_days = 30) =>
       fetchAPI<Reconciliation>("/api/token-broker/pilot/reconcile", { method: "POST", body: JSON.stringify({ provider, invoiced_cost_usd, period_days }) }),
     reconciliations: () => fetchAPI<Reconciliation[]>("/api/token-broker/pilot/reconciliations"),
-    collector: () => fetchAPI<{ mode: string }>("/api/token-broker/pilot/collector"),
+    collector: () => fetchAPI<CollectorInfo>("/api/token-broker/pilot/collector"),
   },
 };
 
@@ -344,6 +344,14 @@ export interface Reconciliation {
   drift_usd: number;
   drift_pct: number;
   consumed_tokens: number;
+}
+
+export interface CollectorInfo {
+  mode: string;
+  configured?: boolean;
+  meter_event_name?: string;
+  customer_mappings?: number;
+  default_customer?: boolean;
 }
 
 export interface ApprovalItem {
@@ -475,14 +483,17 @@ export interface Wallet {
 
 export interface PaymentRecord {
   id: number;
+  event_id: string;
   agent_id: string;
   gateway_id: string;
   action: string;
   amount_usdc: number;
   settled: boolean;
+  wallet_debited: boolean;
   tx_hash: string;
   mode: string;
   source: string;
+  reason: string;
   timestamp: string;
 }
 

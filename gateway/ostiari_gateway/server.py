@@ -399,7 +399,11 @@ def _shadow_execute_response(
     }
 
 
-def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
+def create_app(
+    initial_config: SidecarConfig | None = None,
+    *,
+    payment_settler: Any = None,
+) -> FastAPI:
     """Create the generic sidecar FastAPI app."""
     _check_production_posture()
 
@@ -431,8 +435,15 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
     import os as _os
 
     from ostiari_gateway.payments import PaymentGate, SimulatedSettler, X402Settler, parse_402
-    if _os.environ.get("OSTIARI_X402_MODE", "simulated").lower() == "live":
-        _settler = X402Settler(facilitator_url=_os.environ.get("OSTIARI_X402_FACILITATOR", ""))
+    if payment_settler is not None:
+        _settler = payment_settler
+    elif _os.environ.get("OSTIARI_X402_MODE", "simulated").lower() == "live":
+        _settler = X402Settler(
+            private_key=_os.environ.get("OSTIARI_X402_PRIVATE_KEY", ""),
+            allowed_assets=X402Settler.parse_allowed_assets(
+                _os.environ.get("OSTIARI_X402_ALLOWED_ASSETS", "")
+            ),
+        )
     else:
         _settler = SimulatedSettler()
     payment_gate = PaymentGate(settler=_settler)
@@ -1195,7 +1206,10 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
             # Passthrough x402: the tool demanded payment (HTTP 402). Settle from
             # the agent wallet, then retry the call carrying the X-PAYMENT proof.
             quote_402 = parse_402(
-                proxy_result.get("result"), proxy_result.get("status_code", 200), action
+                proxy_result.get("result"),
+                proxy_result.get("status_code", 200),
+                action,
+                proxy_result.get("payment_headers"),
             )
             if quote_402 is not None and payment_gate.mode == "passthrough":
                 pay = await payment_gate.settle_402(
@@ -1222,16 +1236,69 @@ def create_app(initial_config: SidecarConfig | None = None) -> FastAPI:
                             "wallet_balance_usdc": pay.balance_usdc,
                         },
                     )
+                if pay.receipt and pay.receipt.pending:
+                    # Live x402 v2: the official SDK signs the fresh challenge
+                    # and retries. The output is withheld until PAYMENT-RESPONSE
+                    # confirms settlement below.
+                    proxy_result = await manager.tool_proxy.execute(
+                        action,
+                        params,
+                        propagate_headers=propagation_headers,
+                        payment_client=payment_gate.payment_client,
+                        payment_quote=quote_402,
+                    )
+                    pay = payment_gate.confirm_402(
+                        pay,
+                        status_code=proxy_result.get("status_code", 500),
+                        payment_headers=proxy_result.get("payment_headers"),
+                    )
+                else:
+                    # Simulated/legacy path: retry with the synthetic proof.
+                    proxy_result = await manager.tool_proxy.execute(
+                        action,
+                        params,
+                        propagate_headers={**propagation_headers, **pay.retry_header},
+                    )
+
                 await trace_reporter.report_payment(
-                    agent_id=agent_id, action=action, amount_usdc=pay.amount_usdc,
-                    settled=True, tx_hash=pay.receipt.tx_hash if pay.receipt else "",
-                    mode=payment_gate.settler_mode, source="tool_402",
+                    agent_id=agent_id,
+                    action=action,
+                    amount_usdc=pay.amount_usdc,
+                    settled=pay.settled,
+                    tx_hash=pay.receipt.tx_hash if pay.receipt else "",
+                    mode=payment_gate.settler_mode,
+                    source="tool_402",
+                    reason=pay.reason,
+                    wallet_debited=pay.wallet_debited,
                 )
-                # Paid — retry with the payment proof header.
-                proxy_result = await manager.tool_proxy.execute(
-                    action, params,
-                    propagate_headers={**propagation_headers, **pay.retry_header},
-                )
+                if not pay.settled:
+                    await trace_reporter.report(
+                        action=action,
+                        tier="block",
+                        score=0,
+                        duration_ms=proxy_result.get("duration_ms", 0),
+                        agent_id=agent_id,
+                        framework=framework,
+                        is_mcp=False,
+                        blocked_reason=pay.reason,
+                        endpoint=tool.endpoint,
+                        session_id=session_id,
+                        plan=plan,
+                        step=step,
+                        params=params,
+                        limit_type="payment",
+                    )
+                    return JSONResponse(
+                        status_code=402,
+                        content={
+                            "blocked": True,
+                            "action": action,
+                            "reason": pay.reason,
+                            "limit_type": "payment",
+                            "amount_usdc": pay.amount_usdc,
+                            "wallet_balance_usdc": pay.balance_usdc,
+                        },
+                    )
 
             record_proxy_result(
                 proxy_span,

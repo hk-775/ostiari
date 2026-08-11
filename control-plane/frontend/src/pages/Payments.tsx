@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Wallet as WalletIcon, Coins, Ban, Play, Pause, Upload, Plus, Check } from "lucide-react";
+import { Wallet as WalletIcon, Coins, Ban, Play, Pause, Upload, Plus, Check, AlertTriangle } from "lucide-react";
 import { api } from "../lib/api";
 
 const fmt = (n: number) => `$${n.toFixed(4)}`;
@@ -71,9 +71,9 @@ export function Payments() {
           <p className="mt-1 text-xs text-stone-400">at {((summary?.fee_rate ?? 0) * 100).toFixed(0)}% per txn</p>
         </div>
         <div className="card p-5">
-          <p className="text-xs font-semibold uppercase tracking-wider text-stone-500">Blocked (unpaid)</p>
+          <p className="text-xs font-semibold uppercase tracking-wider text-stone-500">Not settled</p>
           <p className="mt-2 text-3xl font-bold text-rose-600">{summary?.blocked_count ?? 0}</p>
-          <p className="mt-1 text-xs text-stone-400">insufficient balance / capped</p>
+          <p className="mt-1 text-xs text-stone-400">blocked or unconfirmed</p>
         </div>
         <div className="card p-5">
           <p className="text-xs font-semibold uppercase tracking-wider text-stone-500">Funded wallets</p>
@@ -186,6 +186,7 @@ export function Payments() {
               <th className="px-6 py-3.5">Action</th>
               <th className="px-6 py-3.5">Amount</th>
               <th className="px-6 py-3.5">Tx</th>
+              <th className="px-6 py-3.5">Rail</th>
               <th className="px-6 py-3.5">Status</th>
             </tr>
           </thead>
@@ -196,10 +197,21 @@ export function Payments() {
                 <td className="px-6 py-4 font-mono text-xs text-stone-600">{p.action}</td>
                 <td className="px-6 py-4 font-mono text-sm text-stone-800">{fmt(p.amount_usdc)}</td>
                 <td className="px-6 py-4 font-mono text-xs text-stone-400">{p.tx_hash || "—"}</td>
+                <td className="px-6 py-4 font-mono text-xs text-stone-500">{p.mode}</td>
                 <td className="px-6 py-4">
                   <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${
-                    p.settled ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"
-                  }`}>{p.settled ? "settled" : <><Ban className="h-3 w-3" /> blocked</>}</span>
+                    p.settled
+                      ? "bg-emerald-50 text-emerald-700"
+                      : p.wallet_debited
+                        ? "bg-amber-50 text-amber-700"
+                        : "bg-rose-50 text-rose-700"
+                  }`} title={p.reason || undefined}>
+                    {p.settled
+                      ? "settled"
+                      : p.wallet_debited
+                        ? <><AlertTriangle className="h-3 w-3" /> unconfirmed</>
+                        : <><Ban className="h-3 w-3" /> blocked</>}
+                  </span>
                 </td>
               </tr>
             ))}

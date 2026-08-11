@@ -12,8 +12,10 @@ from collections import defaultdict
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.auth.dependencies import get_current_org
@@ -36,37 +38,40 @@ def _gateway_pricing(org: str, gateway_id: str) -> dict:
 
 class WalletUpsert(BaseModel):
     agent_id: str
-    balance_usdc: float = 0.0
+    balance_usdc: float = Field(default=0.0, ge=0.0)
     address: str = ""
-    daily_limit_usdc: float | None = None
-    per_call_limit_usdc: float | None = None
+    daily_limit_usdc: float | None = Field(default=None, ge=0.0)
+    per_call_limit_usdc: float | None = Field(default=None, ge=0.0)
 
 
 class WalletPatch(BaseModel):
-    daily_limit_usdc: float | None = None
-    per_call_limit_usdc: float | None = None
+    daily_limit_usdc: float | None = Field(default=None, ge=0.0)
+    per_call_limit_usdc: float | None = Field(default=None, ge=0.0)
     status: str | None = None  # active | paused
 
 
 class FundRequest(BaseModel):
-    amount_usdc: float
+    amount_usdc: float = Field(gt=0.0)
 
 
 class PricingConfig(BaseModel):
     mode: str = "off"                     # off | metered | passthrough
-    default: float = 0.0
-    overrides: dict[str, float] = {}
+    default: float = Field(default=0.0, ge=0.0)
+    overrides: dict[str, float] = Field(default_factory=dict)
 
 
 class PaymentIngest(BaseModel):
+    event_id: str | None = Field(default=None, min_length=1, max_length=64)
     agent_id: str
     gateway_id: str = ""
     action: str = ""
-    amount_usdc: float = 0.0
+    amount_usdc: float = Field(default=0.0, ge=0.0)
     settled: bool = True
+    wallet_debited: bool | None = None
     tx_hash: str = ""
     mode: str = "simulated"
     source: str = "policy"
+    reason: str = ""
 
 
 # ─── Ingest (from gateways) ──────────────────────────────────────────────────
@@ -75,27 +80,114 @@ class PaymentIngest(BaseModel):
 async def ingest_payment(body: PaymentIngest, db: AsyncSession = Depends(get_db)):
     """Record a charge reported by a gateway; mirror the settled balance in DB.
 
-    The gateway settles against its local wallet copy and reports here so the
-    ledger, summary, and dashboard reflect real spend. On a settled charge we
-    also decrement the DB wallet so CP balances track the gateway's.
+    The gateway authorizes against its local/shared policy wallet and reports
+    here so the ledger, summary, and dashboard reflect the outcome. The DB
+    wallet is decremented when that allowance was consumed, which can be true
+    for an unconfirmed live attempt without falsely marking it settled.
     """
     # Unauthenticated gateway path — org comes from the reporting gateway's row
     # (default when the gateway is unknown/empty), not a user token.
     rec_org = await org_of_gateway(db, body.gateway_id)
-    db.add(PaymentRecord(
-        agent_id=body.agent_id, gateway_id=body.gateway_id, action=body.action,
-        amount_usdc=body.amount_usdc, settled=body.settled, tx_hash=body.tx_hash,
-        mode=body.mode, source=body.source, org_id=rec_org,
-    ))
-    if body.settled:
+    record, created = await _upsert_payment(db, body, rec_org)
+    if created and record.wallet_debited:
         w = await get_scoped(db, Wallet, body.agent_id, rec_org)
         if w is not None:
-            w.balance_usdc -= body.amount_usdc
+            w.balance_usdc = max(0.0, w.balance_usdc - body.amount_usdc)
             w.spent_today_usdc += body.amount_usdc
             if w.daily_limit_usdc is not None and w.spent_today_usdc >= w.daily_limit_usdc:
                 w.status = "paused"
     await db.commit()
-    return {"recorded": True}
+    return {
+        "recorded": created,
+        "duplicate": not created,
+        "id": record.id,
+    }
+
+
+def _payment_values(body: PaymentIngest, org: str) -> dict:
+    return {
+        "org_id": org,
+        "event_id": body.event_id,
+        "agent_id": body.agent_id,
+        "gateway_id": body.gateway_id,
+        "action": body.action,
+        "amount_usdc": body.amount_usdc,
+        "settled": body.settled,
+        "wallet_debited": (
+            body.settled if body.wallet_debited is None else body.wallet_debited
+        ),
+        "tx_hash": body.tx_hash,
+        "mode": body.mode,
+        "source": body.source,
+        "reason": body.reason,
+    }
+
+
+def _same_payment(record: PaymentRecord, values: dict) -> bool:
+    exact_fields = (
+        "org_id",
+        "event_id",
+        "agent_id",
+        "gateway_id",
+        "action",
+        "settled",
+        "wallet_debited",
+        "tx_hash",
+        "mode",
+        "source",
+        "reason",
+    )
+    return all(getattr(record, field) == values[field] for field in exact_fields) and (
+        abs(float(record.amount_usdc) - float(values["amount_usdc"])) < 1e-12
+    )
+
+
+async def _upsert_payment(
+    db: AsyncSession,
+    body: PaymentIngest,
+    org: str,
+) -> tuple[PaymentRecord, bool]:
+    values = _payment_values(body, org)
+    if not body.event_id:
+        record = PaymentRecord(**values)
+        db.add(record)
+        await db.flush()
+        return record, True
+
+    dialect = db.get_bind().dialect.name
+    insert_fn = postgresql_insert if dialect == "postgresql" else sqlite_insert
+    stmt = (
+        insert_fn(PaymentRecord)
+        .values(**values)
+        .on_conflict_do_nothing(
+            index_elements=[PaymentRecord.gateway_id, PaymentRecord.event_id]
+        )
+        .returning(PaymentRecord.id)
+    )
+    record_id = (await db.execute(stmt)).scalar_one_or_none()
+    if record_id is not None:
+        record = await db.get(PaymentRecord, record_id)
+        if record is None:  # pragma: no cover - defensive against a broken driver
+            raise RuntimeError("Inserted payment record could not be reloaded")
+        return record, True
+
+    record = (
+        await db.execute(
+            select(PaymentRecord).where(
+                PaymentRecord.gateway_id == body.gateway_id,
+                PaymentRecord.event_id == body.event_id,
+            )
+        )
+    ).scalar_one()
+    if not _same_payment(record, values):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Payment event '{body.event_id}' was already recorded with "
+                "different data"
+            ),
+        )
+    return record, False
 
 
 # ─── Wallets ─────────────────────────────────────────────────────────────────
@@ -274,8 +366,11 @@ def _wallet_dict(w: Wallet) -> dict:
 
 def _payment_dict(p: PaymentRecord) -> dict:
     return {
-        "id": p.id, "agent_id": p.agent_id, "gateway_id": p.gateway_id,
+        "id": p.id, "event_id": p.event_id or "",
+        "agent_id": p.agent_id, "gateway_id": p.gateway_id,
         "action": p.action, "amount_usdc": round(p.amount_usdc, 6),
-        "settled": p.settled, "tx_hash": p.tx_hash, "mode": p.mode,
-        "source": p.source, "timestamp": p.timestamp.isoformat() if p.timestamp else "",
+        "settled": p.settled, "wallet_debited": p.wallet_debited,
+        "tx_hash": p.tx_hash, "mode": p.mode,
+        "source": p.source, "reason": p.reason,
+        "timestamp": p.timestamp.isoformat() if p.timestamp else "",
     }

@@ -198,7 +198,11 @@ async def _collect_broker_charge(record: UsageRecord, org: str) -> str | None:
 
     from control_plane.routers.broker_pilot import _collector
 
-    idempotency_key = record.event_id or f"usage:{record.gateway_id}:{record.id}"
+    idempotency_key = (
+        f"{record.gateway_id}:{record.event_id}"
+        if record.event_id
+        else f"usage:{record.gateway_id}:{record.id}"
+    )
     try:
         result = await _collector.collect(
             customer=org,
