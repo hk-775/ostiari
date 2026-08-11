@@ -1,6 +1,6 @@
 import { create } from "zustand";
+import { API_BASE } from "../lib/api";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
 const TOKEN_KEY = "ostiari_token";
 
 export interface User {
@@ -15,6 +15,7 @@ interface AuthState {
   user: User | null;
   isAuthenticated: boolean;
   login: (email: string, password: string) => Promise<void>;
+  completeSSO: (token: string) => Promise<void>;
   logout: () => void;
   hasRole: (role: string) => boolean;
   fetchMe: () => Promise<void>;
@@ -38,6 +39,27 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const data = await res.json();
     localStorage.setItem(TOKEN_KEY, data.access_token);
     set({ token: data.access_token, user: data.user, isAuthenticated: true });
+  },
+
+  completeSSO: async (token: string) => {
+    if (!token) {
+      throw new Error("Single sign-on did not return an access token");
+    }
+
+    // Validate the callback token before making it the active browser session.
+    const res = await fetch(`${API_BASE}/api/auth/me`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) {
+      localStorage.removeItem(TOKEN_KEY);
+      set({ token: null, user: null, isAuthenticated: false });
+      const err = await res.json().catch(() => ({ detail: "Unable to validate SSO session" }));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+
+    const user = await res.json();
+    localStorage.setItem(TOKEN_KEY, token);
+    set({ token, user, isAuthenticated: true });
   },
 
   logout: () => {

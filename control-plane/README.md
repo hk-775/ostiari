@@ -403,6 +403,18 @@ and the token-broker config — that list, and nothing else.
 | `/api/providers/{name}/test` | POST | Send a test completion |
 | `/api/providers/{name}/health` | GET | Provider reachability |
 
+Browser SSO requires `OIDC_ISSUER`, `OIDC_CLIENT_ID`, and
+`OIDC_CLIENT_SECRET`. Register `OIDC_REDIRECT_URI` with the IdP; its local
+default is `http://localhost:8400/api/auth/sso/callback`. Set
+`OSTIARI_FRONTEND_URL` to the browser-reachable dashboard origin (local default
+`http://localhost:9000`). The callback redirects to `/auth/sso-callback` with
+the issued token in the URL fragment; the frontend removes it from history,
+validates `/api/auth/me`, then stores the session.
+
+This browser flow issues a local Ostiari JWT, so leave `OSTIARI_AUTH_MODE`
+unset. `OSTIARI_AUTH_MODE=oidc` plus `OSTIARI_OIDC_*` is the separate mode for
+API clients that send IdP bearer tokens directly.
+
 ### Gateway Proxy
 
 | Endpoint | Method | Description |

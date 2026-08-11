@@ -32,6 +32,7 @@ import { Users } from "./pages/Users";
 import { Providers } from "./pages/Providers";
 import { useAuthStore } from "./stores/authStore";
 import { AgentQuotas } from "./pages/AgentQuotas";
+import { SSOCallbackPage } from "./pages/SSOCallbackPage";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchInterval: 10000 } },
@@ -76,6 +77,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Landing />} />
             <Route path="/login" element={<LoginPage />} />
+            <Route path="/auth/sso-callback" element={<SSOCallbackPage />} />
             <Route element={<RequireAuth><Layout /></RequireAuth>}>
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/architecture" element={<Architecture />} />

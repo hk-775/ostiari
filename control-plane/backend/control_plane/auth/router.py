@@ -9,10 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.auth.dependencies import get_current_user, require_role
 from control_plane.auth.models import User
-from control_plane.env import is_production
-from control_plane.models.database import DEFAULT_ORG, Organization
-
-log = logging.getLogger("control_plane.auth")
 from control_plane.auth.schemas import (
     AuthUser,
     LoginRequest,
@@ -22,6 +18,10 @@ from control_plane.auth.schemas import (
 )
 from control_plane.auth.service import create_access_token, hash_password, verify_password
 from control_plane.database import get_db
+from control_plane.env import is_production
+from control_plane.models.database import DEFAULT_ORG, Organization
+
+log = logging.getLogger("control_plane.auth")
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -72,7 +72,11 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
     await _seed_admin(db)
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
-    if not user or not verify_password(body.password, user.hashed_password):
+    if (
+        not user
+        or not user.hashed_password
+        or not verify_password(body.password, user.hashed_password)
+    ):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")

@@ -578,7 +578,10 @@ docker build -f deploy/docker/Dockerfile.frontend \
 | `OSTIARI_JWT_SECRET` | Signing secret for issued tokens. In production the dev default is refused and the value must be **≥ 32 characters** |
 | `OSTIARI_INGEST_KEY` | Shared secret for `POST /api/traces/ingest` (`X-Ingest-Key`). **Required in production** — unset, ingest 401s |
 | `OSTIARI_CORS_ORIGINS` | Comma-separated allowed origins (enables credentialed CORS) |
-| `OSTIARI_AUTH_MODE=oidc` + `OSTIARI_OIDC_*` | Validate IdP JWTs instead of local tokens — see [`auth/README.md`](auth/README.md) |
+| `OIDC_ISSUER` / `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | Enable browser SSO on the dashboard login page using the authorization-code flow |
+| `OIDC_REDIRECT_URI` | IdP callback registered for the backend. Defaults to `http://localhost:8400/api/auth/sso/callback`; set the exact public API URL in production |
+| `OSTIARI_FRONTEND_URL` | Browser-reachable dashboard origin used after SSO. Defaults to `http://localhost:9000` |
+| `OSTIARI_AUTH_MODE=oidc` + `OSTIARI_OIDC_*` | Validate caller-supplied IdP bearer tokens directly instead of locally issued Ostiari tokens |
 
 > **`OSTIARI_ENV=production` and `OSTIARI_REQUIRE_AUTH` are separate knobs, and
 > you need both.** Production mode hardens the admin password, JWT secret, and
@@ -595,6 +598,13 @@ docker build -f deploy/docker/Dockerfile.frontend \
 > `OSTIARI_CONFIG_ADMIN_KEY` to matching values on the components that share
 > them. Trace ingest uses the ingest key; restricted gateway lifecycle and
 > event routes use the service token; config pushes use the config-admin key.
+
+Dashboard SSO and direct OIDC bearer validation are separate modes. For the
+dashboard login button, configure `OIDC_*`, set `OSTIARI_FRONTEND_URL`, and leave
+`OSTIARI_AUTH_MODE` at its default `local` value so the Ostiari JWT issued after
+the callback is accepted by `/api/auth/me`. Register `OIDC_REDIRECT_URI` exactly
+with the identity provider. Use `OSTIARI_AUTH_MODE=oidc` only when API clients
+send the identity provider's access tokens directly.
 
 ### Why `OSTIARI_ADVERTISE_HOST` matters
 

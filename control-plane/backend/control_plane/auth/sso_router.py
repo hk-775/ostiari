@@ -7,6 +7,7 @@ and reporting SSO configuration status to the frontend.
 import logging
 import os
 from datetime import datetime, timezone
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse
@@ -26,6 +27,7 @@ from control_plane.auth.sso import (
     validate_id_token,
 )
 from control_plane.database import get_db
+from control_plane.models.database import DEFAULT_ORG, Organization
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +40,25 @@ _pending_states: dict[str, dict] = {}
 # Default role for new SSO users (configurable via env var)
 DEFAULT_ROLE = os.environ.get("OIDC_DEFAULT_ROLE", "viewer")
 
-# Frontend URL to redirect to after successful SSO login
-FRONTEND_URL = os.environ.get("OSTIARI_FRONTEND_URL", "http://localhost:9500")
+def _frontend_url() -> str:
+    """Browser-reachable dashboard origin used after the IdP callback."""
+    return os.environ.get("OSTIARI_FRONTEND_URL", "http://localhost:9000").rstrip("/")
+
+
+def _frontend_redirect(
+    path: str,
+    *,
+    query: dict[str, str] | None = None,
+    fragment: dict[str, str] | None = None,
+) -> RedirectResponse:
+    url = f"{_frontend_url()}/{path.lstrip('/')}"
+    if query:
+        url = f"{url}?{urlencode(query)}"
+    if fragment:
+        # Fragments are not sent to the frontend web server or in Referer
+        # headers, keeping the local JWT out of access logs.
+        url = f"{url}#{urlencode(fragment)}"
+    return RedirectResponse(url=url, status_code=status.HTTP_302_FOUND)
 
 
 class SSOConfigResponse(BaseModel):
@@ -86,9 +105,9 @@ async def sso_login():
         authorization_url, state, nonce = await get_authorization_url(config)
     except Exception as e:
         logger.error(f"Failed to build authorization URL: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Failed to contact identity provider",
+        return _frontend_redirect(
+            "/login",
+            query={"error": "provider_unavailable"},
         )
 
     # Store state and nonce for validation in callback
@@ -115,32 +134,35 @@ async def sso_callback(
     # Handle IdP errors
     if error:
         logger.warning(f"SSO callback error: {error} - {error_description}")
-        return RedirectResponse(
-            url=f"{FRONTEND_URL}/login?error=sso_failed&detail={error_description or error}",
-            status_code=status.HTTP_302_FOUND,
+        return _frontend_redirect(
+            "/login",
+            query={
+                "error": "sso_failed",
+                "detail": error_description or error,
+            },
         )
 
     if not code or not state:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Missing code or state parameter",
+        return _frontend_redirect(
+            "/login",
+            query={"error": "invalid_callback"},
         )
 
     # Validate state (CSRF protection)
     pending = _pending_states.pop(state, None)
     if not pending:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired state parameter",
+        return _frontend_redirect(
+            "/login",
+            query={"error": "invalid_state"},
         )
 
     nonce = pending["nonce"]
 
     config = get_oidc_config()
     if not config:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="SSO configuration lost",
+        return _frontend_redirect(
+            "/login",
+            query={"error": "sso_unavailable"},
         )
 
     # Exchange authorization code for tokens
@@ -148,9 +170,9 @@ async def sso_callback(
         token_response = await exchange_code(config, code)
     except Exception as e:
         logger.error(f"Token exchange failed: {e}")
-        return RedirectResponse(
-            url=f"{FRONTEND_URL}/login?error=token_exchange_failed",
-            status_code=status.HTTP_302_FOUND,
+        return _frontend_redirect(
+            "/login",
+            query={"error": "token_exchange_failed"},
         )
 
     access_token = token_response.get("access_token")
@@ -158,9 +180,9 @@ async def sso_callback(
 
     if not id_token:
         logger.error("No id_token in token response")
-        return RedirectResponse(
-            url=f"{FRONTEND_URL}/login?error=no_id_token",
-            status_code=status.HTTP_302_FOUND,
+        return _frontend_redirect(
+            "/login",
+            query={"error": "no_id_token"},
         )
 
     # Validate the ID token
@@ -168,9 +190,9 @@ async def sso_callback(
         id_claims = await validate_id_token(config, id_token, nonce=nonce)
     except ValueError as e:
         logger.error(f"ID token validation failed: {e}")
-        return RedirectResponse(
-            url=f"{FRONTEND_URL}/login?error=invalid_token",
-            status_code=status.HTTP_302_FOUND,
+        return _frontend_redirect(
+            "/login",
+            query={"error": "invalid_token"},
         )
 
     # Get user info (supplement ID token claims)
@@ -188,9 +210,9 @@ async def sso_callback(
     email = claims.get("email")
     if not email:
         logger.error("No email claim in SSO response")
-        return RedirectResponse(
-            url=f"{FRONTEND_URL}/login?error=no_email",
-            status_code=status.HTTP_302_FOUND,
+        return _frontend_redirect(
+            "/login",
+            query={"error": "no_email"},
         )
 
     name = claims.get("name") or claims.get("preferred_username") or email.split("@")[0]
@@ -205,6 +227,12 @@ async def sso_callback(
     user = result.scalar_one_or_none()
 
     if user:
+        if not user.is_active:
+            logger.warning("Disabled user attempted SSO login: %s", email)
+            return _frontend_redirect(
+                "/login",
+                query={"error": "account_disabled"},
+            )
         # Existing user — update SSO fields
         user.name = name
         user.sso_provider = provider
@@ -216,12 +244,16 @@ async def sso_callback(
     else:
         # New user — create with default or IdP-assigned role
         role = idp_role or DEFAULT_ROLE
+        if await db.get(Organization, DEFAULT_ORG) is None:
+            db.add(Organization(id=DEFAULT_ORG, name="Default Organization"))
+            await db.flush()
         user = User(
             email=email,
             name=name,
             hashed_password="",  # SSO users don't have passwords
             role=role,
             is_active=True,
+            org_id=DEFAULT_ORG,
             sso_provider=provider,
             sso_subject_id=subject_id,
             last_login=datetime.now(timezone.utc),
@@ -230,10 +262,15 @@ async def sso_callback(
         await db.flush()
 
     # Issue Ostiari JWT
-    token = create_access_token(user.id, user.email, user.role)
+    token = create_access_token(
+        user.id,
+        user.email,
+        user.role,
+        org=user.org_id or DEFAULT_ORG,
+    )
 
-    # Redirect to frontend with token
-    return RedirectResponse(
-        url=f"{FRONTEND_URL}/auth/sso-callback?token={token}",
-        status_code=status.HTTP_302_FOUND,
+    # The frontend consumes and removes the fragment before validating /auth/me.
+    return _frontend_redirect(
+        "/auth/sso-callback",
+        fragment={"token": token},
     )

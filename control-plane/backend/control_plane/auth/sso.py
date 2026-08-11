@@ -51,7 +51,7 @@ def get_oidc_config() -> OIDCConfig | None:
     client_id = os.environ.get("OIDC_CLIENT_ID", "")
     client_secret = os.environ.get("OIDC_CLIENT_SECRET", "")
     redirect_uri = os.environ.get(
-        "OIDC_REDIRECT_URI", "http://localhost:9500/api/auth/sso/callback"
+        "OIDC_REDIRECT_URI", "http://localhost:8400/api/auth/sso/callback"
     )
     scopes_str = os.environ.get("OIDC_SCOPES", "openid email profile")
     scopes = scopes_str.split()
@@ -230,7 +230,7 @@ async def validate_id_token(
     try:
         unverified_header = jwt.get_unverified_header(id_token)
     except JWTError as e:
-        raise ValueError(f"Invalid ID token header: {e}")
+        raise ValueError(f"Invalid ID token header: {e}") from e
 
     kid = unverified_header.get("kid")
     if not kid:
@@ -267,7 +267,7 @@ async def validate_id_token(
             options={"verify_at_hash": False},
         )
     except JWTError as e:
-        raise ValueError(f"ID token validation failed: {e}")
+        raise ValueError(f"ID token validation failed: {e}") from e
 
     # Verify nonce if provided
     if nonce and claims.get("nonce") != nonce:
