@@ -71,6 +71,22 @@ spec:
               value: "sqlite+aiosqlite:////data/control_plane.db"
             - name: OSTIARI_DATA_DIR
               value: "/data"
+            - name: OSTIARI_BROKER_BILLING
+              value: "simulated"
+            - name: STRIPE_METER_EVENT_NAME
+              value: "ostiari_broker_usage"
+            - name: STRIPE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ostiari-secrets
+                  key: stripe-api-key
+                  optional: true
+            - name: STRIPE_CUSTOMER_ID
+              valueFrom:
+                secretKeyRef:
+                  name: ostiari-secrets
+                  key: stripe-customer-id
+                  optional: true
           volumeMounts:
             - name: data
               mountPath: /data

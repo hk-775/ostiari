@@ -36,6 +36,11 @@ routing = [
 redis = [
     "redis[hiredis]>=5.0",
 ]
+# Native x402 v2 payments for passthrough HTTP tools. Kept optional so the
+# default simulated demo does not install wallet/signing dependencies.
+payments = [
+    "x402[httpx,evm]>=2.18,<3",
+]
 
 [project.scripts]
 ostiari-gateway = "ostiari_gateway.main:cli"

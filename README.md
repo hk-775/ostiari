@@ -42,8 +42,9 @@ data.
 > Everything in the demo is **real**: the gateways actually proxy and govern
 > live tool calls (a `db_delete` really gets blocked with a 403), the MCP
 > servers really run (`npx` draw.io + filesystem), and one agent really
-> delegates to another. Only external money movement (on-chain x402, Stripe) is
-> simulated behind a clean seam.
+> delegates to another. The demo deliberately keeps external money movement
+> simulated; production deployments can opt into x402 v2 settlement and Stripe
+> Billing without changing the governance flow.
 
 **New here?** Read [`docs/control-plane-guide.md`](docs/control-plane-guide.md)
 — a complete, novice-friendly tour of the control plane with architecture

@@ -14,6 +14,7 @@ data:
   # OSTIARI_INGEST_KEY on the control plane; the gateway warns at startup about
   # any control still left open (OSTIARI_STRICT=1 makes that fatal).
   OSTIARI_ENV: "production"
+  OSTIARI_X402_MODE: "simulated"
   # Human-in-the-loop for the *intervene* tier: a call scoring in the middle band
   # returns HTTP 202 instead of executing, a human decides in the Approvals page,
   # and the caller re-submits with X-Approval-Id.
@@ -81,6 +82,12 @@ spec:
                 secretKeyRef:
                   name: ostiari-secrets
                   key: openai-api-key
+                  optional: true
+            - name: OSTIARI_X402_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ostiari-secrets
+                  key: x402-private-key
                   optional: true
           readinessProbe:
             httpGet:

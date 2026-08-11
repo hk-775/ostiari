@@ -55,6 +55,40 @@ async def test_reporter_sends_ingest_and_service_credentials(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_payment_report_retries_identical_event_after_http_failure():
+    calls: list[dict] = []
+
+    class _Client(httpx.AsyncClient):
+        async def post(self, url, json=None, **kw):  # type: ignore[override]
+            calls.append(json)
+            return httpx.Response(
+                401 if len(calls) == 1 else 200,
+                request=httpx.Request("POST", url),
+                json={"recorded": True},
+            )
+
+    tr = TraceReporter(control_plane_url="http://cp.local", sidecar_id="gw1")
+    tr._client = _Client()
+
+    await tr.report_payment(
+        agent_id="a",
+        action="premium",
+        amount_usdc=0.005,
+        settled=True,
+        tx_hash="0xtx",
+    )
+    assert len(tr._payment_buffer) == 1
+
+    await tr.flush_payments()
+
+    assert len(tr._payment_buffer) == 0
+    assert calls[0] == calls[1]
+    assert calls[0]["event_id"]
+    assert calls[0]["wallet_debited"] is True
+    await tr._client.aclose()
+
+
+@pytest.mark.anyio
 async def test_spend_reset_marker_retries_even_with_no_agents():
     calls: list[dict] = []
 

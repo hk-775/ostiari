@@ -65,8 +65,8 @@ graph TB
 | **Sandbox** | Four-tab testing environment: Chat, governed scenarios, browser-isolated JavaScript with a metered tool bridge, and A2A tasks. Code runs in an opaque-origin worker; source never reaches the backend |
 | **Cost Dashboard** | Track LLM spend broken down by model, gateway, agent, and day |
 | **Metering** | Per-agent token/cost rollups with CSV/JSON export |
-| **Payments (x402)** | Per-agent USDC wallets with balance, per-call and daily limits, a payment ledger, and per-tool pricing. External money movement is simulated behind a clean seam |
-| **Token Broker** | Retry-safe pool drawdown and customer charging, depleted-provider routing controls, margin reporting, and invoice reconciliation |
+| **Payments (x402)** | Per-agent USDC policy wallets with balance, per-call and daily limits, a retry-safe ledger, per-tool pricing, simulated settlement, and optional live x402 v2 passthrough |
+| **Token Broker** | Retry-safe pool drawdown and customer charging, optional Stripe Meter Events billing, depleted-provider routing controls, margin reporting, and invoice reconciliation |
 | **A/B Experiments** | Percentage-based traffic splitting between models with side-by-side results comparison. 3 seeded in the demo |
 | **Live Trace Viewer** | Real-time WebSocket feed of tool calls across all gateways, with session/plan/step grouping, tool parameters, and a model badge per trace |
 | **Shadow Report** | What a gateway in `shadow` mode *would* have blocked — try before you enforce |
@@ -291,7 +291,7 @@ Models are keyed by **name**, not a numeric id.
 | `/api/payments/pricing` | GET/POST | Per-tool price list |
 | `/api/payments/ledger` | GET | Payment history |
 | `/api/payments/summary` | GET | Spend rollup |
-| `/api/payments/ingest` | POST | Record a payment (called by the gateway) |
+| `/api/payments/ingest` | POST | Idempotently record a payment (called by the gateway) |
 | `/api/payments/push` | POST | Push wallets + pricing to gateways |
 
 ### Token Broker
@@ -313,6 +313,14 @@ usage row, pool debit, and customer charge once. A billing failure returns `503`
 after persisting the usage and debit; the gateway retains and retries that exact
 batch with the same event IDs. Pool state is returned with ingestion responses
 and heartbeats so gateways reroute away from, or block, depleted providers.
+
+Set `OSTIARI_BROKER_BILLING=live` to deliver broker charges to Stripe Billing
+Meter Events. Configure `STRIPE_API_KEY`, `STRIPE_METER_EVENT_NAME`, and either
+`STRIPE_CUSTOMER_ID` for one tenant or `STRIPE_CUSTOMER_MAP` as a JSON mapping
+from Ostiari organization IDs to Stripe customer IDs. Event values are integer
+micro-USD, so the Stripe meter/price must interpret 1,000,000 units as $1.00.
+The gateway event identity is used for both the Stripe meter-event identifier
+and idempotency key.
 
 ### A/B Experiments
 

@@ -1,6 +1,10 @@
 """Tests for the x402 payment gate: wallets, pricing, settlement, and the
 metered + passthrough flows through the sidecar proxy."""
 
+import base64
+import json
+
+import httpx
 import pytest
 from ostiari_gateway.models import PolicyConfig, SidecarConfig, ToolDefinition
 from ostiari_gateway.payments import (
@@ -10,10 +14,50 @@ from ostiari_gateway.payments import (
     Quote,
     SimulatedSettler,
     Wallet,
+    X402Settler,
     parse_402,
 )
 from ostiari_gateway.server import create_app
 from starlette.testclient import TestClient
+
+_BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+
+
+def _payment_header(payload: dict) -> str:
+    return base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":")).encode()
+    ).rstrip(b"=").decode()
+
+
+def _required_header(amount: int = 5000, pay_to: str = "0xmerchant") -> str:
+    return _payment_header({
+        "x402Version": 2,
+        "resource": {
+            "url": "https://tool.example/premium",
+            "description": "Premium search",
+            "mimeType": "application/json",
+        },
+        "accepts": [{
+            "scheme": "exact",
+            "network": "eip155:8453",
+            "amount": str(amount),
+            "asset": _BASE_USDC,
+            "payTo": pay_to,
+            "maxTimeoutSeconds": 300,
+            "extra": {"name": "USDC", "version": "2"},
+        }],
+    })
+
+
+def _response_header(*, success: bool = True, tx: str = "0xsettled") -> str:
+    payload = {
+        "success": success,
+        "transaction": tx,
+        "network": "eip155:8453",
+    }
+    if not success:
+        payload["errorReason"] = "facilitator rejected payment"
+    return _payment_header(payload)
 
 # ─── Wallet model (unit) ─────────────────────────────────────────────────────
 
@@ -72,6 +116,129 @@ class TestSimulatedSettler:
         assert r.settled is False
         assert "insufficient balance" in r.reason
         assert w.balance_usdc == pytest.approx(0.01)  # untouched
+
+
+class TestX402Settler:
+    async def test_authorizes_passthrough_then_confirms_payment_response(self):
+        async def requester(**_kwargs):
+            return httpx.Response(
+                200,
+                headers={"PAYMENT-RESPONSE": _response_header()},
+                request=httpx.Request("POST", "https://tool.example/premium"),
+                json={"ok": True},
+            )
+
+        settler = X402Settler(requester=requester)
+        wallet = Wallet(agent_id="a", balance_usdc=1.0)
+        quote = Quote(
+            action="premium",
+            amount_usdc=0.005,
+            atomic_amount=5000,
+            pay_to="0xmerchant",
+            asset=_BASE_USDC,
+            source="tool_402",
+            payment_required=_required_header(),
+        )
+
+        pending = await settler.settle(quote=quote, wallet=wallet)
+        assert pending.settled is True
+        assert pending.pending is True
+        assert wallet.balance_usdc == pytest.approx(0.995)
+
+        response = await settler.request(
+            quote=quote,
+            method="POST",
+            url="https://tool.example/premium",
+            params=None,
+            json_body={"q": "x"},
+            headers={},
+            timeout=3,
+        )
+        receipt = settler.confirm(
+            quote=quote,
+            status_code=response.status_code,
+            payment_headers={
+                "payment-response": response.headers["PAYMENT-RESPONSE"],
+            },
+        )
+        assert receipt.settled is True
+        assert receipt.tx_hash == "0xsettled"
+        assert receipt.pending is False
+
+    async def test_live_metered_mode_fails_closed(self):
+        settler = X402Settler(requester=lambda **_kwargs: None)
+        receipt = await settler.settle(
+            quote=Quote(action="premium", amount_usdc=0.005, source="policy"),
+            wallet=Wallet(agent_id="a", balance_usdc=1.0),
+        )
+        assert receipt.settled is False
+        assert "passthrough" in receipt.reason
+
+    def test_missing_or_failed_payment_response_is_not_confirmed(self):
+        quote = Quote(action="premium", amount_usdc=0.005, source="tool_402")
+        missing = X402Settler.confirm(
+            quote=quote,
+            status_code=200,
+            payment_headers={},
+        )
+        failed = X402Settler.confirm(
+            quote=quote,
+            status_code=200,
+            payment_headers={
+                "payment-response": _response_header(success=False),
+            },
+        )
+        assert missing.settled is False
+        assert "omitted" in missing.reason
+        assert failed.settled is False
+        assert "rejected" in failed.reason
+
+    def test_fresh_challenge_must_match_approved_quote(self):
+        quote = Quote(
+            action="premium",
+            amount_usdc=0.005,
+            atomic_amount=5000,
+            pay_to="0xmerchant",
+            asset=_BASE_USDC,
+            network="eip155:8453",
+            source="tool_402",
+        )
+        selector = X402Settler._selector_for(quote)
+        chosen = selector(2, [{
+            "amount": "5000",
+            "network": "eip155:8453",
+            "payTo": "0xmerchant",
+            "scheme": "exact",
+            "asset": _BASE_USDC,
+        }])
+        assert chosen["payTo"] == "0xmerchant"
+        with pytest.raises(RuntimeError, match="changed"):
+            selector(2, [{
+                "amount": "5000",
+                "network": "eip155:8453",
+                "payTo": "0xattacker",
+                "scheme": "exact",
+                "asset": _BASE_USDC,
+            }])
+
+    async def test_unapproved_asset_fails_before_wallet_debit(self):
+        settler = X402Settler(requester=lambda **_kwargs: None)
+        wallet = Wallet(agent_id="a", balance_usdc=1.0)
+        receipt = await settler.settle(
+            quote=Quote(
+                action="premium",
+                amount_usdc=0.005,
+                atomic_amount=5000,
+                pay_to="0xmerchant",
+                asset="0xvaluable-token",
+                source="tool_402",
+                payment_required=_required_header(),
+            ),
+            wallet=wallet,
+        )
+        assert receipt.settled is False
+        assert "approved" in receipt.reason
+        assert wallet.balance_usdc == 1.0
 
 
 # ─── Pricing (unit) ──────────────────────────────────────────────────────────
@@ -166,6 +333,20 @@ class TestParse402:
         assert parse_402({"amount": 0.01}, 402, "x").amount_usdc == 0.01
         assert parse_402({"amount_usdc": "nope"}, 402, "x").amount_usdc == 0.0
 
+    def test_quote_from_standard_v2_header(self):
+        q = parse_402(
+            {"error": "payment required"},
+            402,
+            "premium_search",
+            {"payment-required": _required_header()},
+        )
+        assert q is not None
+        assert q.amount_usdc == pytest.approx(0.005)
+        assert q.atomic_amount == 5000
+        assert q.pay_to == "0xmerchant"
+        assert q.network == "eip155:8453"
+        assert q.payment_required
+
 
 # ─── Integration: metered mode through the proxy ─────────────────────────────
 
@@ -258,6 +439,140 @@ class TestPassthroughIntegration:
         )
         assert resp.status_code == 402
         assert resp.json()["limit_type"] == "payment"
+
+
+class TestLivePassthroughIntegration:
+    def test_standard_x402_payment_is_confirmed_before_output(self, httpserver):
+        challenge = _required_header()
+        settlement = _response_header(tx="0xlive")
+
+        def handler(request):
+            from werkzeug.wrappers import Response
+
+            if not request.headers.get("PAYMENT-SIGNATURE"):
+                return Response(
+                    '{"error":"payment required"}',
+                    status=402,
+                    content_type="application/json",
+                    headers={"PAYMENT-REQUIRED": challenge},
+                )
+            return Response(
+                '{"results":["paid"]}',
+                status=200,
+                content_type="application/json",
+                headers={"PAYMENT-RESPONSE": settlement},
+            )
+
+        httpserver.expect_request("/live-premium", method="POST").respond_with_handler(handler)
+
+        async def paid_request(**kwargs):
+            headers = {
+                **kwargs["headers"],
+                "PAYMENT-SIGNATURE": "signed-by-test-wallet",
+            }
+            async with httpx.AsyncClient() as client:
+                return await client.request(
+                    kwargs["method"],
+                    kwargs["url"],
+                    params=kwargs["params"],
+                    json=kwargs["json_body"],
+                    headers=headers,
+                    timeout=kwargs["timeout"],
+                )
+
+        config = SidecarConfig(
+            sidecar_id="pay-test",
+            tools=[
+                ToolDefinition(
+                    name="live_premium",
+                    endpoint=httpserver.url_for("/live-premium"),
+                )
+            ],
+            policy=PolicyConfig(allow=["live_premium"]),
+            payments={
+                "mode": "passthrough",
+                "wallets": [{"agent_id": "rich", "balance_usdc": 1.0}],
+            },
+        )
+        client = TestClient(
+            create_app(
+                initial_config=config,
+                payment_settler=X402Settler(requester=paid_request),
+            )
+        )
+
+        response = client.post(
+            "/tool/live_premium",
+            json={"query": "x"},
+            headers={"X-Agent-Id": "rich"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["result"] == {"results": ["paid"]}
+        status = client.get("/config/payments").json()
+        assert status["settler"] == "live"
+        assert status["wallets"][0]["balance_usdc"] == pytest.approx(0.995)
+
+    def test_unconfirmed_live_payment_does_not_expose_tool_output(self, httpserver):
+        challenge = _required_header()
+
+        def handler(request):
+            from werkzeug.wrappers import Response
+
+            if not request.headers.get("PAYMENT-SIGNATURE"):
+                return Response(
+                    "{}",
+                    status=402,
+                    content_type="application/json",
+                    headers={"PAYMENT-REQUIRED": challenge},
+                )
+            return Response(
+                '{"secret":"must not escape"}',
+                status=200,
+                content_type="application/json",
+            )
+
+        httpserver.expect_request("/unconfirmed", method="POST").respond_with_handler(handler)
+
+        async def paid_request(**kwargs):
+            async with httpx.AsyncClient() as client:
+                return await client.request(
+                    kwargs["method"],
+                    kwargs["url"],
+                    json=kwargs["json_body"],
+                    headers={**kwargs["headers"], "PAYMENT-SIGNATURE": "signed"},
+                )
+
+        config = SidecarConfig(
+            sidecar_id="pay-test",
+            tools=[
+                ToolDefinition(
+                    name="unconfirmed",
+                    endpoint=httpserver.url_for("/unconfirmed"),
+                )
+            ],
+            policy=PolicyConfig(allow=["unconfirmed"]),
+            payments={
+                "mode": "passthrough",
+                "wallets": [{"agent_id": "rich", "balance_usdc": 1.0}],
+            },
+        )
+        client = TestClient(
+            create_app(
+                initial_config=config,
+                payment_settler=X402Settler(requester=paid_request),
+            )
+        )
+
+        response = client.post(
+            "/tool/unconfirmed",
+            json={"query": "x"},
+            headers={"X-Agent-Id": "rich"},
+        )
+
+        assert response.status_code == 402
+        assert "secret" not in response.text
+        assert "PAYMENT-RESPONSE" in response.json()["reason"]
 
 
 # ─── Integration: off mode charges nothing ───────────────────────────────────

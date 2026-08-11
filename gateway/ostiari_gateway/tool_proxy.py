@@ -79,7 +79,12 @@ class ToolProxy:
         return url, query, body
 
     async def execute(
-        self, name: str, params: dict[str, Any], propagate_headers: dict[str, str] | None = None
+        self,
+        name: str,
+        params: dict[str, Any],
+        propagate_headers: dict[str, str] | None = None,
+        payment_client: Any = None,
+        payment_quote: Any = None,
     ) -> dict[str, Any]:
         """Proxy a tool call to its remote endpoint.
 
@@ -88,6 +93,8 @@ class ToolProxy:
             params: Parameters to send as JSON body.
             propagate_headers: Extra headers to forward (e.g., traceparent for OTel).
                               Passed through regardless of whether the tool supports them.
+            payment_client: Optional live x402 client used for a paid retry.
+            payment_quote: The previously approved x402 challenge.
         """
         tool = self._tools.get(name)
         if tool is None:
@@ -110,14 +117,25 @@ class ToolProxy:
         start = time.monotonic()
 
         try:
-            response = await self._client.request(
-                method=tool.method,
-                url=url,
-                params=query or None,
-                json=body,
-                headers=headers,
-                timeout=tool.timeout_seconds,
-            )
+            if payment_client is None:
+                response = await self._client.request(
+                    method=tool.method,
+                    url=url,
+                    params=query or None,
+                    json=body,
+                    headers=headers,
+                    timeout=tool.timeout_seconds,
+                )
+            else:
+                response = await payment_client.request(
+                    quote=payment_quote,
+                    method=tool.method,
+                    url=url,
+                    params=query or None,
+                    json_body=body,
+                    headers=headers,
+                    timeout=tool.timeout_seconds,
+                )
             duration_ms = (time.monotonic() - start) * 1000
 
             try:
@@ -125,10 +143,21 @@ class ToolProxy:
             except Exception:
                 body = response.text
 
+            payment_headers = {
+                name.lower(): value
+                for name in (
+                    "PAYMENT-REQUIRED",
+                    "X-PAYMENT-REQUIRED",
+                    "PAYMENT-RESPONSE",
+                    "X-PAYMENT-RESPONSE",
+                )
+                if (value := response.headers.get(name))
+            }
             return {
                 "result": body,
                 "status_code": response.status_code,
                 "duration_ms": round(duration_ms, 2),
+                "payment_headers": payment_headers,
             }
         except httpx.TimeoutException:
             duration_ms = (time.monotonic() - start) * 1000
@@ -143,6 +172,17 @@ class ToolProxy:
                 "error": f"Cannot reach tool endpoint: {e}",
                 "status_code": 502,
                 "duration_ms": round(duration_ms, 2),
+            }
+        except Exception as e:
+            if payment_client is None:
+                raise
+            duration_ms = (time.monotonic() - start) * 1000
+            log.warning("Live x402 request failed for %s: %s", name, e)
+            return {
+                "error": f"x402 payment failed: {e}",
+                "status_code": 502,
+                "duration_ms": round(duration_ms, 2),
+                "payment_headers": {},
             }
 
     async def close(self) -> None:
