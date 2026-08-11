@@ -134,10 +134,19 @@ sam deploy --guided
 | `OSTIARI_SERVICE_TOKEN` | _(none)_ | Shared machine credential for the restricted gateway lifecycle/ingest routes. Required when `OSTIARI_REQUIRE_AUTH=true`; set the same value on every trusted gateway. |
 | `OSTIARI_CONFIG_ADMIN_KEY` | _(none)_ | Credential the control plane sends on gateway `/config/*` calls. Set the same value on the control plane and gateways. |
 | `OSTIARI_ENCRYPTION_KEY` | _(ephemeral)_ | Encrypts stored provider API keys. Unset, a new key is minted per process — stored keys become unreadable after restart. |
+| `OIDC_ISSUER` / `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | _(none)_ | Enable the dashboard's browser SSO authorization-code flow. |
+| `OIDC_REDIRECT_URI` | `http://localhost:8400/api/auth/sso/callback` | Public backend callback URL registered verbatim with the identity provider. |
+| `OSTIARI_FRONTEND_URL` | `http://localhost:9000` | Public dashboard origin used after the backend completes SSO. |
+| `OSTIARI_AUTH_MODE=oidc` + `OSTIARI_OIDC_*` | _(local tokens)_ | Direct IdP bearer-token validation for API clients. This is separate from dashboard SSO. |
 
 The gateway sends `OSTIARI_INGEST_KEY` as `X-Ingest-Key`. Other gateway machine
 traffic uses `OSTIARI_SERVICE_TOKEN`; the service token is accepted only on the
 explicit lifecycle and ingest route allowlist, not on general control-plane APIs.
+
+For dashboard SSO, leave `OSTIARI_AUTH_MODE` unset (`local`). The backend
+exchanges the authorization code, provisions or updates the local user, and
+issues an Ostiari JWT that the frontend validates before storing. Set
+`OSTIARI_AUTH_MODE=oidc` only when callers present IdP access tokens directly.
 
 In production, an empty trace view beats a poisoned one, so setting it is still
 defensible — but expect a blank dashboard, and don't read it as "ingest is
