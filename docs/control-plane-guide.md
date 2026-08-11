@@ -180,13 +180,14 @@ are out there, which agents run behind them, what tools they can call.
 
 **What it is:** the first page in the Configure section, and the answer to "what
 am I missing?" Ostiari correlates the agent identities it can *observe* — gateway
-traffic and cloud signals — against the agents you actually *registered*, and
-sorts every one into three buckets:
+traffic and configured cloud signals — against the agents you actually
+*registered*, and sorts every one into four buckets:
 
 | Status | Meaning |
 |---|---|
 | **Shadow — ungoverned** | seen in traffic, never registered. Nothing governs it. |
-| **Governed** | seen and registered. Working as intended. |
+| **Registered, off gateway** | registered and assigned, but still observed only outside that gateway. |
+| **Governed** | registered and observed through its assigned Ostiari gateway. |
 | **Registered, unseen** | registered but no traffic. Stale? Decommissioned? |
 
 **Novice framing:** the airport analogy again — this is the sweep that finds
@@ -194,9 +195,22 @@ people who got onto the concourse without passing a checkpoint. You cannot write
 a policy for an agent you don't know about, so this page comes *before* the
 registration pages, not after.
 
-Each shadow row shows the evidence (which gateways saw it, which signals) and an
-**Onboard** button that registers it against a gateway in one click — so the
-remediation path is on the same screen as the finding.
+Each shadow row shows the evidence and an **Onboard** action. The operator picks
+a tenant-owned gateway; Ostiari persists the agent, adds a least-privilege
+agent-auth entry, and pushes the complete authorization/quota bundle. If the
+gateway is offline, the policy remains stored for reconnect.
+
+Onboarding cannot rewrite an external workload's SDK endpoint or network path.
+The row stays **Registered, off gateway** until traces prove that the identity
+is using its assigned gateway. This avoids reporting a registry write as active
+governance.
+
+Production AWS discovery is opt-in with `OSTIARI_DISCOVERY_AWS=1` and is bound
+to exactly one tenant by `OSTIARI_DISCOVERY_AWS_ORG`. The available collectors
+query configured CloudTrail Lake event data stores, inventory Bedrock Agents,
+and read an explicit agent-id tag through the Resource Groups Tagging API.
+Collector failures appear on the page without suppressing healthy sources.
+See `control-plane/README.md` for environment variables and IAM permissions.
 
 **Best practice:** treat a non-zero shadow count as a work item, not a metric.
 Onboard or shut down each one. Then check "Registered, unseen" — a registered
