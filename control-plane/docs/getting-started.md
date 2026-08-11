@@ -1887,10 +1887,10 @@ curl -X DELETE http://localhost:8400/api/agents/billing-agent
 ```
 
 `POST` is an upsert keyed by `name` — re-posting an existing name silently
-replaces the record (no 409). The registry is in-memory and **not** in
-`state.json`, so a control-plane restart empties it: demo agents come back via the
-seeder, but anything you registered yourself is gone. Re-register on startup if
-you rely on it.
+replaces the record (no 409). The live registry is in memory and is serialized
+to `state.json` on graceful shutdown, so registered and discovery-onboarded
+agents survive a normal restart. A hard process kill can still lose changes
+made since the previous state write.
 
 ### Via the UI
 
@@ -2311,21 +2311,19 @@ resolved by `env.py::data_dir()` and overridable with `OSTIARI_DATA_DIR`:
   `organizations`, `gateways`, `tools`, `policies`, `mcp_servers`, `usage_records`,
   `a2a_agents`, `token_pools`, `reconciliation_records`, `wallets`,
   `payment_records`, `audit_logs`.
-- **JSON state file** at `control-plane/data/state.json` — six in-memory stores:
-  `quotas`, `experiments`, `models`, `providers`, `roi_cost_model`,
-  `token_broker_config`. Each record is tagged with `_org` so per-org stores
-  rebuild correctly.
+- **JSON state file** at `control-plane/data/state.json` — nine in-memory stores:
+  `quotas`, `budget_alerts`, `experiments`, `models`, `agent_routing`, `agents`,
+  `providers`, `roi_cost_model`, and `token_broker_config`. Each record is
+  tagged with `_org` where needed so per-org stores rebuild correctly.
 
 **How it works:**
-- On graceful shutdown (Ctrl+C or SIGTERM), the lifespan writes those six stores to `state.json`
+- On graceful shutdown (Ctrl+C or SIGTERM), the lifespan writes those stores to `state.json`
 - On startup, it restores from `state.json` — before the `OSTIARI_NO_DEMO` check, which is why a "clean" start can still come back with old quotas (see the caveat in Step 1)
 - SQLite is the source of truth for gateways, tools, policies, MCP servers, A2A agents, usage, payments, and audit
 
 > **What does *not* survive a restart:**
 > - **Traces** — in-memory `deque(maxlen=200)` per org, no table, no state.json entry. The Live Traces view starts empty (or re-seeded with demo traces) after every restart.
-> - **Quotas' consumed counters** — only the quota *definitions* are in `state.json`. Rate-limit windows and spend-to-date live in the gateway's `QuotaEnforcer` (or Redis, if `REDIS_ENDPOINT` is set), so restarting a gateway without Redis resets its budget tracking to zero.
 > - **Approvals** — the HITL queue is in-memory too.
-> - **Budget alerts** — in-memory per org, capped at 200. The spend behind each one is durable in `usage_records`; the notification isn't.
 >
 > Restored on reconnect, because the registration bundle carries them: a gateway's
 > **enforcement mode** and its **A/B experiments**. Both used to be lost — a shadow

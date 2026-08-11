@@ -56,6 +56,28 @@ class TestAuthorizeLLM:
         a = self._policy()   # default_models defaults to ["*"]
         assert a.authorize_llm("stranger", "claude-opus-4-8", "anthropic") == (True, "")
 
+    def test_explicit_empty_tool_grants_override_open_defaults(self):
+        """Discovery onboarding can preserve unknown traffic while containing
+        the newly enrolled identity."""
+        a = AgentAuthPolicy()
+        a.configure({
+            "enabled": True,
+            "quota_enabled": False,
+            "default_grants": ["*"],
+            "agents": {
+                "discovered-agent": {
+                    "allowed_tools": [],
+                    "allowed_models": ["*"],
+                    "allowed_providers": ["*"],
+                },
+            },
+        })
+
+        assert a.check("unrelated-agent", "db.delete") == (True, "")
+        allowed, reason = a.check("discovered-agent", "db.delete")
+        assert allowed is False
+        assert "not authorized" in reason
+
     def test_quota_only_bundle_does_not_activate_tool_authorization(self):
         a = AgentAuthPolicy()
         a.configure({

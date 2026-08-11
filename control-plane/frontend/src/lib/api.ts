@@ -299,8 +299,11 @@ export const api = {
   },
   discovery: {
     agents: () => fetchAPI<DiscoveryReport>("/api/discovery/agents"),
-    onboard: (agent_id: string, gateway_id: string, framework = "other") =>
-      fetchAPI(`/api/discovery/onboard`, { method: "POST", body: JSON.stringify({ agent_id, gateway_id, framework }) }),
+    onboard: (data: DiscoveryOnboardRequest) =>
+      fetchAPI<DiscoveryOnboardResponse>("/api/discovery/onboard", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
   },
   tokenBroker: {
     report: (periodDays = 30) =>
@@ -359,18 +362,51 @@ export interface ApprovalItem {
 
 export interface DiscoveredAgent {
   agent_id: string;
-  status: "discovered" | "governed" | "governed_unseen";
+  status: "discovered" | "registered_off_gateway" | "governed" | "governed_unseen";
   registered: boolean;
   sources: string[];
   gateways: string[];
+  governed_gateways: string[];
+  assigned_gateway: string;
   call_count: number;
   confidence: number;
   evidence: string[];
 }
 
 export interface DiscoveryReport {
-  summary: { total: number; shadow: number; governed: number; stale: number; sources: string[] };
+  summary: {
+    total: number;
+    shadow: number;
+    off_gateway: number;
+    governed: number;
+    stale: number;
+    sources: string[];
+    source_status: { source: string; status: "ok" | "error"; detail: string }[];
+  };
   agents: DiscoveredAgent[];
+}
+
+export interface DiscoveryOnboardRequest {
+  agent_id: string;
+  gateway_id: string;
+  framework?: string;
+  allowed_tools?: string[];
+  allowed_models?: string[];
+  allowed_providers?: string[];
+}
+
+export interface DiscoveryOnboardResponse {
+  onboarded: string;
+  registered: boolean;
+  gateway_id: string;
+  status: "registered_off_gateway" | "governed";
+  traffic_routed: boolean;
+  gateway_policy: {
+    status: "pushed" | "queued" | "error";
+    gateway: string;
+    reason?: string;
+    detail?: string;
+  };
 }
 
 export interface BrokerModelRow {

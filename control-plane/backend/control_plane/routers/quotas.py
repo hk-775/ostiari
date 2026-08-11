@@ -339,19 +339,13 @@ async def clear_budget_alerts(org: str = Depends(get_current_org)):
     return {"cleared": count}
 
 
-async def _push_agent_quotas(
-    gateway_id: str,
-    request: Request,
+async def build_agent_auth_payload(
+    gateway: Gateway,
     db: AsyncSession,
     org: str,
 ) -> dict[str, Any]:
-    """Persist and deliver the complete per-agent quota map for one gateway."""
-    import httpx
-
-    gateway = await get_scoped(db, Gateway, gateway_id, org)
-    if not gateway:
-        raise HTTPException(status_code=404, detail=f"Gateway '{gateway_id}' not found")
-
+    """Layer runtime quotas over the gateway's durable authorization policy."""
+    gateway_id = gateway.id
     quotas = [
         quota for quota in _quotas[org].values()
         if quota.scope == "agent" and _agent_gateway(quota, org) == gateway_id
@@ -409,6 +403,24 @@ async def _push_agent_quotas(
         "agent_auth_base": base_auth,
         "agent_auth": payload,
     }
+    return payload
+
+
+async def _push_agent_quotas(
+    gateway_id: str,
+    request: Request,
+    db: AsyncSession,
+    org: str,
+) -> dict[str, Any]:
+    """Persist and deliver the complete per-agent auth/quota map for one gateway."""
+    import httpx
+
+    gateway = await get_scoped(db, Gateway, gateway_id, org)
+    if not gateway:
+        raise HTTPException(status_code=404, detail=f"Gateway '{gateway_id}' not found")
+
+    payload = await build_agent_auth_payload(gateway, db, org)
+    agents = payload["agents"]
     await audit.log(
         db,
         actor_of(request),

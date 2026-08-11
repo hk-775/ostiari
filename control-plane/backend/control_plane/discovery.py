@@ -16,7 +16,7 @@ discovery_collectors.py.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -37,6 +37,7 @@ class Sighting:
     gateways: list[str] = field(default_factory=list)
     call_count: int = 0
     confidence: float = 1.0          # 0..1
+    governed: bool = False           # observed through an enforcement point
 
 
 class Collector(Protocol):
@@ -55,13 +56,16 @@ class DiscoveredAgent:
     """A reconciled agent: merged sightings + its governance status."""
 
     agent_id: str
-    status: str                      # "governed" | "discovered" | "governed_unseen"
+    status: str                      # governed | discovered | registered_off_gateway | governed_unseen
     sources: list[str] = field(default_factory=list)
     evidence: list[str] = field(default_factory=list)
     gateways: list[str] = field(default_factory=list)
+    governed_gateways: list[str] = field(default_factory=list)
     call_count: int = 0
     confidence: float = 0.0
     registered: bool = False         # is it in the agents registry?
+    assigned_gateway: str = ""
+    governed_observed: bool = False
 
 
 def _norm(agent_id: str) -> str:
@@ -74,16 +78,23 @@ def _norm(agent_id: str) -> str:
 
 def reconcile(
     collectors: Iterable[Collector],
-    known_agent_ids: Iterable[str],
+    known_agent_ids: Iterable[str] | Mapping[str, str],
 ) -> list[DiscoveredAgent]:
     """Diff SEEN (union of all collectors) against KNOWN (the registry).
 
     Returns one DiscoveredAgent per distinct agent, classified:
-      - governed:        seen AND registered
-      - discovered:      seen AND NOT registered   ← the shadow-AI gap
-      - governed_unseen: registered but never seen (stale / decommissioned?)
+      - governed:              registered and seen through its assigned gateway
+      - discovered:            seen and not registered
+      - registered_off_gateway: registered, but only seen outside its gateway
+      - governed_unseen:       registered but never seen (stale / decommissioned?)
     """
-    known = {_norm(k): k for k in known_agent_ids}
+    if isinstance(known_agent_ids, Mapping):
+        known = {
+            _norm(agent_id): (agent_id, gateway_id)
+            for agent_id, gateway_id in known_agent_ids.items()
+        }
+    else:
+        known = {_norm(agent_id): (agent_id, "") for agent_id in known_agent_ids}
 
     # Merge sightings across sources, keyed by normalized id.
     merged: dict[str, DiscoveredAgent] = {}
@@ -107,6 +118,9 @@ def reconcile(
             for gw in s.gateways:
                 if gw not in da.gateways:
                     da.gateways.append(gw)
+                if s.governed and gw not in da.governed_gateways:
+                    da.governed_gateways.append(gw)
+            da.governed_observed = da.governed_observed or s.governed
             da.call_count += s.call_count
             da.confidence = max(da.confidence, s.confidence)
 
@@ -114,8 +128,18 @@ def reconcile(
     results: list[DiscoveredAgent] = []
     for key, da in merged.items():
         if key in known:
-            da.status = "governed"
+            original, assigned_gateway = known[key]
+            da.agent_id = original
             da.registered = True
+            da.assigned_gateway = assigned_gateway
+            routed_through_assignment = (
+                da.governed_observed
+                and (
+                    not assigned_gateway
+                    or assigned_gateway in da.governed_gateways
+                )
+            )
+            da.status = "governed" if routed_through_assignment else "registered_off_gateway"
         else:
             da.status = "discovered"
             da.registered = False
@@ -123,15 +147,20 @@ def reconcile(
 
     # Registered-but-never-seen (stale) — surface these too.
     seen_keys = set(merged.keys())
-    for key, original in known.items():
+    for key, (original, assigned_gateway) in known.items():
         if key not in seen_keys:
             results.append(DiscoveredAgent(
                 agent_id=original, status="governed_unseen",
-                registered=True, confidence=1.0,
+                registered=True, assigned_gateway=assigned_gateway, confidence=1.0,
                 evidence=["registered in the agents registry; not seen by any source"],
             ))
 
-    # Shadow AI first (most actionable), then governed, then stale.
-    order = {"discovered": 0, "governed": 1, "governed_unseen": 2}
+    # Shadow AI first, then registered agents still bypassing their gateway.
+    order = {
+        "discovered": 0,
+        "registered_off_gateway": 1,
+        "governed": 2,
+        "governed_unseen": 3,
+    }
     results.sort(key=lambda d: (order.get(d.status, 9), -d.confidence, -d.call_count))
     return results

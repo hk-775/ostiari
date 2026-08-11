@@ -71,13 +71,13 @@ graph TB
 | **Live Trace Viewer** | Real-time WebSocket feed of tool calls across all gateways, with session/plan/step grouping, tool parameters, and a model badge per trace |
 | **Shadow Report** | What a gateway in `shadow` mode *would* have blocked — try before you enforce |
 | **Protocol Governance (A2A)** | Register peer agents per gateway, govern agent-to-agent delegation, and view a delegation report with trust scoring |
-| **Discovery** | Scan for unregistered agents and onboard them |
+| **Discovery** | Reconcile gateway traces with opt-in AWS CloudTrail Lake, Bedrock Agent, and tagged-resource signals. Onboarding validates a tenant gateway, installs an agent authorization entry, and distinguishes registration from traffic actually routed through that gateway |
 | **Compliance** | EU AI Act–oriented framework reports |
 | **ROI / Savings** | "Damage prevented" dashboard driven by a configurable cost model |
 | **Audit Log** | Tamper-evident record of who changed what config, when (filterable by resource, action, actor; `/api/audit/verify` checks the chain) |
 | **Users & SSO** | Local accounts with roles (admin / operator / viewer) plus an OIDC SSO flow, including IdP claim→role mapping |
 | **Gateway Proxy** | `/api/proxy/gateway/{gateway_id}/{path}` forwards UI requests to gateways, eliminating CORS and enabling Sandbox in production |
-| **Data Persistence** | SQLite + JSON state, both under `control-plane/data/` (override with `OSTIARI_DATA_DIR`). `state.json` is written on graceful shutdown and restored on startup, and covers exactly six stores: quotas, experiments, models, providers, the ROI cost model, and the token-broker config. **Agents, approvals, and traces are in neither the DB nor `state.json`** — the demo re-seeds them each start, so a non-demo start comes up without them. Wallets, tools, policies, MCP servers, usage records, and audit logs are SQLite tables and persist normally |
+| **Data Persistence** | SQLite + JSON state, both under `control-plane/data/` (override with `OSTIARI_DATA_DIR`). `state.json` is written on graceful shutdown and restores quotas, budget alerts, experiments, models, agent routing, agents, providers, the ROI cost model, and token-broker config. **Approvals and traces remain in-memory only.** Wallets, tools, policies, MCP servers, usage records, and audit logs are SQLite tables and persist normally |
 
 ### UI Design
 
@@ -358,8 +358,8 @@ and heartbeats so gateways reroute away from, or block, depleted providers.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/discovery/agents` | GET | Agents found on the network but not registered |
-| `/api/discovery/onboard` | POST | Register a discovered agent |
+| `/api/discovery/agents` | GET | Reconcile gateway and configured cloud sightings; reports shadow, off-gateway, governed, and registered-unseen agents plus source health |
+| `/api/discovery/onboard` | POST | Register a discovered agent on a tenant-owned gateway and persist/push its agent-auth policy |
 | `/api/compliance/frameworks` | GET | Supported compliance frameworks |
 | `/api/compliance/report` | GET | Generate a compliance report |
 | `/api/roi/report` | GET | "Damage prevented" / savings report |
@@ -377,11 +377,10 @@ and heartbeats so gateways reroute away from, or block, depleted providers.
 
 Agents are keyed by **name**, and there is no `PUT` — re-`POST` to replace.
 
-The registry is in-memory and **not** in `state.json`: the demo agents are
-re-seeded on each start by `demo_seed.seed_demo_agents()` (skipped under
-`OSTIARI_NO_DEMO=1`), and an agent you register yourself is lost on restart.
-`state.json` persists quotas, experiments, models, providers, the ROI cost model,
-and the token-broker config — that list, and nothing else.
+The live registry is in memory and is serialized to `state.json` on graceful
+shutdown, then restored before demo seeding. Agent records therefore survive a
+normal restart; like the other JSON-backed stores, they can still be lost on
+`kill -9`.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -389,6 +388,45 @@ and the token-broker config — that list, and nothing else.
 | `/api/agents/{name}` | GET | Get agent details |
 | `/api/agents` | POST | Register or replace an agent |
 | `/api/agents/{name}` | DELETE | Remove an agent |
+
+### Production AWS discovery
+
+Install the optional collector dependency from `control-plane/backend`:
+
+```bash
+pip install '.[aws]'
+```
+
+Then bind one AWS account scan to one Ostiari tenant:
+
+```bash
+export OSTIARI_DISCOVERY_AWS=1
+export OSTIARI_DISCOVERY_AWS_ORG=default
+export OSTIARI_DISCOVERY_AWS_REGIONS=us-east-1,us-west-2
+export OSTIARI_DISCOVERY_CLOUDTRAIL_DATA_STORES=us-east-1=<event-data-store-id>
+```
+
+The runtime role needs `cloudtrail:StartQuery`,
+`cloudtrail:GetQueryResults`, `cloudtrail:CancelQuery`,
+`bedrock:ListAgents`, and `tag:GetResources`. The CloudTrail Lake event data
+store must contain the Bedrock invocation and Secrets Manager access events you
+expect to discover.
+
+Optional controls:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `OSTIARI_DISCOVERY_LOOKBACK_HOURS` | `24` | CloudTrail Lake lookback |
+| `OSTIARI_DISCOVERY_MAX_EVENTS` | `1000` | Per-store result limit |
+| `OSTIARI_DISCOVERY_CACHE_SECONDS` | `60` | Cloud collector cache TTL |
+| `OSTIARI_DISCOVERY_SECRET_PATTERNS` | `openai,anthropic,bedrock,llm,api-key` | Only matching `GetSecretValue` events become sightings |
+| `OSTIARI_DISCOVERY_AGENT_TAG_KEY` | `ostiari:agent-id` | Explicit identity tag read through Resource Groups Tagging API |
+| `OSTIARI_DISCOVERY_RESOURCE_TYPES` | all | Optional comma-separated resource type filters |
+| `OSTIARI_DISCOVERY_AWS_PROFILE` | SDK default chain | Optional local AWS profile |
+
+AWS collectors are active only for `OSTIARI_DISCOVERY_AWS_ORG`; other tenants
+receive only their own gateway-trace sightings. The demo mock cloud source
+remains separate and is enabled only by `OSTIARI_DISCOVERY_MOCK=1`.
 
 ### Auth, Users, Providers
 
@@ -564,9 +602,9 @@ Two things it doesn't cover:
 - **The 18 models come back regardless.** `seed_models()` runs at import time at
   the bottom of `routers/model_config.py`, outside the `OSTIARI_NO_DEMO` gate. By
   design — the catalog is a routing table with pricing, not sample data.
-- **`state.json` is restored before the gate is checked**, so quotas,
-  experiments, models, providers, the ROI cost model, and the token-broker config
-  from an earlier demo run reappear. `make clean-start` deletes
+- **`state.json` is restored before the gate is checked**, so JSON-backed
+  configuration and agent records from an earlier demo run reappear.
+  `make clean-start` deletes
   `control-plane/backend/data/state.json`, the path from before `env.data_dir()`
   centralized it; the live file is `control-plane/data/state.json`. Remove that
   one for a genuinely empty control plane.
