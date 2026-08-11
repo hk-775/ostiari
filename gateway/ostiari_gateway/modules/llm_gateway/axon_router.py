@@ -31,6 +31,7 @@ Routing modes are selected by the request/context, matching AxonLLM's contract:
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from typing import Any
 
 log = logging.getLogger("ostiari.sidecar.llm.axon")
@@ -65,6 +66,7 @@ class AxonRouter:
         self._broker_policy = broker_policy
         self._base_available_providers: frozenset[str] | None = None
         self._broker_router_id: int | None = None
+        self._model_registry_config: dict[str, Any] | None = None
 
     @property
     def available(self) -> bool:
@@ -163,6 +165,63 @@ class AxonRouter:
             # KeyError need different fixes, and the message alone hides which.
             self._error = f"{type(e).__name__}: {e}"
             log.warning("AxonLLM router unavailable (%s) — falling back to direct provider calls", e)
+
+    def configure_model_registry(self, config: dict[str, Any]) -> dict[str, Any]:
+        """Replace AxonLLM's in-process model registry with a validated catalog."""
+        models = config.get("models")
+        if not isinstance(models, list):
+            raise ValueError("model registry must contain a models list")
+        candidate = deepcopy({"models": models})
+        self._ensure()
+        if not self._available:
+            self._model_registry_config = candidate
+            return {
+                "status": "pending",
+                "models": len(models),
+                "reason": self._error or "AxonLLM unavailable",
+            }
+        previous = self._model_registry_config
+        self._model_registry_config = candidate
+        try:
+            self._apply_model_registry()
+        except Exception:
+            self._model_registry_config = previous
+            raise
+        return {"status": "applied", "models": len(models)}
+
+    def model_registry_config(self) -> dict[str, Any]:
+        return deepcopy(self._model_registry_config or {"models": []})
+
+    def _apply_model_registry(self) -> None:
+        if (
+            self._model_registry_config is None
+            or not self._available
+            or self._agent is None
+        ):
+            return
+        router = getattr(self._agent, "router", None)
+        registry = getattr(router, "model_registry", None)
+        if registry is None:
+            raise RuntimeError("AxonLLM router has no model registry")
+
+        errors = registry.validate(self._model_registry_config)
+        if errors:
+            details = "; ".join(f"{error.field}: {error.message}" for error in errors)
+            raise ValueError(f"invalid model registry: {details}")
+
+        parsed = {
+            entry["name"]: registry._parse_entry(entry)
+            for entry in self._model_registry_config["models"]
+        }
+        registry.models = parsed
+        # The broker filter caches the router's original provider set. Rebuild
+        # that baseline after a catalog change so newly-added mappings can route.
+        if self._broker_router_id == id(router):
+            router.available_providers = self._base_available_providers
+        self._base_available_providers = None
+        self._broker_router_id = None
+        self._apply_broker_policy()
+        log.info("AxonLLM model registry applied: %d models", len(parsed))
 
     def knows_model(self, model: str) -> bool:
         """Whether AxonLLM's registry recognizes this model name.

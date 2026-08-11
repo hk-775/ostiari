@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Bot, Trash2, Plus, Route, Save } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { fetchAPI } from "../lib/api";
 
 interface AgentConfig {
@@ -38,182 +38,41 @@ const PRESET_FRAMEWORKS = [
   "agentcore", "crewai", "langgraph", "gateway-invoke",
 ];
 
-const ROUTING_STRATEGIES = [
-  { value: "none", label: "No Override (use global)", description: "Uses the default routing from Models page" },
-  { value: "smart-routing", label: "Smart Routing", description: "Classify prompt → pick best model" },
-  { value: "round-robin", label: "Round Robin", description: "Rotate between allowed models" },
-  { value: "least-latency", label: "Least Latency", description: "Pick the fastest responding model" },
-  { value: "cost-optimized", label: "Cost Optimized", description: "Always pick the cheapest model" },
-  { value: "force-model", label: "Force Specific Model", description: "Always use one model regardless of task" },
-  { value: "ensemble-quality", label: "Ensemble (Quality)", description: "Send to N models, synthesize best answer — prioritize accuracy" },
-  { value: "ensemble-budget", label: "Ensemble (Budget)", description: "Send to N cheap models, majority vote — quality within budget" },
-];
-
-interface RoutingOverride {
-  agent: string;
-  strategy: string;
-  preferred_model: string;
-  fallback_chain: string[];
-  ensemble_size: number;
+interface RoutingPolicy {
+  agent_id: string;
+  gateway_id: string;
+  strategy: "round_robin";
+  models: string[];
+  scope: "request" | "session";
 }
 
-const DEFAULT_OVERRIDES: RoutingOverride[] = [
-  { agent: "research-bot", strategy: "smart-routing", preferred_model: "", fallback_chain: ["claude-haiku", "gpt-4o-mini"], ensemble_size: 3 },
-  { agent: "ops-bot", strategy: "none", preferred_model: "", fallback_chain: [], ensemble_size: 3 },
-  { agent: "devops-bot", strategy: "force-model", preferred_model: "claude-sonnet", fallback_chain: ["claude-haiku"], ensemble_size: 3 },
-  { agent: "gov-bot", strategy: "ensemble-quality", preferred_model: "", fallback_chain: ["nova-pro", "nova-lite", "llama-4-maverick"], ensemble_size: 3 },
-  { agent: "intern-bot", strategy: "cost-optimized", preferred_model: "", fallback_chain: ["nova-lite", "claude-haiku"], ensemble_size: 2 },
-  { agent: "analytics-bot", strategy: "ensemble-budget", preferred_model: "", fallback_chain: ["claude-haiku", "gpt-4o-mini", "nova-lite"], ensemble_size: 3 },
-];
-
-function RoutingOverrideSection({ agents }: { agents: AgentConfig[] }) {
-  const [overrides, setOverrides] = useState<RoutingOverride[]>(DEFAULT_OVERRIDES);
-  const [saved, setSaved] = useState(false);
-  const [saveError, setSaveError] = useState("");
-
-  const updateOverride = (agent: string, field: keyof RoutingOverride, value: any) => {
-    setOverrides(prev => prev.map(o => o.agent === agent ? { ...o, [field]: value } : o));
-  };
-
-  const saveOverrides = async () => {
-    setSaveError("");
-    try {
-      await fetchAPI("/api/proxy/gateway/crm-agent/config/routing-overrides", {
-        method: "POST",
-        body: JSON.stringify({ overrides }),
-      });
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
-    } catch (error) {
-      setSaveError(error instanceof Error ? error.message : "Failed to save routing overrides");
-    }
-  };
-
-  return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Route className="h-5 w-5 text-indigo-600" />
-          <h2 className="text-lg font-semibold text-stone-900">Per-Agent Routing Override</h2>
-        </div>
-        <div className="flex items-center gap-2">
-          {saveError && <span className="text-xs font-medium text-rose-600">{saveError}</span>}
-          {saved && <span className="text-xs text-emerald-600 font-medium">Saved!</span>}
-          <button onClick={saveOverrides} className="btn-primary text-xs"><Save className="h-3.5 w-3.5" /> Save</button>
-        </div>
-      </div>
-      <p className="text-xs text-stone-500">Override the global LLM routing strategy for specific agents. Agents without an override use the default from the Models page.</p>
-
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {overrides.map((override) => {
-          const strategy = ROUTING_STRATEGIES.find(s => s.value === override.strategy);
-          const isEnsemble = override.strategy.startsWith("ensemble");
-          const isForce = override.strategy === "force-model";
-
-          return (
-            <div key={override.agent} className="card p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-semibold text-stone-800">{override.agent}</p>
-                {isEnsemble && (
-                  <span className="badge bg-purple-50 text-purple-700 text-[10px]">×{override.ensemble_size} models</span>
-                )}
-              </div>
-
-              {/* Strategy dropdown */}
-              <div>
-                <label className="text-[10px] font-semibold text-stone-400 uppercase">Routing Strategy</label>
-                <select
-                  value={override.strategy}
-                  onChange={(e) => updateOverride(override.agent, "strategy", e.target.value)}
-                  className="mt-0.5 w-full rounded-lg border border-stone-200 bg-white px-2 py-1.5 text-xs"
-                >
-                  {ROUTING_STRATEGIES.map(s => (
-                    <option key={s.value} value={s.value}>{s.label}</option>
-                  ))}
-                </select>
-                {strategy && <p className="text-[10px] text-stone-400 mt-0.5">{strategy.description}</p>}
-              </div>
-
-              {/* Force model selector */}
-              {isForce && (
-                <div>
-                  <label className="text-[10px] font-semibold text-stone-400 uppercase">Forced Model</label>
-                  <input
-                    value={override.preferred_model}
-                    onChange={(e) => updateOverride(override.agent, "preferred_model", e.target.value)}
-                    placeholder="e.g., claude-sonnet"
-                    className="mt-0.5 w-full rounded-lg border border-stone-200 px-2 py-1.5 text-xs"
-                  />
-                </div>
-              )}
-
-              {/* Ensemble size */}
-              {isEnsemble && (
-                <div>
-                  <label className="text-[10px] font-semibold text-stone-400 uppercase">Panel Size</label>
-                  <select
-                    value={override.ensemble_size}
-                    onChange={(e) => updateOverride(override.agent, "ensemble_size", parseInt(e.target.value))}
-                    className="mt-0.5 w-full rounded-lg border border-stone-200 bg-white px-2 py-1.5 text-xs"
-                  >
-                    <option value={2}>2 models</option>
-                    <option value={3}>3 models (recommended)</option>
-                    <option value={5}>5 models (high confidence)</option>
-                  </select>
-                  <p className="text-[10px] text-stone-400 mt-0.5">
-                    {override.strategy === "ensemble-quality" ? "Picks best answer by quality scoring" : "Majority vote from cheap models"}
-                  </p>
-                </div>
-              )}
-
-              {/* Fallback chain */}
-              {override.strategy !== "none" && (
-                <div>
-                  <label className="text-[10px] font-semibold text-stone-400 uppercase">
-                    {isEnsemble ? "Ensemble Models" : "Fallback Chain"}
-                  </label>
-                  <div className="flex flex-wrap gap-1 mt-1">
-                    {override.fallback_chain.map((m, i) => (
-                      <span key={m} className="inline-flex items-center gap-0.5 rounded-full bg-indigo-50 text-indigo-700 px-2 py-0.5 text-[10px] font-medium">
-                        {isEnsemble ? "" : `${i + 1}. `}{m}
-                        <button onClick={() => updateOverride(override.agent, "fallback_chain", override.fallback_chain.filter((_, j) => j !== i))} className="ml-0.5 hover:text-rose-600">×</button>
-                      </span>
-                    ))}
-                  </div>
-                  <input
-                    placeholder="Add model..."
-                    className="mt-1 w-full rounded-lg border border-stone-200 px-2 py-1 text-[10px]"
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        const val = (e.target as HTMLInputElement).value.trim();
-                        if (val) {
-                          updateOverride(override.agent, "fallback_chain", [...override.fallback_chain, val]);
-                          (e.target as HTMLInputElement).value = "";
-                        }
-                      }
-                    }}
-                  />
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// Live LLM round-robin — unlike the aspirational overrides above, this panel
-// hits /api/agent-routing which is enforced at the gateway (verified end-to-end).
 function LLMRoundRobinSection({ agents }: { agents: AgentConfig[] }) {
+  const queryClient = useQueryClient();
+  const { data: policies = [] } = useQuery({
+    queryKey: ["agent-routing"],
+    queryFn: () => fetchAPI<RoutingPolicy[]>("/api/agent-routing"),
+  });
+  const { data: availableModels = [] } = useQuery({
+    queryKey: ["model-config"],
+    queryFn: () => fetchAPI<{ name: string }[]>("/api/models"),
+  });
   const [agentId, setAgentId] = useState("");
-  const [gatewayId, setGatewayId] = useState("");
   const [scope, setScope] = useState<"request" | "session">("session");
   const [models, setModels] = useState<string[]>([]);
+  const [nextModel, setNextModel] = useState("");
   const [status, setStatus] = useState("");
 
   const agent = agentId || agents[0]?.name || "";
-  const gw = gatewayId || agents.find(a => a.name === agent)?.gateway_id || agents[0]?.gateway_id || "";
+  const gw = agents.find(a => a.name === agent)?.gateway_id || "";
+  const current = policies.find(
+    (policy) => policy.agent_id === agent && policy.gateway_id === gw,
+  );
+
+  useEffect(() => {
+    setScope(current?.scope || "session");
+    setModels(current?.models || []);
+    setStatus("");
+  }, [agent, current]);
 
   const save = async () => {
     setStatus("");
@@ -223,9 +82,25 @@ function LLMRoundRobinSection({ agents }: { agents: AgentConfig[] }) {
         method: "POST",
         body: JSON.stringify({ agent_id: agent, gateway_id: gw, strategy: "round_robin", models, scope }),
       });
-      setStatus(d.pushed ? "Saved & pushed to gateway ✓" : `Saved (push failed: ${d.push_error})`);
+      await queryClient.invalidateQueries({ queryKey: ["agent-routing"] });
+      setStatus(d.pushed ? "Saved and pushed" : `Saved; push failed: ${d.push_error}`);
     } catch (e) {
       setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  const remove = async () => {
+    setStatus("");
+    try {
+      const result = await fetchAPI<{ pushed: boolean; push_error?: string }>(
+        `/api/agent-routing/${encodeURIComponent(gw)}/${encodeURIComponent(agent)}`,
+        { method: "DELETE" },
+      );
+      await queryClient.invalidateQueries({ queryKey: ["agent-routing"] });
+      setModels([]);
+      setStatus(result.pushed ? "Policy removed" : `Removed; push failed: ${result.push_error}`);
+    } catch (error) {
+      setStatus(`Error: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
@@ -233,24 +108,19 @@ function LLMRoundRobinSection({ agents }: { agents: AgentConfig[] }) {
     <div className="card p-4 space-y-3">
       <div className="flex items-center gap-2">
         <Route className="h-5 w-5 text-emerald-600" />
-        <h2 className="text-lg font-semibold text-stone-900">LLM Round-Robin (live)</h2>
+        <h2 className="text-lg font-semibold text-stone-900">Per-Agent Model Routing</h2>
       </div>
-      <p className="text-xs text-stone-500">
-        Rotate one agent's calls across several LLMs. This is model <em>selection</em> (which LLM),
-        enforced at the gateway — distinct from per-model backend load-balancing. Session scope keeps
-        one model per conversation; request scope rotates every call.
-      </p>
       <div className="grid gap-3 sm:grid-cols-3">
         <div>
           <label className="text-[10px] font-semibold text-stone-400 uppercase">Agent</label>
-          <select value={agent} onChange={(e) => { setAgentId(e.target.value); setGatewayId(""); }}
+          <select value={agent} onChange={(e) => setAgentId(e.target.value)}
                   className="mt-0.5 w-full rounded-lg border border-stone-200 bg-white px-2 py-1.5 text-xs">
             {agents.map(a => <option key={a.name} value={a.name}>{a.name}</option>)}
           </select>
         </div>
         <div>
           <label className="text-[10px] font-semibold text-stone-400 uppercase">Gateway</label>
-          <input value={gw} onChange={(e) => setGatewayId(e.target.value)}
+          <input value={gw} readOnly
                  className="mt-0.5 w-full rounded-lg border border-stone-200 px-2 py-1.5 text-xs font-mono" />
         </div>
         <div>
@@ -272,17 +142,38 @@ function LLMRoundRobinSection({ agents }: { agents: AgentConfig[] }) {
             </span>
           ))}
         </div>
-        <input placeholder="Add model (e.g. claude-sonnet-4-6, gpt-4o) — Enter"
-               className="mt-1 w-full rounded-lg border border-stone-200 px-2 py-1 text-[10px]"
-               onKeyDown={(e) => {
-                 if (e.key === "Enter") {
-                   const val = (e.target as HTMLInputElement).value.trim();
-                   if (val) { setModels([...models, val]); (e.target as HTMLInputElement).value = ""; }
-                 }
-               }} />
+        <div className="mt-1 flex gap-2">
+          <select
+            value={nextModel}
+            onChange={(event) => setNextModel(event.target.value)}
+            className="input flex-1"
+          >
+            <option value="">Select model</option>
+            {availableModels
+              .filter((model) => !models.includes(model.name))
+              .map((model) => (
+                <option key={model.name} value={model.name}>{model.name}</option>
+              ))}
+          </select>
+          <button
+            onClick={() => {
+              if (!nextModel) return;
+              setModels([...models, nextModel]);
+              setNextModel("");
+            }}
+            className="btn-secondary"
+          >
+            <Plus className="h-4 w-4" /> Add
+          </button>
+        </div>
       </div>
       <div className="flex items-center gap-2">
         <button onClick={save} className="btn-primary text-xs"><Save className="h-3.5 w-3.5" /> Save & Push</button>
+        {current && (
+          <button onClick={remove} className="btn-secondary text-xs text-rose-600">
+            <Trash2 className="h-3.5 w-3.5" /> Remove
+          </button>
+        )}
         {status && <span className="text-xs text-stone-600">{status}</span>}
       </div>
     </div>
@@ -442,14 +333,8 @@ export function Agents() {
         )}
       </div>
 
-      {/* LLM Round-Robin (live, enforced) */}
       {agents.length > 0 && (
         <LLMRoundRobinSection agents={agents} />
-      )}
-
-      {/* Per-Agent Routing Override */}
-      {agents.length > 0 && (
-        <RoutingOverrideSection agents={agents} />
       )}
     </div>
   );

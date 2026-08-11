@@ -9,7 +9,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.auth.dependencies import get_current_org
@@ -113,17 +113,53 @@ async def _usage_metrics(
 ) -> tuple[dict[str, tuple[float, int]], dict[tuple[str, str], tuple[float, int]]]:
     """Aggregate actual spend and trailing-minute request volume."""
     since = datetime.now(timezone.utc) - timedelta(minutes=1)
-    spend_rows = (await db.execute(
-        scoped(
-            select(
-                UsageRecord.gateway_id,
-                UsageRecord.agent_id,
-                func.sum(UsageRecord.cost_usd),
-            ).group_by(UsageRecord.gateway_id, UsageRecord.agent_id),
-            UsageRecord,
-            org,
+    gateway_rows = (
+        await db.execute(
+            select(Gateway.id, Gateway.config).where(Gateway.org_id == org)
         )
-    )).all()
+    ).all()
+    reset_epochs: dict[str, datetime] = {}
+    for gateway_id, config in gateway_rows:
+        raw = (config or {}).get("budget_reset", {}).get("last_reset_at")
+        if not raw:
+            continue
+        try:
+            epoch = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            if epoch.tzinfo is None:
+                epoch = epoch.replace(tzinfo=timezone.utc)
+            reset_epochs[gateway_id] = epoch
+        except (TypeError, ValueError):
+            log.warning("Ignoring invalid budget reset timestamp for %s: %r", gateway_id, raw)
+
+    spend_query = select(
+        UsageRecord.gateway_id,
+        UsageRecord.agent_id,
+        func.sum(UsageRecord.cost_usd),
+    )
+    if reset_epochs:
+        reset_gateways = list(reset_epochs)
+        spend_query = spend_query.where(or_(
+            UsageRecord.gateway_id.not_in(reset_gateways),
+            *[
+                and_(
+                    UsageRecord.gateway_id == gateway_id,
+                    UsageRecord.timestamp >= epoch,
+                )
+                for gateway_id, epoch in reset_epochs.items()
+            ],
+        ))
+    spend_rows = (
+        await db.execute(
+            scoped(
+                spend_query.group_by(
+                    UsageRecord.gateway_id,
+                    UsageRecord.agent_id,
+                ),
+                UsageRecord,
+                org,
+            )
+        )
+    ).all()
     rpm_rows = (await db.execute(
         scoped(
             select(

@@ -2,17 +2,48 @@
 
 import os
 from collections import defaultdict
+from typing import Any
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
-from control_plane.models.database import DEFAULT_ORG
+from control_plane.models.database import DEFAULT_ORG, Gateway
 from control_plane.services.audit_service import actor_of, audit
+from control_plane.services.push_service import gateway_config_headers
 
 router = APIRouter(prefix="/api/models", tags=["models"])
+
+RUNTIME_ROUTING_STRATEGIES = {
+    "round-robin",
+    "weighted",
+    "least-latency",
+    "cost-optimized",
+}
+RUNTIME_PROVIDER_ALIASES = {
+    "azure": "azure_openai",
+    "google": "google_ai",
+    "vertex": "vertex_ai",
+}
+RUNTIME_PROVIDERS = {
+    "ai21",
+    "anthropic",
+    "azure_openai",
+    "bedrock",
+    "bedrock-mantle",
+    "cohere",
+    "fireworks",
+    "google_ai",
+    "groq",
+    "openai",
+    "together",
+    "vertex_ai",
+    "xai",
+}
 
 
 class ProviderMapping(BaseModel):
@@ -45,6 +76,168 @@ async def list_models(org: str = Depends(get_current_org)) -> list[ModelConfig]:
     return list(_models[org].values())
 
 
+def runtime_catalog(org: str, *, strict: bool = False) -> dict[str, list[dict[str, Any]]]:
+    """Build the AxonLLM model/provider registry for one tenant."""
+    entries: list[dict[str, Any]] = []
+    invalid: list[str] = []
+    for model in _models[org].values():
+        if model.routing_strategy not in RUNTIME_ROUTING_STRATEGIES:
+            invalid.append(
+                f"{model.name}: unsupported routing strategy '{model.routing_strategy}'"
+            )
+            continue
+        if not model.providers or any(
+            not mapping.provider or not mapping.model_id for mapping in model.providers
+        ):
+            invalid.append(f"{model.name}: at least one complete provider mapping is required")
+            continue
+        unsupported = sorted({
+            mapping.provider
+            for mapping in model.providers
+            if RUNTIME_PROVIDER_ALIASES.get(
+                mapping.provider, mapping.provider
+            ) not in RUNTIME_PROVIDERS
+        })
+        if unsupported:
+            invalid.append(
+                f"{model.name}: unsupported providers {', '.join(unsupported)}"
+            )
+            continue
+
+        capabilities = []
+        if model.supports_tools:
+            capabilities.append("tools")
+        if model.supports_vision:
+            capabilities.append("vision")
+        providers: list[dict[str, Any]] = []
+        for mapping in model.providers:
+            provider: dict[str, Any] = {
+                "provider": RUNTIME_PROVIDER_ALIASES.get(
+                    mapping.provider, mapping.provider
+                ),
+                "model_id": mapping.model_id,
+                "weight": mapping.weight,
+                "fallback_order": mapping.fallback_order,
+            }
+            if model.input_cost_per_1k > 0 or model.output_cost_per_1k > 0:
+                provider["pricing"] = {
+                    "prompt_token_cost": model.input_cost_per_1k / 1000,
+                    "completion_token_cost": model.output_cost_per_1k / 1000,
+                }
+            providers.append(provider)
+        entries.append({
+            "name": model.name,
+            "description": model.description or model.name,
+            "routing_strategy": model.routing_strategy,
+            "capabilities": capabilities,
+            "providers": providers,
+        })
+
+    if strict and invalid:
+        raise ValueError("; ".join(invalid))
+    return {"models": entries}
+
+
+async def push_runtime_catalog(
+    db: AsyncSession,
+    org: str,
+) -> dict[str, Any]:
+    """Push the tenant model registry to every registered gateway."""
+    try:
+        catalog = runtime_catalog(org, strict=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    gateways = (
+        await db.execute(select(Gateway).where(Gateway.org_id == org))
+    ).scalars().all()
+    results: list[dict[str, Any]] = []
+    async with httpx.AsyncClient(
+        timeout=10.0, headers=gateway_config_headers()
+    ) as client:
+        for gateway in gateways:
+            try:
+                health = await client.get(f"{gateway.endpoint}/health")
+                if health.status_code == 200:
+                    try:
+                        health_body = health.json()
+                    except ValueError:
+                        health_body = {}
+                    modules = (
+                        health_body.get("modules_active")
+                        if isinstance(health_body, dict)
+                        else None
+                    )
+                    if isinstance(modules, list) and "llm_gateway" not in modules:
+                        results.append({
+                            "gateway_id": gateway.id,
+                            "pushed": False,
+                            "skipped": True,
+                            "detail": "LLM gateway module is not active",
+                        })
+                        continue
+                response = await client.post(
+                    f"{gateway.endpoint}/config/model-registry",
+                    json=catalog,
+                )
+                results.append({
+                    "gateway_id": gateway.id,
+                    "pushed": response.status_code == 200,
+                    "skipped": False,
+                    "detail": (
+                        response.json()
+                        if response.status_code == 200
+                        else response.text[:200]
+                    ),
+                })
+            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                results.append({
+                    "gateway_id": gateway.id,
+                    "pushed": False,
+                    "skipped": False,
+                    "detail": str(exc),
+                })
+    skipped = sum(1 for result in results if result.get("skipped"))
+    return {
+        "models": len(catalog["models"]),
+        "gateways": len(gateways),
+        "pushed": sum(1 for result in results if result["pushed"]),
+        "failed": sum(
+            1
+            for result in results
+            if not result["pushed"] and not result.get("skipped")
+        ),
+        "skipped": skipped,
+        "results": results,
+    }
+
+
+@router.post("/push")
+async def push_models(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+) -> dict[str, Any]:
+    result = await push_runtime_catalog(db, org)
+    await audit.log(
+        db,
+        actor_of(request),
+        "push",
+        "model_registry",
+        "*",
+        {
+            "models": result["models"],
+            "gateways": result["gateways"],
+            "pushed": result["pushed"],
+            "failed": result["failed"],
+            "skipped": result["skipped"],
+        },
+        org=org,
+    )
+    await db.commit()
+    return result
+
+
 @router.get("/{name}")
 async def get_model(name: str, org: str = Depends(get_current_org)) -> ModelConfig:
     if name not in _models[org]:
@@ -71,6 +264,11 @@ async def add_model(
     db: AsyncSession = Depends(get_db),
     org: str = Depends(get_current_org),
 ) -> ModelConfig:
+    if body.routing_strategy not in RUNTIME_ROUTING_STRATEGIES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"routing_strategy must be one of {sorted(RUNTIME_ROUTING_STRATEGIES)}",
+        )
     _models[org][body.name] = body
     await audit.log(db, actor_of(request), "create", "model", body.name,
                     _audit_details(body), org=org)
@@ -89,6 +287,11 @@ async def update_model(
     before = _models[org].get(name)
     if before is None:
         raise HTTPException(status_code=404, detail=f"Model '{name}' not found")
+    if body.routing_strategy not in RUNTIME_ROUTING_STRATEGIES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"routing_strategy must be one of {sorted(RUNTIME_ROUTING_STRATEGIES)}",
+        )
     _models[org][name] = body
     # Record only what actually changed — a full before/after doubles the row size
     # and buries the one edited price.

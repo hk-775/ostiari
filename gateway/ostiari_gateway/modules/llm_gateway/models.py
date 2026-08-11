@@ -46,6 +46,13 @@ class AgentRoutingPolicy(BaseModel):
     scope: str = "request"             # request | session
 
 
+class TaskClassificationConfig(BaseModel):
+    """Operator-defined keyword categories and their target models."""
+
+    rules: dict[str, list[str]] = Field(default_factory=dict)
+    model_mapping: dict[str, str] = Field(default_factory=dict)
+
+
 class LLMCredentials(BaseModel):
     """Credentials for all supported LLM providers."""
 
@@ -89,6 +96,9 @@ class LLMConfig(BaseModel):
     # Per-agent model-rotation policies, keyed by agent_id. A "*" key applies to
     # any agent without a specific entry.
     agent_routing: dict[str, AgentRoutingPolicy] = Field(default_factory=dict)
+    task_classification: TaskClassificationConfig = Field(
+        default_factory=TaskClassificationConfig
+    )
 
 
 class InvokeRequest(BaseModel):

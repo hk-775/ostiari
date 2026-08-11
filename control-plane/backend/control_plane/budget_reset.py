@@ -14,6 +14,42 @@ logger = logging.getLogger(__name__)
 Schedule = Literal["manual", "daily", "weekly", "monthly"]
 
 
+def next_reset_at(
+    schedule: Schedule, now: datetime | None = None
+) -> datetime | None:
+    """Return the next UTC reset boundary for display and persisted config."""
+    current = now or datetime.now(timezone.utc)
+    if schedule == "manual":
+        return None
+    if schedule == "daily":
+        return (current + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+    if schedule == "weekly":
+        days_until_monday = (7 - current.weekday()) % 7 or 7
+        return (current + timedelta(days=days_until_monday)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+    if current.month == 12:
+        return current.replace(
+            year=current.year + 1,
+            month=1,
+            day=1,
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+    return current.replace(
+        month=current.month + 1,
+        day=1,
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+
+
 class BudgetResetScheduler:
     """Schedules automatic budget resets for gateways."""
 
@@ -42,19 +78,7 @@ class BudgetResetScheduler:
 
     def _compute_next_reset(self) -> datetime:
         """Compute the next reset time based on schedule."""
-        now = datetime.now(timezone.utc)
-        if self.schedule == "daily":
-            return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        elif self.schedule == "weekly":
-            days_until_monday = (7 - now.weekday()) % 7 or 7
-            return (now + timedelta(days=days_until_monday)).replace(
-                hour=0, minute=0, second=0, microsecond=0
-            )
-        elif self.schedule == "monthly":
-            if now.month == 12:
-                return now.replace(year=now.year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-            return now.replace(month=now.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0)
-        return now + timedelta(days=1)
+        return next_reset_at(self.schedule) or datetime.now(timezone.utc)
 
     async def _run_loop(self) -> None:
         """Background loop that triggers resets on schedule."""
