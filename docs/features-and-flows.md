@@ -389,8 +389,8 @@ startup can warn or refuse when important controls remain open.
 ## 15. Persistence Boundaries
 
 The control plane uses SQLAlchemy-backed storage for durable fleet resources and
-`state.json` for selected in-memory configuration. Other runtime views are
-bounded in-memory stores or are reconstructed from demo seed data. Consult
+`state.json` for selected in-memory configuration and the agent registry.
+Other runtime views are bounded in-memory stores or are reconstructed from demo seed data. Consult
 `control-plane/README.md` before relying on a specific resource across process
 restarts.
 

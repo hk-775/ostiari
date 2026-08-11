@@ -20,9 +20,58 @@ def _s(agent_id, source, **kw):
     return discovery.Sighting(agent_id=agent_id, source=source, **kw)
 
 
+async def _gateway(client, gateway_id="crm-agent", headers=None):
+    response = await client.post(
+        "/api/gateways",
+        headers=headers,
+        json={
+            "id": gateway_id,
+            "name": gateway_id,
+            "endpoint": f"http://{gateway_id}.local",
+        },
+    )
+    assert response.status_code == 200, response.text
+
+
+@pytest.fixture
+def gateway_push(monkeypatch):
+    sent = {}
+
+    class _Response:
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {"status": "applied"}
+
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, url, json=None):
+            sent["url"] = url
+            sent["json"] = json
+            return _Response()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    return sent
+
+
 class TestReconcile:
     def test_seen_and_known_is_governed(self):
-        c = _FakeCollector("t", [_s("research-agent", "t", call_count=5)])
+        c = _FakeCollector(
+            "t",
+            [_s("research-agent", "t", call_count=5, governed=True)],
+        )
         out = discovery.reconcile([c], known_agent_ids=["research-agent"])
         a = next(x for x in out if x.agent_id == "research-agent")
         assert a.status == "governed" and a.registered
@@ -50,9 +99,29 @@ class TestReconcile:
 
     def test_normalization_matches_a2a_and_case(self):
         # "a2a.Research-Agent" seen should match registered "research-agent"
-        c = _FakeCollector("t", [_s("a2a.Research-Agent", "t")])
+        c = _FakeCollector(
+            "t",
+            [_s("a2a.Research-Agent", "t", governed=True)],
+        )
         out = discovery.reconcile([c], known_agent_ids=["research-agent"])
         assert any(x.status == "governed" for x in out)
+
+    def test_registered_cloud_identity_is_not_called_governed(self):
+        c = _FakeCollector("cloud", [_s("batch", "cloud")])
+        out = discovery.reconcile([c], known_agent_ids={"batch": "gw-a"})
+        agent = next(x for x in out if x.agent_id == "batch")
+        assert agent.status == "registered_off_gateway"
+        assert agent.assigned_gateway == "gw-a"
+
+    def test_trace_through_wrong_gateway_is_still_off_gateway(self):
+        c = _FakeCollector(
+            "traces",
+            [_s("batch", "traces", governed=True, gateways=["gw-b"])],
+        )
+        out = discovery.reconcile([c], known_agent_ids={"batch": "gw-a"})
+        agent = next(x for x in out if x.agent_id == "batch")
+        assert agent.status == "registered_off_gateway"
+        assert agent.governed_gateways == ["gw-b"]
 
     def test_shadow_listed_first(self):
         c = _FakeCollector("t", [
@@ -127,25 +196,63 @@ class TestDiscoveryRouter:
         # multiple sources reported
         assert len(d["summary"]["sources"]) >= 2
 
-    async def test_onboard_moves_shadow_to_governed(self, client):
+    async def test_collector_failure_is_visible_without_breaking_report(
+        self, client, monkeypatch
+    ):
+        class _BrokenCollector:
+            source = "aws-test"
+            last_error = ""
+
+            def collect(self):
+                self.last_error = "access denied"
+                return []
+
+        monkeypatch.setattr(
+            "control_plane.routers.discovery.default_collectors",
+            lambda _org: [_BrokenCollector()],
+        )
+        response = await client.get("/api/discovery/agents")
+        assert response.status_code == 200
+        status = response.json()["summary"]["source_status"]
+        assert status == [{
+            "source": "aws-test",
+            "status": "error",
+            "detail": "access denied",
+        }]
+
+    async def test_onboard_moves_shadow_to_governed(self, client, gateway_push):
+        await _gateway(client)
         before = (await client.get("/api/discovery/agents")).json()
         assert next(a for a in before["agents"] if a["agent_id"] == "rogue-scraper")["status"] == "discovered"
 
         r = await client.post("/api/discovery/onboard",
                               json={"agent_id": "rogue-scraper", "gateway_id": "crm-agent"})
-        assert r.status_code == 200
+        assert r.status_code == 200, r.text
+        result = r.json()
+        assert result["traffic_routed"] is True
+        assert result["gateway_policy"]["status"] == "pushed"
+        assert gateway_push["url"] == "http://crm-agent.local/config/agent-auth"
+        assert gateway_push["json"]["enabled"] is True
+        assert gateway_push["json"]["default_grants"] == ["*"]
+        assert gateway_push["json"]["agents"]["rogue-scraper"]["allowed_tools"] == []
 
         after = (await client.get("/api/discovery/agents")).json()
         assert next(a for a in after["agents"] if a["agent_id"] == "rogue-scraper")["status"] == "governed"
 
     async def test_onboard_duplicate_409(self, client):
-        r = await client.post("/api/discovery/onboard", json={"agent_id": "research-agent"})
+        r = await client.post(
+            "/api/discovery/onboard",
+            json={"agent_id": "research-agent", "gateway_id": "crm-agent"},
+        )
         assert r.status_code == 409
 
-    async def test_onboarded_agent_appears_in_the_agents_registry(self, client):
+    async def test_onboarded_agent_appears_in_the_agents_registry(
+        self, client, gateway_push
+    ):
         """Onboarding must write [org][agent_id]. Writing to the outer org-keyed
         dict put an AgentConfig where a per-org dict belongs: the agent was
         invisible to /api/agents and the bogus key then looked like an org."""
+        await _gateway(client)
         await client.post("/api/discovery/onboard",
                           json={"agent_id": "rogue-scraper", "gateway_id": "crm-agent",
                                 "framework": "langchain"})
@@ -153,6 +260,83 @@ class TestDiscoveryRouter:
         names = {a["name"] for a in listed}
         assert "rogue-scraper" in names
         assert "research-agent" in names   # the pre-existing agent survived the write
+
+    async def test_cloud_only_agent_stays_off_gateway_after_onboarding(
+        self, client, gateway_push
+    ):
+        await _gateway(client)
+        response = await client.post(
+            "/api/discovery/onboard",
+            json={"agent_id": "batch-summarizer", "gateway_id": "crm-agent"},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "registered_off_gateway"
+        assert response.json()["traffic_routed"] is False
+
+        report = (await client.get("/api/discovery/agents")).json()
+        agent = next(
+            item for item in report["agents"]
+            if item["agent_id"] == "batch-summarizer"
+        )
+        assert agent["status"] == "registered_off_gateway"
+        assert report["summary"]["off_gateway"] >= 1
+
+    async def test_onboard_preserves_an_existing_authorization_policy(
+        self, client, gateway_push
+    ):
+        await _gateway(client)
+        from control_plane.database import async_session
+        from control_plane.models.database import Gateway
+
+        existing = {
+            "enabled": True,
+            "quota_enabled": False,
+            "default_grants": ["read_only"],
+            "default_models": ["approved-model"],
+            "default_providers": ["bedrock"],
+            "agents": {
+                "existing-agent": {
+                    "allowed_tools": ["lookup"],
+                },
+            },
+        }
+        async with async_session() as db:
+            gateway = await db.get(Gateway, "crm-agent")
+            gateway.config = {"agent_auth_base": existing}
+            await db.commit()
+
+        response = await client.post(
+            "/api/discovery/onboard",
+            json={"agent_id": "rogue-scraper", "gateway_id": "crm-agent"},
+        )
+        assert response.status_code == 200, response.text
+        payload = gateway_push["json"]
+        assert payload["enabled"] is True
+        assert payload["quota_enabled"] is False
+        assert payload["default_grants"] == ["read_only"]
+        assert payload["default_models"] == ["approved-model"]
+        assert payload["default_providers"] == ["bedrock"]
+        assert payload["agents"]["existing-agent"] == {
+            "allowed_tools": ["lookup"],
+        }
+        assert payload["agents"]["rogue-scraper"]["allowed_tools"] == []
+
+    async def test_onboard_requires_a_tenant_gateway(self, client):
+        response = await client.post(
+            "/api/discovery/onboard",
+            json={"agent_id": "rogue-scraper", "gateway_id": "missing"},
+        )
+        assert response.status_code == 404
+        assert "Gateway" in response.json()["detail"]
+
+    async def test_onboard_rejects_identity_not_in_discovery(self, client):
+        await _gateway(client)
+        response = await client.post(
+            "/api/discovery/onboard",
+            json={"agent_id": "invented-agent", "gateway_id": "crm-agent"},
+        )
+        assert response.status_code == 404
+        assert "current discovery report" in response.json()["detail"]
 
     async def test_governed_status_requires_reading_agent_names_not_org_names(self, client):
         """`_agents` is org -> name -> config. Taking `.keys()` off the outer dict
@@ -200,7 +384,9 @@ class TestDiscoveryOrgIsolation:
         assert a["agents"][0]["gateways"] == ["gw-a"]
 
     @pytest.mark.usefixtures("two_org_traces")
-    async def test_onboarding_in_one_org_does_not_govern_the_other(self, client):
+    async def test_onboarding_in_one_org_does_not_govern_the_other(
+        self, client, gateway_push
+    ):
         from control_plane.auth.service import create_access_token
         from control_plane.routers import agents as agents_mod
 
@@ -210,6 +396,7 @@ class TestDiscoveryOrgIsolation:
                 tok = create_access_token(user_id=1, email=f"{org}@t.io", role="admin", org=org)
                 return {"Authorization": f"Bearer {tok}"}
 
+            await _gateway(client, "gw-a", headers=hdr("org-a"))
             r = await client.post("/api/discovery/onboard", headers=hdr("org-a"),
                                   json={"agent_id": "a-only-agent", "gateway_id": "gw-a"})
             assert r.status_code == 200
@@ -222,3 +409,63 @@ class TestDiscoveryOrgIsolation:
         finally:
             agents_mod._agents.clear()
             agents_mod._agents.update(saved)
+
+    @pytest.mark.usefixtures("two_org_traces")
+    async def test_cannot_onboard_to_another_org_gateway(self, client):
+        from control_plane.auth.service import create_access_token
+
+        def hdr(org):
+            token = create_access_token(
+                user_id=1,
+                email=f"{org}@t.io",
+                role="admin",
+                org=org,
+            )
+            return {"Authorization": f"Bearer {token}"}
+
+        await _gateway(client, "gw-b", headers=hdr("org-b"))
+        response = await client.post(
+            "/api/discovery/onboard",
+            headers=hdr("org-a"),
+            json={"agent_id": "a-only-agent", "gateway_id": "gw-b"},
+        )
+        assert response.status_code == 404
+
+
+async def test_onboarded_agents_survive_a_graceful_restart(
+    app_and_db, tmp_path, monkeypatch
+):
+    import control_plane.persistence as persistence
+    from control_plane.app import lifespan
+    from control_plane.persistence import load_state
+    from control_plane.routers.agents import AgentConfig, _agents
+
+    monkeypatch.setenv("OSTIARI_NO_DEMO", "1")
+    monkeypatch.setattr(persistence, "STATE_FILE", tmp_path / "state.json")
+    _agents.clear()
+
+    async with lifespan(app_and_db):
+        _agents["org-a"]["cloud-agent"] = AgentConfig(
+            name="cloud-agent",
+            framework="bedrock",
+            gateway_id="gw-a",
+            status="registered_off_gateway",
+        )
+
+    saved = load_state()
+    assert saved["agents"] == [{
+        "name": "cloud-agent",
+        "framework": "bedrock",
+        "gateway_id": "gw-a",
+        "tools": [],
+        "description": "",
+        "status": "registered_off_gateway",
+        "model": "",
+        "_org": "org-a",
+    }]
+
+    _agents.clear()
+    async with lifespan(app_and_db):
+        restored = _agents["org-a"]["cloud-agent"]
+        assert restored.gateway_id == "gw-a"
+        assert restored.status == "registered_off_gateway"

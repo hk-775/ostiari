@@ -99,6 +99,14 @@ async def lifespan(app: FastAPI):
             policy = RoutingPolicy(**data)
             _policies[(org, policy.gateway_id, policy.agent_id)] = policy
 
+    if "agents" in state:
+        from control_plane.routers.agents import AgentConfig, _agents
+        for item in state["agents"]:
+            org = _org_of(item)
+            data = {k: v for k, v in item.items() if k != "_org"}
+            agent = AgentConfig(**data)
+            _agents[org][agent.name] = agent
+
     if "providers" in state:
         from control_plane.routers.providers import _ProviderRecord, _providers
         for p in state["providers"]:
@@ -165,6 +173,7 @@ async def lifespan(app: FastAPI):
 
     # Save in-memory state before shutdown
     from control_plane.routers.agent_routing import _policies
+    from control_plane.routers.agents import _agents
     from control_plane.routers.experiments import _experiments
     from control_plane.routers.model_config import _models
     from control_plane.routers.providers import _providers
@@ -203,6 +212,7 @@ async def lifespan(app: FastAPI):
             {**policy.model_dump(), "_org": org}
             for (org, _gateway_id, _agent_id), policy in _policies.items()
         ],
+        "agents": _dump(_agents),
         "providers": _dump(_providers),
         "roi_cost_model": dict(_cost_model),
         "token_broker_config": dict(_tb_config),
