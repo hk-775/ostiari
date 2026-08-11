@@ -1,5 +1,9 @@
 """Tests for the token broker pilot: pool draw-down, depletion, reconciliation."""
 
+from hashlib import sha256
+from urllib.parse import parse_qs
+
+import httpx
 import pytest
 from control_plane import broker_pilot
 
@@ -27,6 +31,86 @@ class TestSimulatedCollector:
         assert r["collected"] is True
         assert r["ref"].startswith("sim-bill-acme")
         assert r["mode"] == "simulated"
+
+
+class TestStripeCollector:
+    async def test_posts_retry_safe_meter_event_in_micro_usd(self):
+        requests: list[httpx.Request] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(
+                200,
+                request=request,
+                json={"object": "billing.meter_event", "identifier": "stripe-ref"},
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        collector = broker_pilot.StripeCollector(
+            api_key="sk_test_secret",
+            meter_event_name="ostiari_broker_usage",
+            customer_map={"acme": "cus_123"},
+            api_base="https://stripe.test",
+            client=client,
+        )
+
+        result = await collector.collect(
+            customer="acme",
+            amount_usd=0.8400014,
+            model="gpt-4o",
+            idempotency_key="evt-1",
+        )
+
+        assert result["collected"] is True
+        assert result["ref"] == "stripe-ref"
+        assert result["quantity_microusd"] == 840001
+        request = requests[0]
+        form = parse_qs(request.content.decode())
+        assert form["event_name"] == ["ostiari_broker_usage"]
+        expected_identifier = f"ostiari-{sha256(b'evt-1').hexdigest()}"
+        assert form["identifier"] == [expected_identifier]
+        assert form["payload[stripe_customer_id]"] == ["cus_123"]
+        assert form["payload[value]"] == ["840001"]
+        assert request.headers["Authorization"] == "Bearer sk_test_secret"
+        assert request.headers["Idempotency-Key"] == expected_identifier
+        await client.aclose()
+
+    async def test_requires_customer_mapping(self):
+        collector = broker_pilot.StripeCollector(
+            api_key="sk_test_secret",
+            meter_event_name="ostiari_broker_usage",
+        )
+        with pytest.raises(RuntimeError, match="no Stripe customer"):
+            await collector.collect(
+                customer="acme",
+                amount_usd=1.0,
+                model="gpt-4o",
+                idempotency_key="evt-1",
+            )
+
+    async def test_stripe_error_is_safe_and_actionable(self):
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                400,
+                request=request,
+                json={"error": {"message": "Unknown meter event name"}},
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        collector = broker_pilot.StripeCollector(
+            api_key="sk_test_secret",
+            customer_map={"acme": "cus_123"},
+            client=client,
+        )
+        with pytest.raises(RuntimeError, match="Unknown meter event name") as exc:
+            await collector.collect(
+                customer="acme",
+                amount_usd=1.0,
+                model="gpt-4o",
+                idempotency_key="evt-1",
+            )
+        assert "sk_test_secret" not in str(exc.value)
+        await client.aclose()
 
 
 # ─── Pool inventory + draw-down (integration) ────────────────────────────────

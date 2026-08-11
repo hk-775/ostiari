@@ -1,10 +1,4 @@
-"""Data models for the x402 payment gate.
-
-The currency is USDC (a USD-pegged stablecoin) in every mode — only the
-settlement backend differs (simulated ledger vs. real on-chain transfer).
-Amounts are plain floats of USDC for demo clarity; a production build would
-use integer minor units (6-decimal USDC base units) to avoid float rounding.
-"""
+"""Data models for the x402 payment gate."""
 
 from __future__ import annotations
 
@@ -24,9 +18,12 @@ class Quote:
     amount_usdc: float
     pay_to: str = ""          # payee address (empty in metered/sim demo)
     asset: str = "USDC"
-    chain: str = "base"
+    network: str = "eip155:8453"
+    scheme: str = "exact"
+    atomic_amount: int = 0    # USDC base units from the x402 requirement
     nonce: str = ""
     source: str = "policy"    # "policy" (metered) | "tool_402" (passthrough)
+    payment_required: str = ""  # original v2 PAYMENT-REQUIRED header
 
 
 @dataclass
@@ -38,6 +35,8 @@ class Receipt:
     tx_hash: str = ""         # "sim-..." in simulated mode, real Base tx hash when live
     reason: str = ""
     mode: str = "simulated"
+    pending: bool = False     # signed/authorized, awaiting downstream settlement response
+    payment_response: str = ""
 
 
 @dataclass
@@ -99,6 +98,7 @@ class PaymentDecision:
     free: bool = False        # True when no payment was required at all
     amount_usdc: float = 0.0
     balance_usdc: float = 0.0
+    wallet_debited: bool = False
     reason: str = ""
     receipt: Receipt | None = None
     quote: Quote | None = None

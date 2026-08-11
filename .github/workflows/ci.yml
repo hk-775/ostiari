@@ -46,7 +46,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -e .
-          pip install -e gateway/
+          pip install -e "gateway/[payments]"
           pip install pytest pytest-asyncio anyio pytest-httpserver werkzeug \
                       opentelemetry-api opentelemetry-sdk httpx starlette
 
@@ -55,6 +55,7 @@ jobs:
           python -c "from ostiari_gateway.server import create_app; print('Gateway OK')"
           python -c "from ostiari_gateway.cross_agent import CrossAgentPolicy; print('CrossAgent OK')"
           python -c "from ostiari_gateway.a2a import A2AManager; print('A2A OK')"
+          python -c "from ostiari_gateway.payments import Quote, X402Settler; s=X402Settler(private_key='0x'+'11'*32); s._build_http_client(Quote(action='ci', amount_usdc=.001, atomic_amount=1000, pay_to='0x1')); print('x402 SDK OK')"
 
       # AxonLLM is deliberately NOT installed here. It owns routing governance and
       # token cost tracking, but it is a separate private repo and not on PyPI, so

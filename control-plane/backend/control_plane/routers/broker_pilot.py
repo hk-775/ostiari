@@ -11,6 +11,7 @@ Billing collection uses a swappable Collector (simulated now; env selects live).
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -32,9 +33,23 @@ router = APIRouter(prefix="/api/token-broker/pilot", tags=["token-broker-pilot"]
 
 # Billing collector — simulated unless OSTIARI_BROKER_BILLING=live.
 if os.environ.get("OSTIARI_BROKER_BILLING", "simulated").lower() == "live":
+    try:
+        _stripe_customer_map = json.loads(
+            os.environ.get("STRIPE_CUSTOMER_MAP", "").strip() or "{}"
+        )
+        if not isinstance(_stripe_customer_map, dict):
+            raise ValueError("STRIPE_CUSTOMER_MAP must be a JSON object")
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise RuntimeError(f"Invalid STRIPE_CUSTOMER_MAP: {exc}") from exc
     _collector: broker_pilot.Collector = broker_pilot.StripeCollector(
         api_key=os.environ.get("STRIPE_API_KEY", ""),
-        price_id=os.environ.get("STRIPE_PRICE_ID", ""),
+        meter_event_name=os.environ.get(
+            "STRIPE_METER_EVENT_NAME",
+            "ostiari_broker_usage",
+        ),
+        customer_map=_stripe_customer_map,
+        default_customer=os.environ.get("STRIPE_CUSTOMER_ID", ""),
+        api_base=os.environ.get("STRIPE_API_BASE", "https://api.stripe.com"),
     )
 else:
     _collector = broker_pilot.SimulatedCollector()
@@ -92,7 +107,8 @@ async def collector_info():
     # Deliberately unscoped: the collector is process-level deployment config
     # (which billing backend this control plane runs), not tenant data. Every
     # other route on this router takes an org.
-    return {"mode": _collector.mode}
+    status = getattr(_collector, "status", None)
+    return status() if status else {"mode": _collector.mode}
 
 
 # ─── Reconciliation ──────────────────────────────────────────────────────────
