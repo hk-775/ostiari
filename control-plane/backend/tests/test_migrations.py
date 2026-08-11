@@ -56,6 +56,20 @@ def test_upgrade_head_creates_org_schema():
                 r[1] for r in con.execute("PRAGMA table_info(usage_records)")
             }
             assert {"experiment_name", "experiment_variant"} <= usage_cols
+            assert "sandbox_runs" in tables
+            sandbox_cols = {
+                r[1] for r in con.execute("PRAGMA table_info(sandbox_runs)")
+            }
+            assert {
+                "org_id",
+                "gateway_id",
+                "source_digest",
+                "status",
+                "max_output_bytes",
+                "max_tool_payload_bytes",
+                "tool_calls",
+                "completed_at",
+            } <= sandbox_cols
             con.close()
         finally:
             _restore_env(prev)
