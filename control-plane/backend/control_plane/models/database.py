@@ -311,3 +311,38 @@ class AuditLog(Base):
     # row breaks every subsequent hash. Nullable for pre-existing rows.
     prev_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     entry_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class SandboxRun(Base):
+    """Metadata for one browser-isolated Sandbox code execution.
+
+    Source code and output are deliberately not stored. The browser sends only
+    a source digest and bounded execution counters, while governed tool calls
+    cross the control plane under this run id.
+    """
+
+    __tablename__ = "sandbox_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64), default=DEFAULT_ORG, index=True, nullable=False
+    )
+    actor: Mapped[str] = mapped_column(String(128), default="system")
+    gateway_id: Mapped[str] = mapped_column(String(64), index=True)
+    language: Mapped[str] = mapped_column(String(20), default="javascript")
+    source_digest: Mapped[str] = mapped_column(String(64))
+    source_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(20), default="running", index=True)
+    timeout_ms: Mapped[int] = mapped_column(Integer, default=10_000)
+    max_tool_calls: Mapped[int] = mapped_column(Integer, default=20)
+    max_output_bytes: Mapped[int] = mapped_column(Integer, default=64 * 1024)
+    max_tool_payload_bytes: Mapped[int] = mapped_column(Integer, default=16 * 1024)
+    tool_calls: Mapped[int] = mapped_column(Integer, default=0)
+    output_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str] = mapped_column(Text, default="")
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )

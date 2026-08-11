@@ -31,7 +31,7 @@ The control plane provides twelve core capabilities:
 | 4 | **MCP Server Management** | Connect MCP-compatible tool servers (embedded, remote, or stdio) that auto-discover tools |
 | 5 | **Model Configuration** | Central registry of LLM models with pricing, capabilities, providers, and routing strategies. 18 models pre-seeded. |
 | 6 | **Quotas (Runtime Enforced)** | Rate limits, budget caps, model allowlists, and max_tokens caps — pushed to gateways and enforced at runtime |
-| 7 | **Sandbox** | Interactive testing through a real gateway: chat with LLMs, run pre-built scenarios, or exercise A2A. Pinned to `crm-agent`; the Code tab issues the `/tool/<name>` calls it finds in the editor |
+| 7 | **Sandbox** | Interactive testing through real gateways: chat, scenarios, browser-isolated JavaScript, and A2A. The Code tab selects a registered gateway and executes real control flow through a bounded governed tool bridge |
 | 8 | **Cost Dashboard** | Track LLM spend across your fleet, broken down by model, gateway, agent, and day |
 | 9 | **A/B Experiments** | Compare two models on cost/token/request metrics. Creating, toggling, or deleting an experiment pushes the full set to its gateway, which runs the split — see Step 13 |
 | 10 | **Live Trace Viewer** | Watch tool calls happen in real time across all gateways via WebSocket streaming, including /invoke tool calls, session grouping, and parameters. In-memory, 200 per org |
@@ -1605,36 +1605,34 @@ decide.
 
 #### Code Tab
 
-A code editor with an output panel, pre-filled with a request example:
+The editor executes JavaScript control flow in a disposable, opaque-origin
+Worker. Select a gateway, then use the injected `ostiari.tool` function:
 
-```python
-# Write code that interacts with the gateway
-import requests
+```javascript
+const query = await ostiari.tool("db_query", {
+  sql: "SELECT * FROM users",
+});
+console.log(query.status, query.body);
 
-GATEWAY = "http://localhost:8400/api/proxy/gateway/crm-agent"
-
-response = requests.post(f"{GATEWAY}/invoke", json={
-    "messages": [{"role": "user", "content": "List my GitHub repos"}]
-})
-
-print(f"Response: {response.json()['response']}")
+if (query.ok) {
+  const deletion = await ostiari.tool("db_delete", { table: "users" });
+  console.log(deletion.status, deletion.body);
+}
 ```
 
-> **The Code tab issues your tool calls; it does not interpret your code.** There
-> is no backend executor, so nothing runs a Python interpreter. What `runCode`
-> does instead: it scans the editor for `/tool/<name>` calls, extracts the JSON
-> body of each, and issues them for real against the gateway in order as
-> `X-Agent-Id: sandbox-code`, streaming each response as it arrives. So the calls
-> you write are the calls that happen — and they travel the full governance path,
-> which is why a `403` is reported as `✗ BLOCKED` and a `429` as `✗ QUOTA` rather
-> than as an error. Loops, conditionals, variables, and `print()` are *not*
-> evaluated; a call inside an `if` is issued unconditionally. For real agent logic,
-> run it locally against the gateway as in Step 7.
->
-> The body parser accepts what the templates use — `requests.post(json={...})`,
-> `httpx`, `fetch(body: JSON.stringify({...}))`, and `curl -d '{...}'` — and
-> tolerates Python literals (`True`/`None`, single quotes) and unquoted JS keys. A
-> call whose body it can't parse is issued with `{}`.
+The worker has no DOM, browser storage, credentials, direct network access, or
+host filesystem. Its parent iframe has an opaque origin and `connect-src 'none'`.
+Every `ostiari.tool` call goes through `/api/sandbox/runs/{id}/tools/{tool}` and
+then the selected gateway as `X-Agent-Id: sandbox-code`, so normal policies,
+quotas, approvals, and traces still apply. `403` and `429` are returned to the
+program as ordinary tool results (`status`, `ok`, `body`) so code can branch on
+them.
+
+The control plane stores run metadata and a source digest, never the source or
+output. Server-issued limits bound runtime, source size, output, payload size,
+concurrent runs, and tool-call count. Stop removes the execution container and
+aborts outstanding browser requests; a downstream tool already executing may
+still finish.
 
 ### Sandbox uses real enforcement
 
@@ -2440,10 +2438,10 @@ surfaces as a 500 rather than being passed through.
 | Budget alerts stopped once Redis was enabled | Fixed — the threshold check used to read the process-local spend, which stays `0.0` when a shared store is booking it | Update the gateway; verify with `GET /config/quota` reporting `spend_scope: "fleet"` |
 | Agent gets shorter responses | Max tokens cap is active | Check quota's `max_tokens_per_request` (silent cap, not an error). Only applies on `/invoke` — the `/v1/*` shims aren't capped |
 | `/invoke` returns 200 but the answer says "Request blocked by quota" | `/invoke` reports quota refusals in the body, not the status code | Don't gate on status alone for `/invoke`; check the `response` text or use `/tool/{action}`, which does return 429 |
-| Sandbox not connecting | Sandbox is hardcoded to the `crm-agent` gateway (no selector) | Start `crm-agent`, or exercise another gateway via `curl` against `/api/proxy/gateway/{id}/…` |
-| Sandbox Code tab ran a call I put inside an `if` | The tab issues the `/tool/<name>` calls it finds; it does not evaluate Python | Expected — control flow isn't interpreted. Delete the call, or run the logic locally against the gateway |
-| Sandbox Code tab shows `request: {}` | The parser couldn't read that call's JSON body | Put the body in one of the recognized forms — `json={...}`, `body: JSON.stringify({...})`, or `-d '{...}'` |
-| Sandbox Code tab says "no tool calls found" | The editor has no `/tool/<name>` URL in it | Add one, or use the template as a starting point |
+| Sandbox Chat/Scenarios/A2A not connecting | Those tabs target the demo `crm-agent` gateway | Start `crm-agent`; the Code tab can select another registered gateway |
+| Sandbox Code reports `Sandbox runtime failed to initialize` | Browser CSP or enterprise policy blocked the nested Blob Worker | Allow scripts and Blob Workers for the dashboard origin; network access remains denied inside the run |
+| Sandbox Code returns 403/429 | Gateway policy or quota rejected `sandbox-code` | Grant that agent only the intended tools/limits, then rerun |
+| Sandbox Code times out | The server-issued runtime limit elapsed | Reduce work or raise `OSTIARI_SANDBOX_TIMEOUT_MS` within its 60-second cap |
 
 ---
 

@@ -156,6 +156,24 @@ export interface McpServer {
   created_at: string;
 }
 
+export interface SandboxRun {
+  id: string;
+  gateway_id: string;
+  language: "javascript";
+  source_digest: string;
+  source_bytes: number;
+  status: "running" | "completed" | "error" | "cancelled" | "timed_out";
+  timeout_ms: number;
+  max_tool_calls: number;
+  max_output_bytes: number;
+  max_tool_payload_bytes: number;
+  tool_calls: number;
+  output_bytes: number;
+  error: string;
+  started_at: string;
+  completed_at: string | null;
+}
+
 export const api = {
   gateways: {
     list: () => fetchAPI<Gateway[]>("/api/gateways"),
@@ -244,6 +262,35 @@ export const api = {
       }>(`/api/tools/${gatewayId}/import-openapi`, {
         method: "POST",
         body: JSON.stringify(data),
+      }),
+  },
+  sandbox: {
+    start: (data: {
+      gateway_id: string;
+      language: "javascript";
+      source_digest: string;
+      source_bytes: number;
+    }) =>
+      fetchAPI<SandboxRun>("/api/sandbox/runs", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    complete: (
+      id: string,
+      data: {
+        status: "completed" | "error" | "cancelled" | "timed_out";
+        duration_ms: number;
+        output_bytes: number;
+        error: string;
+      },
+    ) =>
+      fetchAPI<SandboxRun>(`/api/sandbox/runs/${encodeURIComponent(id)}/complete`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    cancel: (id: string) =>
+      fetchAPI<SandboxRun>(`/api/sandbox/runs/${encodeURIComponent(id)}`, {
+        method: "DELETE",
       }),
   },
   policies: {
