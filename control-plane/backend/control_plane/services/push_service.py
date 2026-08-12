@@ -224,6 +224,13 @@ class PushService:
         )
         config["model_registry"] = runtime_catalog(gateway.org_id or "default")
 
+        from control_plane.routers.provider_routes import runtime_route_catalog
+
+        config["provider_routes"] = await runtime_route_catalog(
+            db,
+            gateway.org_id or "default",
+        )
+
         # Enforcement mode is always sent explicitly (defaults to enforce) so a
         # gateway can never be left on a stale shadow setting after a push.
         config["mode"] = (gateway.config or {}).get("mode", "enforce")

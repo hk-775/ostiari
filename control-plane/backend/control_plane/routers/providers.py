@@ -1,5 +1,6 @@
 """LLM Provider Configuration API — manage provider credentials and connectivity."""
 
+import contextlib
 import logging
 import os
 import time
@@ -9,8 +10,12 @@ from datetime import datetime, timezone
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import delete
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.auth.dependencies import get_current_org, require_role
+from control_plane.database import get_db
+from control_plane.models.database import ProviderRouteRecord
 
 log = logging.getLogger("control_plane.routers.providers")
 
@@ -145,10 +150,8 @@ def _mask_key(key: str) -> str:
 
 def _to_response(rec: _ProviderRecord) -> ProviderResponse:
     raw_key = ""
-    try:
+    with contextlib.suppress(Exception):
         raw_key = _decrypt(rec.api_key_encrypted)
-    except Exception:
-        pass
     return ProviderResponse(
         name=rec.name,
         enabled=rec.enabled,
@@ -287,10 +290,26 @@ async def update_provider(name: str, body: ProviderUpdate, _user=_admin_dep, org
 
 
 @router.delete("/{name}")
-async def delete_provider(name: str, _user=_admin_dep, org: str = Depends(get_current_org)):
+async def delete_provider(
+    name: str,
+    _user=_admin_dep,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+):
     """Remove a provider (within the caller's org)."""
     if name not in _providers[org]:
         raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
+    runtime_name = {
+        "azure": "azure_openai",
+        "google": "google_ai",
+        "vertex": "vertex_ai",
+    }.get(name, name)
+    await db.execute(
+        delete(ProviderRouteRecord).where(
+            ProviderRouteRecord.org_id == org,
+            ProviderRouteRecord.provider == runtime_name,
+        )
+    )
     del _providers[org][name]
     return {"deleted": name}
 

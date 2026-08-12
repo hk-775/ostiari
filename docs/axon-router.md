@@ -3,8 +3,9 @@
 Ostiari **governs** (auth, injection, quota, trace, HITL) and delegates the
 **routing of the actual model call** to AxonLLM's in-process `GatewayAgent`.
 AxonLLM owns model/provider selection, health-aware fallback, cost tracking,
-smart (task-classification) routing, and ensemble. There is **no extra network
-hop** — it is one Python call inside the gateway process.
+smart (task-classification) routing, ensemble, and concrete provider-route
+selection. There is **no extra network hop** — it is one Python call inside the
+gateway process.
 
 ```
 Claude Code / caller
@@ -12,6 +13,7 @@ Claude Code / caller
    │      in-process (no network):
    │        AxonRouter → build_gateway_agent().handle_chat_completion(req, ctx)
    │          → smart / ensemble / health-aware fallback, picks model + provider
+   │          → route pool picks credential + endpoint + pooled transport
    │  ② the ONE outbound LLM call (Anthropic | Bedrock | OpenAI | …)
    ◀── response → (translated) → caller
 ```
@@ -200,6 +202,46 @@ restores cwd. Override the root with `OSTIARI_AXON_ROOT` if needed.
 On startup you'll see `AxonLLM embedded — routing governance active (root=…)`, or
 a warning naming what is no longer being enforced. Check `GET /health` →
 `llm_router` to confirm from outside the process.
+
+## Concrete provider routes
+
+The model router and route pool have separate responsibilities:
+
+```text
+Ostiari policy and Axon model router
+  -> logical model/provider
+  -> Axon route pool
+  -> concrete credential, endpoint, region, and connection pool
+```
+
+Ostiari stores the tenant's route catalog in the control-plane database. Private
+route material is encrypted and is never returned by list or runtime-health
+APIs. An administrator can manage routes on the Providers page and push the
+complete catalog to every LLM-enabled gateway. The gateway applies it atomically
+through `POST /config/provider-routes`; no restart is required.
+
+AxonLLM measures each route independently and adapts its effective weight using
+recent errors, token-adjusted latency, current capacity, and recovery state.
+Route priority supplies explicit failover tiers. `capacity_group` prevents
+multiple keys for one provider account from being counted as independent
+capacity.
+
+Connection sessions are pooled by endpoint and transport policy, not by secret.
+Keys sharing one host can reuse TCP/TLS connections safely because credentials
+are attached per request. Endpoint, proxy, TLS, timeout, or pool-policy changes
+create a distinct pool.
+
+Failure handling is route-aware: authentication and billing failures quarantine
+that credential, throttling cools the route, and network/server failures penalize
+the endpoint. Axon's existing Router remains the retry-budget owner for ordinary
+calls; Ostiari does not start a second retry loop. True streams may rotate routes
+only while opening the stream and before the first chunk. They are never replayed
+after output begins.
+
+Runtime health is available from the gateway at
+`GET /config/provider-routes` and is aggregated by the control plane at
+`GET /api/providers/routes/runtime`. Both surfaces omit credentials, custom
+headers, and private parameters.
 
 ## Notes
 

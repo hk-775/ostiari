@@ -983,6 +983,8 @@ Push button, because they arrive by different routes:
   really does hot-reload this way.
 - **Generic `push-config` callers** post to the gateway's `POST /config`, which
   replaces the whole config document and applies **only tools and policy**.
+  `provider_routes` is reserved for the encrypted provider-route API and is
+  rejected here.
 - **Quota pages** use `/config/quota` and `/config/agent-auth`, so their limits
   reach the runtime enforcers directly.
 
