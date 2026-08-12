@@ -60,6 +60,7 @@ graph TB
 | **Policy Management** | Create/edit/push safety policies (allow/block/risk-adjust). The demo creates `block-destructive` (crm-agent) and `ops-guard` (ops-agent) |
 | **MCP Server Management** | Configure MCP servers (embedded, remote HTTP, or stdio subprocess) with tool auto-discovery. The demo seeds two *real* stdio servers (draw.io + filesystem, via `npx`) |
 | **Model Configuration** | Central registry of LLM models — 18 pre-seeded from AxonLLM. CRUD with inline routing strategy editing. Shows providers, pricing, capabilities (tools/vision), and category (reasoning/general/speed) |
+| **Provider Routes** | Tenant-scoped encrypted credentials and endpoint assignments with adaptive AxonLLM health, weighted selection, failover priorities, shared-account capacity, connection-pool limits, hot push, and fleet runtime health |
 | **Quotas (Runtime Enforced)** | Per-gateway and per-agent rate limits, budget caps, model/provider allowlists, and `max_tokens` caps. Agent quotas persist in the control plane, push as a complete gateway bundle, restore measured spend after restart, and use actual usage records for dashboard spend/RPM |
 | **Approvals (HITL)** | Human-in-the-loop queue for calls that score *intervene*. The gateway answers 202 with an approval id; a human decides here; the caller re-submits with `X-Approval-Id` |
 | **Sandbox** | Four-tab testing environment: Chat, governed scenarios, browser-isolated JavaScript with a metered tool bridge, and A2A tasks. Code runs in an opaque-origin worker; source never reaches the backend |
@@ -77,7 +78,7 @@ graph TB
 | **Audit Log** | Tamper-evident record of who changed what config, when (filterable by resource, action, actor; `/api/audit/verify` checks the chain) |
 | **Users & SSO** | Local accounts with roles (admin / operator / viewer) plus an OIDC SSO flow, including IdP claim→role mapping |
 | **Gateway Proxy** | `/api/proxy/gateway/{gateway_id}/{path}` forwards UI requests to gateways, eliminating CORS and enabling Sandbox in production |
-| **Data Persistence** | SQLite + JSON state, both under `control-plane/data/` (override with `OSTIARI_DATA_DIR`). `state.json` is written on graceful shutdown and restores quotas, budget alerts, experiments, models, agent routing, agents, providers, the ROI cost model, and token-broker config. **Approvals and traces remain in-memory only.** Wallets, tools, policies, MCP servers, usage records, and audit logs are SQLite tables and persist normally |
+| **Data Persistence** | SQLite + JSON state, both under `control-plane/data/` (override with `OSTIARI_DATA_DIR`). Provider routes and their encrypted private material are SQL-backed. `state.json` is written on graceful shutdown and restores quotas, budget alerts, experiments, models, agent routing, agents, legacy providers, the ROI cost model, and token-broker config. **Approvals and traces remain in-memory only.** Wallets, tools, policies, MCP servers, usage records, and audit logs are SQLite tables and persist normally |
 
 ### UI Design
 
@@ -167,10 +168,10 @@ Authoritative source: `http://localhost:8400/docs` (generated from the app).
 | `/api/gateways/{gateway_id}` | PATCH | Update a gateway |
 | `/api/gateways/{gateway_id}` | DELETE | Remove a gateway |
 | `/api/gateways/{gateway_id}/push` | POST | Push the full config bundle, rebuilt from stored state. **Prefer this** — it's the Gateways page's ↑ button and can't clear anything |
-| `/api/gateways/{gateway_id}/push-config` | POST | Forward an arbitrary caller-supplied body to the gateway's `POST /config`. **Not persisted**; tools/policy/base fields use replacement semantics while explicitly present runtime gates apply live. Prefer dedicated routes for individual controls |
-| `/api/gateways/{gateway_id}/config-bundle` | GET | Fetch the config a gateway would receive |
-| `/api/gateways/{gateway_id}/register` | POST | Self-registration (called by the gateway on boot) |
-| `/api/gateways/{gateway_id}/heartbeat` | POST | Liveness ping (called by the gateway) |
+| `/api/gateways/{gateway_id}/push-config` | POST | Forward a caller-supplied body to the gateway's `POST /config`. **Not persisted**; tools/policy/base fields use replacement semantics while explicitly present runtime gates apply live. `provider_routes` is rejected; use the encrypted route API. Prefer dedicated routes for individual controls |
+| `/api/gateways/{gateway_id}/config-bundle` | GET | Fetch the config a gateway would receive. Signed-in operators receive secret-free provider-route metadata; a valid `X-Ostiari-Service-Key` is required for resolved credentials |
+| `/api/gateways/{gateway_id}/register` | POST | Self-registration (called by the gateway on boot; requires `X-Ostiari-Service-Key` when API auth is enabled) |
+| `/api/gateways/{gateway_id}/heartbeat` | POST | Liveness ping (called by the gateway; requires `X-Ostiari-Service-Key` when API auth is enabled) |
 | `/api/gateways/{gateway_id}/health` | GET | Check gateway health |
 | `/api/gateways/{gateway_id}/mode` | PUT | Set enforcement mode (`enforce` \| `shadow`), persist it, and push it live. Registration and reconnect bundles include the stored mode, so it is restored after a gateway restart |
 | `/api/gateways/push-all` | POST | Push config to all gateways |
@@ -453,6 +454,22 @@ remains separate and is enabled only by `OSTIARI_DISCOVERY_MOCK=1`.
 | `/api/providers/{name}/key` | GET | Masked key |
 | `/api/providers/{name}/test` | POST | Send a test completion |
 | `/api/providers/{name}/health` | GET | Provider reachability |
+| `/api/providers/routes` | GET | List tenant route metadata without private values |
+| `/api/providers/{name}/routes` | POST | Create an encrypted concrete provider route |
+| `/api/providers/{name}/routes/{route_id}` | PUT/DELETE | Update, rotate, disable, or delete a route |
+| `/api/providers/routes/push` | POST | Push the complete resolved catalog to LLM-enabled gateways |
+| `/api/providers/routes/runtime` | GET | Aggregate secret-free adaptive health and load from gateways |
+
+The base provider record supplies backward-compatible single-key operation. If a
+provider has no explicit route records, the control plane synthesizes one
+`<provider>:default` route. Once any explicit route exists, that provider's
+explicit catalog is authoritative; disabling every route intentionally removes
+the provider from runtime selection.
+
+Set `OSTIARI_ENCRYPTION_KEY` before writing provider or route credentials and
+retain it across deployments. A route list never returns credential values.
+Resolved private material is sent only through the config-admin-authenticated
+gateway channel. Apply `alembic upgrade head` before using the route endpoints.
 
 Browser SSO requires `OIDC_ISSUER`, `OIDC_CLIENT_ID`, and
 `OIDC_CLIENT_SECRET`. Register `OIDC_REDIRECT_URI` with the IdP; its local

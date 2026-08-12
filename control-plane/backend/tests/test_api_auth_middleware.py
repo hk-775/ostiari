@@ -55,6 +55,26 @@ class TestAuthMiddleware:
         assert registered.status_code == 200
         assert (await client.get("/api/gateways", headers=headers)).status_code == 401
 
+    async def test_operator_token_cannot_call_machine_only_lifecycle_route(
+        self,
+        client,
+        monkeypatch,
+        admin_headers,
+    ):
+        monkeypatch.setenv("OSTIARI_REQUIRE_AUTH", "true")
+        monkeypatch.setenv("OSTIARI_SERVICE_TOKEN", "machine-secret")
+
+        registered = await client.post(
+            "/api/gateways/operator-register/register",
+            json={},
+            headers=admin_headers,
+        )
+
+        assert registered.status_code == 401
+        assert registered.json()["detail"] == (
+            "Gateway service authentication required"
+        )
+
     async def test_service_key_allows_cost_ingest(self, client, monkeypatch, admin_headers):
         monkeypatch.setenv("OSTIARI_REQUIRE_AUTH", "true")
         monkeypatch.setenv("OSTIARI_SERVICE_TOKEN", "machine-secret")
