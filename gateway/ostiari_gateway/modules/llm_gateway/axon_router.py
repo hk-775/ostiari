@@ -33,8 +33,41 @@ from __future__ import annotations
 import logging
 from copy import deepcopy
 from typing import Any
+from urllib.parse import urlparse
 
 log = logging.getLogger("ostiari.sidecar.llm.axon")
+
+_PROVIDER_ROUTE_PUBLIC_FIELDS = frozenset({
+    "route_id",
+    "provider",
+    "endpoint",
+    "auth_type",
+    "region",
+    "allowed_models",
+    "weight",
+    "adaptive_weight",
+    "priority",
+    "enabled",
+    "max_concurrency",
+    "capacity_group",
+    "capacity_limit",
+    "connect_timeout",
+    "read_timeout",
+    "max_connections",
+    "max_connections_per_host",
+    "keepalive_timeout",
+    "has_credentials",
+    "status",
+    "inflight",
+    "selected",
+    "successes",
+    "failures",
+    "error_ewma",
+    "latency_ewma_ms",
+    "latency_per_token_ewma_ms",
+    "cooldown_remaining_seconds",
+    "last_status_code",
+})
 
 
 class AxonResult:
@@ -67,6 +100,7 @@ class AxonRouter:
         self._base_available_providers: frozenset[str] | None = None
         self._broker_router_id: int | None = None
         self._model_registry_config: dict[str, Any] | None = None
+        self._provider_routes_config: list[dict[str, Any]] | None = None
 
     @property
     def available(self) -> bool:
@@ -157,6 +191,8 @@ class AxonRouter:
 
             self._available = True
             self._error = ""
+            self._apply_model_registry()
+            self._apply_provider_routes()
             log.info("AxonLLM router embedded — GatewayAgent routing active (root=%s)", axon_root)
         except Exception as e:  # noqa: BLE001 — any failure => unavailable, degrade
             self._agent = None
@@ -191,6 +227,106 @@ class AxonRouter:
 
     def model_registry_config(self) -> dict[str, Any]:
         return deepcopy(self._model_registry_config or {"models": []})
+
+    def configure_provider_routes(
+        self,
+        routes: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Atomically replace AxonLLM's concrete credential/endpoint routes."""
+        if not isinstance(routes, list) or any(
+            not isinstance(route, dict) for route in routes
+        ):
+            raise ValueError("provider routes must be a list of objects")
+        for route in routes:
+            if not str(route.get("route_id") or "").strip():
+                raise ValueError("provider route_id is required")
+            if not str(route.get("provider") or "").strip():
+                raise ValueError("provider route provider is required")
+            endpoint = str(
+                route.get("endpoint") or route.get("base_url") or ""
+            ).strip()
+            if endpoint:
+                parsed = urlparse(endpoint)
+                if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                    raise ValueError(
+                        "provider route endpoint must be an absolute HTTP(S) URL"
+                    )
+                if parsed.username or parsed.password:
+                    raise ValueError(
+                        "provider route endpoint must not contain userinfo"
+                    )
+                if parsed.query or parsed.fragment:
+                    raise ValueError(
+                        "provider route endpoint must not contain a query or fragment"
+                    )
+        candidate = deepcopy(routes)
+        self._ensure()
+        if not self._available:
+            self._provider_routes_config = candidate
+            return {
+                "status": "pending",
+                "routes": len(candidate),
+                "reason": self._error or "AxonLLM unavailable",
+            }
+        previous = self._provider_routes_config
+        self._provider_routes_config = candidate
+        try:
+            result = self._apply_provider_routes()
+        except Exception:
+            self._provider_routes_config = previous
+            raise
+        return {"status": "applied", **result}
+
+    def provider_route_snapshot(self) -> list[dict[str, Any]]:
+        """Return route configuration and health without credential values."""
+        self._ensure()
+        if self._available and self._agent is not None:
+            factory = getattr(self._agent, "provider_fn_factory", None)
+            snapshot = getattr(factory, "route_snapshot", None)
+            if callable(snapshot):
+                return snapshot()
+        return [
+            {
+                key: deepcopy(value)
+                for key, value in route.items()
+                if key in _PROVIDER_ROUTE_PUBLIC_FIELDS
+            }
+            | {
+                "has_credentials": bool(route.get("credentials")),
+                "status": "pending",
+            }
+            for route in (self._provider_routes_config or [])
+        ]
+
+    def _apply_provider_routes(self) -> dict[str, int]:
+        if (
+            self._provider_routes_config is None
+            or not self._available
+            or self._agent is None
+        ):
+            return {
+                "routes": len(self._provider_routes_config or []),
+                "providers": 0,
+            }
+        factory = getattr(self._agent, "provider_fn_factory", None)
+        configure = getattr(factory, "configure_routes", None)
+        if not callable(configure):
+            raise RuntimeError(
+                "embedded AxonLLM does not support provider route pools"
+            )
+        result = configure(deepcopy(self._provider_routes_config))
+        router = getattr(self._agent, "router", None)
+        if router is not None:
+            router.available_providers = factory.available_providers
+            self._base_available_providers = None
+            self._broker_router_id = None
+            self._apply_broker_policy()
+        log.info(
+            "AxonLLM provider routes applied: %d routes across %d providers",
+            result["routes"],
+            result["providers"],
+        )
+        return result
 
     def _apply_model_registry(self) -> None:
         if (

@@ -86,6 +86,15 @@ class LLMGatewayModule:
             raise RuntimeError("LLM Gateway not initialized")
         return self._executor._axon.configure_model_registry(config)
 
+    def apply_provider_routes(
+        self,
+        routes: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Apply concrete provider credentials/endpoints without a restart."""
+        if self._executor is None:
+            raise RuntimeError("LLM Gateway not initialized")
+        return self._executor._axon.configure_provider_routes(routes)
+
     @property
     def name(self) -> str:
         return "llm_gateway"
@@ -342,6 +351,25 @@ class LLMGatewayModule:
                 return {"models": []}
             return self._executor._axon.model_registry_config()
 
+        @app.post("/config/provider-routes")
+        async def update_provider_routes(request: Request) -> Any:
+            """Replace concrete provider routes while preserving LLM policy."""
+            body = await request.json()
+            routes = body.get("routes") if isinstance(body, dict) else body
+            try:
+                result = self.apply_provider_routes(routes)
+            except (RuntimeError, TypeError, ValueError) as exc:
+                return JSONResponse(status_code=422, content={"error": str(exc)})
+            if result.get("status") != "applied":
+                return JSONResponse(status_code=503, content=result)
+            return result
+
+        @app.get("/config/provider-routes")
+        async def get_provider_routes() -> Any:
+            if self._executor is None:
+                return {"routes": []}
+            return {"routes": self._executor._axon.provider_route_snapshot()}
+
         @app.post("/config/ab-experiments")
         async def update_ab_experiments(request: Request) -> Any:
             """Replace the A/B experiment set WITHOUT touching credentials.
@@ -368,7 +396,7 @@ class LLMGatewayModule:
         log.info("LLM Gateway module registered: POST /v1/messages, POST /invoke, "
                  "GET /models, POST /config/llm, POST /config/agent-routing, "
                  "POST /config/task-classification, POST /config/model-registry, "
-                 "POST /config/ab-experiments")
+                 "POST /config/provider-routes, POST /config/ab-experiments")
 
     def shutdown(self) -> None:
         self._executor = None

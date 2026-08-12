@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { Shield, Server, Wrench, FileText, Activity, Plug, History, DollarSign, Radio, FlaskConical, Brain, ShieldCheck, Beaker, Bot, Network, Users, Key, LogOut, EyeOff, FileCheck, Gauge, Wallet, TrendingUp, Coins, Radar, UserCheck } from "lucide-react";
+import { Shield, Server, Wrench, FileText, Activity, Plug, History, DollarSign, Radio, FlaskConical, Brain, ShieldCheck, Beaker, Bot, Network, Users, Key, LogOut, EyeOff, FileCheck, Gauge, Wallet, TrendingUp, Coins, Radar, UserCheck, Menu, X } from "lucide-react";
 import { useAuthStore } from "../stores/authStore";
 
 const NAV_SECTIONS: {
@@ -112,6 +113,7 @@ const WRITE_SECTIONS = ["Control", "Configure", "Test"];
 export function Layout() {
   const location = useLocation();
   const navigate = useNavigate();
+  const [navOpen, setNavOpen] = useState(false);
   const { user, logout } = useAuthStore();
   const borderColor = ROUTE_BORDER_COLORS[location.pathname] || "rgba(214, 211, 209, 0.8)";
 
@@ -127,12 +129,31 @@ export function Layout() {
   });
 
   return (
-    <div className="flex min-h-screen">
+    <div className="flex min-h-screen overflow-x-hidden">
+      {navOpen && (
+        <button
+          type="button"
+          aria-label="Close navigation"
+          className="fixed inset-0 z-20 bg-stone-900/25 backdrop-blur-[1px] md:hidden"
+          onClick={() => setNavOpen(false)}
+        />
+      )}
+
       {/* Sidebar */}
-      <aside className="fixed inset-y-0 left-0 z-30 flex w-60 flex-col border-r border-stone-200 bg-white">
+      <aside className={`fixed inset-y-0 left-0 z-30 flex w-60 flex-col border-r border-stone-200 bg-white shadow-xl transition-transform duration-200 md:translate-x-0 md:shadow-none ${
+        navOpen ? "translate-x-0" : "-translate-x-full"
+      }`}>
         {/* Logo */}
-        <div className="flex h-20 items-center px-4 border-b border-stone-100">
-          <img src="/logo.svg" alt="Ostiari" className="w-full" />
+        <div className="flex h-20 items-center gap-3 border-b border-stone-100 px-4">
+          <img src="/logo.svg" alt="Ostiari" className="min-w-0 flex-1" />
+          <button
+            type="button"
+            title="Close navigation"
+            className="rounded-lg p-1.5 text-stone-400 transition hover:bg-stone-100 hover:text-stone-700 md:hidden"
+            onClick={() => setNavOpen(false)}
+          >
+            <X className="h-5 w-5" />
+          </button>
         </div>
 
         {/* Nav */}
@@ -149,6 +170,7 @@ export function Layout() {
                     <Link
                       key={item.path}
                       to={item.path}
+                      onClick={() => setNavOpen(false)}
                       className={`flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-sm transition ${
                         active
                           ? `${item.activeBg} ${item.color} font-medium`
@@ -195,20 +217,28 @@ export function Layout() {
       </aside>
 
       {/* Main content */}
-      <main className="ml-60 flex-1 min-h-screen" style={{ "--card-border": borderColor } as React.CSSProperties}>
+      <main className="min-h-screen min-w-0 flex-1 md:ml-60" style={{ "--card-border": borderColor } as React.CSSProperties}>
         {/* Sticky ribbon */}
-        <div className="sticky top-0 z-20 border-b border-violet-100/60 bg-gradient-to-r from-violet-50/70 via-white/80 to-indigo-50/70 backdrop-blur-sm px-8 py-2.5 flex items-center justify-between">
+        <div className="sticky top-0 z-20 flex items-center justify-between border-b border-violet-100/60 bg-gradient-to-r from-violet-50/70 via-white/80 to-indigo-50/70 px-4 py-2.5 backdrop-blur-sm md:px-8">
           <div className="flex items-center gap-2.5">
+            <button
+              type="button"
+              title="Open navigation"
+              className="rounded-lg border border-stone-200 bg-white p-1.5 text-stone-600 shadow-sm md:hidden"
+              onClick={() => setNavOpen(true)}
+            >
+              <Menu className="h-4 w-4" />
+            </button>
             <div className="flex items-center gap-1.5 rounded-full bg-white/80 border border-violet-200/60 px-3 py-1 shadow-sm">
               <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
               <span className="text-[11px] font-semibold text-violet-700 tracking-wide uppercase">Ostiari Control Plane</span>
             </div>
           </div>
-          <div className="rounded-full bg-white/60 border border-stone-200/50 px-3 py-1">
+          <div className="hidden rounded-full border border-stone-200/50 bg-white/60 px-3 py-1 sm:block">
             <span className="text-[10px] text-stone-500">Gateway fleet management · Real-time enforcement</span>
           </div>
         </div>
-        <div className="mx-auto max-w-6xl px-8 py-8">
+        <div className="mx-auto max-w-6xl px-4 py-5 md:px-8 md:py-8">
           <Outlet />
         </div>
       </main>

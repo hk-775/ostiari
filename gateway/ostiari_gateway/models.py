@@ -55,6 +55,7 @@ class SidecarConfig(BaseModel):
     budget_reset: dict = Field(default_factory=dict)
     task_classification: dict = Field(default_factory=dict)
     model_registry: dict = Field(default_factory=dict)
+    provider_routes: list[dict] = Field(default_factory=list)
     agent_routing: dict = Field(default_factory=dict)
     sidecar_id: str = ""
     control_plane_url: str = ""

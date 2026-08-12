@@ -367,6 +367,14 @@ async def get_config_bundle(
     bundle = await push_service._build_config(db, gateway)
     bundle.setdefault("quotas", gateway.config.get("quotas", {}))
     bundle.setdefault("agent_auth", gateway.config.get("agent_auth", {}))
+    if not getattr(request.state, "machine_authenticated", False):
+        from control_plane.routers.provider_routes import (
+            public_runtime_route_catalog,
+        )
+
+        bundle["provider_routes"] = public_runtime_route_catalog(
+            bundle.get("provider_routes", [])
+        )
     return bundle
 
 
@@ -382,7 +390,25 @@ async def push_config_lifecycle(
     if not gateway:
         raise HTTPException(status_code=404, detail="Gateway not found")
 
-    body = await request.json()
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="config body must be a JSON object",
+        ) from exc
+    if not isinstance(body, dict):
+        raise HTTPException(
+            status_code=422,
+            detail="config body must be a JSON object",
+        )
+    if "provider_routes" in body:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "provider_routes is managed by the encrypted provider route API"
+            ),
+        )
 
     if gateway.status == "healthy":
         # Forward immediately via the existing push mechanism

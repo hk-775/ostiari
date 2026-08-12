@@ -37,7 +37,7 @@ the gateway or control plane.
 | Runtime decisions | Allow, intervene, block; score thresholds; explicit policy rules; parameter-aware risk | `src/ostiari/guard.py`, `src/ostiari/policy/`, `src/ostiari/signals/` |
 | Reliability | Loop, drift, hallucination, and contradiction detectors; circuit breakers; checkpoints | `src/ostiari/anomaly/`, `breaker.py`, `checkpoint.py` |
 | Tool governance | Tool registry, authorization, quota, policy, approval, payment, proxy, trace | `gateway/ostiari_gateway/server.py` |
-| LLM governance | Agentic invocation, provider fallback, routing rules, per-agent rotation, A/B experiments, quotas | `gateway/ostiari_gateway/modules/llm_gateway/` |
+| LLM governance | Agentic invocation, provider fallback, adaptive credential/endpoint routes, connection pools, routing rules, per-agent rotation, A/B experiments, quotas | `gateway/ostiari_gateway/modules/llm_gateway/`, embedded AxonLLM |
 | LLM-compatible APIs | Anthropic Messages and OpenAI Chat Completions shims | `/v1/messages`, `/v1/chat/completions` |
 | LLM security | PII redaction and prompt-injection detection | `src/ostiari/detect.py`, LLM gateway security layer |
 | MCP | Embedded, remote, and stdio servers; discovery; filtering; governed execution | `gateway/ostiari_gateway/mcp/` |
@@ -47,7 +47,7 @@ the gateway or control plane.
 | Payments | Tool pricing, wallets, limits, retry-safe ledger, simulated settlement, and live x402 v2 passthrough | `gateway/ostiari_gateway/payments/`, `/api/payments` |
 | Observability | Governance traces, spans, WebSocket stream, OTLP export, shadow and delegation reports | Trace reporter, `/api/traces/*`, `/ws/traces` |
 | Fleet operations | Registration, heartbeat, config bundles, immediate push, queued push | Gateway lifecycle, `/api/gateways/*` |
-| Administration | Local login, users, roles, optional OIDC SSO, provider credentials | Control-plane auth and provider routers |
+| Administration | Local login, users, roles, optional OIDC SSO, encrypted provider credentials and concrete route catalogs | Control-plane auth and provider routers |
 | Reporting | Costs, metering export, compliance, audit verification, ROI, token broker | Control-plane reporting routers |
 | Deployment | Local, Docker Compose, Kubernetes, Helm, ECS, and limited Lambda | `deploy/` |
 
@@ -174,6 +174,14 @@ cost-aware execution. Without it, the gateway warns and uses direct-provider
 fallback; `/health` reports that routing governance and Axon cost tracking are
 inactive. Set `OSTIARI_REQUIRE_AXON=1` to fail startup instead.
 
+After a logical provider is selected, AxonLLM chooses one concrete route for the
+attempt. A route binds a credential, endpoint/region, model allowlist, static
+weight, priority, capacity, and transport policy. Recent errors, token-adjusted
+latency, utilization, and recovery state modify the route's effective weight.
+Multiple keys sharing one provider account must share a `capacity_group`.
+Credentials are attached per request while compatible routes share endpoint
+TCP/TLS pools. Provider/model fallback remains the single retry owner.
+
 ### 5.2 `/invoke` Agentic Loop
 
 1. Validate the request and agent authorization.
@@ -284,6 +292,10 @@ The generic control-plane `push-config` endpoint forwards a caller-supplied
 partial document to gateway `POST /config`. Feature-specific gateway endpoints,
 such as `/config/quota`, are preferable when changing one subsystem because
 `POST /config` primarily rebuilds `SidecarConfig` and the Guard/tool registry.
+Provider routes cannot be sent through this generic path: the control plane
+rejects `provider_routes` so decrypted credentials never enter its offline
+queue. Route records use the encrypted provider-route API and the authenticated
+gateway config channel instead.
 
 ## 10. Quota and Budget Flow
 
@@ -381,6 +393,8 @@ enable and configure controls:
 - Require gateway OIDC authentication instead of trusting `X-Agent-Id`.
 - Set `OSTIARI_CONFIG_ADMIN_KEY` to protect `/config/*`.
 - Set `OSTIARI_ENCRYPTION_KEY` so stored provider keys survive restarts.
+- Apply the provider-route migration and push the complete route catalog from
+  the Providers page after configuring or rotating credentials.
 - Set a trace ingest key after wiring the same value into gateway trace
   reporting; the current reporter does not send `X-Ingest-Key` automatically.
 - Restrict CORS origins.

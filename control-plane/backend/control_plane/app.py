@@ -27,6 +27,7 @@ from control_plane.routers import (
     model_config,
     payments,
     policies,
+    provider_routes,
     providers,
     proxy,
     quotas,
@@ -271,6 +272,7 @@ app.include_router(experiments.router)
 app.include_router(model_config.router)
 app.include_router(routing_controls.router)
 app.include_router(providers.router)
+app.include_router(provider_routes.router)
 app.include_router(quotas.router)
 app.include_router(proxy.router)
 app.include_router(sandbox.router)
