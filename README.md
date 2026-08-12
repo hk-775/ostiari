@@ -5,7 +5,7 @@ agent, intercepts each tool call, scores its risk, enforces your policies, and
 records everything — across any framework, from one central control plane.
 
 [![CI](https://github.com/hk-775/ostiari/actions/workflows/ci.yml/badge.svg)](https://github.com/hk-775/ostiari/actions/workflows/ci.yml)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![License: MIT-0](https://img.shields.io/badge/License-MIT--0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
 ---
@@ -319,4 +319,4 @@ docs/                 # architecture + the control plane guide
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE).
+MIT-0 — see [LICENSE](LICENSE).
