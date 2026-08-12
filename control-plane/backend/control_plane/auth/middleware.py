@@ -77,9 +77,21 @@ _MACHINE_ROUTES = (
     ("POST", re.compile(r"^/api/quotas/alerts$")),
 )
 
+_OPERATOR_VISIBLE_MACHINE_ROUTES = (
+    ("GET", re.compile(r"^/api/gateways/[^/]+/(config-bundle|spend)$")),
+    ("GET", re.compile(r"^/api/approvals/[^/]+$")),
+)
+
 
 def _is_machine_route(method: str, path: str) -> bool:
     return any(method == allowed and pattern.fullmatch(path) for allowed, pattern in _MACHINE_ROUTES)
+
+
+def _is_operator_visible_machine_route(method: str, path: str) -> bool:
+    return any(
+        method == allowed and pattern.fullmatch(path)
+        for allowed, pattern in _OPERATOR_VISIBLE_MACHINE_ROUTES
+    )
 
 
 def _valid_service_key(request: Request) -> bool:
@@ -96,21 +108,35 @@ class AuthMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        if (
+            path.startswith("/api/")
+            and _is_machine_route(request.method, path)
+            and _valid_service_key(request)
+        ):
+            request.state.machine_authenticated = True
+            return await call_next(request)
+
         if not _require_auth_enabled():
             return await call_next(request)
 
-        path = request.url.path
         # Only guard the API surface; static/non-/api paths pass through.
         if not path.startswith("/api/") or _is_public(path):
             return await call_next(request)
 
-        if _is_machine_route(request.method, path):
-            if _valid_service_key(request):
-                request.state.machine_authenticated = True
-                return await call_next(request)
-            # Some lifecycle resources are also visible to signed-in operators.
-            # A missing service key may therefore continue to normal Bearer auth;
-            # an invalid request still fails below.
+        if (
+            _is_machine_route(request.method, path)
+            and not _is_operator_visible_machine_route(request.method, path)
+        ):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Gateway service authentication required"},
+                headers={"WWW-Authenticate": "X-Ostiari-Service-Key"},
+            )
+
+        # Some lifecycle resources are also visible to signed-in operators.
+        # A missing service key may therefore continue to normal Bearer auth;
+        # an invalid request still fails below.
 
         auth = request.headers.get("Authorization", "")
         token = auth.removeprefix("Bearer ") if auth.startswith("Bearer ") else ""
@@ -121,7 +147,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 content={"detail": "Authentication required"},
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
-            if role == "viewer":
-                return JSONResponse(status_code=403, content={"detail": "Viewer role is read-only"})
+        if (
+            request.method in {"POST", "PUT", "PATCH", "DELETE"}
+            and role == "viewer"
+        ):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Viewer role is read-only"},
+            )
         return await call_next(request)

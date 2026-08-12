@@ -57,6 +57,7 @@ def test_upgrade_head_creates_org_schema():
             }
             assert {"experiment_name", "experiment_variant"} <= usage_cols
             assert "sandbox_runs" in tables
+            assert "provider_routes" in tables
             sandbox_cols = {
                 r[1] for r in con.execute("PRAGMA table_info(sandbox_runs)")
             }
@@ -71,6 +72,26 @@ def test_upgrade_head_creates_org_schema():
                 "tool_calls",
                 "completed_at",
             } <= sandbox_cols
+            route_cols = {
+                r[1] for r in con.execute("PRAGMA table_info(provider_routes)")
+            }
+            assert {
+                "org_id",
+                "route_id",
+                "provider",
+                "endpoint",
+                "auth_type",
+                "private_config_encrypted",
+                "allowed_models",
+                "weight",
+                "priority",
+                "max_concurrency",
+                "capacity_group",
+                "capacity_limit",
+                "max_connections",
+                "max_connections_per_host",
+                "keepalive_timeout",
+            } <= route_cols
             con.close()
         finally:
             _restore_env(prev)

@@ -49,6 +49,15 @@ def _redact_credentials(cfg: dict[str, Any]) -> None:
             for k, v in list(creds.items()):
                 if v and k not in _NON_SECRET_CRED_FIELDS:
                     creds[k] = "***REDACTED***"
+    routes = cfg.get("provider_routes")
+    if isinstance(routes, list):
+        for route in routes:
+            if not isinstance(route, dict):
+                continue
+            for field in ("credentials", "extra_headers", "extra_params"):
+                values = route.get(field)
+                if isinstance(values, dict):
+                    route[field] = dict.fromkeys(values, "***REDACTED***")
 
 
 def _fail_closed_on_cp_loss() -> bool:
@@ -803,6 +812,10 @@ def create_app(
             llm_mod = module_registry.get("llm_gateway")
             if llm_mod is not None:
                 llm_mod.apply_model_registry(initial_config.model_registry)
+        if "provider_routes" in initial_config.model_fields_set:
+            llm_mod = module_registry.get("llm_gateway")
+            if llm_mod is not None:
+                llm_mod.apply_provider_routes(initial_config.provider_routes)
         _check_axon(module_registry)
 
     # ─── Tool Execution Endpoints ─────────────────────────────────────────
@@ -1400,6 +1413,8 @@ def create_app(
                 llm_mod.apply_task_classification(config.task_classification)
             if "model_registry" in config.model_fields_set:
                 llm_mod.apply_model_registry(config.model_registry)
+            if "provider_routes" in config.model_fields_set:
+                llm_mod.apply_provider_routes(config.provider_routes)
         # Update trace reporter if control_plane_url changed
         if config.control_plane_url:
             trace_reporter.configure(config.control_plane_url, config.sidecar_id)

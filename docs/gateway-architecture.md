@@ -460,9 +460,11 @@ UI calls:
 | Gateway registration + heartbeat | `_apply_bundle` (not `/config`) | Works — it configures each gate explicitly and touches only the keys present, including `mode` and `ab_experiments`. |
 
 The remaining trap is the generic `push-config` route for custom partial callers;
-the first-party Policies and Quotas pages avoid it. Verify gateway limits with
-`GET /config/quota` and agent limits with `GET /config/agent-auth`; `GET /config`
-only shows the stored whole-document configuration.
+the first-party Policies and Quotas pages avoid it. Provider-route catalogs are
+rejected by this generic path and must use the encrypted route API. Verify
+gateway limits with `GET /config/quota` and agent limits with
+`GET /config/agent-auth`; `GET /config` only shows the stored whole-document
+configuration.
 
 > **Rule of thumb: `/config` is for a full bundle from a system that owns the
 > whole document. Use the `/config/<gate>` endpoints for anything partial.** The

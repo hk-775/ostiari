@@ -325,6 +325,59 @@ class AuditLog(Base):
     entry_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
+class ProviderRouteRecord(Base):
+    """Durable concrete LLM provider credential/endpoint route."""
+
+    __tablename__ = "provider_routes"
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id",
+            "route_id",
+            name="uq_provider_routes_org_route_id",
+        ),
+        CheckConstraint(
+            "weight > 0",
+            name="ck_provider_routes_positive_weight",
+        ),
+        CheckConstraint(
+            "priority >= 0 AND max_concurrency > 0 AND capacity_limit >= 0",
+            name="ck_provider_routes_capacity",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64), default=DEFAULT_ORG, index=True, nullable=False
+    )
+    route_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    provider: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    endpoint: Mapped[str] = mapped_column(String(512), default="")
+    auth_type: Mapped[str] = mapped_column(String(32), default="api_key")
+    # Credentials, custom headers, and transport parameters are one encrypted
+    # document so proxy URLs or header tokens cannot leak through plain columns.
+    private_config_encrypted: Mapped[str] = mapped_column(Text, default="")
+    region: Mapped[str] = mapped_column(String(64), default="")
+    allowed_models: Mapped[list] = mapped_column(JSON, default=list)
+    weight: Mapped[float] = mapped_column(Float, default=1.0)
+    priority: Mapped[int] = mapped_column(Integer, default=0)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    max_concurrency: Mapped[int] = mapped_column(Integer, default=100)
+    capacity_group: Mapped[str] = mapped_column(String(128), default="")
+    capacity_limit: Mapped[int] = mapped_column(Integer, default=0)
+    connect_timeout: Mapped[float] = mapped_column(Float, default=30.0)
+    read_timeout: Mapped[float] = mapped_column(Float, default=120.0)
+    max_connections: Mapped[int] = mapped_column(Integer, default=100)
+    max_connections_per_host: Mapped[int] = mapped_column(Integer, default=100)
+    keepalive_timeout: Mapped[float] = mapped_column(Float, default=30.0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
 class SandboxRun(Base):
     """Metadata for one browser-isolated Sandbox code execution.
 

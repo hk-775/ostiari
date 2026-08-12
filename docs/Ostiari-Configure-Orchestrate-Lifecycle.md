@@ -64,7 +64,8 @@ What was at risk was narrow but real: the register bundle carries the current st
 config anyway, so a queued policy edit that was also persisted arrived via
 `bundle["policy"]`. Only a delta that was *never* stored was lost — which is exactly
 what `POST /{id}/push-config` sends, since it forwards an arbitrary operator-supplied
-body without persisting it. First-party pages use persisted, dedicated routes;
+body without persisting it, except for the reserved `provider_routes` catalog,
+which that endpoint rejects. First-party pages use persisted, dedicated routes;
 this caveat applies to custom callers of `push-config`.
 
 ### 3. Gateway Lifecycle
@@ -123,19 +124,31 @@ interchangeable:
 | Quotas page **Push** | `POST /api/quotas/{id}/push` | stored gateway quota | yes |
 | Agent Quotas **Save & Push** | `POST /api/quotas/{id}/push` | complete stored agent-quota map for the gateway | yes |
 | Models page **Push Registry** | `POST /api/models/push` | tenant model/provider catalog for each LLM-enabled gateway | yes |
+| Providers page **Push Routes** | `POST /api/providers/routes/push` | complete encrypted-at-rest credential/endpoint route catalog resolved for each LLM-enabled gateway | yes |
 | Models page routing controls | `PUT /api/routing-controls/{id}/...` | stored task rules or reset schedule | yes |
 | Agents **Save & Push** | `POST /api/agent-routing` | stored per-agent model policy | yes |
 
 `push-config` forwards whatever body a custom caller gives it to the gateway's
 `POST /config`. Tools, policy, mode, and the base document use replacement
-semantics; explicitly present runtime gates are applied live. First-party pages
-use dedicated partial endpoints for individual controls. Full detail and
-reproductions: [gateway-architecture.md → The /config partial-push
+semantics; explicitly present runtime gates are applied live. Provider routes
+are the exception: `provider_routes` is rejected here so credentials cannot be
+placed in the plaintext offline queue. Manage them through
+`/api/providers/{provider}/routes` and distribute them with
+`/api/providers/routes/push`. First-party pages use dedicated partial endpoints
+for individual controls. Full detail and reproductions:
+[gateway-architecture.md → The /config partial-push
 trap](gateway-architecture.md#the-config-partial-push-trap).
 
 Prefer the **Gateways page** Push (or `POST /api/gateways/push-all`): it rebuilds
 the bundle from stored state, so it can't clear anything or leave the gateway
 holding config the control plane doesn't know about.
+
+`GET /api/gateways/{id}/config-bundle` returns provider-route credentials only
+when called with the configured `X-Ostiari-Service-Key`. Browser/operator calls
+receive route metadata and secret-presence flags, never credentials, custom
+headers, or private route parameters. When API authentication is enabled,
+gateway registration and heartbeat endpoints are machine-only and require the
+same service key because their reconnect responses can carry a resolved bundle.
 
 **Enforcement mode survives a restart.** `PUT /api/gateways/{id}/mode` persists the
 mode in the gateway record and pushes it live, `_build_config` always sends `mode`
@@ -171,7 +184,7 @@ stored record, not the gateway's live state — so verify with the gateway's
 | **Quotas** | Set limits | Per-gateway and per-agent limits, enforced at runtime by gateway |
 | **Model access** | Control who uses what | Per-agent model/provider restrictions |
 | **Budgets** | Track and enforce | Per-agent spend tracking, alerts, auto-reset |
-| **Providers** | Configure keys | Store encrypted API keys, test connectivity |
+| **Providers** | Configure execution routes | Store encrypted credentials, assign endpoints/regions, set adaptive weights and shared capacity, test connectivity, and hot-push the complete catalog |
 | **Traces** | Collect and display | Gateways fire-and-forget traces to CP |
 | **Costs** | Aggregate and alert | Per-model, per-agent cost attribution |
 | **Health** | Monitor | Heartbeat-based health tracking |
