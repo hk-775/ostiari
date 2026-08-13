@@ -36,7 +36,15 @@ async def echo_app(scope, receive, send):
     await send({"type": "http.response.body", "body": body})
 
 
-async def drive(mw, messages, *, headers=(), scope_type="http", client=("1.2.3.4", 0)):
+async def drive(
+    mw,
+    messages,
+    *,
+    headers=(),
+    scope_type="http",
+    client=("1.2.3.4", 0),
+    state=None,
+):
     """Run one request through `mw`, returning the ASGI messages it sent."""
     sent: list[dict] = []
     pending = iter(messages)
@@ -47,8 +55,16 @@ async def drive(mw, messages, *, headers=(), scope_type="http", client=("1.2.3.4
     async def send(message):
         sent.append(message)
 
-    await mw({"type": scope_type, "headers": list(headers), "client": client},
-             receive, send)
+    await mw(
+        {
+            "type": scope_type,
+            "headers": list(headers),
+            "client": client,
+            "state": state or {},
+        },
+        receive,
+        send,
+    )
     return sent
 
 
@@ -176,6 +192,26 @@ class TestRateLimit:
         assert (await drive(mw, ONE_REQUEST, headers=[(b"x-agent-id", b"A")]))[0]["status"] == 429
         assert (await drive(mw, ONE_REQUEST, headers=[(b"x-agent-id", b"B")]))[0]["status"] == 200
         assert (await drive(mw, ONE_REQUEST, client=("9.9.9.9", 0)))[0]["status"] == 200
+
+    @pytest.mark.asyncio
+    async def test_verified_agent_identity_overrides_caller_header(self):
+        mw = RateLimitMiddleware(echo_app, rpm=1)
+        assert (
+            await drive(
+                mw,
+                ONE_REQUEST,
+                headers=[(b"x-agent-id", b"spoof-a")],
+                state={"agent_id": "verified"},
+            )
+        )[0]["status"] == 200
+        assert (
+            await drive(
+                mw,
+                ONE_REQUEST,
+                headers=[(b"x-agent-id", b"spoof-b")],
+                state={"agent_id": "verified"},
+            )
+        )[0]["status"] == 429
 
     @pytest.mark.asyncio
     async def test_window_slides_so_the_budget_recovers(self, monkeypatch):

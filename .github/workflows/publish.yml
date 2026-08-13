@@ -5,10 +5,15 @@ on:
     types: [published]
 
 permissions:
+  contents: write
   id-token: write
 
 jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+
   publish:
+    needs: verify
     runs-on: ubuntu-latest
     environment: pypi
     steps:
@@ -18,4 +23,12 @@ jobs:
           python-version: "3.12"
       - run: pip install hatchling build
       - run: python -m build
+      - name: Generate release SBOM
+        run: |
+          pip install .
+          python tools/python_sbom.py python-sbom.cdx.json
       - uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Attach SBOM to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" python-sbom.cdx.json --clobber

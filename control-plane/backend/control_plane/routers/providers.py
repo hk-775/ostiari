@@ -8,7 +8,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from control_plane.auth.dependencies import get_current_org, require_role
 from control_plane.database import get_db
 from control_plane.models.database import ProviderRouteRecord
+from control_plane.services.audit_service import actor_of, audit
+from control_plane.services.runtime_state import (
+    delete_runtime_state,
+    put_runtime_state,
+)
 
 log = logging.getLogger("control_plane.routers.providers")
 
@@ -247,7 +252,13 @@ async def list_providers(org: str = Depends(get_current_org)):
 
 
 @router.post("", response_model=ProviderResponse)
-async def add_provider(body: ProviderCreate, _user=_admin_dep, org: str = Depends(get_current_org)):
+async def add_provider(
+    body: ProviderCreate,
+    request: Request,
+    _user=_admin_dep,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+):
     """Add a new provider configuration (within the caller's org)."""
     if body.name in _providers[org]:
         raise HTTPException(status_code=409, detail=f"Provider '{body.name}' already exists")
@@ -262,11 +273,42 @@ async def add_provider(body: ProviderCreate, _user=_admin_dep, org: str = Depend
         enabled=body.enabled,
     )
     _providers[org][body.name] = rec
+    await put_runtime_state(
+        db,
+        org,
+        "providers",
+        body.name,
+        rec.model_dump(mode="json"),
+    )
+    await audit.log(
+        db,
+        actor_of(request),
+        "create",
+        "provider",
+        body.name,
+        {
+            "api_base_url": body.api_base_url,
+            "region": body.region,
+            "project_id": body.project_id,
+            "tenant_id": body.tenant_id,
+            "enabled": body.enabled,
+            "has_api_key": bool(body.api_key),
+        },
+        org=org,
+    )
+    await db.commit()
     return _to_response(rec)
 
 
 @router.put("/{name}", response_model=ProviderResponse)
-async def update_provider(name: str, body: ProviderUpdate, _user=_admin_dep, org: str = Depends(get_current_org)):
+async def update_provider(
+    name: str,
+    body: ProviderUpdate,
+    request: Request,
+    _user=_admin_dep,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+):
     """Update an existing provider (within the caller's org)."""
     if name not in _providers[org]:
         raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
@@ -286,12 +328,33 @@ async def update_provider(name: str, body: ProviderUpdate, _user=_admin_dep, org
         rec.enabled = body.enabled
 
     _providers[org][name] = rec
+    await put_runtime_state(
+        db,
+        org,
+        "providers",
+        name,
+        rec.model_dump(mode="json"),
+    )
+    changes = body.model_dump(exclude_unset=True, mode="json")
+    if "api_key" in changes:
+        changes["api_key"] = "[updated]" if changes["api_key"] else "[cleared]"
+    await audit.log(
+        db,
+        actor_of(request),
+        "update",
+        "provider",
+        name,
+        changes,
+        org=org,
+    )
+    await db.commit()
     return _to_response(rec)
 
 
 @router.delete("/{name}")
 async def delete_provider(
     name: str,
+    request: Request,
     _user=_admin_dep,
     db: AsyncSession = Depends(get_db),
     org: str = Depends(get_current_org),
@@ -311,11 +374,27 @@ async def delete_provider(
         )
     )
     del _providers[org][name]
+    await delete_runtime_state(db, org, "providers", name)
+    await audit.log(
+        db,
+        actor_of(request),
+        "delete",
+        "provider",
+        name,
+        {},
+        org=org,
+    )
+    await db.commit()
     return {"deleted": name}
 
 
 @router.post("/{name}/test")
-async def test_provider(name: str, _user=_admin_dep, org: str = Depends(get_current_org)):
+async def test_provider(
+    name: str,
+    _user=_admin_dep,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+):
     """Test connectivity to a provider by making a minimal API call."""
     if name not in _providers[org]:
         raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
@@ -526,6 +605,14 @@ async def test_provider(name: str, _user=_admin_dep, org: str = Depends(get_curr
     if success:
         rec.models_available = _KNOWN_MODELS.get(name, [])
     _providers[org][name] = rec
+    await put_runtime_state(
+        db,
+        org,
+        "providers",
+        name,
+        rec.model_dump(mode="json"),
+    )
+    await db.commit()
 
     return {
         "name": name,

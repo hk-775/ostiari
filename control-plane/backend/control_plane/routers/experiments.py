@@ -23,6 +23,10 @@ from control_plane.models.database import Gateway, UsageRecord
 from control_plane.models.scoping import get_scoped, scoped
 from control_plane.services.audit_service import actor_of, audit
 from control_plane.services.push_service import gateway_config_headers
+from control_plane.services.runtime_state import (
+    delete_runtime_state,
+    put_runtime_state,
+)
 
 router = APIRouter(prefix="/api/experiments", tags=["experiments"])
 
@@ -51,7 +55,7 @@ class ExperimentResults(BaseModel):
     model_b: dict
 
 
-# In-memory store (production would use DB), scoped per org (tenant):
+# Hot cache over runtime_state_records, scoped per org (tenant):
 # org -> name -> experiment. Single-org dev/demo uses only the "default" org.
 _experiments: dict[str, dict[str, ExperimentResponse]] = defaultdict(dict)
 
@@ -119,6 +123,13 @@ async def create_experiment(
         traffic_pct_b=body.traffic_pct_b, gateway_id=body.gateway_id,
     )
     _experiments[org][body.name] = exp
+    await put_runtime_state(
+        db,
+        org,
+        "experiments",
+        exp.name,
+        exp.model_dump(mode="json"),
+    )
     pushed, err = await _push(org, exp.gateway_id, db)
     # An experiment silently sends a share of live traffic to a different model —
     # who started it, on which gateway, and at what split all belong in the trail.
@@ -142,6 +153,7 @@ async def delete_experiment(
         raise HTTPException(status_code=404, detail="Experiment not found")
     gateway_id = exp.gateway_id
     del _experiments[org][name]
+    await delete_runtime_state(db, org, "experiments", name)
     # Push after the delete so the gateway receives the set without this one.
     pushed, err = await _push(org, gateway_id, db)
     await audit.log(db, actor_of(request), "delete", "experiment", name,
@@ -161,6 +173,13 @@ async def toggle_experiment(
     if not exp:
         raise HTTPException(status_code=404, detail="Experiment not found")
     exp.enabled = not exp.enabled
+    await put_runtime_state(
+        db,
+        org,
+        "experiments",
+        exp.name,
+        exp.model_dump(mode="json"),
+    )
     pushed, err = await _push(org, exp.gateway_id, db)
     await audit.log(db, actor_of(request), "toggle", "experiment", name,
                     {"enabled": exp.enabled, "gateway_id": exp.gateway_id,

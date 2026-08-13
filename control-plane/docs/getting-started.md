@@ -1355,11 +1355,9 @@ curl -X DELETE http://localhost:8400/api/models/my-fine-tuned-model
 curl -X POST http://localhost:8400/api/models/push
 ```
 
-> The registry is **in-memory**, keyed per org, and re-seeded at import time —
-> `seed_models()` runs at the bottom of `model_config.py` and is *not* gated by
-> `OSTIARI_NO_DEMO`, so the 18 models are present even on a clean install. Edits
-> survive a restart only via the JSON state file (see [Data
-> Persistence](#data-persistence)).
+> The registry is tenant-scoped and SQL-backed. `seed_models()` is gated by
+> `OSTIARI_NO_DEMO`, so a clean install starts empty. Every create, update, and
+> delete is written through to the database before the API returns.
 
 ### Routing strategies
 
@@ -1800,9 +1798,8 @@ curl -X POST http://localhost:8400/api/experiments/sonnet-vs-mini/push
 curl http://localhost:8400/api/experiments
 ```
 
-Creating a duplicate name returns **409**. Experiments live in memory but *are*
-saved to `state.json` on graceful shutdown and restored on startup, so they
-survive a clean restart — but not a `kill -9`.
+Creating a duplicate name returns **409**. Experiments write through to SQL and
+are restored into the hot cache on startup, including after an ungraceful stop.
 
 ---
 
@@ -1885,10 +1882,9 @@ curl -X DELETE http://localhost:8400/api/agents/billing-agent
 ```
 
 `POST` is an upsert keyed by `name` — re-posting an existing name silently
-replaces the record (no 409). The live registry is in memory and is serialized
-to `state.json` on graceful shutdown, so registered and discovery-onboarded
-agents survive a normal restart. A hard process kill can still lose changes
-made since the previous state write.
+replaces the record (no 409). The live registry is a hot cache over SQL, and
+registered or discovery-onboarded agents are persisted in the same transaction
+as their audit event.
 
 ### Via the UI
 
@@ -2048,11 +2044,10 @@ curl "http://localhost:8400/api/traces/recent?limit=50"
 > It's `len(traces)` after applying `limit`, so it never exceeds `limit` and
 > tells you nothing about how many traces exist. Don't paginate on it.
 
-> **Traces are in memory only.** Each org keeps a `deque(maxlen=200)` — the 201st
-> trace evicts the oldest, and a control-plane restart loses all of them. There is
-> no traces table in SQLite. For durable governance history use the audit log (which
-> *is* persisted) or configure the OTLP exporter to ship spans to a real backend.
-> `/api/traces/spans` groups the same in-memory buffer by `parent_trace_id`.
+> Traces are sanitized and upserted into `trace_records` before entering the
+> bounded per-org hot cache used for WebSocket fan-out. A restart rebuilds that
+> cache from SQL. Configure the OTLP exporter when you also need an external
+> retention, search, or SIEM backend.
 
 ---
 
@@ -2114,9 +2109,9 @@ Omitting `allowed_models` or `allowed_providers` means *unrestricted*, not empty
 `None` short-circuits the check to `True`. Only an explicit list restricts.
 
 `budget_usd` is how you get a **per-agent** budget; quotas can only be pushed at
-gateway scope (Step 11). Spend is tracked in-process and **preserved across a
-config hot-reload** — re-pushing `agent_auth` doesn't reset an agent's
-`spend_usd` — but it is lost on gateway restart.
+gateway scope (Step 11). With the production-required Redis store, spend and
+reservations are shared across replicas and survive a gateway restart. A
+development gateway without Redis keeps only process-local spend.
 
 ### Future: JWT Override
 
@@ -2145,15 +2140,15 @@ The gateway calculates LLM cost locally (no round-trip to control plane) and enf
 
 > **Where a budget alert goes.** The gateway subscribes to `on_budget_alert` at
 > startup and reports each crossing to the control plane at
-> `POST /api/quotas/alerts` — the same unauthenticated gateway ingest path traces
-> and payments use, so the org is resolved from the reporting gateway's row, never
-> from the payload. `record_spend` is synchronous, so the report is handed to the
+> `POST /api/quotas/alerts` using the gateway service credential. The org is
+> resolved from the reporting gateway's row, never from the payload.
+> `record_spend` is synchronous, so the report is handed to the
 > running event loop as a task; if there's no loop (a sync script or test), the
 > alert is logged and the spend still books.
 >
-> Alerts are held **in memory, newest first, capped at 200 per org** — an alert is
-> a notification, and the spend behind it is already durable in `usage_records`.
-> They do not survive a control-plane restart.
+> Alerts are SQL-backed and restored into a bounded newest-first hot cache.
+> Clearing the alert list deletes the durable notification records; the spend
+> behind them remains in `usage_records`.
 >
 > ```bash
 > curl localhost:8400/api/quotas/alerts            # list this org's alerts
@@ -2302,34 +2297,19 @@ an audit-reader role.
 
 ## Data Persistence
 
-The control plane persists data in two places — both under `control-plane/data/`,
-resolved by `env.py::data_dir()` and overridable with `OSTIARI_DATA_DIR`:
+The control plane has one durable source of truth:
 
-- **SQLite database** at `control-plane/data/control_plane.db` — 12 tables:
-  `organizations`, `gateways`, `tools`, `policies`, `mcp_servers`, `usage_records`,
-  `a2a_agents`, `token_pools`, `reconciliation_records`, `wallets`,
-  `payment_records`, `audit_logs`.
-- **JSON state file** at `control-plane/data/state.json` — nine in-memory stores:
-  `quotas`, `budget_alerts`, `experiments`, `models`, `agent_routing`, `agents`,
-  `providers`, `roi_cost_model`, and `token_broker_config`. Each record is
-  tagged with `_org` where needed so per-org stores rebuild correctly.
+- **PostgreSQL in production**, required by startup posture checks.
+- **SQLite in development**, normally at `control-plane/data/control_plane.db`.
 
-**How it works:**
-- On graceful shutdown (Ctrl+C or SIGTERM), the lifespan writes those stores to `state.json`
-- On startup, it restores from `state.json` — before the `OSTIARI_NO_DEMO` check, which is why a "clean" start can still come back with old quotas (see the caveat in Step 1)
-- SQLite is the source of truth for gateways, tools, policies, MCP servers, A2A agents, usage, payments, and audit
+Fleet resources, runtime configuration, encrypted credentials, approvals,
+sanitized traces, SSO state, audit entries, and offline config updates are all
+SQL-backed. Small in-memory structures accelerate reads and WebSocket fan-out.
+Older `state.json` files are imported once only when the runtime-state table is
+empty; the application no longer writes them.
 
-> **What does *not* survive a restart:**
-> - **Traces** — in-memory `deque(maxlen=200)` per org, no table, no state.json entry. The Live Traces view starts empty (or re-seeded with demo traces) after every restart.
-> - **Approvals** — the HITL queue is in-memory too.
->
-> Restored on reconnect, because the registration bundle carries them: a gateway's
-> **enforcement mode** and its **A/B experiments**. Both used to be lost — a shadow
-> gateway came back enforcing, and a running experiment silently ended.
-
-For production, back up `control_plane.db` **and** `state.json` — the DB alone
-loses every quota, experiment, and model config. Ship traces to a durable backend
-via the OTLP exporter if you need retained governance history.
+For production, back up PostgreSQL with PITR and test restores. Export traces to
+OTLP as well when an external retention/search system is required.
 
 ---
 
@@ -2427,18 +2407,18 @@ surfaces as a 500 rather than being passed through.
 | MCP stdio: command not found | Binary not in PATH | Install the MCP server binary in the gateway image |
 | Cost dashboard shows $0 | LLM Gateway not enabled on gateways | Enable `llm_gateway` module in gateway config |
 | Traces not appearing | Gateway not reporting to control plane, or `OSTIARI_INGEST_KEY` mismatch | Verify gateway knows the control plane URL; if ingest auth is on, both sides need the same key (ingest is *required* in production) |
-| Traces vanished after a restart | Traces are in-memory only (200 per org, no table) | Expected — use the audit log or an OTLP backend for durable history |
+| Traces vanished after a restart | The database migration was not applied or the application is pointed at a different database | Run `alembic upgrade head`, verify `DATABASE_URL`, and confirm the `trace_records` table is populated |
 | Traces missing /invoke tool calls | Old gateway version | Update gateway — trace reporter in executor is now automatic |
 | Experiment results empty | Not enough time elapsed | Wait for traffic to accumulate, check period_days |
 | Quota not enforced | Quota created but not pushed, **or** it isn't gateway-scoped | Click "Push to Gateway"; a non-gateway scope returns 200 `{"status": "skipped"}` — use `agent_auth.budget_usd` for per-agent budgets |
 | Agent gets 429 unexpectedly | Rate limit, budget, **or** a disallowed model — all three are 429 | Read `limit_type` in the body (`rate_limit` / `budget` / `model_restriction`); check quota config and budget usage in Costs |
 | Budget looks exhausted after a gateway restart, or resets unexpectedly | Spend lives in the gateway, not the control plane | Set `REDIS_ENDPOINT` so spend and reservations survive restarts and are shared fleet-wide |
-| No 80% budget warning reached Slack/email | There's no webhook or email integration — alerts land in the control plane, not in a chat client | Poll `GET /api/quotas/alerts` (in-memory, newest first, 200 per org) and clear with `DELETE`; for paging, register your own `on_budget_alert` callback at gateway startup |
+| No 80% budget warning reached Slack/email | There's no webhook or email integration — alerts land in the control plane, not in a chat client | Poll `GET /api/quotas/alerts` and clear with `DELETE`; for paging, register your own `on_budget_alert` callback at gateway startup |
 | Two budget alerts from one call | A single spend can cross two thresholds at once ($9 on a $10 budget crosses 80% and 90%) | Expected — each threshold still fires only once per budget period |
 | Budget alerts stopped once Redis was enabled | Fixed — the threshold check used to read the process-local spend, which stays `0.0` when a shared store is booking it | Update the gateway; verify with `GET /config/quota` reporting `spend_scope: "fleet"` |
 | Agent gets shorter responses | Max tokens cap is active | Check quota's `max_tokens_per_request` (silent cap, not an error). Only applies on `/invoke` — the `/v1/*` shims aren't capped |
 | `/invoke` returns 200 but the answer says "Request blocked by quota" | `/invoke` reports quota refusals in the body, not the status code | Don't gate on status alone for `/invoke`; check the `response` text or use `/tool/{action}`, which does return 429 |
-| Sandbox Chat/Scenarios/A2A not connecting | Those tabs target the demo `crm-agent` gateway | Start `crm-agent`; the Code tab can select another registered gateway |
+| Sandbox Chat/Scenarios/A2A not connecting | The selected gateway is offline or lacks the requested module/tool | Select a healthy registered gateway and push its LLM, tool, MCP, or A2A configuration |
 | Sandbox Code reports `Sandbox runtime failed to initialize` | Browser CSP or enterprise policy blocked the nested Blob Worker | Allow scripts and Blob Workers for the dashboard origin; network access remains denied inside the run |
 | Sandbox Code returns 403/429 | Gateway policy or quota rejected `sandbox-code` | Grant that agent only the intended tools/limits, then rerun |
 | Sandbox Code times out | The server-issued runtime limit elapsed | Reduce work or raise `OSTIARI_SANDBOX_TIMEOUT_MS` within its 60-second cap |

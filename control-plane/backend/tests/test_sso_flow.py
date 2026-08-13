@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from control_plane.auth import sso, sso_router
+from sqlalchemy import select
 
 pytestmark = pytest.mark.anyio
 
@@ -54,6 +56,15 @@ class TestSSOBrowserFlow:
         assert sso_router._pending_states["state-123"] == {
             "nonce": "nonce-123"
         }
+        from control_plane.database import async_session
+        from control_plane.models.database import SSOLoginState
+
+        async with async_session() as db:
+            rows = (await db.execute(select(SSOLoginState))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].state_digest == hashlib.sha256(b"state-123").hexdigest()
+        assert rows[0].state_digest != "state-123"
+        assert rows[0].nonce == "nonce-123"
 
     async def test_default_urls_match_local_backend_and_frontend(
         self, client, monkeypatch
@@ -130,6 +141,14 @@ class TestSSOBrowserFlow:
             "nonce": "nonce-123",
             "access_token": "idp-access",
         }
+
+        replay = await client.get(
+            "/api/auth/sso/callback",
+            params={"code": "replayed", "state": "state-123"},
+            follow_redirects=False,
+        )
+        replay_redirect = urlsplit(replay.headers["location"])
+        assert parse_qs(replay_redirect.query) == {"error": ["invalid_state"]}
 
         me = await client.get(
             "/api/auth/me",

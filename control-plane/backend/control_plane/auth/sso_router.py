@@ -4,18 +4,20 @@ Provides endpoints for initiating SSO login, handling the IdP callback,
 and reporting SSO configuration status to the frontend.
 """
 
+import hashlib
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.auth.models import User
+from control_plane.auth.roles import require_valid_role
 from control_plane.auth.service import create_access_token
 from control_plane.auth.sso import (
     detect_provider,
@@ -27,22 +29,66 @@ from control_plane.auth.sso import (
     validate_id_token,
 )
 from control_plane.database import get_db
-from control_plane.models.database import DEFAULT_ORG, Organization
+from control_plane.env import configured_org_id, is_production, tenant_is_allowed
+from control_plane.models.database import Organization, SSOLoginState
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth/sso", tags=["auth-sso"])
 
-# In-memory state store for CSRF protection.
-# In production with multiple instances, use Redis or a shared store.
+# Dev-only compatibility mirror. Durable state is stored by digest in SQL.
 _pending_states: dict[str, dict] = {}
+_STATE_TTL_SECONDS = 600
 
 # Default role for new SSO users (configurable via env var)
-DEFAULT_ROLE = os.environ.get("OIDC_DEFAULT_ROLE", "viewer")
+DEFAULT_ROLE = require_valid_role(
+    os.environ.get("OIDC_DEFAULT_ROLE", "viewer"),
+    source="OIDC_DEFAULT_ROLE",
+)
 
 def _frontend_url() -> str:
     """Browser-reachable dashboard origin used after the IdP callback."""
     return os.environ.get("OSTIARI_FRONTEND_URL", "http://localhost:9000").rstrip("/")
+
+
+def _state_digest(state: str) -> str:
+    return hashlib.sha256(state.encode()).hexdigest()
+
+
+async def _store_state(db: AsyncSession, state: str, nonce: str) -> None:
+    now = datetime.now(timezone.utc)
+    await db.execute(delete(SSOLoginState).where(SSOLoginState.expires_at <= now))
+    db.add(
+        SSOLoginState(
+            state_digest=_state_digest(state),
+            nonce=nonce,
+            expires_at=now + timedelta(seconds=_STATE_TTL_SECONDS),
+        )
+    )
+    await db.commit()
+    if not is_production():
+        _pending_states[state] = {"nonce": nonce}
+
+
+async def _consume_state(db: AsyncSession, state: str) -> str | None:
+    now = datetime.now(timezone.utc)
+    result = await db.execute(
+        delete(SSOLoginState)
+        .where(
+            SSOLoginState.state_digest == _state_digest(state),
+            SSOLoginState.expires_at > now,
+        )
+        .returning(SSOLoginState.nonce)
+    )
+    nonce = result.scalar_one_or_none()
+    await db.commit()
+    if nonce is not None:
+        _pending_states.pop(state, None)
+        return nonce
+    if is_production():
+        return None
+    pending = _pending_states.pop(state, None)
+    return pending.get("nonce") if pending else None
 
 
 def _frontend_redirect(
@@ -88,7 +134,7 @@ async def sso_config():
 
 
 @router.get("/login")
-async def sso_login():
+async def sso_login(db: AsyncSession = Depends(get_db)):
     """Initiate SSO login by redirecting to the IdP authorization endpoint.
 
     The browser is redirected to the IdP's login page. After authentication,
@@ -110,8 +156,7 @@ async def sso_login():
             query={"error": "provider_unavailable"},
         )
 
-    # Store state and nonce for validation in callback
-    _pending_states[state] = {"nonce": nonce}
+    await _store_state(db, state, nonce)
 
     return RedirectResponse(url=authorization_url, status_code=status.HTTP_302_FOUND)
 
@@ -149,14 +194,12 @@ async def sso_callback(
         )
 
     # Validate state (CSRF protection)
-    pending = _pending_states.pop(state, None)
-    if not pending:
+    nonce = await _consume_state(db, state)
+    if nonce is None:
         return _frontend_redirect(
             "/login",
             query={"error": "invalid_state"},
         )
-
-    nonce = pending["nonce"]
 
     config = get_oidc_config()
     if not config:
@@ -227,6 +270,12 @@ async def sso_callback(
     user = result.scalar_one_or_none()
 
     if user:
+        if not tenant_is_allowed(user.org_id):
+            logger.warning("User from disallowed tenant attempted SSO login: %s", email)
+            return _frontend_redirect(
+                "/login",
+                query={"error": "tenant_not_allowed"},
+            )
         if not user.is_active:
             logger.warning("Disabled user attempted SSO login: %s", email)
             return _frontend_redirect(
@@ -244,8 +293,9 @@ async def sso_callback(
     else:
         # New user — create with default or IdP-assigned role
         role = idp_role or DEFAULT_ROLE
-        if await db.get(Organization, DEFAULT_ORG) is None:
-            db.add(Organization(id=DEFAULT_ORG, name="Default Organization"))
+        org_id = configured_org_id()
+        if await db.get(Organization, org_id) is None:
+            db.add(Organization(id=org_id, name=org_id))
             await db.flush()
         user = User(
             email=email,
@@ -253,7 +303,7 @@ async def sso_callback(
             hashed_password="",  # SSO users don't have passwords
             role=role,
             is_active=True,
-            org_id=DEFAULT_ORG,
+            org_id=org_id,
             sso_provider=provider,
             sso_subject_id=subject_id,
             last_login=datetime.now(timezone.utc),
@@ -266,7 +316,7 @@ async def sso_callback(
         user.id,
         user.email,
         user.role,
-        org=user.org_id or DEFAULT_ORG,
+        org=user.org_id or configured_org_id(),
     )
 
     # The frontend consumes and removes the fragment before validating /auth/me.

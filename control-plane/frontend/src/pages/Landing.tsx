@@ -220,9 +220,9 @@ export function Landing() {
         <div className="rounded-xl border border-stone-200 bg-stone-50/50 p-5 mt-4">
           <p className="text-xs font-bold text-stone-700 uppercase tracking-wide mb-3">Lifecycle in action</p>
           <pre className="text-[10px] text-stone-600 leading-relaxed overflow-x-auto whitespace-pre">{`CP starts
-  ← Gateway 1 registers (POST /api/gateways/crm-agent/register)
-  ← Gateway 2 registers (POST /api/gateways/devops-agent/register)
-  ← Gateway 3 registers (POST /api/gateways/ops-agent/register)
+  ← Gateway 1 registers (POST /api/gateways/gateway-a/register)
+  ← Gateway 2 registers (POST /api/gateways/gateway-b/register)
+  ← Gateway 3 registers (POST /api/gateways/gateway-c/register)
 
 Running:
   ← Gateway 1 heartbeats every 30s

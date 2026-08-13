@@ -112,7 +112,9 @@ class MessagesProxy:
         if not isinstance(body, dict) or "messages" not in body:
             return _err(400, "invalid_request_error", "Missing 'messages'")
 
-        agent_id = request.headers.get("X-Agent-Id", "unknown")
+        from ostiari_gateway.oidc import request_agent_id
+
+        agent_id = request_agent_id(request)
         framework = request.headers.get("X-Framework", "claude-code")
         # Claude Code correlates a whole prompt's calls with x-claude-code-session-id;
         # fall back to it when the generic X-Session-Id isn't set. This is what lets

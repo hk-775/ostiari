@@ -7,6 +7,14 @@ import pytest
 from ostiari.net_guard import SSRFError, validate_public_url
 
 
+@pytest.fixture
+def public_dns(monkeypatch):
+    monkeypatch.setattr(
+        "ostiari.net_guard.socket.getaddrinfo",
+        lambda host, port: [(None, None, None, "", ("8.8.8.8", 0))],
+    )
+
+
 class TestAlwaysBlocked:
     def test_metadata_blocked_in_dev(self, monkeypatch):
         monkeypatch.delenv("OSTIARI_ENV", raising=False)
@@ -43,7 +51,7 @@ class TestDevPermissive:
         assert validate_public_url("http://localhost:9300/openapi.json")
         assert validate_public_url("http://127.0.0.1:8400/spec")
 
-    def test_public_allowed_in_dev(self, monkeypatch):
+    def test_public_allowed_in_dev(self, monkeypatch, public_dns):
         monkeypatch.delenv("OSTIARI_ENV", raising=False)
         assert validate_public_url("https://api.github.com/openapi.json")
 
@@ -66,6 +74,6 @@ class TestProductionStrict:
         monkeypatch.setenv("OSTIARI_SSRF_ALLOW", "10.0.0.0/8")
         assert validate_public_url("http://10.0.0.5/spec")
 
-    def test_public_still_allowed_in_prod(self, monkeypatch):
+    def test_public_still_allowed_in_prod(self, monkeypatch, public_dns):
         monkeypatch.setenv("OSTIARI_ENV", "production")
         assert validate_public_url("https://api.github.com/openapi.json")

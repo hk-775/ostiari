@@ -1,9 +1,7 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Network, Save, Check, ShieldAlert, Ban, Activity, ArrowRight, Bot } from "lucide-react";
-import { fetchAPI } from "../lib/api";
-
-const GATEWAY_PATH = "/api/proxy/gateway/crm-agent";
+import { api, fetchAPI } from "../lib/api";
 
 type EdgeState = "allow" | "deny" | "default";
 
@@ -46,11 +44,17 @@ interface TrustScores {
   baseline: number;
 }
 
-async function fetchTrust(): Promise<TrustScores> {
+function gatewayProxyPath(gatewayId: string): string {
+  return `/api/proxy/gateway/${encodeURIComponent(gatewayId)}`;
+}
+
+async function fetchTrust(gatewayId: string): Promise<TrustScores> {
   try {
-    return await fetchAPI<TrustScores>("/api/trust/scores");
+    return await fetchAPI<TrustScores>(
+      `/api/trust/scores?gateway_id=${encodeURIComponent(gatewayId)}`,
+    );
   } catch {
-    return { gateway_id: "crm-agent", enforced: false, agents: [], would_change_count: 0, baseline: 50 };
+    return { gateway_id: gatewayId, enforced: false, agents: [], would_change_count: 0, baseline: 50 };
   }
 }
 
@@ -62,9 +66,11 @@ interface A2AAgent {
   description: string;
 }
 
-async function fetchA2AAgents(): Promise<A2AAgent[]> {
+async function fetchA2AAgents(gatewayId: string): Promise<A2AAgent[]> {
   try {
-    const data = await fetchAPI<{ agents?: A2AAgent[] }>(`${GATEWAY_PATH}/config/a2a-agents`);
+    const data = await fetchAPI<{ agents?: A2AAgent[] }>(
+      `${gatewayProxyPath(gatewayId)}/config/a2a-agents`,
+    );
     return data.agents ?? [];
   } catch {
     return [];
@@ -85,12 +91,11 @@ const EMPTY: CrossAgentConfig = {
   trust_scores: {}, edges: {},
 };
 
-// Demo agent fleet shown when the gateway hasn't been configured yet.
-const DEMO_AGENTS = ["research", "coder", "db", "payments", "ops"];
-
-async function fetchConfig(): Promise<CrossAgentConfig> {
+async function fetchConfig(gatewayId: string): Promise<CrossAgentConfig> {
   try {
-    const data = await fetchAPI<CrossAgentConfig>(`${GATEWAY_PATH}/config/cross-agent`);
+    const data = await fetchAPI<CrossAgentConfig>(
+      `${gatewayProxyPath(gatewayId)}/config/cross-agent`,
+    );
     return { ...EMPTY, ...data };
   } catch {
     return { ...EMPTY };
@@ -106,9 +111,23 @@ function edgeState(cfg: CrossAgentConfig, caller: string, callee: string): EdgeS
 
 export function ProtocolGovernance() {
   const [cfg, setCfg] = useState<CrossAgentConfig>(EMPTY);
-  const [agents, setAgents] = useState<string[]>(DEMO_AGENTS);
+  const [agents, setAgents] = useState<string[]>([]);
+  const [gatewayId, setGatewayId] = useState("");
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState("");
+
+  const { data: gateways = [] } = useQuery({
+    queryKey: ["gateways"],
+    queryFn: api.gateways.list,
+  });
+
+  useEffect(() => {
+    setGatewayId((current) => (
+      gateways.some((gateway) => gateway.id === current)
+        ? current
+        : gateways[0]?.id ?? ""
+    ));
+  }, [gateways]);
 
   const { data: report } = useQuery({
     queryKey: ["delegation-report"],
@@ -117,38 +136,67 @@ export function ProtocolGovernance() {
   });
 
   const { data: a2aAgents } = useQuery({
-    queryKey: ["a2a-agents"],
-    queryFn: fetchA2AAgents,
+    queryKey: ["a2a-agents", gatewayId],
+    queryFn: () => fetchA2AAgents(gatewayId),
+    enabled: Boolean(gatewayId),
     refetchInterval: 5000,
   });
 
   const qc = useQueryClient();
   const { data: trust } = useQuery({
-    queryKey: ["trust-scores"],
-    queryFn: fetchTrust,
+    queryKey: ["trust-scores", gatewayId],
+    queryFn: () => fetchTrust(gatewayId),
+    enabled: Boolean(gatewayId),
     refetchInterval: 5000,
   });
   const applyTrust = useMutation({
     mutationFn: async (enable: boolean) => {
+      if (!gatewayId) throw new Error("Select a gateway");
       const path = enable ? "apply" : "disable";
-      await fetchAPI(`/api/trust/${path}?gateway_id=crm-agent`, { method: "POST" });
+      await fetchAPI(
+        `/api/trust/${path}?gateway_id=${encodeURIComponent(gatewayId)}`,
+        { method: "POST" },
+      );
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["trust-scores"] });
-      qc.invalidateQueries({ queryKey: ["cross-agent"] });
+      qc.invalidateQueries({ queryKey: ["trust-scores", gatewayId] });
+      qc.invalidateQueries({ queryKey: ["cross-agent", gatewayId] });
     },
   });
 
   useEffect(() => {
-    fetchConfig().then((c) => {
+    if (!gatewayId) {
+      setCfg(EMPTY);
+      setAgents([]);
+      return;
+    }
+    let active = true;
+    Promise.all([fetchConfig(gatewayId), api.agents.list()]).then(([c, registered]) => {
+      if (!active) return;
       setCfg(c);
-      const seen = new Set<string>(DEMO_AGENTS);
+      const seen = new Set<string>(
+        registered
+          .filter((agent) => agent.gateway_id === gatewayId)
+          .map((agent) => agent.name),
+      );
       Object.keys(c.edges).forEach((k) => seen.add(k));
       Object.values(c.edges).forEach((e) => [...e.allow, ...e.deny].forEach((a) => a !== "*" && seen.add(a)));
       Object.keys(c.trust_scores).forEach((k) => seen.add(k));
       setAgents([...seen].sort());
     });
-  }, []);
+    return () => {
+      active = false;
+    };
+  }, [gatewayId]);
+
+  useEffect(() => {
+    if (!a2aAgents?.length) return;
+    setAgents((current) => {
+      const seen = new Set(current);
+      a2aAgents.forEach((agent) => seen.add(agent.name));
+      return [...seen].sort();
+    });
+  }, [a2aAgents]);
 
   // Cycle a cell: default -> allow -> deny -> default
   const cycle = (caller: string, callee: string) => {
@@ -171,8 +219,12 @@ export function ProtocolGovernance() {
 
   const save = async () => {
     setSaveError("");
+    if (!gatewayId) {
+      setSaveError("Select a gateway");
+      return;
+    }
     try {
-      await fetchAPI(`${GATEWAY_PATH}/config/cross-agent`, {
+      await fetchAPI(`${gatewayProxyPath(gatewayId)}/config/cross-agent`, {
         method: "POST",
         body: JSON.stringify(cfg),
       });
@@ -191,7 +243,7 @@ export function ProtocolGovernance() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight text-stone-900">
             <Network className="h-6 w-6 text-violet-500" /> Protocol Governance
@@ -201,8 +253,24 @@ export function ProtocolGovernance() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <label className="min-w-52 text-xs font-semibold text-stone-500">
+            Gateway
+            <select
+              value={gatewayId}
+              onChange={(event) => setGatewayId(event.target.value)}
+              className="input mt-1 w-full py-2 text-sm"
+              disabled={gateways.length === 0}
+            >
+              {gateways.length === 0 && <option value="">No gateways registered</option>}
+              {gateways.map((gateway) => (
+                <option key={gateway.id} value={gateway.id}>
+                  {gateway.name || gateway.id}
+                </option>
+              ))}
+            </select>
+          </label>
           {saveError && <span className="text-xs font-medium text-rose-600">{saveError}</span>}
-          <button onClick={save} className="btn-sky">
+          <button onClick={save} disabled={!gatewayId} className="btn-sky">
             {saved ? <Check className="h-4 w-4" /> : <Save className="h-4 w-4" />} {saved ? "Saved" : "Save & Push"}
           </button>
         </div>
@@ -243,7 +311,7 @@ export function ProtocolGovernance() {
               <Bot className="h-4 w-4 text-lime-600" /> Connected A2A agents
             </h2>
             <p className="mt-0.5 text-xs text-stone-500">
-              Remote agents discovered on crm-agent (via A2A agent cards). Their skills
+              Remote agents discovered on {gatewayId || "the selected gateway"} via A2A agent cards. Their skills
               are callable as <span className="font-mono">a2a.&lt;agent&gt;</span>, subject to the
               delegation matrix and trust below.
             </p>

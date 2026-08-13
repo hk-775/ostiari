@@ -7,11 +7,9 @@ and wallet balances diverge per pod). This module backs those counters with
 Redis so the limits hold across the whole fleet.
 
 Design:
-- **Optional & fail-safe.** `get_shared_store()` returns None unless a Redis
-  endpoint is configured AND reachable at startup. Every caller keeps its
-  existing in-process path when the store is None, so dev/demo behavior is
-  unchanged and a Redis outage degrades to per-process limits rather than an
-  outage of the gateway itself.
+- **Optional in development, mandatory in production.** Development keeps the
+  existing per-process fallback. Production requires Redis at startup and marks
+  readiness unavailable if the shared store later fails.
 - **Atomic.** Each operation is a single Lua script (one round-trip), so the
   check-and-mutate is atomic across all clients — no TOCTOU between replicas.
 - **Sync client.** The scripts are tiny (sub-ms on same-host/VPC Redis) and are
@@ -32,6 +30,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from urllib.parse import urlsplit, urlunsplit
 
 log = logging.getLogger("ostiari.sidecar.shared_store")
 
@@ -87,16 +86,59 @@ return {1, '', tostring(nb)}
 """
 
 
+def shared_store_required() -> bool:
+    value = os.environ.get("OSTIARI_REQUIRE_REDIS", "").strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    return os.environ.get("OSTIARI_ENV", "").strip().lower() in {
+        "production",
+        "prod",
+    }
+
+
 class SharedStore:
     """Thin atomic wrapper over Redis for cross-replica enforcement counters."""
 
-    def __init__(self, client, prefix: str = "ostiari") -> None:
+    def __init__(
+        self,
+        client,
+        prefix: str = "ostiari",
+        *,
+        required: bool = False,
+    ) -> None:
         self._r = client
         self._prefix = prefix
+        self._required = required
+        self._healthy = True
+        self._last_error = ""
         # register_script gives us EVALSHA with automatic fallback to EVAL.
         self._rate = client.register_script(_RATE_LUA)
         self._reserve = client.register_script(_BUDGET_RESERVE_LUA)
         self._debit = client.register_script(_WALLET_DEBIT_LUA)
+
+    def _ok(self) -> None:
+        self._healthy = True
+        self._last_error = ""
+
+    def _failed(self, operation: str, error: Exception) -> None:
+        self._healthy = False
+        self._last_error = f"{operation}: {error}"
+        log.warning("shared %s failed: %s", operation, error)
+
+    def status(self, *, check: bool = False) -> dict[str, object]:
+        """Return secret-free health metadata, optionally probing Redis now."""
+        if check:
+            try:
+                self._r.ping()
+                self._ok()
+            except Exception as exc:  # noqa: BLE001
+                self._failed("ping", exc)
+        return {
+            "configured": True,
+            "required": self._required,
+            "healthy": self._healthy,
+            "last_error": self._last_error,
+        }
 
     def _k(self, *parts: str) -> str:
         return ":".join((self._prefix, *parts))
@@ -111,42 +153,54 @@ class SharedStore:
                 keys=[self._k("rate", key)],
                 args=[now_ms, int(window_s * 1000), limit, member],
             )
+            self._ok()
             return bool(res)
         except Exception as e:  # noqa: BLE001 — never let Redis break the request
-            log.warning("shared rate_allow failed (allowing): %s", e)
-            return True
+            self._failed("rate_allow", e)
+            return not self._required
 
     # ── budget ────────────────────────────────────────────────────────────────
     def budget_reserve(self, key: str, amount: float, limit: float) -> bool:
         """Atomically reserve `amount` against a fleet-wide budget `limit`."""
         try:
-            return bool(self._reserve(keys=[self._k("budget", key)], args=[amount, limit]))
+            result = bool(
+                self._reserve(keys=[self._k("budget", key)], args=[amount, limit])
+            )
+            self._ok()
+            return result
         except Exception as e:  # noqa: BLE001
-            log.warning("shared budget_reserve failed (allowing): %s", e)
-            return True
+            self._failed("budget_reserve", e)
+            return not self._required
 
-    def budget_adjust(self, key: str, delta: float) -> None:
+    def budget_adjust(self, key: str, delta: float) -> bool:
         """Add `delta` to shared spend (reconcile estimate→actual, or release)."""
         if not delta:
-            return
+            return True
         try:
             self._r.incrbyfloat(self._k("budget", key), delta)
+            self._ok()
+            return True
         except Exception as e:  # noqa: BLE001
-            log.warning("shared budget_adjust failed: %s", e)
+            self._failed("budget_adjust", e)
+            return False
 
-    def budget_spend(self, key: str) -> float:
+    def budget_spend(self, key: str) -> float | None:
         try:
             v = self._r.get(self._k("budget", key))
+            self._ok()
             return float(v) if v is not None else 0.0
         except Exception as e:  # noqa: BLE001
-            log.warning("shared budget_spend read failed: %s", e)
-            return 0.0
+            self._failed("budget_spend", e)
+            return None if self._required else 0.0
 
-    def budget_reset(self, key: str) -> None:
+    def budget_reset(self, key: str) -> bool:
         try:
             self._r.delete(self._k("budget", key))
+            self._ok()
+            return True
         except Exception as e:  # noqa: BLE001
-            log.warning("shared budget_reset failed: %s", e)
+            self._failed("budget_reset", e)
+            return False
 
     # ── wallets ────────────────────────────────────────────────────────────────
     def upsert_wallet(self, agent_id: str, fields: dict) -> None:
@@ -160,8 +214,9 @@ class SharedStore:
         }
         try:
             self._r.hset(self._k("wallet", agent_id), mapping=mapping)
+            self._ok()
         except Exception as e:  # noqa: BLE001
-            log.warning("shared upsert_wallet failed: %s", e)
+            self._failed("upsert_wallet", e)
 
     def wallet_debit(self, agent_id: str, amount: float) -> tuple[bool, str, float]:
         """Atomically check-and-debit a wallet. Returns (ok, reason, new_balance)."""
@@ -169,22 +224,25 @@ class SharedStore:
             ok, reason, bal = self._debit(keys=[self._k("wallet", agent_id)], args=[amount])
             reason = reason.decode() if isinstance(reason, bytes) else reason
             bal = bal.decode() if isinstance(bal, bytes) else bal
+            self._ok()
             return bool(ok), reason, float(bal)
         except Exception as e:  # noqa: BLE001
             # Fail CLOSED on a wallet error — do not settle a charge we can't verify.
-            log.warning("shared wallet_debit failed (denying): %s", e)
+            self._failed("wallet_debit", e)
             return False, "shared store error", 0.0
 
     def wallet_get(self, agent_id: str) -> dict | None:
         try:
             h = self._r.hgetall(self._k("wallet", agent_id))
             if not h:
+                self._ok()
                 return None
             d = {(k.decode() if isinstance(k, bytes) else k):
                  (v.decode() if isinstance(v, bytes) else v) for k, v in h.items()}
+            self._ok()
             return d
         except Exception as e:  # noqa: BLE001
-            log.warning("shared wallet_get failed: %s", e)
+            self._failed("wallet_get", e)
             return None
 
 
@@ -192,6 +250,7 @@ class SharedStore:
 
 _store: SharedStore | None = None
 _resolved = False
+_resolve_error = ""
 
 
 def _redis_url() -> str:
@@ -205,38 +264,66 @@ def _redis_url() -> str:
     return f"redis://{endpoint}:{port}/0"
 
 
+def _safe_redis_url(url: str) -> str:
+    """Redact Redis credentials before logging configuration errors."""
+    parsed = urlsplit(url)
+    if not parsed.netloc or "@" not in parsed.netloc:
+        return url
+    host = parsed.netloc.rsplit("@", 1)[1]
+    return urlunsplit((parsed.scheme, f"***@{host}", parsed.path, parsed.query, ""))
+
+
 def get_shared_store() -> SharedStore | None:
     """Return the shared store, or None when Redis is unconfigured/unreachable.
 
-    Resolved once and cached. A connection is verified with PING at startup; if
-    it fails, we log and return None so the gateway runs with per-process limits
-    rather than failing to start.
+    Resolved once and cached. A connection is verified with PING at startup.
+    Development falls back to per-process limits; production/required mode
+    raises so a fleet cannot silently multiply enforcement limits.
     """
-    global _store, _resolved
+    global _store, _resolved, _resolve_error
+    required = shared_store_required()
     if _resolved:
+        if required and _store is None:
+            raise RuntimeError(_resolve_error or "Redis shared state is unavailable")
         return _store
-    _resolved = True
+
     url = _redis_url()
     if not url:
+        _resolved = True
+        _resolve_error = "Redis is required but OSTIARI_REDIS_URL/REDIS_ENDPOINT is unset"
+        if required:
+            raise RuntimeError(_resolve_error)
         return None
     try:
         import redis  # redis-py (sync); redis[hiredis] declared in gateway deps
         client = redis.Redis.from_url(url, socket_timeout=2.0, socket_connect_timeout=2.0)
         client.ping()
         prefix = os.environ.get("OSTIARI_REDIS_PREFIX", "ostiari").strip() or "ostiari"
-        _store = SharedStore(client, prefix=prefix)
-        log.info("Shared state backed by Redis at %s (prefix=%s)", url, prefix)
-    except Exception as e:  # noqa: BLE001
-        log.warning(
-            "Redis configured (%s) but unreachable — falling back to per-process "
-            "limits: %s", url, e,
+        _store = SharedStore(client, prefix=prefix, required=required)
+        _resolve_error = ""
+        log.info(
+            "Shared state backed by Redis at %s (prefix=%s)",
+            _safe_redis_url(url),
+            prefix,
         )
+    except Exception as e:  # noqa: BLE001
+        safe_url = _safe_redis_url(url)
+        _resolve_error = f"Redis configured at {safe_url} but unavailable: {e}"
         _store = None
+        if required:
+            _resolved = True
+            raise RuntimeError(_resolve_error) from e
+        log.warning(
+            "%s — falling back to per-process limits",
+            _resolve_error,
+        )
+    _resolved = True
     return _store
 
 
 def reset_shared_store() -> None:
     """Test hook — clear the cached singleton so env changes take effect."""
-    global _store, _resolved
+    global _store, _resolved, _resolve_error
     _store = None
     _resolved = False
+    _resolve_error = ""

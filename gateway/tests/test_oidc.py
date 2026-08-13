@@ -6,19 +6,24 @@ and, when required, enforces a valid token whose agent identity matches
 X-Agent-Id.
 """
 
+import base64
 import time
 
+import jwt
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from jose import jwt
-from jose.utils import long_to_base64
 from ostiari_gateway import oidc
-from ostiari_gateway.models import PolicyConfig, SidecarConfig, ToolDefinition
+from ostiari_gateway.models import ModulesConfig, PolicyConfig, SidecarConfig, ToolDefinition
 from ostiari_gateway.server import create_app
 from starlette.testclient import TestClient
 
 ISSUER = "https://issuer.test/pool"
+
+
+def _base64url_uint(value: int) -> str:
+    raw = value.to_bytes((value.bit_length() + 7) // 8, "big")
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 
 
 @pytest.fixture
@@ -26,17 +31,26 @@ def keypair():
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     pub = key.public_key().public_numbers()
     jwk_dict = {"kty": "RSA", "kid": "gw-key-1", "use": "sig", "alg": "RS256",
-                "n": long_to_base64(pub.n).decode(), "e": long_to_base64(pub.e).decode()}
+                "n": _base64url_uint(pub.n), "e": _base64url_uint(pub.e)}
     pem = key.private_bytes(serialization.Encoding.PEM,
                             serialization.PrivateFormat.PKCS8,
                             serialization.NoEncryption()).decode()
     return {"pem": pem, "jwks": {"keys": [jwk_dict]}, "kid": "gw-key-1"}
 
 
-def _token(keypair, *, agent_id="research-agent", issuer=ISSUER, exp_delta=3600):
+def _token(
+    keypair,
+    *,
+    agent_id="research-agent",
+    issuer=ISSUER,
+    exp_delta=3600,
+    tenant_id=None,
+):
     now = int(time.time())
     claims = {"sub": agent_id, "agent_id": agent_id, "token_use": "access",
               "client_id": agent_id, "iss": issuer, "iat": now, "exp": now + exp_delta}
+    if tenant_id is not None:
+        claims["tenant_id"] = tenant_id
     return jwt.encode(claims, keypair["pem"], algorithm="RS256", headers={"kid": keypair["kid"]})
 
 
@@ -66,6 +80,14 @@ def _app_with_tool(httpserver):
         policy=PolicyConfig(allow=["web_search"]),
     )
     return create_app(initial_config=config)
+
+
+def _app_with_llm():
+    return create_app(initial_config=SidecarConfig(
+        sidecar_id="llm-auth",
+        modules=ModulesConfig(llm_gateway=True),
+        llm={"default_model": "gpt-4o"},
+    ))
 
 
 class TestGatewayAuthOffByDefault:
@@ -99,6 +121,12 @@ class TestGatewayAuthRequired:
                         headers={"X-Agent-Id": "research-agent", "Authorization": f"Bearer {tok}"})
         assert r.status_code == 200
 
+    def test_valid_token_without_agent_header_uses_token_identity(self, keypair):
+        client = TestClient(_app_with_llm())
+        tok = _token(keypair, agent_id="research-agent")
+        r = client.get("/models", headers={"Authorization": f"Bearer {tok}"})
+        assert r.status_code == 200
+
     def test_token_agent_mismatch_403(self, httpserver, keypair):
         client = TestClient(_app_with_tool(httpserver))
         tok = _token(keypair, agent_id="other-agent")  # token says other, header says research
@@ -106,9 +134,64 @@ class TestGatewayAuthRequired:
                         headers={"X-Agent-Id": "research-agent", "Authorization": f"Bearer {tok}"})
         assert r.status_code == 403
 
+    @pytest.mark.parametrize("tenant_id", [None, "other-org"])
+    def test_single_tenant_gateway_rejects_missing_or_other_tenant(
+        self,
+        keypair,
+        monkeypatch,
+        tenant_id,
+    ):
+        monkeypatch.setenv("OSTIARI_TENANCY_MODE", "single")
+        monkeypatch.setenv("OSTIARI_ORG_ID", "acme")
+        client = TestClient(_app_with_llm())
+        tok = _token(keypair, tenant_id=tenant_id)
+        r = client.get("/models", headers={"Authorization": f"Bearer {tok}"})
+        assert r.status_code == 403
+
+    def test_single_tenant_gateway_accepts_matching_tenant(
+        self,
+        keypair,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("OSTIARI_TENANCY_MODE", "single")
+        monkeypatch.setenv("OSTIARI_ORG_ID", "acme")
+        client = TestClient(_app_with_llm())
+        tok = _token(keypair, tenant_id="acme")
+        r = client.get("/models", headers={"Authorization": f"Bearer {tok}"})
+        assert r.status_code == 200
+
     def test_expired_token_401(self, httpserver, keypair):
         client = TestClient(_app_with_tool(httpserver))
         tok = _token(keypair, exp_delta=-10)
         r = client.post("/tool/web_search", json={"q": "x"},
                         headers={"X-Agent-Id": "research-agent", "Authorization": f"Bearer {tok}"})
         assert r.status_code == 401
+
+    @pytest.mark.parametrize(
+        ("path", "body"),
+        [
+            ("/v1/messages", {"model": "claude", "messages": [{"role": "user", "content": "hi"}]}),
+            ("/v1/chat/completions", {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]}),
+            ("/invoke", {"messages": [{"role": "user", "content": "hi"}]}),
+        ],
+    )
+    def test_llm_routes_require_token(self, path, body):
+        client = TestClient(_app_with_llm())
+        r = client.post(path, json=body, headers={"X-Agent-Id": "research-agent"})
+        assert r.status_code == 401
+
+    def test_llm_route_rejects_identity_mismatch(self, keypair):
+        client = TestClient(_app_with_llm())
+        tok = _token(keypair, agent_id="other-agent")
+        r = client.post(
+            "/v1/chat/completions",
+            headers={
+                "X-Agent-Id": "research-agent",
+                "Authorization": f"Bearer {tok}",
+            },
+            json={
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert r.status_code == 403

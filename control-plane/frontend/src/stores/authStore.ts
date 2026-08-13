@@ -3,11 +3,13 @@ import { API_BASE } from "../lib/api";
 
 const TOKEN_KEY = "ostiari_token";
 
+export type Role = "admin" | "operator" | "viewer";
+
 export interface User {
   id: string;
   email: string;
   name: string;
-  role: string;
+  role: Role;
 }
 
 interface AuthState {
@@ -17,7 +19,7 @@ interface AuthState {
   login: (email: string, password: string) => Promise<void>;
   completeSSO: (token: string) => Promise<void>;
   logout: () => void;
-  hasRole: (role: string) => boolean;
+  hasRole: (role: Role) => boolean;
   fetchMe: () => Promise<void>;
 }
 
@@ -67,7 +69,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ token: null, user: null, isAuthenticated: false });
   },
 
-  hasRole: (role: string) => {
+  hasRole: (role: Role) => {
     const user = get().user;
     return user?.role === role;
   },

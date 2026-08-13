@@ -3,6 +3,7 @@
 import asyncio as _asyncio
 import logging
 import os as _os
+import re as _re
 import uuid as _uuid
 from contextlib import asynccontextmanager
 from typing import Any
@@ -29,6 +30,7 @@ from ostiari_gateway.telemetry import (
 )
 
 log = logging.getLogger("ostiari.sidecar")
+_ORG_ID_PATTERN = _re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 _NON_SECRET_CRED_FIELDS = {
     "azure_endpoint", "azure_api_version", "bedrock_region",
@@ -79,49 +81,83 @@ def _is_production() -> bool:
 
 
 def _check_production_posture() -> None:
-    """Warn (or refuse) when a production gateway is left fail-open.
-
-    Every gateway control is off-by-default for the demo/standalone flow. In
-    production that means anyone reaching the port can flip enforcement mode,
-    rewrite tools/policy, or impersonate any agent via the X-Agent-Id header.
-    We surface that loudly at startup, and hard-refuse when the operator opts
-    into strict mode (OSTIARI_STRICT=1) — mirroring the control plane's
-    production JWT-secret guard.
-    """
+    """Refuse a production gateway with fail-open identity or machine auth."""
     if not _is_production():
         return
 
     open_controls: list[str] = []
-    if not _os.environ.get("OSTIARI_CONFIG_ADMIN_KEY", "").strip():
-        open_controls.append(
-            "OSTIARI_CONFIG_ADMIN_KEY unset — /config/* (mode, tools, policy, "
-            "quota, payments) is unauthenticated"
-        )
-    if _os.environ.get("OSTIARI_GATEWAY_AUTH", "off").strip().lower() not in (
-        "required", "1", "true", "yes", "on"
+    for name in (
+        "OSTIARI_CONFIG_ADMIN_KEY",
+        "OSTIARI_SERVICE_TOKEN",
+        "OSTIARI_INGEST_KEY",
     ):
+        if len(_os.environ.get(name, "").strip()) < 32:
+            open_controls.append(f"{name} must be set and at least 32 characters")
+
+    if _os.environ.get("OSTIARI_GATEWAY_AUTH", "off").strip().lower() != "required":
         open_controls.append(
-            "OSTIARI_GATEWAY_AUTH not required — the X-Agent-Id header is trusted "
-            "with no token, so any caller can impersonate any agent"
+            "OSTIARI_GATEWAY_AUTH must be exactly 'required'"
+        )
+    if _os.environ.get("OSTIARI_TENANCY_MODE", "").strip().lower() != "single":
+        open_controls.append(
+            "OSTIARI_TENANCY_MODE must be 'single' until composite tenant keys ship"
+        )
+    org_id = _os.environ.get("OSTIARI_ORG_ID", "").strip()
+    if not org_id:
+        open_controls.append("OSTIARI_ORG_ID must be set")
+    elif not _ORG_ID_PATTERN.fullmatch(org_id):
+        open_controls.append(
+            "OSTIARI_ORG_ID must be 1-64 letters, digits, dots, underscores, or hyphens"
         )
 
-    if not open_controls:
-        return
+    issuer = _os.environ.get("OSTIARI_OIDC_ISSUER", "").strip()
+    if not issuer.startswith("https://"):
+        open_controls.append("OSTIARI_OIDC_ISSUER must be an HTTPS issuer")
+    if not _os.environ.get("OSTIARI_OIDC_AUDIENCE", "").strip():
+        open_controls.append("OSTIARI_OIDC_AUDIENCE must be set")
+    if _os.environ.get("OSTIARI_REQUIRE_REDIS", "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        open_controls.append("OSTIARI_REQUIRE_REDIS must be enabled")
+    if not (
+        _os.environ.get("OSTIARI_REDIS_URL", "").strip()
+        or _os.environ.get("REDIS_ENDPOINT", "").strip()
+    ):
+        open_controls.append("OSTIARI_REDIS_URL or REDIS_ENDPOINT must be set")
+    rate_limit = _os.environ.get("OSTIARI_GATEWAY_RATE_LIMIT_RPM", "").strip()
+    if not rate_limit.isdigit() or int(rate_limit) < 1:
+        open_controls.append(
+            "OSTIARI_GATEWAY_RATE_LIMIT_RPM must be a positive integer"
+        )
+    if _os.environ.get("OSTIARI_FAIL_CLOSED_ON_CP_LOSS", "").strip().lower() in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }:
+        open_controls.append(
+            "OSTIARI_FAIL_CLOSED_ON_CP_LOSS may not be disabled in production"
+        )
 
-    strict = _os.environ.get("OSTIARI_STRICT", "").strip().lower() in (
-        "1", "true", "yes", "on"
-    )
-    banner = "; ".join(open_controls)
-    if strict:
+    settlement_mode = _os.environ.get("OSTIARI_X402_MODE", "simulated").strip().lower()
+    if settlement_mode not in {"off", "live"}:
+        open_controls.append(
+            "OSTIARI_X402_MODE must be 'off' or 'live' in production"
+        )
+    if settlement_mode == "live":
+        if not _os.environ.get("OSTIARI_X402_PRIVATE_KEY", "").strip():
+            open_controls.append("OSTIARI_X402_PRIVATE_KEY is required for live x402")
+        if not _os.environ.get("OSTIARI_X402_ALLOWED_ASSETS", "").strip():
+            open_controls.append("OSTIARI_X402_ALLOWED_ASSETS is required for live x402")
+
+    if open_controls:
         raise RuntimeError(
-            f"OSTIARI_ENV=production with OSTIARI_STRICT set, but fail-open "
-            f"controls remain: {banner}. Set the listed variables or unset "
-            f"OSTIARI_STRICT to start anyway."
+            "Refusing insecure production gateway configuration: "
+            + "; ".join(open_controls)
         )
-    log.warning(
-        "PRODUCTION SECURITY WARNING — fail-open controls detected: %s. "
-        "Set OSTIARI_STRICT=1 to make this fatal.", banner,
-    )
 
 
 def _axon_health(module_registry: Any) -> dict[str, Any]:
@@ -235,7 +271,14 @@ def _authenticate_agent(request: Request, agent_id: str) -> JSONResponse | None:
 
     validator = oidc.get_validator()
     if validator is None:
-        return None  # auth off or unconfigured — trust the header as before
+        if oidc.auth_required():
+            return JSONResponse(status_code=503, content={
+                "error": "gateway authentication is misconfigured",
+                "detail": "OIDC issuer or validator unavailable",
+            })
+        request.state.agent_id = agent_id.strip() or "unknown"
+        request.state.tenant_id = "default"
+        return None
 
     header = request.headers.get("Authorization", "")
     if not header.startswith("Bearer "):
@@ -249,12 +292,50 @@ def _authenticate_agent(request: Request, agent_id: str) -> JSONResponse | None:
             "error": "invalid token", "detail": str(exc),
         })
     token_agent = oidc.agent_id_from_claims(claims)
-    if token_agent != agent_id:
+    if not token_agent:
+        return JSONResponse(status_code=403, content={
+            "error": "token identity missing",
+            "detail": "validated token has no agent identity claim",
+        })
+    if agent_id and token_agent != agent_id:
         return JSONResponse(status_code=403, content={
             "error": "identity mismatch",
             "detail": f"token identity '{token_agent}' does not match X-Agent-Id '{agent_id}'",
         })
+    tenant_claim = oidc.tenant_claim_from_claims(claims)
+    if oidc.tenancy_mode() == "single":
+        expected_tenant = oidc.configured_org_id()
+        if not tenant_claim:
+            return JSONResponse(status_code=403, content={
+                "error": "token tenant missing",
+                "detail": "validated token has no tenant identity claim",
+            })
+        if tenant_claim != expected_tenant:
+            return JSONResponse(status_code=403, content={
+                "error": "tenant mismatch",
+                "detail": "token tenant is not permitted by this gateway",
+            })
+    request.state.agent_id = token_agent
+    request.state.tenant_id = tenant_claim or oidc.tenant_from_claims(claims)
+    request.state.agent_claims = claims
     return None
+
+
+def _requires_agent_auth(method: str, path: str) -> bool:
+    """Whether a gateway route acts with an agent identity."""
+    if method == "POST" and path.startswith("/tool/"):
+        return True
+    return (method, path) in {
+        ("POST", "/validate"),
+        ("POST", "/invoke"),
+        ("POST", "/v1/messages"),
+        ("POST", "/v1/chat/completions"),
+        ("POST", "/a2a"),
+        ("GET", "/tools"),
+        ("GET", "/models"),
+        ("GET", "/cache/stats"),
+        ("GET", "/modules"),
+    }
 
 
 def _hitl_enabled() -> bool:
@@ -440,19 +521,29 @@ def create_app(
     broker_policy = BrokerPoolPolicy()
     cross_agent = CrossAgentPolicy()
 
-    # Payment gate — mode chosen by env: simulated (default, no chain) or live.
+    # Payment settlement backend. Simulated settlement is a dev/test facility;
+    # production may explicitly disable settlement or configure live x402.
     import os as _os
 
-    from ostiari_gateway.payments import PaymentGate, SimulatedSettler, X402Settler, parse_402
+    from ostiari_gateway.payments import (
+        DisabledSettler,
+        PaymentGate,
+        SimulatedSettler,
+        X402Settler,
+        parse_402,
+    )
+    settlement_mode = _os.environ.get("OSTIARI_X402_MODE", "simulated").strip().lower()
     if payment_settler is not None:
         _settler = payment_settler
-    elif _os.environ.get("OSTIARI_X402_MODE", "simulated").lower() == "live":
+    elif settlement_mode == "live":
         _settler = X402Settler(
             private_key=_os.environ.get("OSTIARI_X402_PRIVATE_KEY", ""),
             allowed_assets=X402Settler.parse_allowed_assets(
                 _os.environ.get("OSTIARI_X402_ALLOWED_ASSETS", "")
             ),
         )
+    elif settlement_mode == "off" and _is_production():
+        _settler = DisabledSettler()
     else:
         _settler = SimulatedSettler()
     payment_gate = PaymentGate(settler=_settler)
@@ -756,7 +847,10 @@ def create_app(
 
     # Optional Redis-backed shared state so rate limit / budget / wallet limits
     # hold across a horizontally-scaled fleet. None (default) = per-process.
-    from ostiari_gateway.shared_store import get_shared_store
+    from ostiari_gateway.shared_store import (
+        get_shared_store,
+        shared_store_required,
+    )
     shared_store = get_shared_store()
     quota_enforcer.attach_shared_store(shared_store)
     agent_auth.attach_shared_store(
@@ -781,6 +875,16 @@ def create_app(
         """
         if request.url.path.startswith("/config"):
             denied = _authorize_config(request)
+            if denied is not None:
+                return denied
+        return await call_next(request)
+
+    @app.middleware("http")
+    async def _guard_agent_identity(request: Request, call_next: Any) -> Any:
+        """Bind every agent-facing route to the verified token identity."""
+        if _requires_agent_auth(request.method, request.url.path):
+            claimed_agent = request.headers.get("X-Agent-Id", "").strip()
+            denied = _authenticate_agent(request, claimed_agent)
             if denied is not None:
                 return denied
         return await call_next(request)
@@ -840,17 +944,13 @@ def create_app(
             return JSONResponse(status_code=400,
                                 content={"error": "Tool parameters must be a JSON object"})
 
-        agent_id = request.headers.get("X-Agent-Id", "unknown")
+        from ostiari_gateway.oidc import request_agent_id
+
+        agent_id = request_agent_id(request)
         framework = request.headers.get("X-Framework", "unknown")
         session_id = request.headers.get("X-Session-Id", "")
         plan = request.headers.get("X-Plan", "")
         step = request.headers.get("X-Step", "")
-
-        # Authenticate the agent (no-op unless OSTIARI_GATEWAY_AUTH=required):
-        # requires a valid OIDC token whose identity matches X-Agent-Id.
-        auth_err = _authenticate_agent(request, agent_id)
-        if auth_err is not None:
-            return auth_err
 
         # Delegation provenance: the chain of agents that led to this call.
         # An inbound X-Delegation-Chain means this request itself arrived via a
@@ -1347,12 +1447,10 @@ def create_app(
         body: dict[str, Any] = await request.json()
         action = body.get("action", "")
         params = body.get("params", {})
-        agent_id = request.headers.get("X-Agent-Id", "unknown")
-        framework = request.headers.get("X-Framework", "unknown")
+        from ostiari_gateway.oidc import request_agent_id
 
-        auth_err = _authenticate_agent(request, agent_id)
-        if auth_err is not None:
-            return auth_err
+        agent_id = request_agent_id(request)
+        framework = request.headers.get("X-Framework", "unknown")
 
         if not action:
             return JSONResponse(status_code=400, content={"error": "action is required"})
@@ -1728,7 +1826,36 @@ def create_app(
             "agent_auth": agent_auth.get_status(),
             "broker": broker_policy.get_status(),
             "llm_router": _axon_health(module_registry),
+            "redis": (
+                shared_store.status(check=False)
+                if shared_store is not None
+                else {
+                    "configured": False,
+                    "required": shared_store_required(),
+                    "healthy": not shared_store_required(),
+                    "last_error": "",
+                }
+            ),
         }
+
+    @app.get("/ready")
+    async def ready() -> Any:
+        redis_status = (
+            shared_store.status(check=True)
+            if shared_store is not None
+            else {
+                "configured": False,
+                "required": shared_store_required(),
+                "healthy": not shared_store_required(),
+                "last_error": "",
+            }
+        )
+        if redis_status["required"] and not redis_status["healthy"]:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "not_ready", "redis": redis_status},
+            )
+        return {"status": "ready", "redis": redis_status}
 
     @app.get("/modules")
     async def list_modules() -> Any:

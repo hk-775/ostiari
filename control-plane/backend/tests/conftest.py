@@ -46,9 +46,13 @@ def _reset_in_memory_state() -> None:
         approvals,
         experiments,
         model_config,
+        payments,
         providers,
         quotas,
+        roi,
+        token_broker,
         traces,
+        trust,
     )
 
     for mod, attr in (
@@ -64,9 +68,13 @@ def _reset_in_memory_state() -> None:
         # continue from a previous test's count.
         (quotas, "_next_id"),
         (quotas, "_alerts"),
+        (payments, "_pricing"),
+        (roi, "_cost_model"),
+        (token_broker, "_config"),
         (traces, "_recent_traces"),
         (traces, "_session_parents"),
         (traces, "_ws_clients"),
+        (trust, "_enforced"),
     ):
         obj = getattr(mod, attr, None)
         if obj is not None and hasattr(obj, "clear"):

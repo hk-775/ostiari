@@ -17,6 +17,7 @@ from control_plane.discovery_collectors import default_collectors
 from control_plane.models.database import Gateway
 from control_plane.models.scoping import get_scoped
 from control_plane.services.audit_service import actor_of, audit
+from control_plane.services.runtime_state import put_runtime_state
 
 router = APIRouter(prefix="/api/discovery", tags=["discovery"])
 
@@ -228,6 +229,13 @@ async def onboard(
         tools=body.allowed_tools,
         description="Onboarded from discovery",
         status="governed" if traffic_routed else "registered_off_gateway",
+    )
+    await put_runtime_state(
+        db,
+        org,
+        "agents",
+        agent_id,
+        registered.model_dump(mode="json"),
     )
     await audit.log(
         db,
