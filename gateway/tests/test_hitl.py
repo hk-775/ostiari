@@ -104,10 +104,10 @@ class TestHitlEnabled:
 
 
 class TestHitlSurvivesFailClosed:
-    """Production is fail-closed, and a fail-closed Guard has no way to resolve an
+    """A fail-closed Guard has no way to resolve an
     intervene in-process: it collapses it to a block and *raises*. That used to
     return 403 straight from the exception handler, which reaches the caller
-    before the approval gate ever runs — so production silently deleted the
+    before the approval gate ever runs — so fail-closed deployments silently deleted the
     intervene tier and the Approvals queue stayed empty however OSTIARI_HITL was
     set. The gateway has a human to ask, so a collapsed intervene must still be
     deferrable.
@@ -115,7 +115,8 @@ class TestHitlSurvivesFailClosed:
 
     @pytest.fixture(autouse=True)
     def _production(self, monkeypatch):
-        monkeypatch.setenv("OSTIARI_ENV", "production")   # → fail_open False
+        monkeypatch.delenv("OSTIARI_ENV", raising=False)
+        monkeypatch.setenv("OSTIARI_FAIL_OPEN", "false")
         monkeypatch.setenv("OSTIARI_HITL", "on")
 
     def test_intervene_still_pauses_for_approval_in_production(self, httpserver, monkeypatch):
@@ -221,7 +222,8 @@ class TestShadowModeUnaffected:
 
     @pytest.fixture(autouse=True)
     def _production_shadow(self, monkeypatch):
-        monkeypatch.setenv("OSTIARI_ENV", "production")
+        monkeypatch.delenv("OSTIARI_ENV", raising=False)
+        monkeypatch.setenv("OSTIARI_FAIL_OPEN", "false")
         monkeypatch.setenv("OSTIARI_HITL", "on")
 
     def test_shadow_does_not_queue_approvals(self, httpserver, monkeypatch):

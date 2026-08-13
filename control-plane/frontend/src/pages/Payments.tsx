@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Wallet as WalletIcon, Coins, Ban, Play, Pause, Upload, Plus, Check, AlertTriangle } from "lucide-react";
 import { api } from "../lib/api";
@@ -10,12 +10,27 @@ export function Payments() {
   const { data: wallets } = useQuery({ queryKey: ["pay-wallets"], queryFn: api.payments.wallets, refetchInterval: 5000 });
   const { data: summary } = useQuery({ queryKey: ["pay-summary"], queryFn: api.payments.summary, refetchInterval: 5000 });
   const { data: ledger } = useQuery({ queryKey: ["pay-ledger"], queryFn: () => api.payments.ledger(), refetchInterval: 5000 });
-  const { data: pricing } = useQuery({ queryKey: ["pay-pricing"], queryFn: () => api.payments.pricing() });
+  const { data: gateways = [] } = useQuery({ queryKey: ["gateways"], queryFn: api.gateways.list });
+  const [gatewayId, setGatewayId] = useState("");
+  const { data: pricing } = useQuery({
+    queryKey: ["pay-pricing", gatewayId],
+    queryFn: () => api.payments.pricing(gatewayId),
+    enabled: Boolean(gatewayId),
+  });
+
+  useEffect(() => {
+    setGatewayId((current) => (
+      gateways.some((gateway) => gateway.id === current)
+        ? current
+        : gateways[0]?.id ?? ""
+    ));
+  }, [gateways]);
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["pay-wallets"] });
     qc.invalidateQueries({ queryKey: ["pay-summary"] });
     qc.invalidateQueries({ queryKey: ["pay-ledger"] });
+    qc.invalidateQueries({ queryKey: ["pay-pricing", gatewayId] });
   };
 
   const fund = useMutation({
@@ -27,7 +42,13 @@ export function Payments() {
       api.payments.patchWallet(agent, { status }),
     onSuccess: invalidate,
   });
-  const push = useMutation({ mutationFn: () => api.payments.push(), onSuccess: invalidate });
+  const push = useMutation({
+    mutationFn: () => {
+      if (!gatewayId) throw new Error("Select a gateway");
+      return api.payments.push(gatewayId);
+    },
+    onSuccess: invalidate,
+  });
   const upsert = useMutation({
     mutationFn: (data: { agent_id: string; balance_usdc: number }) => api.payments.upsert(data),
     onSuccess: () => { invalidate(); setNewAgent(""); setNewBalance(1.0); },
@@ -43,7 +64,7 @@ export function Payments() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight text-stone-900">
             <WalletIcon className="h-6 w-6 text-emerald-500" /> Payments
@@ -53,9 +74,31 @@ export function Payments() {
             {pricing && <> Mode: <span className="font-mono text-stone-700">{pricing.mode}</span>.</>}
           </p>
         </div>
-        <button onClick={() => push.mutate()} disabled={push.isPending} className="btn-sky">
-          <Upload className="h-4 w-4" /> {push.isPending ? "Pushing…" : "Push to gateway"}
-        </button>
+        <div className="flex items-end gap-2">
+          <label className="min-w-52 text-xs font-semibold text-stone-500">
+            Gateway
+            <select
+              value={gatewayId}
+              onChange={(event) => setGatewayId(event.target.value)}
+              className="input mt-1 w-full py-2 text-sm"
+              disabled={gateways.length === 0}
+            >
+              {gateways.length === 0 && <option value="">No gateways registered</option>}
+              {gateways.map((gateway) => (
+                <option key={gateway.id} value={gateway.id}>
+                  {gateway.name || gateway.id}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            onClick={() => push.mutate()}
+            disabled={!gatewayId || push.isPending}
+            className="btn-sky"
+          >
+            <Upload className="h-4 w-4" /> {push.isPending ? "Pushing…" : "Push to gateway"}
+          </button>
+        </div>
       </div>
 
       {/* Summary cards */}

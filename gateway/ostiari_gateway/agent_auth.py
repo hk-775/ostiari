@@ -1,8 +1,9 @@
 """Per-agent tool authorization — policy-based, least privilege.
 
 Each agent is granted access to specific tools. Any tool not explicitly
-granted is denied. This is NOT JWT/token authorization — it's a policy rule
-that controls which agent can access which tool.
+granted is denied. This complements JWT/token authentication: the gateway first
+binds a request to the verified token identity, then this policy decides which
+tools, models, and providers that identity may use.
 
 Design:
   - Default: DENY ALL (least privilege principle)
@@ -10,11 +11,8 @@ Design:
   - The sidecar checks grants BEFORE policy evaluation
   - If an agent is not registered, it gets DEFAULT grants (configurable)
 
-Future:
-  - JWT authorization will be layered on top
-  - A JWT claim (e.g., role: "admin") can override agent grants
-  - JWT overrides policy, not the other way around
-  - This allows service accounts to bypass per-agent restrictions
+Authentication never overrides these grants. A valid identity without an
+explicit grant is still denied.
 """
 
 import logging
@@ -239,6 +237,8 @@ class AgentAuthPolicy:
         if self._store is None or grants.spend_usd <= 0:
             return
         current = self._store.budget_spend(self._budget_key(grants.agent_id))
+        if current is None:
+            return
         if grants.spend_usd > current:
             self._store.budget_adjust(
                 self._budget_key(grants.agent_id),
@@ -488,7 +488,14 @@ class AgentAuthPolicy:
                     reservation_id = grants.reserve(estimate)
                     self._shared_reservations.add((agent_id, reservation_id))
                 else:
-                    projected = self._store.budget_spend(budget_key) + estimate
+                    shared_spend = self._store.budget_spend(budget_key)
+                    if shared_spend is None:
+                        return AgentQuotaDecision(
+                            False,
+                            "Shared quota store is unavailable",
+                            "shared_store",
+                        )
+                    projected = shared_spend + estimate
                     if projected >= grants.budget_usd:
                         return AgentQuotaDecision(
                             False,
@@ -540,10 +547,11 @@ class AgentAuthPolicy:
                     self._store.budget_adjust(key, cost_usd)
             grants.record_spend(cost_usd, reservation_id)
             if self._store is not None:
-                grants.spend_usd = max(
-                    grants.spend_usd,
-                    self._store.budget_spend(self._budget_key(agent_id)),
+                shared_spend = self._store.budget_spend(
+                    self._budget_key(agent_id)
                 )
+                if shared_spend is not None:
+                    grants.spend_usd = max(grants.spend_usd, shared_spend)
             self._emit_budget_alerts(grants)
 
     def release_agent_reservation(

@@ -8,6 +8,7 @@ from jose import JWTError
 from control_plane.auth import oidc
 from control_plane.auth.schemas import AuthUser
 from control_plane.auth.service import decode_token
+from control_plane.env import configured_org_id, tenant_is_allowed
 
 
 def principal_from_token(token: str) -> AuthUser:
@@ -36,6 +37,15 @@ async def get_current_user(request: Request) -> AuthUser:
     (default) the control plane's own locally-issued token is decoded — the
     behavior the demo and seeded admin login rely on.
     """
+    cached = getattr(request.state, "auth_principal", None)
+    if isinstance(cached, AuthUser):
+        if not tenant_is_allowed(cached.tenant_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Token tenant is not permitted by this deployment",
+            )
+        return cached
+
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(
@@ -46,13 +56,19 @@ async def get_current_user(request: Request) -> AuthUser:
     token = auth_header.removeprefix("Bearer ")
 
     try:
-        return principal_from_token(token)
+        principal = principal_from_token(token)
     except (oidc.OIDCError, JWTError, KeyError, TypeError, ValueError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
+        ) from None
+    if not tenant_is_allowed(principal.tenant_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Token tenant is not permitted by this deployment",
         )
+    return principal
 
 
 async def get_current_org(request: Request) -> str:
@@ -65,12 +81,12 @@ async def get_current_org(request: Request) -> str:
     """
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
-        return "default"
+        return configured_org_id()
     try:
         user = await get_current_user(request)
     except HTTPException:
-        return "default"
-    return user.tenant_id or "default"
+        return configured_org_id()
+    return user.tenant_id or configured_org_id()
 
 
 def require_role(*roles: str) -> Callable:

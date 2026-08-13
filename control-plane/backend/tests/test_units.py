@@ -4,7 +4,6 @@ rate_limiter, redis_client fallback, and persistence."""
 from datetime import datetime, timezone
 
 import pytest
-
 from control_plane import persistence, redis_client
 from control_plane.budget_reset import BudgetResetScheduler
 from control_plane.rate_limiter import RateLimiter, _InMemoryBucket
@@ -111,11 +110,12 @@ class TestPersistence:
         monkeypatch.setattr(persistence, "STATE_FILE", tmp_path / "nope.json")
         assert persistence.load_state() == {}
 
-    def test_load_corrupt_returns_empty(self, tmp_path, monkeypatch):
+    def test_load_corrupt_fails_closed(self, tmp_path, monkeypatch):
         f = tmp_path / "bad.json"
         f.write_text("{not valid json")
         monkeypatch.setattr(persistence, "STATE_FILE", f)
-        assert persistence.load_state() == {}
+        with pytest.raises(RuntimeError, match="Cannot read legacy state file"):
+            persistence.load_state()
 
 
 # ─── Provider api-key encryption ─────────────────────────────────────────────

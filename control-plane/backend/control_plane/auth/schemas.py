@@ -2,6 +2,8 @@
 
 from pydantic import BaseModel
 
+from control_plane.auth.roles import Role
+
 
 class LoginRequest(BaseModel):
     email: str
@@ -12,7 +14,7 @@ class UserResponse(BaseModel):
     id: int
     email: str
     name: str
-    role: str
+    role: Role
 
     model_config = {"from_attributes": True}
 
@@ -27,7 +29,7 @@ class UserCreate(BaseModel):
     email: str
     name: str
     password: str
-    role: str = "viewer"
+    role: Role = "viewer"
 
 
 class AuthUser(BaseModel):
@@ -40,7 +42,7 @@ class AuthUser(BaseModel):
     """
     id: int
     email: str
-    role: str
+    role: Role
     subject: str = ""            # raw IdP 'sub' / client_id (esp. for OIDC principals)
     kind: str = "user"           # user | service | agent
     tenant_id: str = "default"   # single-tenant today; multi-tenant-ready seam

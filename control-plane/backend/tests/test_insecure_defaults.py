@@ -10,6 +10,86 @@ import pytest
 
 pytestmark = pytest.mark.anyio
 
+_FERNET_KEY = "-oUl3c_Lb7U-Z1JawknrorCyThuwnRMc_6leonQpjeo="
+
+
+def _secure_production_env(monkeypatch):
+    monkeypatch.setenv("OSTIARI_ENV", "production")
+    monkeypatch.setenv("OSTIARI_REQUIRE_AUTH", "true")
+    monkeypatch.setenv("OSTIARI_NO_DEMO", "1")
+    monkeypatch.setenv("OSTIARI_TENANCY_MODE", "single")
+    monkeypatch.setenv("OSTIARI_ORG_ID", "production-org")
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+asyncpg://ostiari:secret@db.internal:5432/ostiari",
+    )
+    monkeypatch.setenv("OSTIARI_JWT_SECRET", "j" * 40)
+    monkeypatch.setenv("OSTIARI_ADMIN_PASSWORD", "a" * 20)
+    monkeypatch.setenv("OSTIARI_INGEST_KEY", "i" * 40)
+    monkeypatch.setenv("OSTIARI_SERVICE_TOKEN", "s" * 40)
+    monkeypatch.setenv("OSTIARI_CONFIG_ADMIN_KEY", "c" * 40)
+    monkeypatch.setenv("OSTIARI_GATEWAY_AGENT_TOKEN", "g" * 40)
+    monkeypatch.setenv("OSTIARI_GATEWAY_AGENT_ID", "control-plane")
+    monkeypatch.setenv("OSTIARI_ENCRYPTION_KEY", _FERNET_KEY)
+    monkeypatch.setenv("OSTIARI_CORS_ORIGINS", "https://console.example.com")
+    monkeypatch.setenv("OSTIARI_GATEWAY_CALLBACK_ALLOW", "gateway.internal")
+
+
+class TestProductionPosture:
+    def test_complete_configuration_passes(self, monkeypatch):
+        from control_plane.env import validate_production_posture
+
+        _secure_production_env(monkeypatch)
+        validate_production_posture()
+
+    def test_auth_must_be_enabled(self, monkeypatch):
+        from control_plane.env import validate_production_posture
+
+        _secure_production_env(monkeypatch)
+        monkeypatch.delenv("OSTIARI_REQUIRE_AUTH", raising=False)
+        with pytest.raises(RuntimeError, match="OSTIARI_REQUIRE_AUTH"):
+            validate_production_posture()
+
+    def test_sqlite_is_rejected(self, monkeypatch):
+        from control_plane.env import validate_production_posture
+
+        _secure_production_env(monkeypatch)
+        monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:////data/control.db")
+        with pytest.raises(RuntimeError, match="postgresql\\+asyncpg"):
+            validate_production_posture()
+
+    def test_wildcard_cors_is_rejected(self, monkeypatch):
+        from control_plane.env import validate_production_posture
+
+        _secure_production_env(monkeypatch)
+        monkeypatch.setenv("OSTIARI_CORS_ORIGINS", "*")
+        with pytest.raises(RuntimeError, match="HTTPS origins"):
+            validate_production_posture()
+
+    def test_multi_tenant_mode_is_rejected_until_schema_is_ready(self, monkeypatch):
+        from control_plane.env import validate_production_posture
+
+        _secure_production_env(monkeypatch)
+        monkeypatch.setenv("OSTIARI_TENANCY_MODE", "multi")
+        with pytest.raises(RuntimeError, match="OSTIARI_TENANCY_MODE"):
+            validate_production_posture()
+
+    def test_production_org_is_required(self, monkeypatch):
+        from control_plane.env import validate_production_posture
+
+        _secure_production_env(monkeypatch)
+        monkeypatch.delenv("OSTIARI_ORG_ID")
+        with pytest.raises(RuntimeError, match="OSTIARI_ORG_ID"):
+            validate_production_posture()
+
+    def test_gateway_callback_allowlist_is_required(self, monkeypatch):
+        from control_plane.env import validate_production_posture
+
+        _secure_production_env(monkeypatch)
+        monkeypatch.delenv("OSTIARI_GATEWAY_CALLBACK_ALLOW")
+        with pytest.raises(RuntimeError, match="OSTIARI_GATEWAY_CALLBACK_ALLOW"):
+            validate_production_posture()
+
 
 # ── JWT secret ────────────────────────────────────────────────────────────
 
@@ -74,6 +154,7 @@ class TestAdminSeed:
 
     async def test_dev_seeds_admin_admin(self, client, monkeypatch):
         monkeypatch.delenv("OSTIARI_ENV", raising=False)
+        monkeypatch.delenv("OSTIARI_ADMIN_PASSWORD", raising=False)
         # login as the seeded admin works in dev
         r = await client.post("/api/auth/login",
                               json={"email": "admin@ostiari.ai", "password": "admin"})

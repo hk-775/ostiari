@@ -26,6 +26,9 @@ import httpx
 from jose import jwt
 from jose.exceptions import JWTError
 
+from control_plane.auth.roles import VALID_ROLES
+from control_plane.env import configured_org_id, tenancy_mode
+
 
 class OIDCError(Exception):
     """Raised when a token fails OIDC validation."""
@@ -164,37 +167,56 @@ def reset_validator() -> None:
 # ─── Claims → Ostiari identity/role mapping ──────────────────────────────────
 
 _VALID_ROLES = ("admin", "operator", "viewer")
+_GROUP_ROLE_ALIASES = {
+    "admin": frozenset({"admin", "admins", "administrator", "admin_group", "ostiari-admin"}),
+    "operator": frozenset(
+        {"operator", "operators", "operator_group", "editor", "ostiari-operator"}
+    ),
+    "viewer": frozenset(
+        {"viewer", "viewers", "viewer_group", "reader", "readonly", "ostiari-viewer"}
+    ),
+}
 
 
 def _role_from_claims(claims: dict[str, Any]) -> str:
     """Map IdP claims to an Ostiari role (admin | operator | viewer).
 
     Precedence: explicit custom 'role'/'ostiari_role' claim → Cognito groups →
-    OAuth scopes → default 'viewer' (least privilege). Group/scope naming is
-    matched case-insensitively against the role names.
+    OAuth scopes → default 'viewer' (least privilege). Group and scope values
+    are matched as complete, case-insensitive tokens; substrings never grant a
+    role.
     """
     # 1. explicit role claim
     for key in ("ostiari_role", "custom:role", "role"):
         val = claims.get(key)
-        if isinstance(val, str) and val.lower() in _VALID_ROLES:
-            return val.lower()
+        if isinstance(val, str) and val.strip().lower() in VALID_ROLES:
+            return val.strip().lower()
 
     # 2. groups (Cognito 'cognito:groups' or generic 'groups')
     groups = claims.get("cognito:groups") or claims.get("groups") or []
     if isinstance(groups, str):
         groups = [groups]
-    lowered = {str(g).lower() for g in groups}
+    lowered = {str(g).strip().lower() for g in groups}
     for role in _VALID_ROLES:  # admin wins over operator wins over viewer
-        if any(role in g for g in lowered):
+        if lowered.intersection(_GROUP_ROLE_ALIASES[role]):
             return role
 
     # 3. scopes (space-delimited string or list)
     scope = claims.get("scope", "")
     scopes = scope.split() if isinstance(scope, str) else list(scope)
-    scope_text = " ".join(scopes).lower()
-    if "admin" in scope_text:
+    normalized_scopes = {str(value).strip().lower() for value in scopes}
+    if normalized_scopes.intersection({"admin", "ostiari.admin", "ostiari/admin"}):
         return "admin"
-    if "write" in scope_text or "operator" in scope_text:
+    if normalized_scopes.intersection(
+        {
+            "write",
+            "operator",
+            "ostiari.write",
+            "ostiari.operator",
+            "ostiari/operator",
+            "write:tools",
+        }
+    ):
         return "operator"
 
     return "viewer"
@@ -232,4 +254,4 @@ def tenant_from_claims(claims: dict[str, Any]) -> str:
         val = claims.get(key)
         if isinstance(val, str) and val:
             return val
-    return "default"
+    return configured_org_id() if tenancy_mode() == "single" else "default"

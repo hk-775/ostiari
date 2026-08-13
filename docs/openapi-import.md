@@ -105,5 +105,5 @@ MCP SDK dependency.
   and link-local/metadata addresses are blocked in every environment. A local
   file path is read by the CLI and inlined instead.
 - Like the rest of `/config/*`, the gateway's import endpoint is behind
-  `OSTIARI_CONFIG_ADMIN_KEY` when that's set and **unauthenticated** when it
-  isn't — an open gateway lets any caller register arbitrary tool endpoints.
+  `OSTIARI_CONFIG_ADMIN_KEY`. Development may leave it unset; production startup
+  refuses a missing or weak key.

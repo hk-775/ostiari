@@ -50,3 +50,17 @@ class Session(Base):
     )
 
     user: Mapped["User"] = relationship(back_populates="sessions")
+
+
+class LoginAttemptWindow(Base):
+    """Durable, privacy-preserving login throttle bucket."""
+
+    __tablename__ = "login_attempt_windows"
+
+    key_digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    window_started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )

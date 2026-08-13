@@ -242,11 +242,10 @@ either way: `claude`, `openai`, `bedrock`, `strands`, `policy`, `fuzzy`, `tui`,
 > The Sandbox chat needs LLM credentials; point `make demo-full` at an env file
 > with `LLM_ENV=/path/to/.env`. Everything else runs without keys.
 
-> **`clean-start` gives you an empty control plane** — SQLite DB, `state.json`, and
-> the 18 model routing configs all gone. It used to delete only the pre-`data_dir()`
-> `state.json` path while the lifespan restored the live one, and `seed_models()`
-> ran at import time ungated, so quotas, experiments, providers, and the model
-> catalog all came back. See [`QUICKSTART.md` §3](QUICKSTART.md#3-clean-install).
+> **`clean-start` gives you an empty control plane** — the development SQLite DB,
+> any legacy `state.json` import file, and the seeded model catalog are removed.
+> Current runtime configuration is SQL-backed and no longer depends on graceful
+> shutdown. See [`QUICKSTART.md` §3](QUICKSTART.md#3-clean-install).
 
 ## Architecture
 

@@ -74,7 +74,9 @@ class ChatProxy:
         if not isinstance(body, dict) or "messages" not in body:
             return _err(400, "Missing 'messages'")
 
-        agent_id = request.headers.get("X-Agent-Id", "unknown")
+        from ostiari_gateway.oidc import request_agent_id
+
+        agent_id = request_agent_id(request)
         framework = request.headers.get("X-Framework", "codex")
         session_id = (request.headers.get("X-Session-Id")
                       or request.headers.get("x-codex-session-id", ""))

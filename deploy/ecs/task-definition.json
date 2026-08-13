@@ -9,8 +9,9 @@
   "containerDefinitions": [
     {
       "name": "ostiari-gateway",
-      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/ostiari-gateway:latest",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/ostiari-gateway@sha256:REPLACE_WITH_64_HEX_DIGEST",
       "essential": true,
+      "stopTimeout": 30,
       "portMappings": [
         {
           "containerPort": 8421,
@@ -43,10 +44,30 @@
         { "name": "OSTIARI_PORT", "value": "8421" },
         { "name": "OSTIARI_ADVERTISE_HOST", "value": "gateway.internal" },
         { "name": "OSTIARI_ENV", "value": "production" },
+        { "name": "OSTIARI_TENANCY_MODE", "value": "single" },
+        { "name": "OSTIARI_ORG_ID", "value": "REPLACE_ORG_ID" },
+        { "name": "OSTIARI_GATEWAY_AUTH", "value": "required" },
+        { "name": "OSTIARI_OIDC_ISSUER", "value": "https://REPLACE_OIDC_ISSUER" },
+        { "name": "OSTIARI_OIDC_AUDIENCE", "value": "REPLACE_GATEWAY_AUDIENCE" },
+        { "name": "OSTIARI_GATEWAY_RATE_LIMIT_RPM", "value": "600" },
+        { "name": "OSTIARI_REQUIRE_REDIS", "value": "true" },
+        { "name": "OSTIARI_FAIL_CLOSED_ON_CP_LOSS", "value": "true" },
         { "name": "OSTIARI_HITL", "value": "on" },
-        { "name": "REDIS_PORT", "value": "6379" }
+        { "name": "OSTIARI_X402_MODE", "value": "live" }
       ],
       "secrets": [
+        {
+          "name": "OSTIARI_CONFIG_ADMIN_KEY",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:ostiari/config-admin-key"
+        },
+        {
+          "name": "OSTIARI_SERVICE_TOKEN",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:ostiari/service-token"
+        },
+        {
+          "name": "OSTIARI_INGEST_KEY",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:ostiari/ingest-key"
+        },
         {
           "name": "ANTHROPIC_API_KEY",
           "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:ostiari/anthropic-api-key"
@@ -56,8 +77,16 @@
           "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:ostiari/openai-api-key"
         },
         {
-          "name": "REDIS_ENDPOINT",
-          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:ostiari/redis-endpoint"
+          "name": "OSTIARI_REDIS_URL",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:ostiari/redis-url"
+        },
+        {
+          "name": "OSTIARI_X402_PRIVATE_KEY",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:ostiari/x402-private-key"
+        },
+        {
+          "name": "OSTIARI_X402_ALLOWED_ASSETS",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:ostiari/x402-allowed-assets"
         }
       ],
       "logConfiguration": {

@@ -16,6 +16,8 @@ import httpx
 from jose import jwt
 from jose.exceptions import JWTError
 
+from control_plane.auth.roles import VALID_ROLES
+
 
 @dataclass
 class OIDCConfig:
@@ -302,29 +304,35 @@ def extract_roles_from_claims(claims: dict[str, Any], provider: str) -> str | No
 
     Returns the first matching Ostiari role (admin, operator, viewer) or None.
     """
-    valid_roles = {"admin", "operator", "viewer"}
+    def values(name: str) -> list[str]:
+        value = claims.get(name, [])
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, (list, tuple, set)):
+            return [str(item) for item in value]
+        return []
 
     # Check provider-specific claims
     role_claims: list[str] = []
 
     if provider == "okta":
-        role_claims = claims.get("groups", []) + [claims.get("role", "")]
+        role_claims = values("groups") + values("role")
     elif provider == "cognito":
-        role_claims = claims.get("cognito:groups", [])
+        role_claims = values("cognito:groups")
     elif provider == "azure_ad":
-        role_claims = claims.get("roles", []) + claims.get("groups", [])
+        role_claims = values("roles") + values("groups")
     else:
-        role_claims = claims.get("roles", []) + claims.get("groups", [])
+        role_claims = values("roles") + values("groups")
 
     # Also check a generic 'role' claim
-    if claims.get("role"):
-        role_claims.append(claims["role"])
+    if provider not in {"okta"}:
+        role_claims.extend(values("role"))
 
     # Map to Ostiari roles (case-insensitive)
     for claim_value in role_claims:
         if isinstance(claim_value, str):
             normalized = claim_value.lower().strip()
-            if normalized in valid_roles:
+            if normalized in VALID_ROLES:
                 return normalized
             # Common mappings
             if normalized in ("administrator", "admins", "admin_group"):

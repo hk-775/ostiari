@@ -385,7 +385,12 @@ class TestTraceIngestIsolation:
         await client.post("/api/traces/ingest", json=self._event(
             sidecar_id="trace-gw-b", trace_id="t-b", agent_id="agent-b"))
 
-        a_trust = (await client.get("/api/trust/scores", headers=ORG_A)).json()
+        a_trust = (
+            await client.get(
+                "/api/trust/scores?gateway_id=crm-agent",
+                headers=ORG_A,
+            )
+        ).json()
         ids = {row.get("agent_id") for row in (a_trust if isinstance(a_trust, list)
                                               else a_trust.get("agents", []))}
         assert "agent-b" not in ids

@@ -30,7 +30,10 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from control_plane.auth import oidc
+from control_plane.auth.roles import WRITE_ROLES, normalize_role
+from control_plane.auth.schemas import AuthUser
 from control_plane.auth.service import decode_token
+from control_plane.env import tenant_is_allowed
 
 # Paths that must remain reachable without a token. Prefix match on the URL path.
 _PUBLIC_PREFIXES = (
@@ -51,18 +54,34 @@ def _is_public(path: str) -> bool:
     return any(path == p or path.startswith(p) for p in _PUBLIC_PREFIXES)
 
 
-def _token_role(token: str) -> str | None:
-    """Validate a Bearer token and return its effective role."""
+def _token_principal(token: str) -> AuthUser | None:
+    """Validate a Bearer token and return its normalized principal."""
     validator = oidc.get_validator()
     if validator is not None:
         try:
             claims = validator.validate(token)
-            return oidc.principal_from_claims(claims).role
+            principal = oidc.principal_from_claims(claims)
+            role = normalize_role(principal.role)
+            if role is None:
+                return None
+            principal.role = role
+            return principal
         except oidc.OIDCError:
             return None
     try:
-        return decode_token(token).get("role")
-    except JWTError:
+        payload = decode_token(token)
+        role = normalize_role(payload.get("role"))
+        if role is None:
+            return None
+        return AuthUser(
+            id=int(payload["sub"]),
+            email=payload["email"],
+            role=role,
+            subject=str(payload["sub"]),
+            kind="user",
+            tenant_id=payload.get("org", "default"),
+        )
+    except (JWTError, KeyError, TypeError, ValueError):
         return None
 
 
@@ -115,6 +134,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             and _valid_service_key(request)
         ):
             request.state.machine_authenticated = True
+            request.state.audit_actor = "gateway-service"
             return await call_next(request)
 
         if not _require_auth_enabled():
@@ -140,19 +160,28 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         auth = request.headers.get("Authorization", "")
         token = auth.removeprefix("Bearer ") if auth.startswith("Bearer ") else ""
-        role = _token_role(token) if token else None
-        if role is None:
+        principal = _token_principal(token) if token else None
+        if principal is None:
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Authentication required"},
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        if not tenant_is_allowed(principal.tenant_id):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Token tenant is not permitted by this deployment"},
+            )
+        request.state.auth_principal = principal
+        request.state.audit_actor = (
+            principal.email or principal.subject or f"{principal.kind}:{principal.id}"
+        )
         if (
             request.method in {"POST", "PUT", "PATCH", "DELETE"}
-            and role == "viewer"
+            and principal.role not in WRITE_ROLES
         ):
             return JSONResponse(
                 status_code=403,
-                content={"detail": "Viewer role is read-only"},
+                content={"detail": "This role is read-only"},
             )
         return await call_next(request)

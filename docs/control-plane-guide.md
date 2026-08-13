@@ -405,11 +405,10 @@ A quota that cries wolf gets ignored (or raised until it's useless).
    80/90/100% thresholds. Each agent quota has a configurable warning threshold
    (plus 100%). Both are reported to `/api/quotas/alerts`; agent alerts retain
    `agent_id`.
-4. **The control-plane quota store is a per-org dict, not a table.** Quotas aren't
-   in the database; they're held in memory and serialized to `state.json` on clean
-   shutdown, so they survive a graceful restart but are lost on a `kill -9`.
-   Displayed spend and trailing-minute RPM are recomputed from `usage_records`;
-   all three LLM entry points report usage.
+4. **Quota definitions are durable SQL records with a bounded hot cache.**
+   Tenant-scoped integer IDs are allocated atomically, so concurrent control-plane
+   requests cannot collide. Displayed spend and trailing-minute RPM are recomputed
+   from `usage_records`; all three LLM entry points report usage.
 
 ### 5.4 Protocol Governance — agent↔agent (`/protocol-governance`)
 
@@ -842,14 +841,11 @@ vendor. Their base URLs and probe models mirror AxonLLM's adapters deliberately 
 divergence would let this page "pass" a key the router can't actually route with.
 Seeded models: `grok-3`, `grok-3-mini`, `llama-3.3-70b`, `deepseek-r1-together`.
 
-**This store is process memory, not a table.** It renders empty on a fresh control
-plane, and it does not survive a restart. `gateway/register_demo_providers.py` seeds it
-from the same env file the gateways load, so the page shows exactly the providers this
-machine can reach — run it after every control-plane restart (the `make dev` and
-`make demo-full` targets do). Keys are Fernet-encrypted at rest under
-`OSTIARI_ENCRYPTION_KEY`; unset, the control plane mints a transient key, so the
-stored keys die with the process regardless. Persisting this to a real table is
-outstanding work.
+Provider metadata and encrypted credentials are tenant-scoped SQL records.
+`gateway/register_demo_providers.py` seeds or updates those records from the
+same environment file the demo gateways load. Production startup requires a
+stable `OSTIARI_ENCRYPTION_KEY`; API responses expose presence flags, never the
+decrypted value.
 
 ### 9.2 Users (`/users`)
 
@@ -1140,10 +1136,10 @@ For a real deployment, in order:
 | Expecting approvals with HITL off | Intervene never pauses — and in production it's *refused* | `OSTIARI_HITL=on` (§7.4) |
 | Thresholds tuned in dev, promoted to prod | Dev's intervene band is "log it"; prod's is "refuse" | Turn HITL on, or empty the band first (§7.4) |
 | Caller ignores the 202 | Approved call never re-submitted, looks lost | Retry with `X-Approval-Id` |
-| Trusting viewer as a security boundary | Only the UI is restricted | Role-gate the write routers (§9.2) |
+| Assigning a write-capable role to a read-only user | Operator/admin tokens can mutate governance | Keep read-only users on `viewer`; backend RBAC rejects viewer writes (§9.2) |
 | Enabling detection straight to `block` | Fail-closed + untuned = blocked traffic | `injection_mode: flag` first (§5.5) |
-| No `OSTIARI_INGEST_KEY` outside dev | Forged traces poison compliance/billing | Set it on the CP — but see §10a: the gateway can't send it yet, so traces go quiet |
-| Assuming the ingest key protects billing | Only `/api/traces/ingest` checks it; cost/approval/payment ingest stay open | Don't treat metering as authenticated (§10a) |
+| No `OSTIARI_INGEST_KEY` outside dev | Forged traces poison compliance evidence | Production startup refuses it; set the same key on control plane and gateways |
+| Missing gateway service credential | Lifecycle, cost, approval, payment, and alert ingest fail | Set the same `OSTIARI_SERVICE_TOKEN` on the control plane and every trusted gateway |
 
 ---
 

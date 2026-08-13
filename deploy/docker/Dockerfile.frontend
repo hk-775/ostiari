@@ -9,7 +9,7 @@
 FROM node:20-alpine AS build
 WORKDIR /app
 COPY control-plane/frontend/package.json control-plane/frontend/package-lock.json* ./
-RUN npm install
+RUN npm ci
 COPY control-plane/frontend/ ./
 ARG VITE_API_URL=http://localhost:8400
 ENV VITE_API_URL=$VITE_API_URL

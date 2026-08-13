@@ -8,7 +8,7 @@ enforced at runtime (via the gateway's /config/agent-routing endpoint).
 """
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,7 +16,12 @@ from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
 from control_plane.models.database import Gateway
 from control_plane.models.scoping import get_scoped
+from control_plane.services.audit_service import actor_of, audit
 from control_plane.services.push_service import gateway_config_headers
+from control_plane.services.runtime_state import (
+    delete_runtime_state,
+    put_runtime_state,
+)
 
 router = APIRouter(prefix="/api/agent-routing", tags=["agent-routing"])
 
@@ -29,9 +34,8 @@ class RoutingPolicy(BaseModel):
     scope: str = "request"                 # request | session
 
 
-# In-memory store keyed by (org, gateway_id, agent_id), scoped per org (tenant).
-# Mirrors the other config routers (experiments, model_config) which are also
-# in-memory registries.
+# Hot cache over tenant-scoped runtime_state_records, keyed by
+# (org, gateway_id, agent_id).
 _policies: dict[tuple[str, str, str], RoutingPolicy] = {}
 
 
@@ -74,6 +78,7 @@ async def list_for_gateway(gateway_id: str, org: str = Depends(get_current_org))
 @router.post("")
 async def set_policy(
     body: RoutingPolicy,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     org: str = Depends(get_current_org),
 ) -> dict:
@@ -85,6 +90,24 @@ async def set_policy(
         raise HTTPException(status_code=400, detail="round_robin needs at least one model")
 
     _policies[(org, body.gateway_id, body.agent_id)] = body
+    state_key = f"{body.gateway_id}:{body.agent_id}"
+    await put_runtime_state(
+        db,
+        org,
+        "agent_routing",
+        state_key,
+        body.model_dump(mode="json"),
+    )
+    await audit.log(
+        db,
+        actor_of(request),
+        "set",
+        "agent_routing",
+        state_key,
+        body.model_dump(mode="json"),
+        org=org,
+    )
+    await db.commit()
     pushed, err = await _push(org, gateway)
     return {"status": "saved", "pushed": pushed, "push_error": err or None, "policy": body.model_dump()}
 
@@ -93,12 +116,25 @@ async def set_policy(
 async def delete_policy(
     gateway_id: str,
     agent_id: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     org: str = Depends(get_current_org),
 ) -> dict:
     if (org, gateway_id, agent_id) not in _policies:
         raise HTTPException(status_code=404, detail="Policy not found")
     del _policies[(org, gateway_id, agent_id)]
+    state_key = f"{gateway_id}:{agent_id}"
+    await delete_runtime_state(db, org, "agent_routing", state_key)
+    await audit.log(
+        db,
+        actor_of(request),
+        "delete",
+        "agent_routing",
+        state_key,
+        {"gateway_id": gateway_id, "agent_id": agent_id},
+        org=org,
+    )
+    await db.commit()
     gateway = await get_scoped(db, Gateway, gateway_id, org)
     pushed, err = (await _push(org, gateway)) if gateway else (False, "gateway not found")
     return {"status": "deleted", "pushed": pushed, "push_error": err or None}

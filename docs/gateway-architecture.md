@@ -403,13 +403,10 @@ Registered only when `llm_gateway: true` (`modules/llm_gateway/module.py`):
 | `/config/llm` | GET/POST | Whole-document LLM config; GET omits credentials |
 
 Every path starting with `/config` is gated by `OSTIARI_CONFIG_ADMIN_KEY` when
-it's set — present it as `X-Config-Admin-Key` or `Authorization: Bearer <key>`,
-compared with `hmac.compare_digest`; a mismatch is 401. (The middleware's
-docstring says `GET /config/mode` stays readable, but the prefix check gates that
-too. `/tools`, `/modules`, and `/health` are outside `/config` and genuinely
-remain open.) When the variable is **unset** the whole surface is
-unauthenticated, so an open gateway lets any caller rewrite policy or register
-tools.
+it is set — present it as `X-Config-Admin-Key` or `Authorization: Bearer <key>`,
+compared with `hmac.compare_digest`; a mismatch is 401. Development can leave it
+unset for local demos. Production startup refuses to run without a strong key,
+so a production gateway cannot expose a writable configuration surface.
 
 ### The `/config` partial-push trap
 
@@ -2329,8 +2326,8 @@ existing name removes the old server first, so it's an upsert, not a duplicate.
 list, so you get `200 {"tools_discovered": 0}`, indistinguishable from a server
 that exists but exposes nothing.
 
-Like the rest of `/config/*`, these are behind `OSTIARI_CONFIG_ADMIN_KEY` when
-it's set and unauthenticated when it isn't.
+Like the rest of `/config/*`, these require `OSTIARI_CONFIG_ADMIN_KEY`.
+Production startup refuses a missing or weak key.
 
 ### Auto-Discovery: What Happens When You Add an MCP Server
 
@@ -2887,11 +2884,11 @@ Four things to know about gateway-quota pushes:
   because a missing entry falls back to `DEFAULT_PRICING` while a `0.0` entry
   would assert a real model is free and disable the budget for it. `budget_key`
   has no field on `POST /api/quotas`; set it by calling `/config/quota` directly.
-- **The control-plane quota store is a per-org dict, not a table** (`_quotas`).
-  It's serialized to `state.json` in `lifespan`'s shutdown half and reloaded on
-  boot, so quotas survive a *graceful* restart and are lost on `kill -9`. The
-  `current_spend` and `current_rpm` are recomputed from `UsageRecord` rows when
-  quotas are listed; spend is bounded by each gateway's latest reset epoch.
+- **The control-plane quota store is SQL-backed.** `_quotas` is a per-org hot
+  cache rebuilt from `runtime_state_records`; IDs come from an atomic tenant
+  sequence. `current_spend` and `current_rpm` are recomputed from `UsageRecord`
+  rows when quotas are listed; spend is bounded by each gateway's latest reset
+  epoch.
 
 ### What happens when limits are hit
 
@@ -3176,10 +3173,10 @@ All providers use the same unified interface internally. The gateway (via AxonLL
 | **Budget period rollover** | Gateway scheduler resets gateway + agent spend on daily/weekly/monthly UTC boundaries and persists the reset epoch | Yes — Models → Budget Reset Schedule |
 | **Live traces** | Reports every governed call in real time (`/tool/{action}`, `/invoke` tool loop, both shims) | Automatic when `control_plane_url` set |
 | **Session/plan/step context** | Groups traces by session, annotates with the agent's plan | Agent sends X-Session-Id, X-Plan, X-Step headers |
-| **Params in traces** | Tool call parameters included verbatim, **unredacted** | Automatic |
+| **Params in traces** | Sensitive parameter values are redacted before the control-plane SQL/cache/OTLP boundary | Automatic |
 | **OpenTelemetry** | Spans on `POST /tool/{action}` only; needs `opentelemetry-exporter-otlp` installed separately | Configure via env vars |
 | **Fallback chains** | Auto-retry with next model on failure | Yes — fallback_chain in LLM config |
-| **9 provider slots** | Anthropic, OpenAI, Azure, Bedrock, Bedrock Mantle, Cohere, Vertex AI, xAI, Together | Yes — credentials in LLM config (in-memory store; re-seed after restart) |
+| **9 provider slots** | Anthropic, OpenAI, Azure, Bedrock, Bedrock Mantle, Cohere, Vertex AI, xAI, Together | Yes — encrypted provider and route records are SQL-backed and pushed over the authenticated config channel |
 
 ---
 
@@ -3313,21 +3310,22 @@ The agent gets a 403 with a clear explanation of what it CAN access. This lets t
 
 ### JWT: what shipped, and what didn't
 
-JWT validation **is implemented**, but it does *authentication only* — it proves
-the caller is who `X-Agent-Id` claims. It carries no authorization: no claim in the
-token can grant, restrict, or override a tool grant.
+JWT validation **is implemented**, but it does *authentication only*. The
+gateway derives the effective agent identity from verified claims; an optional
+`X-Agent-Id` must match. Token claims do not grant, restrict, or override tool
+grants.
 
 ```mermaid
 flowchart TD
-    REQ["Request: X-Agent-Id + Authorization: Bearer …"] --> ON{"OSTIARI_GATEWAY_AUTH<br/>configured?"}
-    ON -->|"no — default"| TRUST["Trust X-Agent-Id verbatim<br/>(no token needed)"]
+    REQ["Request: Authorization: Bearer …<br/>optional X-Agent-Id"] --> ON{"OSTIARI_GATEWAY_AUTH<br/>required?"}
+    ON -->|"development only: no"| TRUST["Use development identity path"]
     ON -->|yes| TOK{Bearer token present?}
     TOK -->|no| E401["401 authentication required"]
     TOK -->|yes| VAL{"OIDC validate:<br/>signature, issuer, audience, exp"}
     VAL -->|invalid| E401b["401 invalid token"]
     VAL -->|valid| MATCH{"agent_id_from_claims(claims)<br/>== X-Agent-Id?"}
     MATCH -->|no| E403["403 identity mismatch"]
-    MATCH -->|yes| GRANTS["Policy-based agent_auth grants<br/>— unchanged, the only authorization"]
+    MATCH -->|yes or header omitted| GRANTS["Policy-based agent_auth grants<br/>— unchanged, the only authorization"]
     TRUST --> GRANTS
 
     style E401 fill:#7f1d1d,color:white
@@ -3339,22 +3337,22 @@ The asserted identity is read from the first present of `agent_id`,
 `custom:agent_id`, `client_id`, `sub` (`oidc.py:80`), and JWKS keys are cached for
 an hour.
 
-Enabling it takes **two** env vars, and getting one of them wrong fails open:
+Production requires all three values and rejects incomplete configuration at
+startup:
 
 | Variable | Effect |
 |---|---|
-| `OSTIARI_GATEWAY_AUTH` | Must be exactly `required` (case-insensitive). Anything else — including `true`, `1`, `on` — leaves auth **off**. |
-| `OSTIARI_OIDC_ISSUER` | The trusted issuer. **If unset, `get_validator` returns `None` and every request is unauthenticated even with `OSTIARI_GATEWAY_AUTH=required`.** No warning is logged for this case. |
+| `OSTIARI_GATEWAY_AUTH` | Must be exactly `required` in production. |
+| `OSTIARI_OIDC_ISSUER` | HTTPS trusted issuer; required in production. |
 | `OSTIARI_OIDC_JWKS_URL` | Optional; derived from the issuer when omitted. |
-| `OSTIARI_OIDC_AUDIENCE` | Optional but **pin it on a shared IdP**: without it, any token from the trusted issuer is accepted, including one minted for a sibling app in the same Cognito pool. This one *does* log a warning at startup. |
+| `OSTIARI_OIDC_AUDIENCE` | Exact audience; required in production so sibling applications' tokens are rejected. |
 
 Verify enforcement by calling `POST /tool/{action}` with no `Authorization` header
 and confirming a 401 — the config alone doesn't tell you it's on.
 
-**What this changes about least privilege:** with `OSTIARI_GATEWAY_AUTH` off — the
-default — `X-Agent-Id` is caller-supplied and unverified, so grants are advisory
-and any client can claim to be `admin-agent`. Turning gateway auth on is what makes
-per-agent grants enforceable at all. Turn it on in production.
+**What this changes about least privilege:** development can still run without
+OIDC for local demos. Production cannot: verified identity is mandatory before
+per-agent grants, quotas, policy, HITL, MCP, A2A, or LLM routing execute.
 
 **Still not implemented, deliberately:** a `role: admin` claim that bypasses grants,
 and a `tools: [...]` claim that supplies grants inline. Both would move

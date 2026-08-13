@@ -54,7 +54,6 @@ class TestHashChain:
             await gen.aclose()
 
     async def test_verify_detects_deletion(self, app_and_db):
-        from control_plane.models.database import AuditLog
         from control_plane.services.audit_service import audit
         gen, db = await _session()
         try:

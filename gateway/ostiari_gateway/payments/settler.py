@@ -35,6 +35,26 @@ class Settler(Protocol):
         ...
 
 
+class DisabledSettler:
+    """Fail-closed backend for production deployments with settlement disabled."""
+
+    mode = "off"
+
+    @staticmethod
+    def validate_quote(quote: Quote, wallet: Wallet | None = None) -> str:
+        return "payment settlement is disabled"
+
+    async def settle(
+        self, *, quote: Quote, wallet: Wallet, payment_header: str | None = None
+    ) -> Receipt:
+        return Receipt(
+            settled=False,
+            amount_usdc=quote.amount_usdc,
+            reason="payment settlement is disabled",
+            mode=self.mode,
+        )
+
+
 class SimulatedSettler:
     """Demo settler — debits the local USDC ledger, no blockchain involved."""
 

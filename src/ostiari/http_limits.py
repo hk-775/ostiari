@@ -144,7 +144,13 @@ class RateLimitMiddleware:
             await self.app(scope, receive, send)
             return
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
-        key = headers.get("x-agent-id") or (scope.get("client") or ("unknown",))[0]
+        state = scope.get("state") or {}
+        verified_agent = state.get("agent_id") if isinstance(state, dict) else None
+        key = (
+            verified_agent
+            or headers.get("x-agent-id")
+            or (scope.get("client") or ("unknown",))[0]
+        )
 
         if self._store is not None:
             allowed = self._store.rate_allow(key, self._rpm, 60.0)

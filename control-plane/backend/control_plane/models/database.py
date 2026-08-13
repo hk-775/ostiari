@@ -9,6 +9,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -323,6 +324,133 @@ class AuditLog(Base):
     # row breaks every subsequent hash. Nullable for pre-existing rows.
     prev_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     entry_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class AuditChainHead(Base):
+    """Serialized head of the global tamper-evident audit chain."""
+
+    __tablename__ = "audit_chain_heads"
+
+    name: Mapped[str] = mapped_column(String(32), primary_key=True)
+    entry_hash: Mapped[str] = mapped_column(String(64), default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+class ApprovalRecord(Base):
+    """Durable human-in-the-loop request and decision."""
+
+    __tablename__ = "approval_records"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'approved', 'denied', 'expired')",
+            name="ck_approval_records_status",
+        ),
+        Index("ix_approval_records_org_status_created", "org_id", "status", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64), default=DEFAULT_ORG, index=True, nullable=False
+    )
+    agent_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    gateway_id: Mapped[str] = mapped_column(String(64), index=True, default="")
+    action: Mapped[str] = mapped_column(String(128), nullable=False)
+    params_encrypted: Mapped[str] = mapped_column(Text, default="")
+    score: Mapped[int] = mapped_column(Integer, default=0)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    decided_by: Mapped[str] = mapped_column(String(256), default="")
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class TraceRecord(Base):
+    """Durable, sanitized governance trace used to rebuild the live cache."""
+
+    __tablename__ = "trace_records"
+    __table_args__ = (
+        UniqueConstraint("org_id", "trace_id", name="uq_trace_records_org_trace_id"),
+        Index("ix_trace_records_org_updated", "org_id", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64), default=DEFAULT_ORG, index=True, nullable=False
+    )
+    trace_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    gateway_id: Mapped[str] = mapped_column(String(64), index=True, default="")
+    event: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+class SSOLoginState(Base):
+    """Single-use OAuth state stored by digest for multi-replica callbacks."""
+
+    __tablename__ = "sso_login_states"
+
+    state_digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    nonce: Mapped[str] = mapped_column(String(256), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class RuntimeStateRecord(Base):
+    """Tenant-scoped durable configuration formerly stored in state.json."""
+
+    __tablename__ = "runtime_state_records"
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id",
+            "namespace",
+            "item_key",
+            name="uq_runtime_state_org_namespace_key",
+        ),
+        Index(
+            "ix_runtime_state_org_namespace",
+            "org_id",
+            "namespace",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64), default=DEFAULT_ORG, index=True, nullable=False
+    )
+    namespace: Mapped[str] = mapped_column(String(64), nullable=False)
+    item_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    value: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+class RuntimeStateSequence(Base):
+    """Atomic per-tenant integer allocator for runtime configuration."""
+
+    __tablename__ = "runtime_state_sequences"
+
+    org_id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=DEFAULT_ORG, nullable=False
+    )
+    namespace: Mapped[str] = mapped_column(String(64), primary_key=True)
+    next_value: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
 
 class ProviderRouteRecord(Base):

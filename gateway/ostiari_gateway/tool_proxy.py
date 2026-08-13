@@ -1,11 +1,19 @@
 """Tool proxy — executes tools by forwarding HTTP requests to remote endpoints."""
 
+import asyncio
 import logging
 import time
 from typing import Any
 
 import httpx
 
+from ostiari.bounded_http import (
+    ResponseTooLargeError,
+    decode_json_or_text,
+    max_response_bytes,
+    read_buffered_limited,
+    request_limited,
+)
 from ostiari_gateway.models import ToolDefinition
 
 log = logging.getLogger("ostiari.sidecar")
@@ -115,33 +123,43 @@ class ToolProxy:
         url, query, body = self._place_params(tool, params)
 
         start = time.monotonic()
+        response_limit = max_response_bytes("OSTIARI_MAX_TOOL_RESPONSE_BYTES")
+        timeout = max(0.1, tool.timeout_seconds)
 
         try:
             if payment_client is None:
-                response = await self._client.request(
+                bounded = await request_limited(
+                    self._client,
                     method=tool.method,
                     url=url,
                     params=query or None,
                     json=body,
                     headers=headers,
-                    timeout=tool.timeout_seconds,
+                    deadline_seconds=timeout,
+                    max_bytes=response_limit,
                 )
+                status_code = bounded.status_code
+                response_headers = bounded.headers
+                content = bounded.content
             else:
-                response = await payment_client.request(
-                    quote=payment_quote,
-                    method=tool.method,
-                    url=url,
-                    params=query or None,
-                    json_body=body,
-                    headers=headers,
-                    timeout=tool.timeout_seconds,
-                )
+                async with asyncio.timeout(timeout):
+                    response = await payment_client.request(
+                        quote=payment_quote,
+                        method=tool.method,
+                        url=url,
+                        params=query or None,
+                        json_body=body,
+                        headers=headers,
+                        timeout=timeout,
+                    )
+                status_code = response.status_code
+                response_headers = {
+                    key.lower(): value for key, value in response.headers.items()
+                }
+                content = read_buffered_limited(response, response_limit)
             duration_ms = (time.monotonic() - start) * 1000
 
-            try:
-                body = response.json()
-            except Exception:
-                body = response.text
+            response_body = decode_json_or_text(content)
 
             payment_headers = {
                 name.lower(): value
@@ -151,19 +169,26 @@ class ToolProxy:
                     "PAYMENT-RESPONSE",
                     "X-PAYMENT-RESPONSE",
                 )
-                if (value := response.headers.get(name))
+                if (value := response_headers.get(name.lower()))
             }
             return {
-                "result": body,
-                "status_code": response.status_code,
+                "result": response_body,
+                "status_code": status_code,
                 "duration_ms": round(duration_ms, 2),
                 "payment_headers": payment_headers,
             }
-        except httpx.TimeoutException:
+        except (TimeoutError, httpx.TimeoutException):
             duration_ms = (time.monotonic() - start) * 1000
             return {
-                "error": f"Tool {name} timed out after {tool.timeout_seconds}s",
+                "error": f"Tool {name} timed out after {timeout}s",
                 "status_code": 504,
+                "duration_ms": round(duration_ms, 2),
+            }
+        except ResponseTooLargeError:
+            duration_ms = (time.monotonic() - start) * 1000
+            return {
+                "error": f"Tool {name} response exceeds {response_limit} byte limit",
+                "status_code": 502,
                 "duration_ms": round(duration_ms, 2),
             }
         except httpx.ConnectError as e:

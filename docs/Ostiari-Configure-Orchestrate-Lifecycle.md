@@ -39,16 +39,11 @@ Clicking "Push" sends config to the gateway NOW. But if the gateway isn't reacha
 When the gateway reconnects (via heartbeat), it automatically receives the latest config.
 
 Push therefore never reports a hard failure — it either applies immediately or
-queues. Two caveats on the queue, though, and the second one is a real bug.
+queues. Queue entries are tenant-scoped SQL records, survive control-plane
+restarts, and are deleted only when registration or heartbeat drains them.
 
-**Caveat 1 — the queue doesn't survive a control-plane restart.** `config_queue`
-in `control_plane/routers/gateways.py` is a plain in-memory dict. The durable part
-is the stored config itself, so a gateway that registers later still gets the
-current state in its bundle; what's lost is the delta that was waiting. Restarting
-the control plane while a gateway is down is the case to watch.
-
-**Caveat 2 — the queue is a sibling key, not part of the bundle.** `gateway_register`
-drains `config_queue` into a top-level `config_updates` on the response, *beside*
+`gateway_register` returns drained updates in a top-level `config_updates` key,
+*beside*
 `config`, and `lifecycle.register()` applies the bundle first and then each queued
 update in order — so a queued change wins over the stored config it was meant to
 change. It cannot be nested inside `config`, because the gateway applies that as a

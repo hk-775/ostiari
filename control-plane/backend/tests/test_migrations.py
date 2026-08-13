@@ -58,6 +58,17 @@ def test_upgrade_head_creates_org_schema():
             assert {"experiment_name", "experiment_variant"} <= usage_cols
             assert "sandbox_runs" in tables
             assert "provider_routes" in tables
+            assert {
+                "approval_records",
+                "trace_records",
+                "sso_login_states",
+                "runtime_state_records",
+                "runtime_state_sequences",
+                "audit_chain_heads",
+            } <= tables
+            assert con.execute(
+                "SELECT count(*) FROM audit_chain_heads WHERE name='global'"
+            ).fetchone()[0] == 1
             sandbox_cols = {
                 r[1] for r in con.execute("PRAGMA table_info(sandbox_runs)")
             }
@@ -92,6 +103,28 @@ def test_upgrade_head_creates_org_schema():
                 "max_connections_per_host",
                 "keepalive_timeout",
             } <= route_cols
+            approval_cols = {
+                r[1] for r in con.execute("PRAGMA table_info(approval_records)")
+            }
+            assert {
+                "id",
+                "org_id",
+                "gateway_id",
+                "params_encrypted",
+                "status",
+                "decided_by",
+                "decided_at",
+            } <= approval_cols
+            trace_cols = {
+                r[1] for r in con.execute("PRAGMA table_info(trace_records)")
+            }
+            assert {
+                "org_id",
+                "trace_id",
+                "gateway_id",
+                "event",
+                "updated_at",
+            } <= trace_cols
             con.close()
         finally:
             _restore_env(prev)
