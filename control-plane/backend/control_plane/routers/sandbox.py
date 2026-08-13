@@ -11,9 +11,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 import httpx
+import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
-from jose import JWTError, jwt
+from jwt.exceptions import PyJWTError as JWTError
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -161,7 +162,10 @@ async def _gateway_credential(request: Request) -> tuple[str, str | None]:
         principal = await get_current_user(request)
         # The same token was just signature-validated by get_current_user. Decode
         # its claims to mirror the gateway's agent-id precedence exactly.
-        claims = jwt.get_unverified_claims(caller_authorization.removeprefix("Bearer "))
+        claims = jwt.decode(
+            caller_authorization.removeprefix("Bearer "),
+            options={"verify_signature": False},
+        )
     except (HTTPException, JWTError):
         return "sandbox-code", None
 

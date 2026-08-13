@@ -4,8 +4,8 @@ Default (OSTIARI_REQUIRE_AUTH unset): open, preserving the demo. When set,
 unauthenticated /api/* calls (except the public allowlist) get 401.
 """
 
+import jwt
 import pytest
-from jose import jwt
 
 pytestmark = pytest.mark.anyio
 

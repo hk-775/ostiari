@@ -24,7 +24,7 @@ import os
 import re
 import secrets
 
-from jose import JWTError
+from jwt.exceptions import PyJWTError as JWTError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse

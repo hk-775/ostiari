@@ -23,8 +23,8 @@ import time
 from typing import Any
 
 import httpx
-from jose import jwt
-from jose.exceptions import JWTError
+import jwt
+from jwt.exceptions import PyJWTError as JWTError
 
 from control_plane.auth.roles import VALID_ROLES
 from control_plane.env import configured_org_id, tenancy_mode
@@ -98,13 +98,14 @@ class OIDCValidator:
         # fallback below.
         options = {"verify_aud": bool(self.audience)}
         try:
+            signing_key = jwt.PyJWK.from_dict(key)
             claims = jwt.decode(
-                token, key, algorithms=["RS256"],
+                token, signing_key, algorithms=["RS256"],
                 issuer=self.issuer,
                 audience=self.audience if self.audience else None,
                 options=options,
             )
-        except JWTError as exc:
+        except (JWTError, KeyError, TypeError, ValueError) as exc:
             raise OIDCError(f"token validation failed: {exc}") from None
 
         if self.audience:

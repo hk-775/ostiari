@@ -6,13 +6,13 @@ and, when required, enforces a valid token whose agent identity matches
 X-Agent-Id.
 """
 
+import base64
 import time
 
+import jwt
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from jose import jwt
-from jose.utils import long_to_base64
 from ostiari_gateway import oidc
 from ostiari_gateway.models import ModulesConfig, PolicyConfig, SidecarConfig, ToolDefinition
 from ostiari_gateway.server import create_app
@@ -21,12 +21,17 @@ from starlette.testclient import TestClient
 ISSUER = "https://issuer.test/pool"
 
 
+def _base64url_uint(value: int) -> str:
+    raw = value.to_bytes((value.bit_length() + 7) // 8, "big")
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
 @pytest.fixture
 def keypair():
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     pub = key.public_key().public_numbers()
     jwk_dict = {"kty": "RSA", "kid": "gw-key-1", "use": "sig", "alg": "RS256",
-                "n": long_to_base64(pub.n).decode(), "e": long_to_base64(pub.e).decode()}
+                "n": _base64url_uint(pub.n), "e": _base64url_uint(pub.e)}
     pem = key.private_bytes(serialization.Encoding.PEM,
                             serialization.PrivateFormat.PKCS8,
                             serialization.NoEncryption()).decode()

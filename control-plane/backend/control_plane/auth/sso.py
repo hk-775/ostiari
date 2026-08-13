@@ -13,8 +13,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
-from jose import jwt
-from jose.exceptions import JWTError
+import jwt
+from jwt.exceptions import PyJWTError as JWTError
 
 from control_plane.auth.roles import VALID_ROLES
 
@@ -260,15 +260,15 @@ async def validate_id_token(
     # Validate the token
     issuer = config.issuer.rstrip("/")
     try:
+        signing_key = jwt.PyJWK.from_dict(rsa_key)
         claims = jwt.decode(
             id_token,
-            rsa_key,
+            signing_key,
             algorithms=["RS256"],
             audience=config.client_id,
             issuer=issuer,
-            options={"verify_at_hash": False},
         )
-    except JWTError as e:
+    except (JWTError, KeyError, TypeError, ValueError) as e:
         raise ValueError(f"ID token validation failed: {e}") from e
 
     # Verify nonce if provided

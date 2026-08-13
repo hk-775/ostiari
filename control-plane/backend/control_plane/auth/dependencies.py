@@ -3,7 +3,7 @@
 from collections.abc import Callable
 
 from fastapi import Depends, HTTPException, Request, status
-from jose import JWTError
+from jwt.exceptions import PyJWTError as JWTError
 
 from control_plane.auth import oidc
 from control_plane.auth.schemas import AuthUser

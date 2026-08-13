@@ -4,7 +4,7 @@ import pytest
 from control_plane.auth import oidc, rbac, service, sso
 from control_plane.auth.models import LoginAttemptWindow
 from control_plane.database import async_session
-from jose import JWTError
+from jwt.exceptions import PyJWTError as JWTError
 from sqlalchemy import select
 
 pytestmark = pytest.mark.anyio
@@ -243,6 +243,68 @@ class TestUserManagement:
 # ─── SSO ──────────────────────────────────────────────────────────────────
 
 class TestSSO:
+    async def test_validate_id_token_rs256(self, monkeypatch):
+        import base64
+        import time
+
+        import jwt
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        public_numbers = key.public_key().public_numbers()
+
+        def base64url_uint(value: int) -> str:
+            raw = value.to_bytes((value.bit_length() + 7) // 8, "big")
+            return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+        jwk = {
+            "kty": "RSA",
+            "kid": "sso-key",
+            "use": "sig",
+            "alg": "RS256",
+            "n": base64url_uint(public_numbers.n),
+            "e": base64url_uint(public_numbers.e),
+        }
+        private_key = key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+        config = sso.OIDCConfig(
+            issuer="https://issuer.test",
+            client_id="ostiari-client",
+            client_secret="secret",
+            redirect_uri="https://ostiari.test/callback",
+        )
+        now = int(time.time())
+        token = jwt.encode(
+            {
+                "sub": "user-1",
+                "iss": config.issuer,
+                "aud": config.client_id,
+                "iat": now,
+                "exp": now + 60,
+                "nonce": "expected-nonce",
+            },
+            private_key,
+            algorithm="RS256",
+            headers={"kid": jwk["kid"]},
+        )
+
+        async def fetch_discovery(_config):
+            return {"jwks_uri": "https://issuer.test/jwks"}
+
+        async def fetch_jwks(_url):
+            return {"keys": [jwk]}
+
+        monkeypatch.setattr(sso, "_fetch_discovery", fetch_discovery)
+        monkeypatch.setattr(sso, "_fetch_jwks", fetch_jwks)
+
+        claims = await sso.validate_id_token(config, token, nonce="expected-nonce")
+
+        assert claims["sub"] == "user-1"
+
     async def test_sso_config_disabled_by_default(self, client):
         r = await client.get("/api/auth/sso/config")
         assert r.status_code == 200
