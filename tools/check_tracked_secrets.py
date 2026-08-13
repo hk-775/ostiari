@@ -15,18 +15,21 @@ PATTERNS = {
     "OpenAI-style key": re.compile(r"\bsk-[A-Za-z0-9_-]{32,}\b"),
 }
 
+AWS_EXAMPLE_ACCESS_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
+RSA_PRIVATE_KEY_HEADER = "-----BEGIN RSA " + "PRIVATE KEY-----"
+
 ALLOWED_FIXTURES = {
     (
         "gateway/tests/test_security_failclosed.py",
-        "AKIAIOSFODNN7EXAMPLE",
+        AWS_EXAMPLE_ACCESS_KEY,
     ),
     (
         "tests/unit/test_detect.py",
-        "AKIAIOSFODNN7EXAMPLE",
+        AWS_EXAMPLE_ACCESS_KEY,
     ),
     (
         "tests/unit/test_detect.py",
-        "-----BEGIN RSA PRIVATE KEY-----",
+        RSA_PRIVATE_KEY_HEADER,
     ),
 }
 
