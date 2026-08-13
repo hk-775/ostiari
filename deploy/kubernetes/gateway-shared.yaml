@@ -1,29 +1,31 @@
+# Production shared-gateway template. Replace every REPLACE_* value, create the
+# required Secret keys, and point redis-url at a TLS/authenticated managed Redis.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: ostiari-gateway-config
-  namespace: default
 data:
   OSTIARI_GATEWAY_ID: "gateway-shared"
   OSTIARI_CONTROL_PLANE_URL: "http://ostiari-control-plane:8400"
   OSTIARI_PORT: "8421"
-  # Config push targets the Service DNS (reaches one replica); all replicas also
-  # pull config on each heartbeat, so the fleet self-syncs.
   OSTIARI_ADVERTISE_HOST: "ostiari-gateway"
-  # Fail-closed posture. Also requires OSTIARI_ADMIN_PASSWORD and
-  # OSTIARI_INGEST_KEY on the control plane; the gateway warns at startup about
-  # any control still left open (OSTIARI_STRICT=1 makes that fatal).
   OSTIARI_ENV: "production"
-  OSTIARI_X402_MODE: "simulated"
-  # Human-in-the-loop for the *intervene* tier: a call scoring in the middle band
-  # returns HTTP 202 instead of executing, a human decides in the Approvals page,
-  # and the caller re-submits with X-Approval-Id.
-  #
-  # On because OSTIARI_ENV is production, and there the two are not independent:
-  # fail-closed means an intervene nobody can resolve is REFUSED. Off + production
-  # collapses the three-tier model to two. Requires that someone actually staff
-  # the queue — see docs/control-plane-guide.md §7.4.
+  OSTIARI_TENANCY_MODE: "single"
+  OSTIARI_ORG_ID: "REPLACE_ORG_ID"
+  OSTIARI_GATEWAY_AUTH: "required"
+  OSTIARI_OIDC_ISSUER: "https://REPLACE_OIDC_ISSUER"
+  OSTIARI_OIDC_AUDIENCE: "REPLACE_GATEWAY_AUDIENCE"
+  OSTIARI_REQUIRE_REDIS: "true"
+  OSTIARI_GATEWAY_RATE_LIMIT_RPM: "600"
+  OSTIARI_FAIL_CLOSED_ON_CP_LOSS: "true"
   OSTIARI_HITL: "on"
+  OSTIARI_X402_MODE: "live"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ostiari-gateway
+automountServiceAccountToken: false
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -41,11 +43,9 @@ spec:
       labels:
         app: ostiari-gateway
     spec:
-      # Enforced here as well as in the image. The Dockerfile's USER is a default
-      # a manifest can silently override, and `runAsNonRoot` is the only setting
-      # that makes the kubelet *refuse* to start a container that would run as
-      # uid 0 — so a future image rebuilt without USER fails loudly instead of
-      # quietly regaining root.
+      serviceAccountName: ostiari-gateway
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -53,9 +53,17 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: ostiari-gateway
       containers:
         - name: gateway
-          image: ostiari-gateway:latest
+          image: "ghcr.io/REPLACE_ORG/ostiari-gateway@sha256:REPLACE_WITH_64_HEX_DIGEST"
+          imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -63,14 +71,41 @@ spec:
               drop: ["ALL"]
           ports:
             - containerPort: 8421
+              name: http
           envFrom:
             - configMapRef:
                 name: ostiari-gateway-config
           env:
-            - name: REDIS_ENDPOINT
-              value: "ostiari-redis"
-            - name: REDIS_PORT
-              value: "6379"
+            - name: OSTIARI_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ostiari-secrets
+                  key: redis-url
+            - name: OSTIARI_CONFIG_ADMIN_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ostiari-secrets
+                  key: config-admin-key
+            - name: OSTIARI_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: ostiari-secrets
+                  key: service-token
+            - name: OSTIARI_INGEST_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ostiari-secrets
+                  key: ingest-key
+            - name: OSTIARI_X402_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ostiari-secrets
+                  key: x402-private-key
+            - name: OSTIARI_X402_ALLOWED_ASSETS
+              valueFrom:
+                secretKeyRef:
+                  name: ostiari-secrets
+                  key: x402-allowed-assets
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -83,24 +118,21 @@ spec:
                   name: ostiari-secrets
                   key: openai-api-key
                   optional: true
-            - name: OSTIARI_X402_PRIVATE_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: ostiari-secrets
-                  key: x402-private-key
-                  optional: true
           readinessProbe:
             httpGet:
-              path: /health
-              port: 8421
+              path: /ready
+              port: http
             initialDelaySeconds: 3
             periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /health
-              port: 8421
-            initialDelaySeconds: 5
+              port: http
+            initialDelaySeconds: 10
             periodSeconds: 10
+            timeoutSeconds: 3
           resources:
             requests:
               cpu: 250m
@@ -108,17 +140,14 @@ spec:
             limits:
               cpu: "1"
               memory: 512Mi
-          # readOnlyRootFilesystem above makes / immutable, so the one path the
-          # gateway does write needs to be a volume: config pushes render the
-          # policy to a tempfile under /tmp (config_manager._policy_file). Without
-          # this the container starts fine and then fails on the first policy
-          # push, which is a worse failure than not booting.
           volumeMounts:
             - name: tmp
               mountPath: /tmp
       volumes:
         - name: tmp
-          emptyDir: {}
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
 ---
 apiVersion: v1
 kind: Service
@@ -128,10 +157,21 @@ spec:
   selector:
     app: ostiari-gateway
   ports:
-    - port: 8421
-      targetPort: 8421
+    - name: http
+      port: 8421
+      targetPort: http
       protocol: TCP
   type: ClusterIP
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ostiari-gateway
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: ostiari-gateway
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
@@ -144,6 +184,9 @@ spec:
     name: ostiari-gateway
   minReplicas: 3
   maxReplicas: 20
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
   metrics:
     - type: Resource
       resource:

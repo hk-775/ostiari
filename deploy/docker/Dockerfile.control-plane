@@ -18,22 +18,16 @@ RUN pip install --no-cache-dir ./core
 COPY control-plane/backend/pyproject.toml ./
 COPY control-plane/backend/control_plane/ control_plane/
 COPY control-plane/backend/main.py ./
+COPY control-plane/backend/alembic.ini ./
+COPY control-plane/backend/alembic/ alembic/
 # Install the AWS discovery extra plus aiosqlite so both the production
 # collectors and default SQLite backend work in the shipped image. Production
 # Postgres pulls asyncpg, which is already a core dependency.
 RUN pip install --no-cache-dir ".[aws]" "aiosqlite>=0.19"
 
-# Everything this app writes goes under /data — the SQLite database and
-# persistence.STATE_FILE (the in-memory stores flushed on shutdown).
-#
-# Both were previously derived from __file__ and resolved relative to WORKDIR
-# (/app), which is root-owned. DATABASE_URL alone is not enough: it redirects the
-# database but leaves state.json in /app/data, and that only fails at *shutdown*,
-# so the container looks healthy while losing all persisted state on restart.
-# OSTIARI_DATA_DIR is what moves both.
-#
-# Setting DATABASE_URL explicitly also means importing the app performs no
-# filesystem write at all, which is what lets / be mounted read-only.
+# The image defaults to a writable SQLite volume for local use. Production
+# manifests override DATABASE_URL with PostgreSQL; runtime governance state is
+# SQL-backed and the root filesystem remains read-only.
 ENV OSTIARI_DATA_DIR=/data \
     DATABASE_URL="sqlite+aiosqlite:////data/control_plane.db"
 
@@ -41,10 +35,8 @@ ENV OSTIARI_DATA_DIR=/data \
 # package and /app stay root-owned and unwritable to this user — deliberately, so
 # the app cannot rewrite its own code.
 #
-# /data must be chown'd, not just created: it holds the SQLite database and is a
-# mounted volume in compose/k8s, so the runtime user needs write access to the
-# directory itself (SQLite writes -wal/-shm siblings next to the .db, so a
-# writable file in a read-only dir is not enough).
+# /data is used only by local/Compose SQLite deployments. SQLite writes WAL/SHM
+# siblings, so the directory itself must be writable.
 RUN useradd --system --create-home --uid 10001 --shell /usr/sbin/nologin ostiari \
     && mkdir -p /data && chown 10001:10001 /data
 

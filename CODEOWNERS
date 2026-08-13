@@ -1,8 +1,9 @@
-# Default owners for everything in the repo
-* @agentlasso/maintainers
+# Default owner for the public repository.
+* @hk-775
 
-# Core safety logic requires maintainer review
-/src/agentlasso/gateway.py @agentlasso/maintainers
-/src/agentlasso/guard.py @agentlasso/maintainers
-/src/agentlasso/policy/ @agentlasso/maintainers
-/src/agentlasso/anomaly/ @agentlasso/maintainers
+# Production enforcement and release surfaces require owner review.
+/src/ @hk-775
+/gateway/ @hk-775
+/control-plane/backend/ @hk-775
+/.github/workflows/ @hk-775
+/deploy/ @hk-775

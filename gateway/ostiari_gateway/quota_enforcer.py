@@ -193,7 +193,14 @@ class QuotaEnforcer:
                         )
                     _shared_reserved = True
                 else:
-                    projected = self._store.budget_spend(self._budget_key) + est
+                    shared_spend = self._store.budget_spend(self._budget_key)
+                    if shared_spend is None:
+                        return QuotaDecision(
+                            allowed=False,
+                            reason="Shared quota store is unavailable",
+                            limit_type="shared_store",
+                        )
+                    projected = shared_spend + est
                     if projected >= limit:
                         return QuotaDecision(
                             allowed=False,
@@ -312,11 +319,23 @@ class QuotaEnforcer:
     def get_status(self) -> dict[str, Any]:
         """Get current quota status for reporting."""
         self._prune_old_requests()
-        spend = self._store.budget_spend(self._budget_key) if self._store is not None else self._total_spend
+        shared_spend = (
+            self._store.budget_spend(self._budget_key)
+            if self._store is not None
+            else None
+        )
+        spend = (
+            shared_spend
+            if shared_spend is not None
+            else self._total_spend
+        )
         status: dict[str, Any] = {
             "current_rpm": len(self._request_times),
             "current_spend": round(spend, 4),
             "spend_scope": "fleet" if self._store is not None else "process",
+            "shared_store_available": (
+                shared_spend is not None if self._store is not None else None
+            ),
         }
         if self._config:
             status["rate_limit_rpm"] = self._config.rate_limit_rpm
@@ -367,7 +386,14 @@ class QuotaEnforcer:
         # meant that with a shared store (Redis) — where spend is booked to Redis
         # and _total_spend stays 0.0 — the percentage was always 0 and no alert
         # ever fired. Fleet deployments are exactly where alerting matters most.
-        spend = self._store.budget_spend(self._budget_key) if self._store is not None else self._total_spend
+        shared_spend = (
+            self._store.budget_spend(self._budget_key)
+            if self._store is not None
+            else None
+        )
+        if self._store is not None and shared_spend is None:
+            return
+        spend = shared_spend if shared_spend is not None else self._total_spend
         pct = spend / self._config.budget_limit_usd
         for threshold in BUDGET_ALERT_THRESHOLDS:
             if pct >= threshold and threshold not in self._alerted_thresholds:

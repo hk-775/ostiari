@@ -5,7 +5,7 @@
 #   cd deploy/docker && docker compose up --build
 services:
   gateway:
-    image: ostiari-gateway:latest
+    image: ostiari-gateway:dev
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.gateway
@@ -38,6 +38,7 @@ services:
       OSTIARI_SERVICE_TOKEN: "${OSTIARI_SERVICE_TOKEN:-}"
       OSTIARI_INGEST_KEY: "${OSTIARI_INGEST_KEY:-}"
       OSTIARI_CONFIG_ADMIN_KEY: "${OSTIARI_CONFIG_ADMIN_KEY:-}"
+      OSTIARI_REDIS_URL: "redis://redis:6379/0"
       OSTIARI_X402_MODE: "${OSTIARI_X402_MODE:-simulated}"
       OSTIARI_X402_PRIVATE_KEY: "${OSTIARI_X402_PRIVATE_KEY:-}"
       OSTIARI_X402_ALLOWED_ASSETS: "${OSTIARI_X402_ALLOWED_ASSETS:-}"
@@ -45,6 +46,8 @@ services:
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
     depends_on:
       control-plane-backend:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     # The image runs as uid 10001; these harden it further. read_only makes the
     # root filesystem immutable, so the one path the gateway writes — the rendered
@@ -66,7 +69,7 @@ services:
     restart: unless-stopped
 
   control-plane-backend:
-    image: ostiari-control-plane:latest
+    image: ostiari-control-plane:dev
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.control-plane
@@ -76,10 +79,10 @@ services:
       # SQLite on a persisted volume by default. For production point this at
       # Postgres: postgresql+asyncpg://user:pass@host:5432/ostiari
       DATABASE_URL: "sqlite+aiosqlite:////data/control_plane.db"
-      # Everything writable (SQLite db + state.json) lives here, on the volume.
-      # DATABASE_URL above only covers the db; without this, state.json stays in
-      # the root-owned app dir and shutdown loses every persisted store.
+      # Development SQLite and any one-time legacy state import live here.
+      # Runtime configuration itself is written through to SQL.
       OSTIARI_DATA_DIR: "/data"
+      OSTIARI_ENV: "${OSTIARI_ENV:-}"
       OSTIARI_SERVICE_TOKEN: "${OSTIARI_SERVICE_TOKEN:-}"
       OSTIARI_INGEST_KEY: "${OSTIARI_INGEST_KEY:-}"
       OSTIARI_CONFIG_ADMIN_KEY: "${OSTIARI_CONFIG_ADMIN_KEY:-}"
@@ -108,7 +111,7 @@ services:
     restart: unless-stopped
 
   control-plane-frontend:
-    image: ostiari-frontend:latest
+    image: ostiari-frontend:dev
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.frontend

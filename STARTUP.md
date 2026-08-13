@@ -103,20 +103,13 @@ make clean-start
 
 The `OSTIARI_NO_DEMO=1` flag is what skips the demo seeders (agents, traces, experiments, pricing, usage records, approvals, quotas, wallets).
 
-> **What `clean-start` clears.** The SQLite database, both `state.json` paths (the
-> live `control-plane/data/state.json` that `data_dir()` resolves to, and the
-> pre-`data_dir()` `control-plane/backend/data/state.json`), and — via
-> `OSTIARI_NO_DEMO=1` — every seeder including the 18 model routing configs.
->
-> Two things previously survived it. The `rm` targeted only the *old* `state.json`
-> path while the lifespan called `load_state()` **before** the `OSTIARI_NO_DEMO`
-> check, so quotas, experiments, and providers from an earlier demo run came back.
-> And `seed_models()` ran at import time, ungated — defensible on the grounds that a
-> model catalog is a routing table rather than demo content, but it meant the Models
-> page was populated on an install that had promised to be empty.
+> **What `clean-start` clears.** The development SQLite database, both historical
+> legacy `state.json` import paths, and every demo seeder including the built-in
+> model catalog. Runtime configuration is now written through to SQL; the JSON
+> files are read only for one-time upgrades.
 >
 > On a clean install, register the models you use via `POST /api/models`, or call
-> `seed_models()` to get the built-in catalog back.
+> `seed_models()` to restore the built-in catalog.
 
 **Verify it's empty:**
 
@@ -252,7 +245,7 @@ curl -X POST http://localhost:8421/config/quota \
 
 **Fleet path:** `POST /api/quotas/{id}/push` — it forwards to the gateway's
 `/config/quota` and is the one that actually enforces. Quotas are persisted to
-`state.json` and restored across control-plane restarts.
+the control-plane database and restored across restarts.
 
 > **The Quotas page's Push button is not that route.** It calls
 > `POST /api/gateways/{id}/push-config` with `{"quota": …}`, and the gateway's
@@ -432,7 +425,7 @@ Both calls now appear in **Live Traces** in the UI.
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Quotas/experiments/providers appear despite `clean-start` | Fixed — the recipe used to `rm` only the pre-`data_dir()` `state.json` path, so the live one was restored | Update, then re-run. On an older checkout: `rm -f control-plane/data/state.json` |
+| Quotas/experiments/providers appear despite `clean-start` | The process is connected to a different database, or an old legacy import file remains | Stop all control-plane processes, verify `DATABASE_URL`, then rerun `make clean-start` |
 | Models page empty on a clean install | `seed_models()` is now gated on `OSTIARI_NO_DEMO`, so a clean install starts with no catalog | Expected. Register what you use via `POST /api/models`, or call `seed_models()` for the built-in 18 |
 | Gateway shows in UI but config push fails | Gateway endpoint missing its port | Fixed — gateways advertise `host:port` on register. Confirm `curl /api/gateways` shows `http://…:8421`, not `http://…` |
 | `POST /tool/x` returns 404 | Tool not registered on that gateway | Register via `/config/tools` or push from the control plane |
@@ -537,16 +530,15 @@ curl http://localhost:9200/.well-known/agent.json                     # A2A agen
 
 ## 2.6 Reset
 
-To go from full-demo back to a clean slate, stop the processes, delete the state
-file the Makefile misses, then run `make clean-start` (Part 1):
+To go from full-demo back to a clean slate, stop the processes and run
+`make clean-start` (Part 1):
 
 ```bash
-rm -f control-plane/data/state.json
 make clean-start
 ```
 
-Without that `rm`, the demo's quotas, experiments, models, and providers are
-restored on the next boot — see the caveat in §1.2.
+This removes the development database and legacy import files before starting an
+empty control plane.
 
 ---
 
@@ -565,13 +557,15 @@ Run Ostiari as shared infrastructure. All enterprise targets drive the gateway t
 All build contexts are the **repo root**, because the gateway and control-plane images install the local `ostiari` core package (not published to PyPI):
 
 ```bash
-docker build -f deploy/docker/Dockerfile.gateway       -t ostiari-gateway:latest .
-docker build -f deploy/docker/Dockerfile.control-plane -t ostiari-control-plane:latest .
+docker build -f deploy/docker/Dockerfile.gateway       -t ostiari-gateway:dev .
+docker build -f deploy/docker/Dockerfile.control-plane -t ostiari-control-plane:dev .
 docker build -f deploy/docker/Dockerfile.frontend \
-  --build-arg VITE_API_URL=https://ostiari.example.com:8400 -t ostiari-frontend:latest .
+  --build-arg VITE_API_URL=https://ostiari.example.com:8400 -t ostiari-frontend:dev .
 ```
 
 > **Frontend gotcha:** `VITE_API_URL` is baked into the JS bundle at build time and called from the **user's browser**. Set it to a URL the browser can reach (public host / ingress), *not* an in-cluster service name.
+> Local tags are for development only. Production manifests reference immutable
+> image digests and will not accept `:latest`.
 
 ## 3.2 Configuration surface (all targets)
 
@@ -583,11 +577,17 @@ docker build -f deploy/docker/Dockerfile.frontend \
 | `OSTIARI_CONTROL_PLANE_URL` | Control plane URL (enables register/heartbeat) |
 | `OSTIARI_PORT` | Listen port (default 8421) |
 | `OSTIARI_ADVERTISE_HOST` | **Critical.** Host the control plane pushes config back to. Set to the gateway's network-reachable name (compose service / k8s Service DNS / ECS service). Without it, config pushes may not reach the gateway. |
-| `OSTIARI_CONFIG_ADMIN_KEY` | **Fail-open unless set.** Gates the `/config/*` administration endpoints; unset, anything that can reach the gateway can rewrite its policy |
-| `OSTIARI_GATEWAY_AUTH=required` | **Off by default**, meaning `X-Agent-Id` is trusted as-is. When required, a tool call needs a Bearer token whose identity matches the header (401 missing/invalid, 403 mismatch) |
+| `OSTIARI_ENV=production` | Enables fatal posture validation; the gateway refuses missing identity, machine credentials, Redis, fail-closed control-plane handling, or simulated settlement |
+| `OSTIARI_TENANCY_MODE=single` / `OSTIARI_ORG_ID` | Required on production gateways and must match the control plane. Agent tokens must carry the same tenant claim |
+| `OSTIARI_CONFIG_ADMIN_KEY` | Required in production, at least 32 characters; protects every `/config/*` administration endpoint |
+| `OSTIARI_SERVICE_TOKEN` / `OSTIARI_INGEST_KEY` | Required machine credentials for lifecycle/event traffic and trace ingest |
+| `OSTIARI_GATEWAY_AUTH=required` | Required in production; verified token claims determine identity and a conflicting `X-Agent-Id` is rejected |
+| `OSTIARI_OIDC_ISSUER` / `OSTIARI_OIDC_AUDIENCE` | Required production issuer and exact audience for agent tokens |
+| `OSTIARI_GATEWAY_RATE_LIMIT_RPM` | Required positive production request limit, enforced fleet-wide through Redis |
 | `OSTIARI_HITL=on` | Enables the human-approval gate for the *intervene* tier (202 + `X-Approval-Id` resubmit). Off in a fail-closed production deployment means the middle tier becomes a refusal |
 | `OSTIARI_REQUIRE_AXON=1` | Refuse to start without AxonLLM instead of warning. The right setting in production — see [`docs/axon-router.md`](docs/axon-router.md) |
-| `REDIS_ENDPOINT` / `OSTIARI_REDIS_URL` | Share rate-limit, budget, and wallet counters fleet-wide. Without it they are per-replica (see §3.8) |
+| `OSTIARI_REQUIRE_REDIS=true` + `OSTIARI_REDIS_URL` | Required in production; Redis loss fails shared enforcement closed and makes `/ready` return 503 |
+| `OSTIARI_X402_MODE` | Production accepts `off` or `live`; `simulated` is refused |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | LLM credentials (mount from a secret) |
 
 **Control plane** (env vars):
@@ -595,29 +595,28 @@ docker build -f deploy/docker/Dockerfile.frontend \
 | Variable | Purpose |
 |----------|---------|
 | `DATABASE_URL` | `sqlite+aiosqlite:///…` (dev) or `postgresql+asyncpg://user:pass@host:5432/ostiari` (prod RDS) |
-| `OSTIARI_DATA_DIR` | Writable dir for the SQLite DB and `state.json` (default `control-plane/data`). Both resolve through `env.data_dir()` — point it at the mounted volume |
-| `OSTIARI_NO_DEMO` | `1` to skip the demo seeders (recommended for production) |
-| `OSTIARI_ENV=production` | The single production signal. Turns three defaults fail-closed: admin password, JWT secret, and trace-ingest key |
-| `OSTIARI_REQUIRE_AUTH` | **Off by default.** The coarse gate: when truthy, every `/api/*` route needs a Bearer token. Without it the whole API is unauthenticated even with OIDC configured |
+| `OSTIARI_DATA_DIR` | Development-only directory for SQLite and an optional one-time legacy `state.json` import. Production requires PostgreSQL and no application data volume |
+| `OSTIARI_NO_DEMO=1` | Required in production |
+| `OSTIARI_ENV=production` | Activates fatal posture validation for authentication, PostgreSQL, secrets, encryption, tenancy, demo data, and HTTPS origins |
+| `OSTIARI_REQUIRE_AUTH=true` | Required in production; all non-public operator APIs require a valid principal |
+| `OSTIARI_TENANCY_MODE=single` / `OSTIARI_ORG_ID` | Required production boundary until composite tenant keys ship |
+| `OSTIARI_GATEWAY_CALLBACK_ALLOW` | Required production list of gateway callback hostnames/CIDRs the control plane may contact |
 | `OSTIARI_ADMIN_EMAIL` / `OSTIARI_ADMIN_PASSWORD` | Initial admin. The app **refuses to seed** `admin/admin` when `OSTIARI_ENV=production` |
 | `OSTIARI_JWT_SECRET` | Signing secret for issued tokens. In production the dev default is refused and the value must be **≥ 32 characters** |
-| `OSTIARI_INGEST_KEY` | Shared secret for `POST /api/traces/ingest` (`X-Ingest-Key`). **Required in production** — unset, ingest 401s |
-| `OSTIARI_CORS_ORIGINS` | Comma-separated allowed origins (enables credentialed CORS) |
+| `OSTIARI_INGEST_KEY` / `OSTIARI_SERVICE_TOKEN` / `OSTIARI_CONFIG_ADMIN_KEY` | Required machine credentials, each at least 32 characters |
+| `OSTIARI_GATEWAY_AGENT_TOKEN` / `OSTIARI_GATEWAY_AGENT_ID` | Dedicated identity for control-plane initiated gateway execution; browser JWTs are never forwarded |
+| `OSTIARI_ENCRYPTION_KEY` | Required stable Fernet key for encrypted provider credentials and approval parameters |
+| `OSTIARI_CORS_ORIGINS` | Required explicit HTTPS dashboard origins |
+| `OSTIARI_LOGIN_ATTEMPTS_PER_MINUTE` | Optional account throttle override; production defaults to 10 |
 | `OIDC_ISSUER` / `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | Enable browser SSO on the dashboard login page using the authorization-code flow |
 | `OIDC_REDIRECT_URI` | IdP callback registered for the backend. Defaults to `http://localhost:8400/api/auth/sso/callback`; set the exact public API URL in production |
 | `OSTIARI_FRONTEND_URL` | Browser-reachable dashboard origin used after SSO. Defaults to `http://localhost:9000` |
 | `OSTIARI_AUTH_MODE=oidc` + `OSTIARI_OIDC_*` | Validate caller-supplied IdP bearer tokens directly instead of locally issued Ostiari tokens |
 
-> **`OSTIARI_ENV=production` and `OSTIARI_REQUIRE_AUTH` are separate knobs, and
-> you need both.** Production mode hardens the admin password, JWT secret, and
-> ingest key, but it does *not* make authentication mandatory — that's
-> `OSTIARI_REQUIRE_AUTH` alone. Set production without it and every route stays
-> reachable with no token.
->
-> Two of these make the app **refuse to start** rather than warn:
-> `OSTIARI_ADMIN_PASSWORD` and a ≥32-char `OSTIARI_JWT_SECRET`. That's deliberate
-> — a governance control plane that silently boots on `admin/admin` is worse than
-> one that fails loudly.
+> `OSTIARI_ENV=production` validates every required setting above and refuses
+> startup when one is missing or insecure. The variables remain explicit so the
+> deployment intent is visible and testable; production mode does not silently
+> mutate operator configuration.
 >
 > Set `OSTIARI_INGEST_KEY`, `OSTIARI_SERVICE_TOKEN`, and
 > `OSTIARI_CONFIG_ADMIN_KEY` to matching values on the components that share
@@ -647,7 +646,7 @@ The control plane pushes config to `{gateway.endpoint}/config`. The gateway adve
 - **Kubernetes** → the gateway's Service DNS name
 - **ECS** → the service's Cloud Map / service-discovery name
 
-## 3.3 Option A — Docker Compose
+## 3.3 Option A — Docker Compose (development)
 
 Full stack (backend + frontend + one gateway + Redis) on one host.
 
@@ -672,7 +671,9 @@ docker compose up --build
 ```
 
 - Backend health: `GET /api/health`. Gateway health: `GET /health`.
-- Data persists in the `control-plane-data` named volume (SQLite). For production, set `DATABASE_URL` to Postgres.
+- Data persists in the `control-plane-data` named volume (SQLite). This Compose
+  file is a development topology, not a production substitute for PostgreSQL,
+  authenticated Redis, OIDC, TLS, and digest-pinned images.
 
 **Verify:**
 
@@ -695,6 +696,7 @@ Two patterns:
 **Sidecar** — one gateway per agent pod, sharing the pod network:
 
 ```bash
+# Replace every REPLACE_* value and create ostiari-secrets first.
 kubectl apply -f deploy/kubernetes/gateway-sidecar.yaml
 kubectl apply -f deploy/kubernetes/control-plane.yaml
 ```
@@ -717,30 +719,40 @@ kubectl apply -f deploy/kubernetes/gateway-shared.yaml
 kubectl apply -f deploy/kubernetes/control-plane.yaml
 ```
 
-Config push targets the Service DNS (reaches one replica); every replica also **pulls** its config on each heartbeat, so the fleet self-syncs. An HPA scales 3→20 pods on CPU/memory.
-
-> **Note:** config self-syncs, and *enforcement counters* (rate limit, quota/budget, wallets) are per-replica in-process **unless** you point the gateway at Redis (`REDIS_ENDPOINT`/`OSTIARI_REDIS_URL`) — then they're shared fleet-wide via atomic Redis ops. Without Redis, a limit configured on the fleet is enforced per pod (N pods ⇒ N× effective). See the [Production checklist](#38-production-checklist).
+Config push targets the Service DNS; every replica also pulls its config on each
+heartbeat, so the fleet self-syncs. An HPA scales 3→20 pods on CPU/memory.
+Production startup requires authenticated Redis, and readiness fails whenever
+shared enforcement is unavailable.
 
 Secrets:
 
 ```bash
 kubectl create secret generic ostiari-secrets \
-  --from-literal=anthropic-api-key=... \
-  --from-literal=openai-api-key=...
+  --from-literal=database-url='postgresql+asyncpg://...' \
+  --from-literal=redis-url='rediss://...' \
+  --from-literal=jwt-secret='...' \
+  --from-literal=service-token='...' \
+  --from-literal=ingest-key='...' \
+  --from-literal=config-admin-key='...'
 ```
 
-The control-plane Deployment uses a `DATABASE_URL` env var and `/api/health` probes; the frontend runs as the separate `ostiari-frontend` image. For production, replace the SQLite PVC with RDS (set `DATABASE_URL` to your Postgres DSN).
+The control-plane init container runs `alembic upgrade head`. Liveness uses
+`/api/health`; readiness uses `/api/ready`. The production backend has no
+application data volume because PostgreSQL owns all durable state.
 
 ## 3.5 Option C — Helm
 
 ```bash
 helm install ostiari deploy/helm/ostiari-gateway \
+  --set image.digest=<64-hex-manifest-digest> \
   --set gateway.controlPlaneUrl=http://your-control-plane:8400 \
-  --set gateway.advertiseHost=ostiari-gateway \
-  --set redis.endpoint=your-redis-host
+  --set gateway.oidcIssuer=https://issuer.example.com \
+  --set gateway.oidcAudience=ostiari-gateway \
+  --set secrets.existingSecret=ostiari-secrets
 ```
 
-Key values (`deploy/helm/ostiari-gateway/values.yaml`): `image.repository/tag`, `gateway.{id,port,controlPlaneUrl,advertiseHost}`, `redis.{enabled,endpoint,port}`, `autoscaling.*`, `secrets.existingSecret`. The chart renders valid manifests whether or not Redis is enabled.
+The production chart refuses a missing digest, OIDC issuer/audience, Redis
+secret, fail-closed control-plane handling, or simulated settlement.
 
 ```bash
 helm lint deploy/helm/ostiari-gateway
@@ -756,11 +768,15 @@ aws ecs register-task-definition --cli-input-json file://deploy/ecs/task-definit
 aws ecs create-service          --cli-input-json file://deploy/ecs/service.json
 ```
 
-The task definition wires `OSTIARI_GATEWAY_ID` / `OSTIARI_CONTROL_PLANE_URL` / `OSTIARI_PORT` / `OSTIARI_ADVERTISE_HOST` as env vars and pulls API keys + Redis endpoint from Secrets Manager. Health check: `curl -f http://localhost:8421/health`.
+The task definition pulls machine, Redis, identity, payment, and provider
+credentials from Secrets Manager. Keep container liveness on `/health`; configure
+the ALB target group to use `/ready`.
 
 ## 3.7 Option E — AWS Lambda (limited)
 
-Suitable for **stateless, pull-based validation only**. The heartbeat/config-push background loop does **not** run under Lambda, so a Lambda gateway won't stay registered or receive pushed config. Prefer ECS/Kubernetes for a fully-governed gateway.
+Suitable for **non-production stateless validation only**. The
+heartbeat/config-push background loop does not run under Lambda, so it cannot
+satisfy the governed production lifecycle. Use ECS or Kubernetes.
 
 ```bash
 cd deploy/lambda
@@ -772,36 +788,38 @@ sam build && sam deploy --guided
 
 ## 3.8 Production checklist
 
+The enforced boundary and unresolved release gates are tracked in
+[`docs/production-readiness.md`](docs/production-readiness.md).
+
 - [ ] `DATABASE_URL` → PostgreSQL (RDS), not SQLite.
 - [ ] `OSTIARI_NO_DEMO=1` on the control plane.
-- [ ] `OSTIARI_ENV=production` + `OSTIARI_ADMIN_PASSWORD` set (the app refuses to seed `admin/admin` in production).
+- [ ] `OSTIARI_ENV=production`, `OSTIARI_TENANCY_MODE=single`, and an explicit
+      `OSTIARI_ORG_ID`.
+- [ ] `OSTIARI_ADMIN_PASSWORD` set (the app refuses to seed `admin/admin`).
 - [ ] `OSTIARI_REQUIRE_AUTH=1` and an `OSTIARI_JWT_SECRET` of **≥ 32 characters**
       (production refuses the dev default and anything shorter).
-- [ ] `OSTIARI_INGEST_KEY` set — required in production, or every trace ingest
-      401s. Read the two gaps in [`deploy/README.md`](deploy/README.md) first.
-- [ ] `OSTIARI_CONFIG_ADMIN_KEY` set on every gateway. Unset, the `/config/*`
-      endpoints are open and anything on the network can rewrite the policy the
-      gateway enforces.
-- [ ] `OSTIARI_GATEWAY_AUTH=required` if agents must prove identity — otherwise
-      `X-Agent-Id` is a self-asserted header and per-agent limits are advisory.
+- [ ] Matching ≥32-character `OSTIARI_INGEST_KEY`, `OSTIARI_SERVICE_TOKEN`, and
+      `OSTIARI_CONFIG_ADMIN_KEY` on the components that share them.
+- [ ] Stable `OSTIARI_ENCRYPTION_KEY` and dedicated
+      `OSTIARI_GATEWAY_AGENT_TOKEN` / `OSTIARI_GATEWAY_AGENT_ID`.
+- [ ] `OSTIARI_GATEWAY_AUTH=required` with HTTPS `OSTIARI_OIDC_ISSUER` and exact
+      `OSTIARI_OIDC_AUDIENCE`; every agent token also carries the configured
+      `OSTIARI_ORG_ID` in a supported tenant claim.
 - [ ] `OSTIARI_HITL=on` wherever `OSTIARI_ENV=production` is set. Production is
       fail-closed, so HITL off turns every scored *intervene* into a 403 with an
       empty Approvals queue. Validate thresholds in `shadow` first.
 - [ ] `OSTIARI_REQUIRE_AXON=1` on gateways that route LLM traffic — without
       AxonLLM, routing governance and token cost tracking silently stop applying.
-- [ ] After every gateway restart, Push from the Gateways page (or
-      `POST /api/gateways/push-all`) — enforcement mode is not restored from the
-      config bundle, so a shadow gateway comes back up enforcing.
-- [ ] `OSTIARI_CORS_ORIGINS` set to your dashboard origin(s).
+- [ ] Authenticated Redis configured with `OSTIARI_REQUIRE_REDIS=true`; verify
+      `/ready` fails when Redis is unavailable.
+- [ ] `OSTIARI_X402_MODE=off` unless live settlement credentials and acceptance
+      tests are complete; production refuses simulated mode.
+- [ ] `OSTIARI_CORS_ORIGINS` set to explicit HTTPS dashboard origin(s).
 - [ ] `OSTIARI_ADVERTISE_HOST` set on every gateway to a name the control plane can reach.
 - [ ] API keys sourced from Secrets Manager / k8s Secrets, never baked into images.
+- [ ] Run `alembic upgrade head` before the API and retain PostgreSQL backup/PITR evidence.
+- [ ] Deploy immutable image digests, never mutable tags.
 - [ ] TLS terminated at the ALB / ingress (not the gateway).
-- [ ] For a multi-replica fleet, set `REDIS_ENDPOINT` (or `OSTIARI_REDIS_URL`)
-      so rate-limit / budget / wallet limits hold **fleet-wide** — otherwise
-      enforcement state is in-process and limits apply per replica (N instances
-      ⇒ N× the effective `budget_limit_usd`/`rate_limit_rpm`). Install the extra:
-      `pip install "ostiari-gateway[redis]"`. See [`deploy/README.md`](deploy/README.md)
-      Production Notes.
 - [ ] (Optional) `OTEL_EXPORTER_OTLP_ENDPOINT` for trace export — see [`docs/otlp-export.md`](docs/otlp-export.md).
 
 ## 3.9 Troubleshooting (Part 3)

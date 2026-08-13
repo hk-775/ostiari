@@ -323,10 +323,10 @@ export const api = {
     ledger: (agentId?: string) =>
       fetchAPI<PaymentRecord[]>(`/api/payments/ledger${agentId ? `?agent_id=${agentId}` : ""}`),
     summary: () => fetchAPI<PaymentSummary>("/api/payments/summary"),
-    pricing: (gatewayId = "crm-agent") =>
-      fetchAPI<Pricing>(`/api/payments/pricing?gateway_id=${gatewayId}`),
-    push: (gatewayId = "crm-agent") =>
-      fetchAPI(`/api/payments/push?gateway_id=${gatewayId}`, { method: "POST" }),
+    pricing: (gatewayId: string) =>
+      fetchAPI<Pricing>(`/api/payments/pricing?gateway_id=${encodeURIComponent(gatewayId)}`),
+    push: (gatewayId: string) =>
+      fetchAPI(`/api/payments/push?gateway_id=${encodeURIComponent(gatewayId)}`, { method: "POST" }),
   },
   roi: {
     report: (weightByScore = true) =>

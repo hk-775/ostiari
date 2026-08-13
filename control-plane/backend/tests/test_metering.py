@@ -1,7 +1,6 @@
 """Tests for the metering engine and API."""
 
 import pytest
-
 from control_plane import metering
 
 pytestmark = pytest.mark.anyio

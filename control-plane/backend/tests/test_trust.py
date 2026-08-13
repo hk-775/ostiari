@@ -1,7 +1,6 @@
 """Tests for behavior-derived trust scoring + API (shadow-first, opt-in enforce)."""
 
 import pytest
-
 from control_plane import trust
 
 pytestmark = pytest.mark.anyio
@@ -41,7 +40,7 @@ class TestTrustAPI:
     async def test_scores_shadow_view(self, client):
         await self._seed(client, "riskybot", "block", 95, 8)
         await self._seed(client, "goodbot", "allow", 8, 8)
-        r = await client.get("/api/trust/scores")
+        r = await client.get("/api/trust/scores?gateway_id=crm-agent")
         assert r.status_code == 200
         body = r.json()
         assert body["enforced"] is False   # shadow by default

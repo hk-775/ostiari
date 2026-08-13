@@ -10,6 +10,10 @@ on:
   # base branch is not a signal about whether code needs testing.
   pull_request:
   workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   core:
@@ -28,7 +32,10 @@ jobs:
           pip install pytest pytest-asyncio anyio hypothesis httpx starlette ruff
 
       - name: Lint
-        run: ruff check src/ gateway/ control-plane/backend/control_plane/ control-plane/backend/tests/ --select F --ignore F401
+        run: ruff check src/ gateway/ control-plane/backend/control_plane/ control-plane/backend/tests/
+
+      - name: Type check
+        run: mypy src/ostiari
 
       - name: Test (root suite)
         run: pytest tests/ -v --tb=short
@@ -46,7 +53,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -e .
-          pip install -e "gateway/[payments]"
+          pip install -e "gateway/[payments,redis]"
           pip install pytest pytest-asyncio anyio pytest-httpserver werkzeug \
                       opentelemetry-api opentelemetry-sdk httpx starlette
 
@@ -119,3 +126,94 @@ jobs:
       - name: Build
         working-directory: control-plane/frontend
         run: npx vite build
+
+  security:
+    name: Security and supply chain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: control-plane/frontend/package-lock.json
+
+      - name: Scan tracked files for credentials
+        run: python tools/check_tracked_secrets.py
+
+      - name: Audit Python dependencies and generate SBOM
+        run: |
+          python -m venv .audit-venv
+          .audit-venv/bin/pip install --upgrade pip
+          .audit-venv/bin/pip install . "./gateway[payments,redis]" \
+            "./control-plane/backend[aws,otlp]" pip-audit
+          .audit-venv/bin/pip-audit --strict
+          .audit-venv/bin/python tools/python_sbom.py python-sbom.cdx.json
+
+      - name: Audit frontend production dependencies
+        working-directory: control-plane/frontend
+        run: |
+          npm ci
+          npm audit --omit=dev --audit-level=high
+          npm sbom --sbom-format cyclonedx > ../../frontend-sbom.cdx.json
+
+      - name: Validate generated SBOMs
+        run: |
+          python -m json.tool python-sbom.cdx.json >/dev/null
+          python -m json.tool frontend-sbom.cdx.json >/dev/null
+
+  production-artifacts:
+    name: Production artifacts
+    runs-on: ubuntu-latest
+    needs: [core, gateway, control-plane, frontend, security]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Build Python distributions
+        run: |
+          pip install build
+          python -m build .
+          python -m build gateway
+          python -m build control-plane/backend
+
+      - name: Exercise full migration chain
+        working-directory: control-plane/backend
+        run: |
+          pip install -e "$GITHUB_WORKSPACE"
+          pip install -e ".[dev]"
+          PYTHONPATH=. pytest tests/test_migrations.py -q
+
+      - name: Validate deployment templates
+        run: |
+          pip install pyyaml
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          for path in Path("deploy/kubernetes").glob("*.yaml"):
+              list(yaml.safe_load_all(path.read_text()))
+              print(f"parsed {path}")
+          PY
+          helm lint deploy/helm/ostiari-gateway \
+            --set image.digest="sha256:$(printf 'a%.0s' {1..64})" \
+            --set gateway.tenantId="production-org" \
+            --set gateway.oidcIssuer="https://issuer.example.com" \
+            --set gateway.oidcAudience="ostiari-gateway"
+          ! rg 'image:\\s+[^#\\n]*:latest' deploy
+
+      - name: Build production images
+        run: |
+          docker build -f deploy/docker/Dockerfile.gateway -t ostiari-gateway:ci .
+          docker build -f deploy/docker/Dockerfile.control-plane -t ostiari-control-plane:ci .
+          docker build -f deploy/docker/Dockerfile.frontend \
+            --build-arg VITE_API_URL=https://api.example.com \
+            -t ostiari-frontend:ci .

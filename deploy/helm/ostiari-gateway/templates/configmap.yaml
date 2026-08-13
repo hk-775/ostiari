@@ -1,3 +1,4 @@
+{{- include "ostiari-gateway.validateProduction" . }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -10,6 +11,14 @@ data:
   OSTIARI_CONTROL_PLANE_URL: {{ .Values.gateway.controlPlaneUrl | quote }}
   OSTIARI_PORT: {{ .Values.gateway.port | quote }}
   OSTIARI_ENV: {{ .Values.gateway.env | default "" | quote }}
+  OSTIARI_TENANCY_MODE: {{ ternary "single" "multi" (or (eq .Values.gateway.env "production") (eq .Values.gateway.env "prod")) | quote }}
+  OSTIARI_ORG_ID: {{ .Values.gateway.tenantId | default "default" | quote }}
+  OSTIARI_GATEWAY_AUTH: {{ ternary "required" "off" (or (eq .Values.gateway.env "production") (eq .Values.gateway.env "prod")) | quote }}
+  OSTIARI_OIDC_ISSUER: {{ .Values.gateway.oidcIssuer | quote }}
+  OSTIARI_OIDC_AUDIENCE: {{ .Values.gateway.oidcAudience | quote }}
+  OSTIARI_GATEWAY_RATE_LIMIT_RPM: {{ .Values.gateway.rateLimitRpm | quote }}
+  OSTIARI_REQUIRE_REDIS: {{ ternary "true" "false" .Values.redis.enabled | quote }}
+  OSTIARI_FAIL_CLOSED_ON_CP_LOSS: {{ ternary "true" "false" .Values.gateway.failClosedOnControlPlaneLoss | quote }}
   OSTIARI_X402_MODE: {{ .Values.payments.x402Mode | default "simulated" | quote }}
   # "on"/"off" rather than "true"/"false": the gateway parses this itself and
   # accepts either, but YAML would render the bare boolean unquoted and k8s

@@ -3,7 +3,6 @@
 from unittest.mock import MagicMock
 
 import pytest
-
 from control_plane.services.otlp_exporter import OTLPTraceExporter, _id_from
 
 # The exporter is an opt-in extra (`pip install -e ".[otlp]"`) and degrades to
@@ -56,7 +55,7 @@ class TestSpanMapping:
     def test_ids_and_parent(self, monkeypatch):
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
         e = OTLPTraceExporter()
-        e.enabled  # build
+        assert e.enabled
         span = e._to_span(_event())
         assert span.context.trace_id == _id_from("sess1", 16)   # session-shared trace
         assert span.context.span_id == _id_from("child1", 8)
@@ -66,14 +65,14 @@ class TestSpanMapping:
     def test_root_has_no_parent(self, monkeypatch):
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
         e = OTLPTraceExporter()
-        e.enabled
+        assert e.enabled
         span = e._to_span(_event(trace_id="root1", parent_trace_id="root1", is_span_root=True))
         assert span.parent is None
 
     def test_attributes(self, monkeypatch):
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
         e = OTLPTraceExporter()
-        e.enabled
+        assert e.enabled
         a = dict(e._to_span(_event()).attributes)
         assert a["gen_ai.request.model"] == "claude-sonnet-4-6"
         assert a["gen_ai.usage.output_tokens"] == 900
@@ -86,14 +85,14 @@ class TestSpanMapping:
         from opentelemetry.trace.status import StatusCode
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
         e = OTLPTraceExporter()
-        e.enabled
+        assert e.enabled
         assert e._to_span(_event(tier="block")).status.status_code == StatusCode.ERROR
         assert e._to_span(_event(tier="allow")).status.status_code == StatusCode.OK
 
     def test_export_calls_exporter(self, monkeypatch):
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
         e = OTLPTraceExporter()
-        e.enabled
+        assert e.enabled
         e._exporter = MagicMock()
         e.export_event(_event())
         assert e._exporter.export.called
@@ -102,7 +101,7 @@ class TestSpanMapping:
     def test_export_swallows_errors(self, monkeypatch):
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
         e = OTLPTraceExporter()
-        e.enabled
+        assert e.enabled
         boom = MagicMock()
         boom.export.side_effect = RuntimeError("collector down")
         e._exporter = boom

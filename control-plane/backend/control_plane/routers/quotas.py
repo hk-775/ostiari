@@ -2,6 +2,7 @@
 
 import logging
 import time
+import uuid
 from collections import defaultdict, deque
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,12 @@ from control_plane.models.database import Gateway, UsageRecord
 from control_plane.models.scoping import get_scoped, scoped
 from control_plane.services.audit_service import actor_of, audit
 from control_plane.services.push_service import gateway_config_headers
+from control_plane.services.runtime_state import (
+    allocate_runtime_id,
+    clear_runtime_namespace,
+    delete_runtime_state,
+    put_runtime_state,
+)
 
 log = logging.getLogger("control_plane.quotas")
 
@@ -85,15 +92,14 @@ class BudgetAlert(BaseModel):
     timestamp: float = 0.0
 
 
-# In-memory store (production would use DB), scoped per org (tenant).
+# Hot cache over runtime_state_records, scoped per org (tenant).
 _quotas: dict[str, dict[int, QuotaResponse]] = defaultdict(dict)
 _next_id: dict[str, int] = defaultdict(lambda: 1)
 
 # Budget alerts reported by gateways, newest last, per org. Bounded: an alert is
 # a notification, not a ledger — the spend itself lives in usage_records. The cap
-# is what keeps a chatty fleet from growing this without limit; it is *not* a
-# reason to drop the whole deque on restart, which is why app.py's lifespan
-# persists it alongside the quotas themselves.
+# is what keeps a chatty fleet from growing this without limit. SQL remains the
+# source of truth across restarts.
 ALERT_HISTORY = 200
 _alerts: dict[str, deque[BudgetAlert]] = defaultdict(lambda: deque(maxlen=ALERT_HISTORY))
 
@@ -268,8 +274,9 @@ async def create_quota(
                 detail=f"Agent quota already exists for '{body.scope_id}' on '{gateway_id}'",
             )
 
+    quota_id = await allocate_runtime_id(db, org, "quotas")
     quota = QuotaResponse(
-        id=_next_id[org],
+        id=quota_id,
         name=body.name,
         scope=body.scope,
         scope_id=body.scope_id,
@@ -283,8 +290,15 @@ async def create_quota(
         current_spend=0.0,
         current_rpm=0,
     )
-    _quotas[org][_next_id[org]] = quota
-    _next_id[org] += 1
+    _quotas[org][quota_id] = quota
+    _next_id[org] = max(_next_id[org], quota_id + 1)
+    await put_runtime_state(
+        db,
+        org,
+        "quotas",
+        str(quota_id),
+        quota.model_dump(mode="json"),
+    )
     # Quotas are spend and rate controls — a change here is exactly the kind of
     # thing an audit asks "who loosened this, and when".
     await audit.log(db, actor_of(request), "create", "quota", str(quota.id), {
@@ -314,10 +328,18 @@ async def ingest_budget_alert(body: BudgetAlert):
 
     async with async_session() as db:
         alert_org = await org_of_gateway(db, body.gateway_id)
-
-    if not body.timestamp:
-        body.timestamp = time.time()
-    _alerts[alert_org].append(body)
+        if not body.timestamp:
+            body.timestamp = time.time()
+        alert_key = f"{body.timestamp:020.6f}:{uuid.uuid4().hex}"
+        await put_runtime_state(
+            db,
+            alert_org,
+            "budget_alerts",
+            alert_key,
+            body.model_dump(mode="json"),
+        )
+        await db.commit()
+        _alerts[alert_org].append(body)
     log.warning(
         "Budget alert from gateway %s: %s ($%.4f / $%.2f)",
         body.gateway_id or "unknown", body.threshold, body.spend_usd, body.budget_usd,
@@ -332,10 +354,25 @@ async def list_budget_alerts(org: str = Depends(get_current_org)):
 
 
 @router.delete("/alerts")
-async def clear_budget_alerts(org: str = Depends(get_current_org)):
+async def clear_budget_alerts(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+):
     """Acknowledge (clear) this org's budget alerts."""
     count = len(_alerts[org])
     _alerts[org].clear()
+    await clear_runtime_namespace(db, org, "budget_alerts")
+    await audit.log(
+        db,
+        actor_of(request),
+        "clear",
+        "budget_alerts",
+        "*",
+        {"cleared": count},
+        org=org,
+    )
+    await db.commit()
     return {"cleared": count}
 
 
@@ -530,6 +567,13 @@ async def update_quota(
                        f"'{_agent_gateway(updated, org)}'",
             )
     _quotas[org][quota_id] = updated
+    await put_runtime_state(
+        db,
+        org,
+        "quotas",
+        str(quota_id),
+        updated.model_dump(mode="json"),
+    )
 
     # Audited for the same reason create and delete are: these are spend and rate
     # controls, and "who raised this budget" is the question an audit asks.
@@ -551,6 +595,7 @@ async def delete_quota(
     if quota is None:
         raise HTTPException(status_code=404, detail="Quota not found")
     del _quotas[org][quota_id]
+    await delete_runtime_state(db, org, "quotas", str(quota_id))
     await audit.log(db, actor_of(request), "delete", "quota", str(quota_id),
                     {
                         "name": quota.name,

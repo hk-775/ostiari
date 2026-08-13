@@ -1,29 +1,31 @@
+# Production sidecar template. The agent must send a bearer token accepted by
+# the configured OIDC issuer on every governed tool/LLM call.
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: ostiari-gateway-config
-  namespace: default
+  name: ostiari-sidecar-config
 data:
   OSTIARI_GATEWAY_ID: "gateway-sidecar-1"
   OSTIARI_CONTROL_PLANE_URL: "http://ostiari-control-plane:8400"
   OSTIARI_PORT: "8421"
-  # Control plane pushes config here. The agent-with-ostiari Service (below)
-  # exposes port 8421, so advertise that Service DNS name.
   OSTIARI_ADVERTISE_HOST: "agent-with-ostiari"
-  # Fail-closed posture. Also requires OSTIARI_ADMIN_PASSWORD and
-  # OSTIARI_INGEST_KEY on the control plane.
   OSTIARI_ENV: "production"
-  OSTIARI_X402_MODE: "simulated"
-  # Human-in-the-loop for the *intervene* tier: 202 instead of executing, a human
-  # decides in the Approvals page, caller re-submits with X-Approval-Id. On
-  # because production is fail-closed, where an unresolvable intervene is REFUSED
-  # rather than allowed — off would collapse three tiers to two.
-  #
-  # Sidecar-specific caveat: the agent container talks to the gateway over
-  # localhost, so it gets the 202 directly. Make sure the agent treats a 202 as
-  # "pending, retry with X-Approval-Id" and not as a failed call — an in-process
-  # agent loop that only checks for 200 will look like it silently lost the call.
+  OSTIARI_TENANCY_MODE: "single"
+  OSTIARI_ORG_ID: "REPLACE_ORG_ID"
+  OSTIARI_GATEWAY_AUTH: "required"
+  OSTIARI_OIDC_ISSUER: "https://REPLACE_OIDC_ISSUER"
+  OSTIARI_OIDC_AUDIENCE: "REPLACE_GATEWAY_AUDIENCE"
+  OSTIARI_REQUIRE_REDIS: "true"
+  OSTIARI_GATEWAY_RATE_LIMIT_RPM: "600"
+  OSTIARI_FAIL_CLOSED_ON_CP_LOSS: "true"
   OSTIARI_HITL: "on"
+  OSTIARI_X402_MODE: "live"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-with-ostiari
+automountServiceAccountToken: false
 ---
 apiVersion: v1
 kind: Pod
@@ -32,9 +34,9 @@ metadata:
   labels:
     app: agent-with-ostiari
 spec:
-  # Applies to both containers in the pod. Your agent image must also be able to
-  # run as uid 10001 — if it can't, move this block down to the gateway container
-  # only rather than deleting it, so the sidecar stays unprivileged either way.
+  serviceAccountName: agent-with-ostiari
+  automountServiceAccountToken: false
+  terminationGracePeriodSeconds: 30
   securityContext:
     runAsNonRoot: true
     runAsUser: 10001
@@ -44,7 +46,13 @@ spec:
       type: RuntimeDefault
   containers:
     - name: agent
-      image: your-agent-image:latest
+      image: "ghcr.io/REPLACE_ORG/your-agent@sha256:REPLACE_WITH_64_HEX_DIGEST"
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
       ports:
         - containerPort: 8080
           name: agent
@@ -53,7 +61,8 @@ spec:
           value: "http://localhost:8421"
 
     - name: ostiari-gateway
-      image: ostiari-gateway:latest
+      image: "ghcr.io/REPLACE_ORG/ostiari-gateway@sha256:REPLACE_WITH_64_HEX_DIGEST"
+      imagePullPolicy: IfNotPresent
       securityContext:
         allowPrivilegeEscalation: false
         readOnlyRootFilesystem: true
@@ -64,8 +73,38 @@ spec:
           name: gateway
       envFrom:
         - configMapRef:
-            name: ostiari-gateway-config
+            name: ostiari-sidecar-config
       env:
+        - name: OSTIARI_REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: ostiari-secrets
+              key: redis-url
+        - name: OSTIARI_CONFIG_ADMIN_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ostiari-secrets
+              key: config-admin-key
+        - name: OSTIARI_SERVICE_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: ostiari-secrets
+              key: service-token
+        - name: OSTIARI_INGEST_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ostiari-secrets
+              key: ingest-key
+        - name: OSTIARI_X402_PRIVATE_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ostiari-secrets
+              key: x402-private-key
+        - name: OSTIARI_X402_ALLOWED_ASSETS
+          valueFrom:
+            secretKeyRef:
+              name: ostiari-secrets
+              key: x402-allowed-assets
         - name: ANTHROPIC_API_KEY
           valueFrom:
             secretKeyRef:
@@ -78,24 +117,20 @@ spec:
               name: ostiari-secrets
               key: openai-api-key
               optional: true
-        - name: OSTIARI_X402_PRIVATE_KEY
-          valueFrom:
-            secretKeyRef:
-              name: ostiari-secrets
-              key: x402-private-key
-              optional: true
       readinessProbe:
         httpGet:
-          path: /health
-          port: 8421
+          path: /ready
+          port: gateway
         initialDelaySeconds: 3
         periodSeconds: 5
+        timeoutSeconds: 3
       livenessProbe:
         httpGet:
           path: /health
-          port: 8421
-        initialDelaySeconds: 5
+          port: gateway
+        initialDelaySeconds: 10
         periodSeconds: 10
+        timeoutSeconds: 3
       resources:
         requests:
           cpu: 100m
@@ -103,16 +138,14 @@ spec:
         limits:
           cpu: 500m
           memory: 256Mi
-      # readOnlyRootFilesystem makes / immutable, so the gateway's one write path
-      # needs a volume: config pushes render the policy to a tempfile under /tmp.
-      # Without this the container boots healthy and then 500s on the first
-      # policy push — verified, not theoretical.
       volumeMounts:
         - name: tmp
           mountPath: /tmp
   volumes:
     - name: tmp
-      emptyDir: {}
+      emptyDir:
+        medium: Memory
+        sizeLimit: 64Mi
 ---
 apiVersion: v1
 kind: Service
@@ -124,7 +157,7 @@ spec:
   ports:
     - name: agent
       port: 8080
-      targetPort: 8080
+      targetPort: agent
     - name: gateway
       port: 8421
-      targetPort: 8421
+      targetPort: gateway

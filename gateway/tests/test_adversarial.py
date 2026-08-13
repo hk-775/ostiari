@@ -175,31 +175,61 @@ class TestJWTHardening:
 
 # ─── 4. Gate-bypass / production posture ─────────────────────────────────────
 
+def _secure_production_env(monkeypatch):
+    monkeypatch.setenv("OSTIARI_ENV", "production")
+    monkeypatch.setenv("OSTIARI_CONFIG_ADMIN_KEY", "c" * 40)
+    monkeypatch.setenv("OSTIARI_SERVICE_TOKEN", "s" * 40)
+    monkeypatch.setenv("OSTIARI_INGEST_KEY", "i" * 40)
+    monkeypatch.setenv("OSTIARI_GATEWAY_AUTH", "required")
+    monkeypatch.setenv("OSTIARI_TENANCY_MODE", "single")
+    monkeypatch.setenv("OSTIARI_ORG_ID", "production-org")
+    monkeypatch.setenv("OSTIARI_OIDC_ISSUER", "https://issuer.example")
+    monkeypatch.setenv("OSTIARI_OIDC_AUDIENCE", "gateway-client")
+    monkeypatch.setenv("OSTIARI_REQUIRE_REDIS", "true")
+    monkeypatch.setenv("REDIS_ENDPOINT", "redis.internal")
+    monkeypatch.setenv("OSTIARI_GATEWAY_RATE_LIMIT_RPM", "600")
+    monkeypatch.setenv("OSTIARI_X402_MODE", "off")
+
+
 class TestProductionPosture:
-    def test_production_strict_refuses_fail_open(self, monkeypatch):
-        """In production + strict mode, starting with /config unauthenticated
-        and no gateway auth is fatal."""
+    def test_production_refuses_insecure_configuration(self, monkeypatch):
+        """Production cannot start with unauthenticated control surfaces."""
         from ostiari_gateway.server import _check_production_posture
-        monkeypatch.setenv("OSTIARI_ENV", "production")
-        monkeypatch.setenv("OSTIARI_STRICT", "1")
+
+        _secure_production_env(monkeypatch)
         monkeypatch.delenv("OSTIARI_CONFIG_ADMIN_KEY", raising=False)
-        monkeypatch.delenv("OSTIARI_GATEWAY_AUTH", raising=False)
         with pytest.raises(RuntimeError) as exc:
             _check_production_posture()
-        assert "fail-open" in str(exc.value).lower()
+        assert "insecure production" in str(exc.value).lower()
 
-    def test_production_strict_passes_when_controls_set(self, monkeypatch):
+    def test_production_passes_when_controls_set(self, monkeypatch):
         from ostiari_gateway.server import _check_production_posture
-        monkeypatch.setenv("OSTIARI_ENV", "production")
-        monkeypatch.setenv("OSTIARI_STRICT", "1")
-        monkeypatch.setenv("OSTIARI_CONFIG_ADMIN_KEY", "a-strong-key")
-        monkeypatch.setenv("OSTIARI_GATEWAY_AUTH", "required")
+
+        _secure_production_env(monkeypatch)
         _check_production_posture()  # must not raise
+
+    def test_production_refuses_simulated_settlement(self, monkeypatch):
+        from ostiari_gateway.server import _check_production_posture
+
+        _secure_production_env(monkeypatch)
+        monkeypatch.setenv("OSTIARI_X402_MODE", "simulated")
+        with pytest.raises(RuntimeError, match="OSTIARI_X402_MODE"):
+            _check_production_posture()
+
+    def test_production_refuses_disabled_gateway_rate_limit(self, monkeypatch):
+        from ostiari_gateway.server import _check_production_posture
+
+        _secure_production_env(monkeypatch)
+        monkeypatch.setenv("OSTIARI_GATEWAY_RATE_LIMIT_RPM", "0")
+        with pytest.raises(RuntimeError, match="OSTIARI_GATEWAY_RATE_LIMIT_RPM"):
+            _check_production_posture()
 
     def test_dev_posture_never_refuses(self, monkeypatch):
         """Non-production (the demo default) must start regardless."""
         from ostiari_gateway.server import _check_production_posture
         monkeypatch.delenv("OSTIARI_ENV", raising=False)
         monkeypatch.delenv("OSTIARI_CONFIG_ADMIN_KEY", raising=False)
+        monkeypatch.delenv("OSTIARI_SERVICE_TOKEN", raising=False)
+        monkeypatch.delenv("OSTIARI_INGEST_KEY", raising=False)
         monkeypatch.delenv("OSTIARI_GATEWAY_AUTH", raising=False)
         _check_production_posture()  # no raise, no requirement

@@ -26,5 +26,7 @@
       "rollback": true
     }
   },
-  "healthCheckGracePeriodSeconds": 30
+  "healthCheckGracePeriodSeconds": 30,
+  "enableExecuteCommand": false,
+  "propagateTags": "SERVICE"
 }

@@ -19,11 +19,21 @@ Run standalone::
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+
+from ostiari.bounded_http import (
+    decode_json_or_text,
+    max_response_bytes,
+    request_limited,
+    timeout_seconds,
+)
+from ostiari.http_limits import BodySizeLimitMiddleware
+from ostiari_gateway import oidc
 
 log = logging.getLogger("ostiari.sidecar.mcp_bridge")
 
@@ -48,12 +58,50 @@ class MCPBridge:
         self._name = server_name
         self._agent_id = agent_id
 
-    async def _list_tools(self) -> list[dict[str, Any]]:
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        agent_id: str,
+        authorization: str | None,
+        json_body: dict[str, Any] | None = None,
+    ):
+        headers = {
+            "X-Agent-Id": agent_id,
+            "X-Framework": "mcp-bridge",
+        }
+        if authorization:
+            headers["Authorization"] = authorization
+        async with httpx.AsyncClient(follow_redirects=False) as client:
+            return await request_limited(
+                client,
+                method,
+                f"{self._gateway}{path}",
+                headers=headers,
+                json=json_body,
+                deadline_seconds=timeout_seconds(
+                    "OSTIARI_MCP_GATEWAY_TIMEOUT_SECONDS",
+                    default=30.0,
+                ),
+                max_bytes=max_response_bytes("OSTIARI_MCP_MAX_RESPONSE_BYTES"),
+            )
+
+    async def _list_tools(
+        self, agent_id: str, authorization: str | None
+    ) -> list[dict[str, Any]]:
         """Fetch the gateway's registered tools and shape them as MCP tool specs."""
-        async with httpx.AsyncClient(timeout=10.0) as c:
-            r = await c.get(f"{self._gateway}/tools")
-            r.raise_for_status()
-            data = r.json()
+        response = await self._request(
+            "GET",
+            "/tools",
+            agent_id=agent_id,
+            authorization=authorization,
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(f"gateway returned HTTP {response.status_code}")
+        data = decode_json_or_text(response.content)
+        if not isinstance(data, (dict, list)):
+            raise RuntimeError("gateway returned an invalid tool catalog")
         tools = data.get("tools", data) if isinstance(data, dict) else data
         out: list[dict[str, Any]] = []
         for t in tools:
@@ -65,33 +113,50 @@ class MCPBridge:
             })
         return out
 
-    async def _call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    async def _call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        agent_id: str,
+        authorization: str | None,
+    ) -> dict[str, Any]:
         """Forward a tool call through the governed gateway proxy."""
-        async with httpx.AsyncClient(timeout=60.0) as c:
-            r = await c.post(
-                f"{self._gateway}/tool/{name}",
-                json=arguments or {},
-                headers={"X-Agent-Id": self._agent_id, "X-Framework": "mcp-bridge"},
-            )
+        response = await self._request(
+            "POST",
+            f"/tool/{name}",
+            agent_id=agent_id,
+            authorization=authorization,
+            json_body=arguments or {},
+        )
         # 403/402/429 → the gate chain blocked it. Surface as an MCP tool error
         # (isError) so the calling model sees the governance decision, not a crash.
-        if r.status_code >= 400:
-            try:
-                detail = r.json()
-            except Exception:
-                detail = {"error": r.text[:300]}
-            reason = detail.get("reason") or detail.get("error") or f"HTTP {r.status_code}"
+        body = decode_json_or_text(response.content)
+        if response.status_code >= 400:
+            detail = body if isinstance(body, dict) else {"error": str(body)[:300]}
+            reason = (
+                detail.get("reason")
+                or detail.get("error")
+                or f"HTTP {response.status_code}"
+            )
             return {
                 "content": [{"type": "text", "text": f"BLOCKED by Ostiari: {reason}"}],
                 "isError": True,
             }
-        body = r.json()
+        if not isinstance(body, dict):
+            body = {"result": body}
         result = body.get("result", body)
         text = result if isinstance(result, str) else _json_dumps(result)
         return {"content": [{"type": "text", "text": text}], "isError": False}
 
-    async def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
+    async def handle(
+        self,
+        message: dict[str, Any],
+        *,
+        agent_id: str | None = None,
+        authorization: str | None = None,
+    ) -> dict[str, Any] | None:
         """Dispatch a single JSON-RPC message. Returns None for notifications."""
+        effective_agent_id = agent_id or self._agent_id
         method = message.get("method")
         req_id = message.get("id")
         params = message.get("params") or {}
@@ -108,7 +173,7 @@ class MCPBridge:
 
         if method == "tools/list":
             try:
-                tools = await self._list_tools()
+                tools = await self._list_tools(effective_agent_id, authorization)
             except Exception as e:  # noqa: BLE001
                 return _error(req_id, -32603, f"could not list tools: {e}")
             return _result(req_id, {"tools": tools})
@@ -118,7 +183,12 @@ class MCPBridge:
             if not name:
                 return _error(req_id, -32602, "missing tool name")
             try:
-                res = await self._call_tool(name, params.get("arguments") or {})
+                res = await self._call_tool(
+                    name,
+                    params.get("arguments") or {},
+                    effective_agent_id,
+                    authorization,
+                )
             except Exception as e:  # noqa: BLE001
                 return _error(req_id, -32603, f"tool call failed: {e}")
             return _result(req_id, res)
@@ -137,15 +207,80 @@ def _json_dumps(obj: Any) -> str:
         return str(obj)
 
 
+def _check_production_posture() -> None:
+    if os.environ.get("OSTIARI_ENV", "").strip().lower() not in {"production", "prod"}:
+        return
+    errors = []
+    if not oidc.auth_required():
+        errors.append("OSTIARI_GATEWAY_AUTH must be exactly 'required'")
+    if not os.environ.get("OSTIARI_OIDC_ISSUER", "").startswith("https://"):
+        errors.append("OSTIARI_OIDC_ISSUER must be an HTTPS issuer")
+    if not os.environ.get("OSTIARI_OIDC_AUDIENCE", "").strip():
+        errors.append("OSTIARI_OIDC_AUDIENCE must be set")
+    if errors:
+        raise RuntimeError(
+            "Refusing insecure production MCP bridge configuration: "
+            + "; ".join(errors)
+        )
+
+
+def _authenticate(request: Request, default_agent_id: str):
+    """Authenticate an MCP caller and return identity plus its verified token."""
+    validator = oidc.get_validator()
+    if validator is None:
+        if oidc.auth_required():
+            return JSONResponse(
+                status_code=503,
+                content={"error": "MCP authentication is misconfigured"},
+            )
+        return default_agent_id, None
+
+    header = request.headers.get("Authorization", "")
+    if not header.startswith("Bearer "):
+        return JSONResponse(
+            status_code=401,
+            content={"error": "authentication required"},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        claims = validator.validate(header.removeprefix("Bearer ").strip())
+    except oidc.OIDCError as exc:
+        return JSONResponse(
+            status_code=401,
+            content={"error": "invalid token", "detail": str(exc)},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    agent_id = oidc.agent_id_from_claims(claims)
+    if not agent_id:
+        return JSONResponse(
+            status_code=403,
+            content={"error": "validated token has no agent identity claim"},
+        )
+    claimed_agent = request.headers.get("X-Agent-Id", "").strip()
+    if claimed_agent and claimed_agent != agent_id:
+        return JSONResponse(
+            status_code=403,
+            content={"error": "token identity does not match X-Agent-Id"},
+        )
+    return agent_id, header
+
+
 def create_bridge_app(gateway_url: str, server_name: str = "ostiari-bridge",
                       agent_id: str = "mcp-bridge") -> FastAPI:
     """Create the MCP bridge FastAPI app for a given Ostiari gateway."""
+    _check_production_posture()
     bridge = MCPBridge(gateway_url, server_name=server_name, agent_id=agent_id)
     app = FastAPI(title="Ostiari MCP Bridge")
+    app.add_middleware(BodySizeLimitMiddleware)
 
     @app.post("/mcp")
     async def mcp_endpoint(request: Request) -> Any:
         """MCP Streamable-HTTP endpoint (JSON-RPC 2.0, single or batch)."""
+        identity = _authenticate(request, bridge._agent_id)
+        if isinstance(identity, JSONResponse):
+            return identity
+        request_agent_id, authorization = identity
         try:
             payload = await request.json()
         except Exception:
@@ -153,10 +288,35 @@ def create_bridge_app(gateway_url: str, server_name: str = "ostiari-bridge",
                                 content=_error(None, -32700, "parse error"))
 
         if isinstance(payload, list):  # JSON-RPC batch
-            responses = [r for msg in payload if (r := await bridge.handle(msg)) is not None]
+            if not all(isinstance(message, dict) for message in payload):
+                return JSONResponse(
+                    status_code=400,
+                    content=_error(None, -32600, "invalid request"),
+                )
+            responses = [
+                response
+                for message in payload
+                if (
+                    response := await bridge.handle(
+                        message,
+                        agent_id=request_agent_id,
+                        authorization=authorization,
+                    )
+                )
+                is not None
+            ]
             return JSONResponse(content=responses) if responses else JSONResponse(content=[], status_code=202)
 
-        response = await bridge.handle(payload)
+        if not isinstance(payload, dict):
+            return JSONResponse(
+                status_code=400,
+                content=_error(None, -32600, "invalid request"),
+            )
+        response = await bridge.handle(
+            payload,
+            agent_id=request_agent_id,
+            authorization=authorization,
+        )
         if response is None:
             return JSONResponse(content={}, status_code=202)  # notification ack
         return JSONResponse(content=response)

@@ -65,19 +65,18 @@ incrementally, so its concurrency window is one round, not the whole call.
 
 Every gateway control is off by default for the demo flow (config-admin key
 unset → `/config/*` open; gateway auth off → `X-Agent-Id` trusted with no
-token). `create_app` now runs a production posture check: under
-`OSTIARI_ENV=production` it **warns** on each fail-open control, and under
-`OSTIARI_STRICT=1` it **refuses to start** — mirroring the control plane's
-existing production JWT-secret guard. Non-production (the demo default) is
-unaffected.
+token). `create_app` now runs a fatal production posture check. Under
+`OSTIARI_ENV=production` it refuses missing machine credentials, required
+gateway OIDC, shared Redis enforcement, fail-closed control-plane handling, or
+an unsafe settlement backend. Non-production remains demo-friendly.
 
-### OIDC audience warning — added
+### OIDC audience enforcement — added
 
-When gateway auth is enabled but `OSTIARI_OIDC_AUDIENCE` is unset, any token
-from the trusted issuer is accepted regardless of its `aud` — a real risk in a
-shared-IdP / multi-app pool. `get_validator` now logs a warning so operators
-pin the audience. (Behavior unchanged to avoid breaking existing single-app
-deployments.)
+Production requires both an HTTPS `OSTIARI_OIDC_ISSUER` and an exact
+`OSTIARI_OIDC_AUDIENCE`. The shared inbound authentication gate covers tool,
+validation, LLM shim, native invoke, model metadata, MCP, and A2A routes.
+Verified token claims determine the effective agent identity; a conflicting
+`X-Agent-Id` is rejected.
 
 ## Attacked and held (no change needed)
 
@@ -102,20 +101,15 @@ default and gated behind operators setting `OSTIARI_ENV=production`,
 `OSTIARI_OIDC_AUDIENCE`, `OSTIARI_CONFIG_ADMIN_KEY`, and `OSTIARI_ADMIN_PASSWORD`.
 This is the documented demo posture, and the [`STARTUP.md`](../STARTUP.md)
 production checklist enumerates the flags. The additions above make a
-misconfigured production deployment *loud* (warnings) or *safe* (strict-mode
-refusal) instead of silently open.
+misconfigured production deployment refuse startup instead of silently opening
+a control surface.
 
 ## Residual / informational (not fixed)
 
-- **Per-process quota/budget state** — each gateway replica has its own
-  counters by default, so a horizontally-scaled fleet gets K× the configured
-  limit. Since this review, `gateway/ostiari_gateway/shared_store.py` closes it:
-  set `OSTIARI_REDIS_URL` (or `REDIS_ENDPOINT`) and rate-limit windows, budget
-  spend, and wallet balances move to Redis, each mutation a single atomic Lua
-  script so replicas can't race. It stays **opt-in and fail-safe** — no Redis
-  configured or reachable means the in-process path, so a Redis outage degrades
-  to per-process limits rather than taking the gateway down. A fleet running
-  without it still gets K× limits.
+- **Per-process quota/budget state in development** — non-production instances
+  may still run without Redis. Production requires Redis, refuses startup when
+  it is absent, fails shared mutations closed during an outage, and reports
+  `/ready` as unavailable until connectivity recovers.
 - **Body-size append-then-check** — the middleware appends a chunk before
   testing the cap, but uvicorn bounds individual chunks (~64KB), so peak memory
   is `cap + one small chunk`. Informational.

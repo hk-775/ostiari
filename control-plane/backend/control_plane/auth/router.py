@@ -3,11 +3,15 @@
 import logging
 import os
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.auth.dependencies import get_current_user, require_role
+from control_plane.auth.login_rate_limit import (
+    clear_login_account_window,
+    enforce_login_rate_limit,
+)
 from control_plane.auth.models import User
 from control_plane.auth.schemas import (
     AuthUser,
@@ -16,10 +20,15 @@ from control_plane.auth.schemas import (
     UserCreate,
     UserResponse,
 )
-from control_plane.auth.service import create_access_token, hash_password, verify_password
+from control_plane.auth.service import (
+    create_access_token,
+    hash_password,
+    validate_local_password,
+    verify_password,
+)
 from control_plane.database import get_db
-from control_plane.env import is_production
-from control_plane.models.database import DEFAULT_ORG, Organization
+from control_plane.env import configured_org_id, is_production
+from control_plane.models.database import Organization
 
 log = logging.getLogger("control_plane.auth")
 
@@ -33,9 +42,9 @@ async def _seed_admin(db: AsyncSession) -> None:
     global _seeded
     if _seeded:
         return
-    # Ensure the default organization exists (FK target for users/resources).
-    if await db.get(Organization, DEFAULT_ORG) is None:
-        db.add(Organization(id=DEFAULT_ORG, name="Default Organization"))
+    org_id = configured_org_id()
+    if await db.get(Organization, org_id) is None:
+        db.add(Organization(id=org_id, name=org_id))
         await db.flush()
     result = await db.execute(select(User).limit(1))
     if result.scalar_one_or_none() is None:
@@ -58,7 +67,7 @@ async def _seed_admin(db: AsyncSession) -> None:
             hashed_password=hash_password(admin_password),
             role="admin",
             is_active=True,
-            org_id=DEFAULT_ORG,
+            org_id=org_id,
         )
         db.add(admin)
         await db.flush()
@@ -67,20 +76,30 @@ async def _seed_admin(db: AsyncSession) -> None:
 
 
 @router.post("/login", response_model=LoginResponse)
-async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
+async def login(
+    body: LoginRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
     """Authenticate user and return JWT."""
     await _seed_admin(db)
+    account_key = await enforce_login_rate_limit(request, body.email, db)
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
     if (
         not user
         or not user.hashed_password
         or not verify_password(body.password, user.hashed_password)
+        or not user.is_active
     ):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-    if not user.is_active:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")
-    token = create_access_token(user.id, user.email, user.role, org=user.org_id or DEFAULT_ORG)
+    await clear_login_account_window(db, account_key)
+    token = create_access_token(
+        user.id,
+        user.email,
+        user.role,
+        org=user.org_id or configured_org_id(),
+    )
     return LoginResponse(
         access_token=token,
         user=UserResponse(id=user.id, email=user.email, name=user.name, role=user.role),
@@ -94,6 +113,13 @@ async def register(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new user (admin only)."""
+    try:
+        validate_local_password(body.password)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
     existing = await db.execute(select(User).where(User.email == body.email))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
@@ -104,7 +130,7 @@ async def register(
         role=body.role,
         is_active=True,
         # New users join the creating admin's org.
-        org_id=getattr(user, "tenant_id", None) or DEFAULT_ORG,
+        org_id=getattr(user, "tenant_id", None) or configured_org_id(),
     )
     db.add(new_user)
     await db.flush()
@@ -123,7 +149,12 @@ async def me(
     validated token instead of 404ing.
     """
     if current_user.id:
-        result = await db.execute(select(User).where(User.id == current_user.id))
+        result = await db.execute(
+            select(User).where(
+                User.id == current_user.id,
+                User.org_id == current_user.tenant_id,
+            )
+        )
         user = result.scalar_one_or_none()
         if user:
             return UserResponse(id=user.id, email=user.email, name=user.name, role=user.role)
@@ -142,7 +173,11 @@ async def list_users(
     db: AsyncSession = Depends(get_db),
 ):
     """List all users (admin only)."""
-    result = await db.execute(select(User).order_by(User.id))
+    result = await db.execute(
+        select(User)
+        .where(User.org_id == user.tenant_id)
+        .order_by(User.id)
+    )
     users = result.scalars().all()
     return [UserResponse(id=u.id, email=u.email, name=u.name, role=u.role) for u in users]
 
@@ -156,7 +191,12 @@ async def delete_user(
     """Delete a user (admin only)."""
     if user.id == user_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot delete yourself")
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(
+        select(User).where(
+            User.id == user_id,
+            User.org_id == user.tenant_id,
+        )
+    )
     target = result.scalar_one_or_none()
     if not target:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")

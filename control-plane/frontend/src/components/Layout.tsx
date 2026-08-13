@@ -103,7 +103,7 @@ const ROUTE_BORDER_COLORS: Record<string, string> = {
 
 const ROLE_BADGES: Record<string, string> = {
   admin: "bg-violet-100 text-violet-700",
-  editor: "bg-sky-100 text-sky-700",
+  operator: "bg-sky-100 text-sky-700",
   viewer: "bg-stone-100 text-stone-600",
 };
 
@@ -124,7 +124,7 @@ export function Layout() {
 
   const visibleSections = NAV_SECTIONS.filter((section) => {
     if (section.adminOnly && user?.role !== "admin") return false;
-    if (user?.role === "viewer" && WRITE_SECTIONS.includes(section.label)) return false;
+    if (!["admin", "operator"].includes(user?.role ?? "") && WRITE_SECTIONS.includes(section.label)) return false;
     return true;
   });
 

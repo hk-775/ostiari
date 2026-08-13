@@ -5,6 +5,7 @@ unauthenticated /api/* calls (except the public allowlist) get 401.
 """
 
 import pytest
+from jose import jwt
 
 pytestmark = pytest.mark.anyio
 
@@ -127,3 +128,66 @@ class TestAuthMiddleware:
             headers=viewer_headers,
         )
         assert r.status_code == 403
+
+    async def test_unknown_role_token_is_rejected(self, client, monkeypatch):
+        from control_plane.auth.service import JWT_ALGORITHM, JWT_SECRET
+
+        monkeypatch.setenv("OSTIARI_REQUIRE_AUTH", "true")
+        token = jwt.encode(
+            {
+                "sub": "99",
+                "email": "legacy-editor@example.com",
+                "role": "editor",
+                "org": "default",
+            },
+            JWT_SECRET,
+            algorithm=JWT_ALGORITHM,
+        )
+        r = await client.get(
+            "/api/gateways",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 401
+
+    async def test_single_tenant_mode_rejects_other_org(
+        self,
+        client,
+        monkeypatch,
+    ):
+        from control_plane.auth.service import create_access_token
+
+        monkeypatch.setenv("OSTIARI_REQUIRE_AUTH", "true")
+        monkeypatch.setenv("OSTIARI_TENANCY_MODE", "single")
+        monkeypatch.setenv("OSTIARI_ORG_ID", "allowed-org")
+        token = create_access_token(
+            user_id=1,
+            email="admin@other.test",
+            role="admin",
+            org="other-org",
+        )
+
+        response = await client.get(
+            "/api/gateways",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 403
+        assert "tenant" in response.json()["detail"].lower()
+
+    async def test_machine_registration_cannot_choose_another_tenant(
+        self,
+        client,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("OSTIARI_REQUIRE_AUTH", "true")
+        monkeypatch.setenv("OSTIARI_SERVICE_TOKEN", "machine-secret")
+        monkeypatch.setenv("OSTIARI_TENANCY_MODE", "single")
+        monkeypatch.setenv("OSTIARI_ORG_ID", "allowed-org")
+
+        response = await client.post(
+            "/api/gateways/cross-tenant/register",
+            headers={"X-Ostiari-Service-Key": "machine-secret"},
+            json={"org_id": "other-org"},
+        )
+
+        assert response.status_code == 403

@@ -44,10 +44,9 @@ class TestEnforcementMode:
         assert app.state.manager.config.mode == "shadow"
 
     def test_config_endpoint_applies_mode(self):
-        from starlette.testclient import TestClient
-
         from ostiari_gateway.models import SidecarConfig
         from ostiari_gateway.server import create_app
+        from starlette.testclient import TestClient
 
         app = create_app(SidecarConfig(sidecar_id="gw-test", mode="enforce"))
         with TestClient(app) as c:

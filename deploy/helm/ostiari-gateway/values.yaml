@@ -1,8 +1,11 @@
 replicaCount: 3
 
 image:
-  repository: ostiari-gateway
-  tag: latest
+  repository: ghcr.io/REPLACE_ORG/ostiari-gateway
+  tag: "0.1.0"
+  # Required when gateway.env=production. Use a manifest-list digest so the
+  # exact release artifact is immutable across architectures.
+  digest: ""
   pullPolicy: IfNotPresent
 
 service:
@@ -18,12 +21,13 @@ gateway:
   # cross-namespace or external control planes.
   advertiseHost: ""
 
-  # "production" flips every gateway control fail-closed. Leave empty for a dev
-  # or demo install, where controls fail OPEN. Note this is not only about HITL:
-  # production also requires OSTIARI_ADMIN_PASSWORD and OSTIARI_INGEST_KEY on the
-  # control plane, and the gateway warns at startup about any control still left
-  # open (OSTIARI_STRICT=1 makes that fatal).
+  # Production is fail-closed and the chart validates every required value.
   env: "production"
+  tenantId: ""
+  oidcIssuer: ""
+  oidcAudience: ""
+  rateLimitRpm: 600
+  failClosedOnControlPlaneLoss: true
 
   # Human-in-the-loop for the *intervene* tier (the middle of allow/intervene/
   # block). On, a call scoring in that band does not execute: the gateway answers
@@ -66,13 +70,12 @@ containerSecurityContext:
 
 redis:
   enabled: true
-  endpoint: "ostiari-redis"
-  port: 6379
+  # Secret key containing a redis:// or rediss:// URL with credentials.
+  urlSecretKey: "redis-url"
 
 payments:
-  # "simulated" for the demo; set "live" only with passthrough pricing and an
-  # x402-private-key entry in secrets.existingSecret.
-  x402Mode: "simulated"
+  # Production charts do not permit simulated settlement.
+  x402Mode: "live"
 
 resources:
   requests:
@@ -90,5 +93,7 @@ autoscaling:
   targetMemoryUtilizationPercentage: 80
 
 secrets:
-  # Reference to existing K8s secret containing API keys
+  # Required secret keys:
+  # config-admin-key, service-token, ingest-key, redis-url,
+  # x402-private-key, x402-allowed-assets.
   existingSecret: "ostiari-secrets"

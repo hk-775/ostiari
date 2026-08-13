@@ -78,7 +78,7 @@ graph TB
 | **Audit Log** | Tamper-evident record of who changed what config, when (filterable by resource, action, actor; `/api/audit/verify` checks the chain) |
 | **Users & SSO** | Local accounts with roles (admin / operator / viewer) plus an OIDC SSO flow, including IdP claim→role mapping |
 | **Gateway Proxy** | `/api/proxy/gateway/{gateway_id}/{path}` forwards UI requests to gateways, eliminating CORS and enabling Sandbox in production |
-| **Data Persistence** | SQLite + JSON state, both under `control-plane/data/` (override with `OSTIARI_DATA_DIR`). Provider routes and their encrypted private material are SQL-backed. `state.json` is written on graceful shutdown and restores quotas, budget alerts, experiments, models, agent routing, agents, legacy providers, the ROI cost model, and token-broker config. **Approvals and traces remain in-memory only.** Wallets, tools, policies, MCP servers, usage records, and audit logs are SQLite tables and persist normally |
+| **Data Persistence** | SQLAlchemy-backed storage throughout: PostgreSQL in production and SQLite in development. Approvals, sanitized traces, SSO state, quotas, alerts, experiments, models, agent routing, agents, encrypted provider config, pricing, trust state, ROI/broker settings, and offline config updates are durable. `state.json` is read only for one-time upgrades from older versions |
 
 ### UI Design
 
@@ -234,11 +234,9 @@ Models are keyed by **name**, not a numeric id.
 | `/api/quotas/alerts` | GET | Budget alerts from this org's gateways, newest first |
 | `/api/quotas/alerts` | DELETE | Acknowledge (clear) this org's alerts; returns the count cleared |
 
-> Budget alerts are held in memory, capped at 200 per org — an alert is a
-> notification, not a ledger, and the spend behind it is already in
-> `usage_records`. They are saved to `state.json` on shutdown and restored on
-> startup, like quotas themselves: the cap bounds the store, but a control-plane
-> bounce should not erase the record that a gateway crossed 100% of its budget.
+> Budget alerts are SQL-backed and restored into an in-memory deque capped at 200
+> per org. An alert is a notification, not the spend ledger; the underlying spend
+> remains in `usage_records`.
 > Ingest is a service-key machine path when production auth is enabled, and the
 > org comes from the reporting gateway's row rather than the payload. The
 > **Quotas** page shows them, newest first, with an Acknowledge-all button.
@@ -386,10 +384,9 @@ and idempotency key.
 
 Agents are keyed by **name**, and there is no `PUT` — re-`POST` to replace.
 
-The live registry is in memory and is serialized to `state.json` on graceful
-shutdown, then restored before demo seeding. Agent records therefore survive a
-normal restart; like the other JSON-backed stores, they can still be lost on
-`kill -9`.
+The live registry is a hot cache over tenant-scoped SQL records. Registration,
+replacement, discovery onboarding, and deletion write through transactionally,
+so a hard process stop does not lose agent records.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -557,10 +554,10 @@ control-plane/
 ├── backend/
 │   ├── main.py                     # Entry point
 │   ├── control_plane/
-│   │   ├── app.py                  # FastAPI app + lifespan (load state, seed demo)
+│   │   ├── app.py                  # FastAPI app + lifespan (restore SQL, seed demo)
 │   │   ├── database.py             # Async engine / session
-│   │   ├── env.py                  # data_dir() — one writable dir for db + state
-│   │   ├── persistence.py          # state.json save/load on shutdown/startup
+│   │   ├── env.py                  # Production posture + development data paths
+│   │   ├── persistence.py          # SQL cache restore + legacy JSON import
 │   │   ├── demo_seed.py            # Idempotent demo seeding
 │   │   ├── auth/                   # Local auth, roles, OIDC SSO
 │   │   ├── routers/
@@ -592,7 +589,7 @@ control-plane/
 │   │   └── services/               # Business logic (push, audit, health check)
 │   ├── tests/
 │   └── pyproject.toml
-├── data/                           # SQLite db + state.json (gitignored)
+├── data/                           # Development SQLite DB + optional legacy import
 ├── frontend/
 │   ├── src/
 │   │   ├── components/Layout.tsx   # Sidebar nav sections
@@ -658,18 +655,11 @@ seeded by `control_plane/demo_seed.py` and the `gateway/register_demo_*.py` /
 | Usage Records | 647 | Across 8 agents and 4 models, for Costs / Metering / ROI |
 | Live Traces | Seeded | Plus live streaming from real Sandbox/gateway calls |
 
-Set `OSTIARI_NO_DEMO=1` (what `make clean-start` does) to skip the seeders above.
-Two things it doesn't cover:
-
-- **The 18 models come back regardless.** `seed_models()` runs at import time at
-  the bottom of `routers/model_config.py`, outside the `OSTIARI_NO_DEMO` gate. By
-  design — the catalog is a routing table with pricing, not sample data.
-- **`state.json` is restored before the gate is checked**, so JSON-backed
-  configuration and agent records from an earlier demo run reappear.
-  `make clean-start` deletes
-  `control-plane/backend/data/state.json`, the path from before `env.data_dir()`
-  centralized it; the live file is `control-plane/data/state.json`. Remove that
-  one for a genuinely empty control plane.
+Set `OSTIARI_NO_DEMO=1` (what `make clean-start` does) to skip every seeder above,
+including the built-in model catalog. `make clean-start` deletes the development
+SQLite database and both historical legacy-import paths, so the resulting control
+plane is empty. Production runtime configuration is PostgreSQL-backed and is not
+stored in `state.json`.
 
 ---
 

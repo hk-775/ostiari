@@ -1,5 +1,7 @@
 """Tests for the human-in-the-loop approval queue."""
 
+import asyncio
+
 import pytest
 
 pytestmark = pytest.mark.anyio
@@ -34,13 +36,19 @@ class TestApprovals:
         q = (await client.get("/api/approvals")).json()
         assert len(q) == 2 and all(a["status"] == "pending" for a in q)
 
-    async def test_approve_records_who_and_when(self, client):
+    async def test_approve_records_authenticated_reviewer(
+        self, client, monkeypatch, admin_headers
+    ):
         aid = (await _create(client)).json()["id"]
-        r = await client.post(f"/api/approvals/{aid}/decision",
-                              json={"decision": "approve", "decided_by": "alice"})
+        monkeypatch.setenv("OSTIARI_REQUIRE_AUTH", "true")
+        r = await client.post(
+            f"/api/approvals/{aid}/decision",
+            headers=admin_headers,
+            json={"decision": "approve", "decided_by": "spoofed"},
+        )
         a = r.json()
         assert a["status"] == "approved"
-        assert a["decided_by"] == "alice" and a["decided_at"]
+        assert a["decided_by"] == "admin@test.io" and a["decided_at"]
 
     async def test_deny(self, client):
         aid = (await _create(client)).json()["id"]
@@ -74,6 +82,41 @@ class TestApprovals:
         await client.post(f"/api/approvals/{aid}/decision", json={"decision": "approve"})
         approved = (await client.get("/api/approvals?status=approved")).json()
         assert len(approved) == 1 and approved[0]["status"] == "approved"
+
+    async def test_parameters_are_encrypted_and_restorable(self, client):
+        from control_plane.database import async_session
+        from control_plane.models.database import ApprovalRecord
+        from control_plane.routers import approvals
+
+        created = (await _create(client)).json()
+        async with async_session() as db:
+            record = await db.get(ApprovalRecord, created["id"])
+            assert record is not None
+            assert "DELETE FROM users" not in record.params_encrypted
+
+        approvals._pending.clear()
+        async with async_session() as db:
+            await approvals.load_approval_cache(db)
+
+        assert approvals.approval_status(created["id"]) == "pending"
+        restored = (await client.get(f"/api/approvals/{created['id']}")).json()
+        assert restored["params"] == created["params"]
+
+    async def test_concurrent_decisions_have_one_winner(self, client):
+        aid = (await _create(client)).json()["id"]
+
+        responses = await asyncio.gather(
+            client.post(
+                f"/api/approvals/{aid}/decision",
+                json={"decision": "approve"},
+            ),
+            client.post(
+                f"/api/approvals/{aid}/decision",
+                json={"decision": "deny"},
+            ),
+        )
+
+        assert sorted(response.status_code for response in responses) == [200, 409]
 
 
 class TestApprovalDemoSeed:

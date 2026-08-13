@@ -25,6 +25,7 @@ from control_plane.database import get_db
 from control_plane.models.database import Gateway, SandboxRun
 from control_plane.models.scoping import get_scoped
 from control_plane.services.audit_service import actor_of, audit
+from control_plane.services.gateway_credentials import gateway_agent_credential
 
 router = APIRouter(prefix="/api/sandbox/runs", tags=["sandbox"])
 
@@ -144,24 +145,23 @@ async def _actor(request: Request) -> str:
 
 
 async def _gateway_credential(request: Request) -> tuple[str, str | None]:
-    service_token = os.environ.get("OSTIARI_SANDBOX_GATEWAY_TOKEN", "").strip()
-    if service_token:
-        token = service_token.removeprefix("Bearer ").strip()
-        agent_id = (
-            os.environ.get("OSTIARI_SANDBOX_GATEWAY_AGENT_ID", "sandbox-code").strip()
-            or "sandbox-code"
-        )
-        return agent_id, f"Bearer {token}"
+    agent_id, authorization = gateway_agent_credential(
+        token_env="OSTIARI_SANDBOX_GATEWAY_TOKEN",
+        agent_env="OSTIARI_SANDBOX_GATEWAY_AGENT_ID",
+        default_agent_id="sandbox-code",
+    )
+    if authorization:
+        return agent_id, authorization
 
-    authorization = request.headers.get("Authorization", "")
-    if not authorization.startswith("Bearer "):
+    caller_authorization = request.headers.get("Authorization", "")
+    if not caller_authorization.startswith("Bearer "):
         return "sandbox-code", None
 
     try:
         principal = await get_current_user(request)
         # The same token was just signature-validated by get_current_user. Decode
         # its claims to mirror the gateway's agent-id precedence exactly.
-        claims = jwt.get_unverified_claims(authorization.removeprefix("Bearer "))
+        claims = jwt.get_unverified_claims(caller_authorization.removeprefix("Bearer "))
     except (HTTPException, JWTError):
         return "sandbox-code", None
 
@@ -173,7 +173,7 @@ async def _gateway_credential(request: Request) -> tuple[str, str | None]:
         or principal.subject
         or "sandbox-code"
     )
-    return agent_id, authorization
+    return agent_id, caller_authorization
 
 
 async def _run_for_org(db: AsyncSession, run_id: str, org: str) -> SandboxRun:

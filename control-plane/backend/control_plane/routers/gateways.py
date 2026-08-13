@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -12,23 +14,70 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.auth.dependencies import get_current_org
 from control_plane.database import async_session, get_db
+from control_plane.env import configured_org_id, is_production, tenancy_mode
 from control_plane.models.database import Gateway, Tool
 from control_plane.models.schemas import GatewayCreate, GatewayResponse, GatewayUpdate
 from control_plane.models.scoping import get_scoped, scoped, stamp
 from control_plane.services.audit_service import actor_of, audit
+from control_plane.services.gateway_callbacks import (
+    GatewayCallbackError,
+    validate_gateway_callback,
+)
 from control_plane.services.push_service import PushService, gateway_config_headers
+from control_plane.services.runtime_state import (
+    delete_runtime_state,
+    load_runtime_namespace,
+    put_runtime_state,
+)
 
 log = logging.getLogger("control_plane.gateways")
 
 router = APIRouter(prefix="/api/gateways", tags=["gateways"])
 push_service = PushService()
 
-# In-memory config queue for offline gateways
-config_queue: dict[str, list[dict[str, Any]]] = {}
-
 # Health check background task handle
 _health_check_task: asyncio.Task | None = None
 HEARTBEAT_TIMEOUT_SECONDS = 90
+
+
+async def _queue_config(
+    db: AsyncSession,
+    org: str,
+    gateway_id: str,
+    body: dict[str, Any],
+) -> None:
+    item_key = f"{gateway_id}:{time.time_ns():020d}:{uuid.uuid4().hex}"
+    await put_runtime_state(
+        db,
+        org,
+        "gateway_config_queue",
+        item_key,
+        {"gateway_id": gateway_id, "body": body},
+    )
+
+
+async def _drain_config_queue(
+    db: AsyncSession,
+    org: str,
+    gateway_id: str,
+) -> list[dict[str, Any]]:
+    stored = await load_runtime_namespace(db, org, "gateway_config_queue")
+    queued: list[dict[str, Any]] = []
+    for item_key, value in sorted(stored.items()):
+        if value.get("gateway_id") != gateway_id:
+            continue
+        body = value.get("body")
+        if isinstance(body, dict):
+            queued.append(body)
+        await delete_runtime_state(
+            db,
+            org,
+            "gateway_config_queue",
+            item_key,
+        )
+    if queued:
+        await db.commit()
+    return queued
 
 
 async def _health_check_loop() -> None:
@@ -99,7 +148,11 @@ async def register_gateway(body: GatewayCreate, request: Request, db: AsyncSessi
     existing = await db.get(Gateway, body.id)
     if existing:
         raise HTTPException(status_code=409, detail=f"Gateway {body.id} already exists")
-    gateway = Gateway(id=body.id, name=body.name, endpoint=body.endpoint, description=body.description)
+    try:
+        endpoint = validate_gateway_callback(body.endpoint)
+    except GatewayCallbackError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    gateway = Gateway(id=body.id, name=body.name, endpoint=endpoint, description=body.description)
     stamp(gateway, org)
     db.add(gateway)
     await audit.log(db, actor_of(request), "create", "gateway", body.id, {"name": body.name, "endpoint": body.endpoint}, org=org)
@@ -124,6 +177,11 @@ async def update_gateway(gateway_id: str, body: GatewayUpdate, request: Request,
     if not gateway:
         raise HTTPException(status_code=404, detail="Gateway not found")
     changes = body.model_dump(exclude_unset=True)
+    if "endpoint" in changes:
+        try:
+            changes["endpoint"] = validate_gateway_callback(changes["endpoint"])
+        except GatewayCallbackError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     for field, value in changes.items():
         setattr(gateway, field, value)
     await audit.log(db, actor_of(request), "update", "gateway", gateway_id, changes, org=org)
@@ -137,6 +195,15 @@ async def delete_gateway(gateway_id: str, request: Request, db: AsyncSession = D
     gateway = await get_scoped(db, Gateway, gateway_id, org)
     if not gateway:
         raise HTTPException(status_code=404, detail="Gateway not found")
+    queued = await load_runtime_namespace(db, org, "gateway_config_queue")
+    for item_key, value in queued.items():
+        if value.get("gateway_id") == gateway_id:
+            await delete_runtime_state(
+                db,
+                org,
+                "gateway_config_queue",
+                item_key,
+            )
     await audit.log(db, actor_of(request), "delete", "gateway", gateway_id, {"name": gateway.name}, org=org)
     await db.delete(gateway)
     await db.commit()
@@ -237,16 +304,35 @@ async def gateway_register(
     # request.client) drops it, breaking config pushes (config goes to
     # http://host/config with no port → connection refused).
     callback_url = ""
-    reg_org = "default"
+    reg_org = configured_org_id()
     try:
         body = await request.json()
         if isinstance(body, dict):
             callback_url = (body.get("callback_url") or "").strip()
+            if callback_url:
+                try:
+                    callback_url = validate_gateway_callback(callback_url)
+                except GatewayCallbackError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
             # A gateway declares its org at registration (no user token on this
             # path). Absent that, it lands in the default org.
-            reg_org = (body.get("org_id") or "default").strip() or "default"
+            requested_org = (body.get("org_id") or reg_org).strip() or reg_org
+            if tenancy_mode() == "single" and requested_org != reg_org:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Gateway tenant is not permitted by this deployment",
+                )
+            reg_org = requested_org
+    except HTTPException:
+        raise
     except Exception:
         pass
+
+    if not callback_url and is_production():
+        raise HTTPException(
+            status_code=422,
+            detail="Production gateway registration requires callback_url",
+        )
 
     def _fallback_endpoint() -> str:
         """Best-effort endpoint from the caller's host (no port — last resort)."""
@@ -298,7 +384,11 @@ async def gateway_register(
     # the gateway applies `config` as one document, so a nested key was silently
     # dropped (it was "queued_updates", which nothing ever read). Naming it
     # config_updates matches the heartbeat path, which the gateway does apply.
-    queued = config_queue.pop(gateway_id, [])
+    queued = await _drain_config_queue(
+        db,
+        gateway.org_id or "default",
+        gateway_id,
+    )
 
     log.info(f"Gateway {gateway_id} registered (healthy)")
     response: dict[str, Any] = {"status": "registered", "config": bundle}
@@ -334,7 +424,11 @@ async def gateway_heartbeat(gateway_id: str, db: AsyncSession = Depends(get_db))
     # all gateways in an org converge after another gateway depletes or funds a
     # pool; the reporting gateway also receives the same state immediately in
     # the cost-ingestion response.
-    queued = config_queue.pop(gateway_id, [])
+    queued = await _drain_config_queue(
+        db,
+        gateway.org_id or "default",
+        gateway_id,
+    )
     from control_plane.routers.broker_pilot import pool_snapshot
 
     queued.append(
@@ -426,12 +520,13 @@ async def push_config_lifecycle(
             except (httpx.ConnectError, httpx.TimeoutException):
                 # Gateway became unreachable — queue instead
                 gateway.status = "unhealthy"
+                await _queue_config(db, org, gateway_id, body)
                 await db.commit()
-                config_queue.setdefault(gateway_id, []).append(body)
                 return {"status": "queued", "gateway_id": gateway_id, "reason": "became_unreachable"}
     else:
         # Queue for later delivery on heartbeat
-        config_queue.setdefault(gateway_id, []).append(body)
+        await _queue_config(db, org, gateway_id, body)
+        await db.commit()
         return {"status": "queued", "gateway_id": gateway_id, "reason": "gateway_offline"}
 
 

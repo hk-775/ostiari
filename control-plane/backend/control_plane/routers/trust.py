@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane import trust
@@ -19,8 +19,10 @@ from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
 from control_plane.models.database import Gateway
 from control_plane.models.scoping import get_scoped
-from control_plane.services.push_service import gateway_config_headers
 from control_plane.routers.traces import recent_traces_for
+from control_plane.services.audit_service import actor_of, audit
+from control_plane.services.push_service import gateway_config_headers
+from control_plane.services.runtime_state import put_runtime_state
 
 router = APIRouter(prefix="/api/trust", tags=["trust"])
 
@@ -47,7 +49,11 @@ async def _get_cross_agent(gateway) -> dict:
 
 
 @router.get("/scores")
-async def scores(gateway_id: str = "crm-agent", db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+async def scores(
+    gateway_id: str,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+):
     """Derived-vs-configured trust per agent (shadow view — computes only)."""
     gateway = await get_scoped(db, Gateway, gateway_id, org)
     configured: dict[str, int] = {}
@@ -68,7 +74,12 @@ async def scores(gateway_id: str = "crm-agent", db: AsyncSession = Depends(get_d
 
 
 @router.post("/apply")
-async def apply(gateway_id: str = "crm-agent", db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+async def apply(
+    request: Request,
+    gateway_id: str,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+):
     """Opt-in: push derived scores into the gateway's cross-agent trust_scores.
 
     Merges derived scores over the existing policy (preserving edges/min_trust)
@@ -99,15 +110,54 @@ async def apply(gateway_id: str = "crm-agent", db: AsyncSession = Depends(get_db
             raise HTTPException(status_code=502, detail=f"Failed to push to gateway: {exc}") from None
 
     _enforced[org][gateway_id] = True
+    await put_runtime_state(
+        db,
+        org,
+        "trust_enforced",
+        gateway_id,
+        {"enforced": True},
+    )
+    await audit.log(
+        db,
+        actor_of(request),
+        "apply",
+        "trust_enforcement",
+        gateway_id,
+        {"agents": sorted(derived)},
+        org=org,
+    )
+    await db.commit()
     return {"gateway_id": gateway_id, "applied": derived, "count": len(derived)}
 
 
 @router.post("/disable")
-async def disable(gateway_id: str = "crm-agent", org: str = Depends(get_current_org)):
+async def disable(
+    request: Request,
+    gateway_id: str,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+):
     """Turn off derived-trust enforcement (back to shadow-only).
 
     Leaves already-pushed scores in place but marks the fleet as no longer
     auto-enforcing; re-apply a manual policy to fully revert values.
     """
     _enforced[org][gateway_id] = False
+    await put_runtime_state(
+        db,
+        org,
+        "trust_enforced",
+        gateway_id,
+        {"enforced": False},
+    )
+    await audit.log(
+        db,
+        actor_of(request),
+        "disable",
+        "trust_enforcement",
+        gateway_id,
+        {},
+        org=org,
+    )
+    await db.commit()
     return {"gateway_id": gateway_id, "enforced": False}

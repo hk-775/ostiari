@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -22,6 +22,8 @@ from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
 from control_plane.models.database import Gateway, PaymentRecord, Wallet
 from control_plane.models.scoping import get_scoped, org_of_gateway, scoped, stamp
+from control_plane.services.audit_service import actor_of, audit
+from control_plane.services.runtime_state import put_runtime_state
 
 router = APIRouter(prefix="/api/payments", tags=["payments"])
 
@@ -297,18 +299,45 @@ async def summary(db: AsyncSession = Depends(get_db), org: str = Depends(get_cur
 # ─── Pricing + push ──────────────────────────────────────────────────────────
 
 @router.get("/pricing")
-async def get_pricing(gateway_id: str = "crm-agent", org: str = Depends(get_current_org)):
+async def get_pricing(gateway_id: str, org: str = Depends(get_current_org)):
     return {"gateway_id": gateway_id, **_gateway_pricing(org, gateway_id)}
 
 
 @router.post("/pricing")
-async def set_pricing(body: PricingConfig, gateway_id: str = "crm-agent", org: str = Depends(get_current_org)):
+async def set_pricing(
+    body: PricingConfig,
+    request: Request,
+    gateway_id: str,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+):
     _pricing[org][gateway_id] = body.model_dump()
+    await put_runtime_state(
+        db,
+        org,
+        "payment_pricing",
+        gateway_id,
+        body.model_dump(mode="json"),
+    )
+    await audit.log(
+        db,
+        actor_of(request),
+        "update",
+        "payment_pricing",
+        gateway_id,
+        body.model_dump(mode="json"),
+        org=org,
+    )
+    await db.commit()
     return {"gateway_id": gateway_id, **_pricing[org][gateway_id]}
 
 
 @router.post("/push")
-async def push_payments(gateway_id: str = "crm-agent", db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+async def push_payments(
+    gateway_id: str,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+):
     """Push the full payment config (pricing + wallet balances) to a gateway."""
     gateway = await get_scoped(db, Gateway, gateway_id, org)
     if gateway is None:

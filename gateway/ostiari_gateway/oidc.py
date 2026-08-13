@@ -5,10 +5,10 @@ gateway is an independent service (it doesn't import the control-plane package).
 Validates RS256 tokens from any OIDC issuer; nothing AWS-specific.
 
 Enable via env (unset = gateway auth off, current header behavior preserved):
-  OSTIARI_GATEWAY_AUTH=required     turn on token enforcement for tool calls
+  OSTIARI_GATEWAY_AUTH=required     turn on token enforcement for agent routes
   OSTIARI_OIDC_ISSUER=<issuer url>
   OSTIARI_OIDC_JWKS_URL=<url>       defaults to <issuer>/.well-known/jwks.json
-  OSTIARI_OIDC_AUDIENCE=<client id> optional aud/client_id check
+  OSTIARI_OIDC_AUDIENCE=<client id> aud/client_id check (required in production)
 """
 
 from __future__ import annotations
@@ -88,13 +88,42 @@ def agent_id_from_claims(claims: dict[str, Any]) -> str:
     )
 
 
+def request_agent_id(request: Any, default: str = "unknown") -> str:
+    """Return the verified request identity, or the dev-mode header fallback."""
+    verified = getattr(getattr(request, "state", None), "agent_id", "")
+    if isinstance(verified, str) and verified:
+        return verified
+    header = request.headers.get("X-Agent-Id", "")
+    return header.strip() or default
+
+
 def tenant_from_claims(claims: dict[str, Any]) -> str:
     """Tenant/org id from the token, defaulting to 'default' (multi-tenant seam)."""
+    return tenant_claim_from_claims(claims) or "default"
+
+
+def tenant_claim_from_claims(claims: dict[str, Any]) -> str:
+    """Return the explicit tenant claim, or an empty string when absent."""
     for key in ("tenant_id", "custom:tenant_id", "org_id", "custom:org"):
         val = claims.get(key)
         if isinstance(val, str) and val:
             return val
-    return "default"
+    return ""
+
+
+def tenancy_mode() -> str:
+    configured = os.environ.get("OSTIARI_TENANCY_MODE", "").strip().lower()
+    if configured:
+        return configured
+    return (
+        "single"
+        if os.environ.get("OSTIARI_ENV", "").strip().lower() in {"production", "prod"}
+        else "multi"
+    )
+
+
+def configured_org_id() -> str:
+    return os.environ.get("OSTIARI_ORG_ID", "").strip() or "default"
 
 
 # ─── env-wired singletons (one validator per issuer) ─────────────────────────

@@ -1,11 +1,11 @@
 import { useState, useEffect } from "react";
-import { User } from "../stores/authStore";
+import { Role, User } from "../stores/authStore";
 import { UserPlus, Trash2, Users as UsersIcon } from "lucide-react";
 import { fetchAPI } from "../lib/api";
 
 const ROLE_BADGES: Record<string, string> = {
   admin: "bg-violet-100 text-violet-700 border-violet-200",
-  editor: "bg-sky-100 text-sky-700 border-sky-200",
+  operator: "bg-sky-100 text-sky-700 border-sky-200",
   viewer: "bg-stone-100 text-stone-600 border-stone-200",
 };
 
@@ -19,7 +19,7 @@ export function Users() {
   const [formEmail, setFormEmail] = useState("");
   const [formName, setFormName] = useState("");
   const [formPassword, setFormPassword] = useState("");
-  const [formRole, setFormRole] = useState("viewer");
+  const [formRole, setFormRole] = useState<Role>("viewer");
   const [formError, setFormError] = useState("");
   const [formLoading, setFormLoading] = useState(false);
 
@@ -152,11 +152,11 @@ export function Users() {
               <label className="block text-xs font-medium text-stone-600 mb-1">Role</label>
               <select
                 value={formRole}
-                onChange={(e) => setFormRole(e.target.value)}
+                onChange={(e) => setFormRole(e.target.value as Role)}
                 className="input w-full"
               >
                 <option value="admin">Admin</option>
-                <option value="editor">Editor</option>
+                <option value="operator">Operator</option>
                 <option value="viewer">Viewer</option>
               </select>
             </div>

@@ -22,7 +22,8 @@ test: ## Run all tests
 	cd control-plane/backend && PYTHONPATH=. pytest tests/ -v
 
 lint: ## Run linters
-	ruff check src/ gateway/ control-plane/backend/control_plane/ control-plane/backend/tests/ --select F --ignore F401
+	ruff check src/ gateway/ control-plane/backend/control_plane/ control-plane/backend/tests/
+	mypy src/ostiari
 	cd control-plane/frontend && npx tsc --noEmit --skipLibCheck
 
 demo: ## Demo mode — frontend only with mock data (http://localhost:9000)
@@ -43,9 +44,9 @@ dev: ## Start backend + frontend + primary gateway (seeded demo data)
 # module + credentials) so the Sandbox chat's /invoke endpoint works, and
 # register_demo_tools.py points its tools at demo_tools_server.py (canned
 # web_search/db_query/github.* responses) so chat tool calls return real data.
-# register_demo_providers.py seeds the Providers page from $(LLM_ENV) — that
-# store is process-memory only, so it must re-run on every restart or the page
-# renders empty while /api/models advertises providers nothing is configured for.
+# register_demo_providers.py seeds or updates the durable Providers catalog from
+# $(LLM_ENV). Re-running the demo refreshes credentials without relying on
+# process memory.
 demo-full: ## Full demo — all gateways, A2A agent, control plane (seeded demo data)
 	cd control-plane/backend && OSTIARI_DISCOVERY_MOCK=1 python main.py &
 	cd gateway && python demo_tools_server.py &
