@@ -19,8 +19,8 @@ import time
 from typing import Any
 
 import httpx
-from jose import jwt
-from jose.exceptions import JWTError
+import jwt
+from jwt.exceptions import PyJWTError as JWTError
 
 
 class OIDCError(Exception):
@@ -67,12 +67,13 @@ class OIDCValidator:
         if key is None:
             raise OIDCError(f"no signing key for kid '{kid}'")
         try:
+            signing_key = jwt.PyJWK.from_dict(key)
             claims = jwt.decode(
-                token, key, algorithms=["RS256"], issuer=self.issuer,
+                token, signing_key, algorithms=["RS256"], issuer=self.issuer,
                 audience=self.audience if self.audience else None,
                 options={"verify_aud": bool(self.audience)},
             )
-        except JWTError as exc:
+        except (JWTError, KeyError, TypeError, ValueError) as exc:
             raise OIDCError(f"token validation failed: {exc}") from None
         return claims
 

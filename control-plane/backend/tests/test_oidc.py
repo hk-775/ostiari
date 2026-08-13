@@ -5,29 +5,34 @@ needed. Proves the full validate path: good token, wrong issuer, wrong key,
 expired, plus claims → role/tenant/principal mapping.
 """
 
+import base64
 import time
 
+import jwt
 import pytest
 from control_plane.auth import oidc
 from cryptography.hazmat.primitives.asymmetric import rsa
-from jose import jwt
 
 ISSUER = "https://issuer.test/pool"
 AUD = "test-client"
 
 
+def _base64url_uint(value: int) -> str:
+    raw = value.to_bytes((value.bit_length() + 7) // 8, "big")
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
 @pytest.fixture
 def keypair():
-    """Generate an RSA keypair and its JWKS (as jose expects)."""
+    """Generate an RSA keypair and its JWKS."""
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    from jose.utils import long_to_base64
     pub = key.public_key().public_numbers()
     jwk_dict = {
         "kty": "RSA", "kid": "test-key-1", "use": "sig", "alg": "RS256",
-        "n": long_to_base64(pub.n).decode(),
-        "e": long_to_base64(pub.e).decode(),
+        "n": _base64url_uint(pub.n),
+        "e": _base64url_uint(pub.e),
     }
-    # jose can sign with a PEM private key directly.
+    # PyJWT can sign with a PEM private key directly.
     from cryptography.hazmat.primitives import serialization
     pem = key.private_bytes(
         serialization.Encoding.PEM,

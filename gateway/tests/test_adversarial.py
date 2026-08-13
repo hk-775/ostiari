@@ -142,8 +142,8 @@ class TestBudgetReservation:
 
 class TestJWTHardening:
     def test_algorithm_is_pinned_no_alg_none(self):
-        """The OIDC validator pins RS256 — a hand-forged alg=none token (which
-        python-jose refuses to even encode) is rejected at validation."""
+        """The OIDC validator pins RS256, so a hand-forged alg=none token is
+        rejected at validation."""
         import base64
         import json
         import time

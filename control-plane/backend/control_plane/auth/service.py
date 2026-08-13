@@ -4,7 +4,8 @@ import os
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
-from jose import JWTError, jwt
+import jwt
+from jwt.exceptions import PyJWTError as JWTError
 
 from control_plane.auth.roles import require_valid_role
 from control_plane.env import DEFAULT_DEV_JWT_SECRET, is_production
