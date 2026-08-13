@@ -8,14 +8,15 @@ import httpx
 import pytest
 from ostiari_gateway.models import PolicyConfig, SidecarConfig, ToolDefinition
 from ostiari_gateway.payments import (
-    PaymentGate as Gate,
-)
-from ostiari_gateway.payments import (
+    DisabledSettler,
     Quote,
     SimulatedSettler,
     Wallet,
     X402Settler,
     parse_402,
+)
+from ostiari_gateway.payments import (
+    PaymentGate as Gate,
 )
 from ostiari_gateway.server import create_app
 from starlette.testclient import TestClient
@@ -116,6 +117,47 @@ class TestSimulatedSettler:
         assert r.settled is False
         assert "insufficient balance" in r.reason
         assert w.balance_usdc == pytest.approx(0.01)  # untouched
+
+
+class TestDisabledSettler:
+    async def test_never_debits(self):
+        s = DisabledSettler()
+        w = Wallet(agent_id="a", balance_usdc=1.0)
+
+        r = await s.settle(quote=Quote(action="x", amount_usdc=0.2), wallet=w)
+
+        assert r.settled is False
+        assert r.mode == "off"
+        assert "disabled" in r.reason
+        assert w.balance_usdc == pytest.approx(1.0)
+
+    async def test_shared_wallet_is_not_debited(self):
+        class Store:
+            def __init__(self):
+                self.debits = 0
+
+            def upsert_wallet(self, agent_id, wallet):
+                return None
+
+            def wallet_debit(self, agent_id, amount):
+                self.debits += 1
+                return True, "", 0.8
+
+        store = Store()
+        gate = Gate(settler=DisabledSettler())
+        gate.configure({
+            "mode": "metered",
+            "default": 0.2,
+            "wallets": [{"agent_id": "a", "balance_usdc": 1.0}],
+        })
+        gate.attach_shared_store(store)
+
+        result = await gate.charge_before(agent_id="a", action="x")
+
+        assert result.settled is False
+        assert "disabled" in result.reason
+        assert store.debits == 0
+        assert gate.get_wallet("a").balance_usdc == pytest.approx(1.0)
 
 
 class TestX402Settler:

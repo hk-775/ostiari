@@ -14,8 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from control_plane.auth.dependencies import get_current_org, get_current_user
 from control_plane.database import get_db
 from control_plane.models.database import AuditLog
-from control_plane.models.scoping import scoped
 from control_plane.models.schemas import AuditLogResponse
+from control_plane.models.scoping import scoped
 from control_plane.services.audit_service import audit
 
 router = APIRouter(prefix="/api/audit", tags=["audit"])

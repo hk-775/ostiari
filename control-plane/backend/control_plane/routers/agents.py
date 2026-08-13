@@ -9,6 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
 from control_plane.services.audit_service import actor_of, audit
+from control_plane.services.runtime_state import (
+    delete_runtime_state,
+    put_runtime_state,
+)
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -114,6 +118,13 @@ async def register_agent(
     # different tool list is a privilege change, and the trail should say so.
     action = "update" if body.name in _agents[org] else "register"
     _agents[org][body.name] = body
+    await put_runtime_state(
+        db,
+        org,
+        "agents",
+        body.name,
+        body.model_dump(mode="json"),
+    )
     await audit.log(db, actor_of(request), action, "agent", body.name, {
         "framework": body.framework, "gateway_id": body.gateway_id,
         "model": body.model, "tools": body.tools,
@@ -133,6 +144,7 @@ async def delete_agent(
     if agent is None:
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
     del _agents[org][name]
+    await delete_runtime_state(db, org, "agents", name)
     await audit.log(db, actor_of(request), "delete", "agent", name,
                     {"framework": agent.framework, "gateway_id": agent.gateway_id},
                     org=org)

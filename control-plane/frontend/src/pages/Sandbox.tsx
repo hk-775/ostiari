@@ -8,8 +8,6 @@ import {
   type SandboxOutputStream,
 } from "../lib/sandboxRunner";
 
-const GATEWAY_PROXY_PATH = "/api/proxy/gateway/crm-agent";
-
 type Tab = "chat" | "scenarios" | "code" | "a2a";
 type CodeRunStatus = "idle" | "starting" | "running" | "completed" | "error" | "cancelled" | "timed_out";
 
@@ -58,8 +56,8 @@ export function Sandbox() {
   const [codeOutput, setCodeOutput] = useState("");
   const [codeRunning, setCodeRunning] = useState(false);
   const [codeStatus, setCodeStatus] = useState<CodeRunStatus>("idle");
-  const [codeGateways, setCodeGateways] = useState<{ id: string; name: string; status: string }[]>([]);
-  const [codeGatewayId, setCodeGatewayId] = useState("crm-agent");
+  const [gateways, setGateways] = useState<{ id: string; name: string; status: string }[]>([]);
+  const [gatewayId, setGatewayId] = useState("");
   const codeExecutionRef = useRef<SandboxExecution | null>(null);
   const codeCancelRequestedRef = useRef(false);
   const mountedRef = useRef(true);
@@ -79,16 +77,16 @@ export function Sandbox() {
     mountedRef.current = true;
     void api.gateways.list().then((gateways) => {
       if (!active) return;
-      setCodeGateways(gateways.map(({ id, name, status }) => ({ id, name, status })));
-      if (gateways.length === 0) {
-        setCodeGatewayId("");
-      } else if (!gateways.some((gateway) => gateway.id === codeGatewayId)) {
-        setCodeGatewayId(gateways[0].id);
-      }
+      setGateways(gateways.map(({ id, name, status }) => ({ id, name, status })));
+      setGatewayId((current) => (
+        gateways.some((gateway) => gateway.id === current)
+          ? current
+          : gateways[0]?.id ?? ""
+      ));
     }).catch(() => {
       if (active) {
-        setCodeGateways([]);
-        setCodeGatewayId("");
+        setGateways([]);
+        setGatewayId("");
       }
     });
     return () => {
@@ -98,15 +96,19 @@ export function Sandbox() {
     };
   }, []);
 
+  const gatewayProxyPath = gatewayId
+    ? `/api/proxy/gateway/${encodeURIComponent(gatewayId)}`
+    : "";
+
   const sendChat = async () => {
-    if (!chatInput.trim() || chatLoading) return;
+    if (!gatewayProxyPath || !chatInput.trim() || chatLoading) return;
     const userMsg: ChatMessage = { role: "user", content: chatInput };
     setChatMessages(prev => [...prev, userMsg]);
     setChatInput("");
     setChatLoading(true);
 
     try {
-      const resp = await apiFetch(`${GATEWAY_PROXY_PATH}/invoke`, {
+      const resp = await apiFetch(`${gatewayProxyPath}/invoke`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Agent-Id": "sandbox-chat", "X-Session-Id": "sandbox", "X-Plan": "Sandbox chat" },
         body: JSON.stringify({ messages: [...chatMessages, userMsg].map(m => ({ role: m.role, content: m.content })) }),
@@ -131,6 +133,7 @@ export function Sandbox() {
   };
 
   const runScenario = async (id: string) => {
+    if (!gatewayProxyPath) return;
     setScenarioResult(prev => ({ ...prev, [id]: { status: "running", output: ["Starting..."] } }));
     const output: string[] = [];
 
@@ -142,7 +145,7 @@ export function Sandbox() {
           { action: "db_delete", params: { table: "users" } },
         ];
         for (const t of tools) {
-          const resp = await apiFetch(`${GATEWAY_PROXY_PATH}/tool/${t.action}`, {
+          const resp = await apiFetch(`${gatewayProxyPath}/tool/${t.action}`, {
             method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Id": "sandbox-scenario" },
             body: JSON.stringify(t.params),
           });
@@ -153,7 +156,7 @@ export function Sandbox() {
         const steps = ["db_query", "github.search_code", "github.create_issue", "drawio.create_diagram", "drawio.add_shape", "send_email"];
         const params: any[] = [{ sql: "SELECT *" }, { query: "auth" }, { repo: "myorg/app", title: "Bug" }, { name: "Flow" }, { diagram_id: "d1", shape: "rect", label: "API" }, { to: "team@co.com", subject: "Done" }];
         for (let i = 0; i < steps.length; i++) {
-          const resp = await apiFetch(`${GATEWAY_PROXY_PATH}/tool/${steps[i]}`, {
+          const resp = await apiFetch(`${gatewayProxyPath}/tool/${steps[i]}`, {
             method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Id": "sandbox-multistep", "X-Session-Id": "sandbox-plan", "X-Plan": "Multi-step sandbox", "X-Step": `${i+1}/${steps.length}` },
             body: JSON.stringify(params[i]),
           });
@@ -162,7 +165,7 @@ export function Sandbox() {
       } else if (id === "blocked") {
         const blocked = ["db_delete", "github.delete_repo", "drawio.delete_diagram"];
         for (const action of blocked) {
-          const resp = await apiFetch(`${GATEWAY_PROXY_PATH}/tool/${action}`, {
+          const resp = await apiFetch(`${gatewayProxyPath}/tool/${action}`, {
             method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Id": "sandbox-blocked" },
             body: JSON.stringify({ target: "all" }),
           });
@@ -173,7 +176,7 @@ export function Sandbox() {
         const mcpTools = ["github.list_repos", "github.search_code", "drawio.list_diagrams", "drawio.create_diagram"];
         const params: any[] = [{ org: "myorg" }, { query: "config" }, {}, { name: "Sandbox Diagram" }];
         for (let i = 0; i < mcpTools.length; i++) {
-          const resp = await apiFetch(`${GATEWAY_PROXY_PATH}/tool/${mcpTools[i]}`, {
+          const resp = await apiFetch(`${gatewayProxyPath}/tool/${mcpTools[i]}`, {
             method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Id": "sandbox-mcp" },
             body: JSON.stringify(params[i]),
           });
@@ -191,8 +194,8 @@ export function Sandbox() {
   const runCode = async () => {
     if (
       codeRunning
-      || !codeGatewayId
-      || !codeGateways.some((gateway) => gateway.id === codeGatewayId)
+      || !gatewayId
+      || !gateways.some((gateway) => gateway.id === gatewayId)
     ) return;
     codeCancelRequestedRef.current = false;
     setCodeRunning(true);
@@ -212,7 +215,7 @@ export function Sandbox() {
     try {
       const source = await sha256Source(code);
       const run = await api.sandbox.start({
-        gateway_id: codeGatewayId,
+        gateway_id: gatewayId,
         language: "javascript",
         source_digest: source.digest,
         source_bytes: source.bytes,
@@ -315,9 +318,27 @@ export function Sandbox() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight text-stone-900">Sandbox</h1>
-        <p className="mt-1 text-sm text-stone-500">Test agents, run scenarios, and experiment with tool calls</p>
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-stone-900">Sandbox</h1>
+          <p className="mt-1 text-sm text-stone-500">Test agents, run scenarios, and experiment with tool calls</p>
+        </div>
+        <label className="min-w-56 text-xs font-semibold text-stone-500">
+          Gateway
+          <select
+            value={gatewayId}
+            onChange={(event) => setGatewayId(event.target.value)}
+            disabled={codeRunning || gateways.length === 0}
+            className="input mt-1 w-full py-2 text-sm"
+          >
+            {gateways.length === 0 && <option value="">No gateways registered</option>}
+            {gateways.map((gateway) => (
+              <option key={gateway.id} value={gateway.id}>
+                {gateway.name || gateway.id}{gateway.status === "healthy" ? "" : ` (${gateway.status})`}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
 
       {/* Tabs */}
@@ -387,10 +408,11 @@ export function Sandbox() {
                 value={chatInput}
                 onChange={(e) => setChatInput(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && sendChat()}
+                disabled={!gatewayId}
                 placeholder="Type a message... (e.g., 'Search code for authentication')"
                 className="input flex-1"
               />
-              <button onClick={sendChat} disabled={chatLoading} className="btn-primary">
+              <button onClick={sendChat} disabled={chatLoading || !gatewayId} className="btn-primary">
                 <Send className="h-4 w-4" />
               </button>
             </div>
@@ -411,7 +433,9 @@ export function Sandbox() {
                     <p className="text-xs text-stone-500">{s.description}</p>
                   </div>
                 </div>
-                <button onClick={() => runScenario(s.id)} disabled={scenarioResult[s.id]?.status === "running"}
+                <button
+                  onClick={() => runScenario(s.id)}
+                  disabled={!gatewayId || scenarioResult[s.id]?.status === "running"}
                   className="btn-secondary text-xs px-3 py-1.5">
                   {scenarioResult[s.id]?.status === "running" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
                   Run
@@ -442,20 +466,6 @@ export function Sandbox() {
                 <p className="text-[10px] text-stone-400">JavaScript · isolated runtime</p>
               </div>
               <div className="flex items-center gap-2">
-                <select
-                  value={codeGatewayId}
-                  onChange={(event) => setCodeGatewayId(event.target.value)}
-                  disabled={codeRunning || codeGateways.length === 0}
-                  aria-label="Execution gateway"
-                  className="input max-w-48 py-1.5 text-xs"
-                >
-                  {codeGateways.length === 0 && <option value="">No gateways</option>}
-                  {codeGateways.map((gateway) => (
-                    <option key={gateway.id} value={gateway.id}>
-                      {gateway.name || gateway.id}
-                    </option>
-                  ))}
-                </select>
                 {codeRunning ? (
                   <button
                     onClick={stopCode}
@@ -468,7 +478,7 @@ export function Sandbox() {
                 ) : (
                   <button
                     onClick={runCode}
-                    disabled={!codeGatewayId || codeGateways.length === 0}
+                    disabled={!gatewayId || gateways.length === 0}
                     className="btn-primary px-3 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <Play className="h-3.5 w-3.5" />
@@ -537,7 +547,7 @@ export function Sandbox() {
                     if (!a2aNewUrl.trim()) return;
                     setA2aDiscovering(true);
                     try {
-                      const resp = await apiFetch(`${GATEWAY_PROXY_PATH}/config/a2a-agents`, {
+                      const resp = await apiFetch(`${gatewayProxyPath}/config/a2a-agents`, {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ url: a2aNewUrl.trim() }),
@@ -547,20 +557,14 @@ export function Sandbox() {
                         setA2aAgents(prev => [...prev, { name: data.name || "Unknown", url: a2aNewUrl.trim(), skills: data.skills || [] }]);
                         setA2aNewUrl("");
                       } else {
-                        const card = await fetch(`${a2aNewUrl.trim()}/.well-known/agent.json`).then(r => r.json()).catch(() => null);
-                        if (card) {
-                          setA2aAgents(prev => [...prev, { name: card.name, url: a2aNewUrl.trim(), skills: (card.skills || []).map((s: any) => s.name || s.id) }]);
-                          setA2aNewUrl("");
-                        } else {
-                          alert("Could not discover agent. Check the URL.");
-                        }
+                        alert("Gateway discovery failed. Check the URL and gateway policy.");
                       }
                     } catch (e: any) {
                       alert(`Discovery failed: ${e.message}`);
                     }
                     setA2aDiscovering(false);
                   }}
-                  disabled={a2aDiscovering}
+                  disabled={!gatewayId || a2aDiscovering}
                   className="btn-primary text-xs px-3"
                 >
                   {a2aDiscovering ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
@@ -652,7 +656,7 @@ export function Sandbox() {
                       id: `task-${Date.now()}`
                     };
                     const toolName = `a2a.${agent.name.toLowerCase().replace(/\s+/g, "_")}`;
-                    const resp = await apiFetch(`${GATEWAY_PROXY_PATH}/tool/${toolName}`, {
+                    const resp = await apiFetch(`${gatewayProxyPath}/tool/${toolName}`, {
                       method: "POST",
                       headers: { "Content-Type": "application/json", "X-Agent-Id": "sandbox-a2a", "X-Framework": "a2a" },
                       body: JSON.stringify(a2aPayload),
@@ -680,7 +684,7 @@ export function Sandbox() {
                   }
                   setA2aTaskRunning(false);
                 }}
-                disabled={a2aTaskRunning || !a2aSelectedAgent || !a2aTaskInput.trim()}
+                disabled={!gatewayId || a2aTaskRunning || !a2aSelectedAgent || !a2aTaskInput.trim()}
                 className="btn-primary w-full"
               >
                 {a2aTaskRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}

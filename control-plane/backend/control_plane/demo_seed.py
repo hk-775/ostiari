@@ -169,7 +169,7 @@ async def seed_demo_payments(db: AsyncSession) -> None:
         ))
         n += 1
     # A handful of blocked attempts from the drained agent.
-    for i in range(5):
+    for _i in range(5):
         db.add(PaymentRecord(
             agent_id="payments-agent", gateway_id="crm-agent",
             action="premium_search", amount_usdc=0.005, settled=False,

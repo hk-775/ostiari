@@ -9,8 +9,8 @@ from control_plane.database import get_db
 from control_plane.models.database import Gateway, McpServer
 from control_plane.models.schemas import McpServerCreate, McpServerResponse
 from control_plane.models.scoping import get_scoped, scoped, stamp
-from control_plane.services.push_service import gateway_config_headers
 from control_plane.services.audit_service import actor_of, audit
+from control_plane.services.push_service import gateway_config_headers
 
 router = APIRouter(prefix="/api/mcp-servers", tags=["mcp-servers"])
 
@@ -119,7 +119,10 @@ async def discover_tools(mcp_id: int, request: Request, db: AsyncSession = Depen
                 return resp.json()
             return {"error": f"Gateway returned {resp.status_code}", "detail": resp.text[:200]}
         except httpx.ConnectError:
-            raise HTTPException(status_code=502, detail=f"Cannot reach gateway at {gateway.endpoint}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Cannot reach gateway at {gateway.endpoint}",
+            ) from None
 
 
 @router.get("/{mcp_id}/tools")
@@ -146,4 +149,7 @@ async def get_discovered_tools(mcp_id: int, db: AsyncSession = Depends(get_db), 
                 return {"server": mcp.name, "tools": server_tools, "total": len(server_tools)}
             return {"server": mcp.name, "tools": [], "total": 0}
         except httpx.ConnectError:
-            raise HTTPException(status_code=502, detail=f"Cannot reach gateway at {gateway.endpoint}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Cannot reach gateway at {gateway.endpoint}",
+            ) from None

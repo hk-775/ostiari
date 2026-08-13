@@ -1,8 +1,7 @@
 """Token broker API — bulk-buy/resell economics over usage records.
 
 Reports customer savings and our margin from routing LLM traffic through a
-discounted token pool. The bulk discount and markup are operator-editable
-assumptions, persisted in the state file (like the ROI cost model).
+discounted token pool. The operator-editable assumptions are SQL-backed.
 """
 
 from __future__ import annotations
@@ -10,7 +9,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,10 +19,15 @@ from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
 from control_plane.models.database import UsageRecord
 from control_plane.models.scoping import scoped
+from control_plane.services.audit_service import actor_of, audit
+from control_plane.services.runtime_state import (
+    delete_runtime_state,
+    put_runtime_state,
+)
 
 router = APIRouter(prefix="/api/token-broker", tags=["token-broker"])
 
-# Operator-editable margin config; persisted via the state file (see app.py).
+# Operator-editable margin config, persisted in runtime_state_records.
 _config: dict[str, dict] = defaultdict(
     lambda: {
         "bulk_discount": token_broker.DEFAULT_BULK_DISCOUNT,
@@ -43,18 +47,58 @@ async def get_config(org: str = Depends(get_current_org)):
 
 
 @router.post("/config")
-async def set_config(body: BrokerConfig, org: str = Depends(get_current_org)):
+async def set_config(
+    body: BrokerConfig,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+):
     _config[org]["bulk_discount"] = max(0.0, min(body.bulk_discount, 0.95))
     _config[org]["markup"] = max(0.0, body.markup)
     _config[org]["_customized"] = True
+    await put_runtime_state(
+        db,
+        org,
+        "token_broker_config",
+        "config",
+        dict(_config[org]),
+    )
+    await audit.log(
+        db,
+        actor_of(request),
+        "update",
+        "token_broker_config",
+        "config",
+        {
+            "bulk_discount": _config[org]["bulk_discount"],
+            "markup": _config[org]["markup"],
+        },
+        org=org,
+    )
+    await db.commit()
     return {**_config[org], "customized": True}
 
 
 @router.post("/config/reset")
-async def reset_config(org: str = Depends(get_current_org)):
+async def reset_config(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+):
     _config[org]["bulk_discount"] = token_broker.DEFAULT_BULK_DISCOUNT
     _config[org]["markup"] = token_broker.DEFAULT_MARKUP
     _config[org]["_customized"] = False
+    await delete_runtime_state(db, org, "token_broker_config", "config")
+    await audit.log(
+        db,
+        actor_of(request),
+        "reset",
+        "token_broker_config",
+        "config",
+        {},
+        org=org,
+    )
+    await db.commit()
     return {**_config[org], "customized": False}
 
 

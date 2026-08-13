@@ -168,9 +168,10 @@ therefore multiplies the effective limits by the replica count. Set
 `OSTIARI_REDIS_URL` (or `REDIS_ENDPOINT`) and
 `gateway/ostiari_gateway/shared_store.py` moves those counters into Redis, each
 mutation a single atomic Lua script — so the limits hold fleet-wide. It's
-fail-safe: unreachable Redis degrades to per-process rather than failing the
-gateway, which also means a misconfigured URL looks like it worked. Load-test a
-**single** instance to get true per-node capacity, then size the fleet.
+optional only in development, where unreachable Redis degrades to per-process
+limits. Production requires Redis, fails shared enforcement closed during an
+outage, and reports `/ready` as unavailable. Load-test a **single** instance to
+get true per-node capacity, then size the fleet and repeat with shared Redis.
 
 ## Don't stress a shared/prod environment
 

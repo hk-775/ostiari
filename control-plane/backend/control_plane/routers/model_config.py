@@ -15,6 +15,10 @@ from control_plane.database import get_db
 from control_plane.models.database import DEFAULT_ORG, Gateway
 from control_plane.services.audit_service import actor_of, audit
 from control_plane.services.push_service import gateway_config_headers
+from control_plane.services.runtime_state import (
+    delete_runtime_state,
+    put_runtime_state,
+)
 
 router = APIRouter(prefix="/api/models", tags=["models"])
 
@@ -270,6 +274,13 @@ async def add_model(
             detail=f"routing_strategy must be one of {sorted(RUNTIME_ROUTING_STRATEGIES)}",
         )
     _models[org][body.name] = body
+    await put_runtime_state(
+        db,
+        org,
+        "models",
+        body.name,
+        body.model_dump(mode="json"),
+    )
     await audit.log(db, actor_of(request), "create", "model", body.name,
                     _audit_details(body), org=org)
     await db.commit()
@@ -293,6 +304,13 @@ async def update_model(
             detail=f"routing_strategy must be one of {sorted(RUNTIME_ROUTING_STRATEGIES)}",
         )
     _models[org][name] = body
+    await put_runtime_state(
+        db,
+        org,
+        "models",
+        name,
+        body.model_dump(mode="json"),
+    )
     # Record only what actually changed — a full before/after doubles the row size
     # and buries the one edited price.
     old, new = _audit_details(before), _audit_details(body)
@@ -313,6 +331,7 @@ async def delete_model(
     if model is None:
         raise HTTPException(status_code=404, detail=f"Model '{name}' not found")
     del _models[org][name]
+    await delete_runtime_state(db, org, "models", name)
     await audit.log(db, actor_of(request), "delete", "model", name,
                     _audit_details(model), org=org)
     await db.commit()

@@ -192,7 +192,9 @@ class LLMGatewayModule:
                 return JSONResponse(status_code=400,
                                     content={"error": "Body must be a JSON object"})
 
-            agent_id = request.headers.get("X-Agent-Id", "unknown")
+            from ostiari_gateway.oidc import request_agent_id
+
+            agent_id = request_agent_id(request)
             framework = request.headers.get("X-Framework", "unknown")
             session_id = request.headers.get("X-Session-Id", "")
             plan = request.headers.get("X-Plan", "")

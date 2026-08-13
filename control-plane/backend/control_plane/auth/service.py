@@ -4,8 +4,10 @@ import os
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
-from jose import JWTError, jwt
+import jwt
+from jwt.exceptions import PyJWTError as JWTError
 
+from control_plane.auth.roles import require_valid_role
 from control_plane.env import DEFAULT_DEV_JWT_SECRET, is_production
 
 
@@ -32,6 +34,7 @@ def _resolve_jwt_secret() -> str:
 JWT_SECRET = _resolve_jwt_secret()
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_HOURS = 24
+MIN_PRODUCTION_PASSWORD_LENGTH = 12
 
 
 def hash_password(password: str) -> str:
@@ -44,6 +47,15 @@ def verify_password(password: str, hashed: str) -> bool:
     return bcrypt.checkpw(password.encode(), hashed.encode())
 
 
+def validate_local_password(password: str) -> None:
+    """Reject weak local credentials in production."""
+    if is_production() and len(password) < MIN_PRODUCTION_PASSWORD_LENGTH:
+        raise ValueError(
+            "Password must be at least "
+            f"{MIN_PRODUCTION_PASSWORD_LENGTH} characters in production"
+        )
+
+
 def create_access_token(user_id: int, email: str, role: str, org: str = "default") -> str:
     """Create a JWT access token with 24h expiry.
 
@@ -53,7 +65,7 @@ def create_access_token(user_id: int, email: str, role: str, org: str = "default
     payload = {
         "sub": str(user_id),
         "email": email,
-        "role": role,
+        "role": require_valid_role(role, source="token role"),
         "org": org,
         "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRY_HOURS),
         "iat": datetime.now(timezone.utc),

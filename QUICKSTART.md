@@ -64,7 +64,7 @@ make demo-full
 ```
 
 This starts everything in the background:
-- **Control Plane backend** on port 8400 (seeds demo data on first start; restores saved state from `control-plane/data/state.json` on later starts)
+- **Control Plane backend** on port 8400 (seeds demo data unless disabled; durable state lives in SQL)
 - **Control Plane frontend** on http://localhost:9000
 - **4 Gateways** on ports 8421, 8422, 8424, 8425
 - **A2A Demo Agent** on port 9200
@@ -121,8 +121,8 @@ In the Control Plane UI:
 
 ### Demo data details
 
-Nothing is checked in — the backend seeds on first start (`control_plane/demo_seed.py`),
-then saves to `control-plane/data/state.json` on shutdown and restores it next time:
+Nothing is checked in — the backend seeds on startup (`control_plane/demo_seed.py`).
+Mutable governance configuration is written through to SQL immediately:
 - 4 gateway quotas, one per gateway, with spend summed from real usage records
 - 18 model routing configs (Anthropic, OpenAI, Bedrock, Vertex, Mistral, xAI, …)
 - 3 experiments (`haiku-vs-sonnet`, `gpt4o-vs-o3`, `cost-routing-test`)
@@ -146,7 +146,8 @@ Tools, policies, MCP servers, and A2A peers are registered by the
 pushes them to each gateway on registration. The SQLite DB
 (`control-plane/data/control_plane.db`) is created on first run, not shipped.
 
-Agents are seeded in-memory (see `control-plane/backend/control_plane/routers/agents.py`):
+Agents are seeded into the durable SQL registry (see
+`control-plane/backend/control_plane/routers/agents.py`):
 - research-agent (OpenAI), ops-agent (Strands), claude-agent (Anthropic)
 - bedrock-agent, agentcore-agent, crewai-agent, langgraph-agent
 - planner-bot, smart-router-bot (gateway-invoke)
@@ -186,15 +187,9 @@ This starts:
 - **Control Plane frontend** on http://localhost:9000
 - **One gateway** (`my-gateway`) on port 8421, connected to the control plane
 
-`clean-start` removes the SQLite database and `control-plane/data/state.json` — the
-path `data_dir()` resolves to (see `control-plane/backend/control_plane/env.py`). It
-also still removes the pre-`data_dir()` path, `control-plane/backend/data/state.json`,
-so an older checkout doesn't leave a file behind that a future refactor might start
-reading again.
-
-This is worth knowing because the recipe used to delete *only* the old path, while
-the lifespan restored the live one **before** the `OSTIARI_NO_DEMO` check — so
-previously-seeded quotas, experiments, and providers came back on a "clean" start.
+`clean-start` removes the SQLite database and both historical `state.json` paths.
+The JSON files are no longer written; they are retained only as a one-time import
+source for upgrades from older versions.
 
 ### Register the gateway with the Control Plane
 

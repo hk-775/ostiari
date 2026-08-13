@@ -1,16 +1,6 @@
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: ostiari-control-plane-data
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 1Gi
-  # NOTE: For production, replace SQLite with Amazon RDS (PostgreSQL).
-  # This PVC is suitable for dev/staging only.
----
+# Production template. Replace every REPLACE_* value and create the
+# `ostiari-secrets` Secret before applying. Images are digest-only deliberately:
+# a mutable tag is not a production release artifact.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -19,6 +9,11 @@ metadata:
     app: ostiari-control-plane
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: ostiari-control-plane
@@ -27,33 +22,33 @@ spec:
       labels:
         app: ostiari-control-plane
     spec:
-      # Pod-level runAsNonRoot only — deliberately no pod-level runAsUser, because
-      # the two containers here need different uids (backend 10001, nginx 101) and
-      # a pod-level value would override both. Each container sets its own below.
-      #
-      # fsGroup 10001 is what makes the PVC writable to the backend: a freshly
-      # provisioned volume is root-owned, so without it a non-root backend can
-      # create the SQLite file nowhere and crashes on first write.
       securityContext:
         runAsNonRoot: true
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        - name: migrate
+          image: "ghcr.io/REPLACE_ORG/ostiari-control-plane@sha256:REPLACE_WITH_64_HEX_DIGEST"
+          imagePullPolicy: IfNotPresent
+          command: ["alembic", "-c", "/app/alembic.ini", "upgrade", "head"]
+          securityContext:
+            runAsUser: 10001
+            runAsGroup: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ostiari-secrets
+                  key: database-url
       containers:
         - name: backend
-          image: ostiari-control-plane:latest
-          # Immutable root filesystem: everything this app writes (the SQLite
-          # database and persistence.STATE_FILE, flushed on shutdown) is under
-          # /data, redirected there by OSTIARI_DATA_DIR below. The PVC is the only
-          # writable mount it needs — no /tmp, since nothing here writes one.
-          #
-          # OSTIARI_DATA_DIR is load-bearing for this flag, not cosmetic: without
-          # it those paths resolve from __file__ into the app directory (/app,
-          # root-owned), and the database one fails at *import* time — the
-          # container crash-loops before serving anything. Setting only
-          # DATABASE_URL is the subtler trap: it redirects the database but not
-          # state.json, and that failure surfaces only at shutdown, after the pod
-          # has been serving traffic, silently losing all persisted state.
+          image: "ghcr.io/REPLACE_ORG/ostiari-control-plane@sha256:REPLACE_WITH_64_HEX_DIGEST"
+          imagePullPolicy: IfNotPresent
           securityContext:
             runAsUser: 10001
             runAsGroup: 10001
@@ -65,43 +60,109 @@ spec:
             - containerPort: 8400
               name: api
           env:
-            # SQLite on the PVC by default. For production point this at RDS:
-            # postgresql+asyncpg://user:pass@host:5432/ostiari
-            - name: DATABASE_URL
-              value: "sqlite+aiosqlite:////data/control_plane.db"
-            - name: OSTIARI_DATA_DIR
-              value: "/data"
+            - name: OSTIARI_ENV
+              value: "production"
+            - name: OSTIARI_REQUIRE_AUTH
+              value: "true"
+            - name: OSTIARI_NO_DEMO
+              value: "1"
+            - name: OSTIARI_TENANCY_MODE
+              value: "single"
+            - name: OSTIARI_ORG_ID
+              value: "REPLACE_ORG_ID"
+            - name: OSTIARI_GATEWAY_CALLBACK_ALLOW
+              value: "REPLACE_GATEWAY_CALLBACK_ALLOW"
+            - name: OSTIARI_CORS_ORIGINS
+              value: "https://REPLACE_CONSOLE_HOST"
+            - name: OSTIARI_FRONTEND_URL
+              value: "https://REPLACE_CONSOLE_HOST"
+            - name: OIDC_ISSUER
+              value: "https://REPLACE_OIDC_ISSUER"
+            - name: OIDC_REDIRECT_URI
+              value: "https://REPLACE_API_HOST/api/auth/sso/callback"
+            - name: OIDC_DEFAULT_ROLE
+              value: "viewer"
+            - name: OSTIARI_GATEWAY_AGENT_ID
+              value: "control-plane"
             - name: OSTIARI_BROKER_BILLING
-              value: "simulated"
+              value: "live"
             - name: STRIPE_METER_EVENT_NAME
               value: "ostiari_broker_usage"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ostiari-secrets
+                  key: database-url
+            - name: OSTIARI_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: ostiari-secrets
+                  key: jwt-secret
+            - name: OSTIARI_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ostiari-secrets
+                  key: admin-password
+            - name: OSTIARI_INGEST_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ostiari-secrets
+                  key: ingest-key
+            - name: OSTIARI_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: ostiari-secrets
+                  key: service-token
+            - name: OSTIARI_CONFIG_ADMIN_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ostiari-secrets
+                  key: config-admin-key
+            - name: OSTIARI_GATEWAY_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: ostiari-secrets
+                  key: gateway-agent-token
+            - name: OSTIARI_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ostiari-secrets
+                  key: encryption-key
+            - name: OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: ostiari-secrets
+                  key: oidc-client-id
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: ostiari-secrets
+                  key: oidc-client-secret
             - name: STRIPE_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: ostiari-secrets
                   key: stripe-api-key
-                  optional: true
             - name: STRIPE_CUSTOMER_ID
               valueFrom:
                 secretKeyRef:
                   name: ostiari-secrets
                   key: stripe-customer-id
-                  optional: true
-          volumeMounts:
-            - name: data
-              mountPath: /data
           readinessProbe:
             httpGet:
-              path: /api/health
-              port: 8400
+              path: /api/ready
+              port: api
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /api/health
-              port: 8400
-            initialDelaySeconds: 10
+              port: api
+            initialDelaySeconds: 15
             periodSeconds: 15
+            timeoutSeconds: 3
           resources:
             requests:
               cpu: 250m
@@ -110,17 +171,11 @@ spec:
               cpu: "1"
               memory: 512Mi
 
-        # The frontend is a separate static-asset image (nginx). VITE_API_URL is
-        # baked at build time and called from the browser, so build the image
-        # with the API URL your users' browsers can reach:
-        #   docker build -f deploy/docker/Dockerfile.frontend \
-        #     --build-arg VITE_API_URL=https://ostiari.example.com:8400 \
-        #     -t ostiari-frontend:latest .
+        # VITE_API_URL is compiled into this image. Build it with the public
+        # HTTPS API URL before publishing the digest referenced here.
         - name: frontend
-          image: ostiari-frontend:latest
-          # uid 101 is nginx's own user in the base image, not 10001 — the static
-          # assets and cache dirs are owned by it. The image relocates nginx's pid
-          # file to /tmp so the master process needs no root either.
+          image: "ghcr.io/REPLACE_ORG/ostiari-frontend@sha256:REPLACE_WITH_64_HEX_DIGEST"
+          imagePullPolicy: IfNotPresent
           securityContext:
             runAsUser: 101
             runAsGroup: 101
@@ -134,7 +189,7 @@ spec:
           readinessProbe:
             httpGet:
               path: /
-              port: 9000
+              port: ui
             initialDelaySeconds: 5
             periodSeconds: 10
           resources:
@@ -144,20 +199,13 @@ spec:
             limits:
               cpu: 500m
               memory: 256Mi
-          # nginx writes its pid and five temp dirs at startup. The image points
-          # all of them at /tmp, so this single mount is all a read-only root
-          # needs — and it avoids an emptyDir over /var/cache/nginx, which would
-          # arrive root-owned and unwritable to uid 101 (the pod's fsGroup is
-          # 10001, for the backend's PVC, so it would not help here).
           volumeMounts:
             - name: nginx-tmp
               mountPath: /tmp
       volumes:
-        - name: data
-          persistentVolumeClaim:
-            claimName: ostiari-control-plane-data
         - name: nginx-tmp
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: 64Mi
 ---
 apiVersion: v1
 kind: Service
@@ -169,8 +217,8 @@ spec:
   ports:
     - name: api
       port: 8400
-      targetPort: 8400
+      targetPort: api
     - name: ui
       port: 9000
-      targetPort: 9000
+      targetPort: ui
   type: ClusterIP

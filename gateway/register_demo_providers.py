@@ -1,9 +1,8 @@
 """Seed the control plane's LLM provider credentials from AxonLLM's .env.
 
-The Providers page reads /api/providers, which is an in-memory store that nothing
-seeds — so it renders empty on a fresh control plane even though /api/models is
-auto-seeded with a dozen models. That mismatch shows models referencing providers
-("anthropic", "openai", ...) that were never configured.
+The Providers page reads /api/providers, whose records are stored durably by the
+control plane. A fresh development control plane still starts without provider
+credentials, even though /api/models is auto-seeded with a dozen model names.
 
 This reads the same env file the gateways already load (Makefile's LLM_ENV, default
 ../../AxonLLM/.env), so the UI ends up showing exactly the providers this machine
@@ -166,7 +165,7 @@ def main() -> int:
                 print(f"  FAIL {name:10s} ({status}): {body}")
 
     print(f"\n{len(seeded)} provider(s) configured — visible on the Providers page.")
-    print("Re-run after a control-plane restart: the provider store is in-memory only.")
+    print("Provider records are persisted by the control plane.")
     return 0
 
 

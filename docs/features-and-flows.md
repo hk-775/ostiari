@@ -390,28 +390,29 @@ enable and configure controls:
 
 - Set `OSTIARI_REQUIRE_AUTH` for control-plane API authentication.
 - Set a strong JWT secret and configure OIDC if used.
-- Require gateway OIDC authentication instead of trusting `X-Agent-Id`.
+- Require gateway OIDC authentication; verified token claims, not
+  `X-Agent-Id`, determine identity.
 - Set `OSTIARI_CONFIG_ADMIN_KEY` to protect `/config/*`.
 - Set `OSTIARI_ENCRYPTION_KEY` so stored provider keys survive restarts.
 - Apply the provider-route migration and push the complete route catalog from
   the Providers page after configuring or rotating credentials.
-- Set a trace ingest key after wiring the same value into gateway trace
-  reporting; the current reporter does not send `X-Ingest-Key` automatically.
+- Set the same trace ingest key on the control plane and gateways; the reporter
+  sends it as `X-Ingest-Key`.
 - Restrict CORS origins.
 - Use TLS and network policy so agents cannot bypass the gateway.
-- Use PostgreSQL and Redis where durable or shared state is required.
-- Consider `OSTIARI_STRICT=1`, `OSTIARI_REQUIRE_AXON=1`, and fail-closed behavior.
+- Use PostgreSQL and Redis; both are production requirements for their
+  respective control-plane and gateway state.
+- Set `OSTIARI_REQUIRE_AXON=1` when LLM routing is an enabled launch feature.
 
 Provider credentials returned by gateway config APIs are redacted. Production
-startup can warn or refuse when important controls remain open.
+startup refuses when required controls remain open.
 
 ## 15. Persistence Boundaries
 
-The control plane uses SQLAlchemy-backed storage for durable fleet resources and
-`state.json` for selected in-memory configuration and the agent registry.
-Other runtime views are bounded in-memory stores or are reconstructed from demo seed data. Consult
-`control-plane/README.md` before relying on a specific resource across process
-restarts.
+The control plane uses SQLAlchemy-backed storage for fleet resources, runtime
+configuration, encrypted provider material, approvals, sanitized traces, SSO
+state, and offline gateway updates. Bounded in-memory structures are hot caches,
+not the source of truth. A legacy `state.json` is read only for one-time upgrades.
 
 The gateway is primarily an enforcement process. Unless Redis or an external
 control-plane store is configured, counters and hot configuration are local to

@@ -1,7 +1,6 @@
 """Tests for the compliance report generator and API."""
 
 import pytest
-
 from control_plane import compliance
 from control_plane.compliance import Evidence
 

@@ -1,3 +1,8 @@
+{{- include "ostiari-gateway.validateProduction" . }}
+{{- $image := printf "%s:%s" .Values.image.repository .Values.image.tag -}}
+{{- if .Values.image.digest -}}
+{{- $image = printf "%s@%s" .Values.image.repository .Values.image.digest -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -19,11 +24,12 @@ spec:
         app.kubernetes.io/name: {{ include "ostiari-gateway.name" . }}
         app.kubernetes.io/instance: {{ .Release.Name }}
     spec:
+      automountServiceAccountToken: false
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: gateway
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: {{ $image | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
@@ -39,12 +45,28 @@ spec:
             - name: OSTIARI_ADVERTISE_HOST
               value: {{ .Values.gateway.advertiseHost | default (include "ostiari-gateway.fullname" .) | quote }}
             {{- if .Values.redis.enabled }}
-            - name: REDIS_ENDPOINT
-              value: {{ .Values.redis.endpoint | quote }}
-            - name: REDIS_PORT
-              value: {{ .Values.redis.port | quote }}
+            - name: OSTIARI_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.redis.urlSecretKey }}
             {{- end }}
             {{- if .Values.secrets.existingSecret }}
+            - name: OSTIARI_CONFIG_ADMIN_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: config-admin-key
+            - name: OSTIARI_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: service-token
+            - name: OSTIARI_INGEST_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: ingest-key
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -62,11 +84,17 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secrets.existingSecret }}
                   key: x402-private-key
-                  optional: true
+                  optional: {{ ne .Values.payments.x402Mode "live" }}
+            - name: OSTIARI_X402_ALLOWED_ASSETS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: x402-allowed-assets
+                  optional: {{ ne .Values.payments.x402Mode "live" }}
             {{- end }}
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: {{ .Values.gateway.port }}
             initialDelaySeconds: 3
             periodSeconds: 5
@@ -86,4 +114,6 @@ spec:
               mountPath: /tmp
       volumes:
         - name: tmp
-          emptyDir: {}
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi

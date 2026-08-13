@@ -6,6 +6,7 @@ import os
 import time
 import uuid
 from collections import OrderedDict, defaultdict, deque
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import (
@@ -18,10 +19,15 @@ from fastapi import (
     WebSocketException,
     status,
 )
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.auth.dependencies import get_current_org, principal_from_token
 from control_plane.database import get_db
+from control_plane.env import is_production
+from control_plane.models.database import TraceRecord
 
 log = logging.getLogger("control_plane.traces")
 
@@ -67,9 +73,12 @@ def _require_ingest_auth(request: Request) -> None:
 # stored in, listed from, or broadcast to another org's buffer/sockets.
 # Single-org dev/demo uses only the "default" org, so behavior is unchanged.
 DEFAULT_ORG = "default"
+_TRACE_CACHE_SIZE = 200
 
 # org -> buffer of recent traces (for new WebSocket clients to catch up)
-_recent_traces: dict[str, deque[dict[str, Any]]] = defaultdict(lambda: deque(maxlen=200))
+_recent_traces: dict[str, deque[dict[str, Any]]] = defaultdict(
+    lambda: deque(maxlen=_TRACE_CACHE_SIZE)
+)
 # org -> set of connected WebSocket clients (fan-out is per-org — no cross-tenant leak)
 _ws_clients: dict[str, set[WebSocket]] = defaultdict(set)
 
@@ -80,6 +89,7 @@ _ws_clients: dict[str, set[WebSocket]] = defaultdict(set)
 # entry is evicted (not a full clear, which would fragment an active session).
 _session_parents: dict[str, OrderedDict[str, str]] = defaultdict(OrderedDict)
 _SESSION_PARENTS_MAX = 2000
+_SAFE_PARAM_FIELDS = frozenset({"input_tokens", "output_tokens", "total_tokens"})
 
 
 async def _event_org(db: AsyncSession, event: dict[str, Any]) -> str:
@@ -99,6 +109,83 @@ async def _event_org(db: AsyncSession, event: dict[str, Any]) -> str:
 
     gw_id = event.get("sidecar_id") or event.get("gateway_id") or ""
     return await org_of_gateway(db, gw_id)
+
+
+def _capture_raw_params() -> bool:
+    raw = os.environ.get("OSTIARI_TRACE_CAPTURE_PARAMS", "").strip().lower()
+    if is_production():
+        return False
+    if not raw:
+        return True
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _sanitize_event(event: dict[str, Any]) -> dict[str, Any]:
+    """Remove raw tool arguments before persistence, fan-out, and export."""
+    sanitized = dict(event)
+    params = sanitized.get("params")
+    if isinstance(params, dict) and not _capture_raw_params():
+        sanitized["params"] = {
+            str(key): (
+                value
+                if key in _SAFE_PARAM_FIELDS
+                and isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                else "[REDACTED]"
+            )
+            for key, value in params.items()
+        }
+    elif not isinstance(params, dict):
+        sanitized["params"] = {}
+    return sanitized
+
+
+async def _persist_trace(db: AsyncSession, org: str, event: dict[str, Any]) -> None:
+    """Tenant-scoped idempotent trace upsert."""
+    values = {
+        "org_id": org,
+        "trace_id": event["trace_id"],
+        "gateway_id": event.get("gateway_id", ""),
+        "event": event,
+        "updated_at": datetime.now(timezone.utc),
+    }
+    dialect = db.bind.dialect.name if db.bind is not None else ""
+    insert_fn = postgresql_insert if dialect == "postgresql" else sqlite_insert
+    statement = insert_fn(TraceRecord).values(**values)
+    statement = statement.on_conflict_do_update(
+        index_elements=["org_id", "trace_id"],
+        set_={
+            "gateway_id": statement.excluded.gateway_id,
+            "event": statement.excluded.event,
+            "updated_at": statement.excluded.updated_at,
+        },
+    )
+    await db.execute(statement)
+
+
+async def _recent_from_db(
+    db: AsyncSession,
+    org: str,
+    *,
+    limit: int = _TRACE_CACHE_SIZE,
+) -> list[dict[str, Any]]:
+    result = await db.execute(
+        select(TraceRecord)
+        .where(TraceRecord.org_id == org)
+        .order_by(TraceRecord.updated_at.desc())
+        .limit(limit)
+    )
+    return [record.event for record in reversed(result.scalars().all())]
+
+
+async def load_recent_trace_cache(db: AsyncSession) -> None:
+    """Rebuild each tenant's bounded live cache from durable trace rows."""
+    _recent_traces.clear()
+    org_result = await db.execute(select(TraceRecord.org_id).distinct())
+    for org in org_result.scalars():
+        _recent_traces[org].extend(
+            await _recent_from_db(db, org, limit=_TRACE_CACHE_SIZE)
+        )
 
 
 def recent_traces_for(org: str = DEFAULT_ORG) -> list[dict[str, Any]]:
@@ -367,6 +454,7 @@ async def ingest_trace(request: Request, db: AsyncSession = Depends(get_db)) -> 
     if not event.get("gateway_id") and event.get("sidecar_id"):
         event["gateway_id"] = event["sidecar_id"]
 
+    event = _sanitize_event(event)
     buf = _recent_traces[org]
 
     # Assign the session parent span (parent_trace_id) so a prompt's sub-calls nest.
@@ -383,6 +471,9 @@ async def ingest_trace(request: Request, db: AsyncSession = Depends(get_db)) -> 
             break
     if not duplicate:
         buf.append(event)
+
+    await _persist_trace(db, org, event)
+    await db.commit()
 
     # Export the governance span over OTLP (no-op unless OTEL endpoint configured).
     # New events only — a duplicate (retry) is the same span.
@@ -407,9 +498,15 @@ async def ingest_trace(request: Request, db: AsyncSession = Depends(get_db)) -> 
 
 
 @router.get("/api/traces/recent")
-async def get_recent_traces(limit: int = 50, org: str = Depends(get_current_org)) -> Any:
+async def get_recent_traces(
+    limit: int = 50,
+    org: str = Depends(get_current_org),
+    db: AsyncSession = Depends(get_db),
+) -> Any:
     """Get recent traces (for initial page load before WebSocket connects)."""
-    traces = list(_recent_traces[org])[-limit:]
+    traces = await _recent_from_db(db, org, limit=min(max(limit, 1), _TRACE_CACHE_SIZE))
+    if not traces:
+        traces = list(_recent_traces[org])[-limit:]
     return {"traces": traces, "total": len(traces)}
 
 

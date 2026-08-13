@@ -9,7 +9,6 @@ security test — those records hold encrypted API keys.
 from __future__ import annotations
 
 import pytest
-
 from control_plane.auth.service import create_access_token
 
 pytestmark = pytest.mark.anyio

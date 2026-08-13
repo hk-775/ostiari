@@ -11,11 +11,14 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from control_plane.models.database import AuditLog
+from control_plane.models.database import AuditChainHead, AuditLog
 
 _GENESIS = ""  # prev_hash of the first entry
+_GLOBAL_HEAD = "global"
 
 
 def _canonical(actor: str, action: str, resource_type: str, resource_id: str,
@@ -46,13 +49,30 @@ def _ts_str(ts: datetime) -> str:
 class AuditService:
     """Records tamper-evident audit entries for config-changing operations."""
 
-    async def _last_hash(self, db: AsyncSession) -> str:
-        """The most recent entry_hash (the chain head), or genesis if empty."""
+    async def _last_hash_from_entries(self, db: AsyncSession) -> str:
+        """Most recent entry hash, used to initialize an upgraded database."""
         result = await db.execute(
             select(AuditLog).order_by(AuditLog.id.desc()).limit(1)
         )
         row = result.scalar_one_or_none()
         return row.entry_hash if row and row.entry_hash else _GENESIS
+
+    async def _lock_head(self, db: AsyncSession) -> AuditChainHead:
+        """Lock the chain head so concurrent appenders cannot fork the chain."""
+        initial_hash = await self._last_hash_from_entries(db)
+        dialect = db.get_bind().dialect.name
+        insert_fn = postgresql_insert if dialect == "postgresql" else sqlite_insert
+        await db.execute(
+            insert_fn(AuditChainHead)
+            .values(name=_GLOBAL_HEAD, entry_hash=initial_hash)
+            .on_conflict_do_nothing(index_elements=[AuditChainHead.name])
+        )
+        result = await db.execute(
+            select(AuditChainHead)
+            .where(AuditChainHead.name == _GLOBAL_HEAD)
+            .with_for_update()
+        )
+        return result.scalar_one()
 
     async def log(
         self,
@@ -65,7 +85,8 @@ class AuditService:
         org: str = "default",
     ) -> AuditLog:
         details = details or {}
-        prev = await self._last_hash(db)
+        head = await self._lock_head(db)
+        prev = head.entry_hash or _GENESIS
         # Set the timestamp explicitly (don't rely on the DB default) so the exact
         # value we hash is the value that's stored — SQLite datetime round-tripping
         # can otherwise lose microseconds and falsely break the chain on re-read.
@@ -87,6 +108,8 @@ class AuditService:
             entry_hash=_hash(prev, content),
         )
         db.add(entry)
+        await db.flush()
+        head.entry_hash = entry.entry_hash or _GENESIS
         await db.flush()
         return entry
 
@@ -115,6 +138,13 @@ class AuditService:
                         "checked": checked}
             prev = row.entry_hash
             checked += 1
+        head = await db.get(AuditChainHead, _GLOBAL_HEAD)
+        if head is not None and (head.entry_hash or _GENESIS) != prev:
+            return {
+                "valid": False,
+                "reason": "chain head does not match final entry",
+                "checked": checked,
+            }
         return {"valid": True, "checked": checked}
 
 
@@ -122,10 +152,7 @@ audit = AuditService()
 
 
 def actor_of(request: Any) -> str:
-    """The actor to attribute a change to: the X-Actor header, else "system".
-
-    Lives here so every router audits the same way — it was duplicated in the
-    gateway and policy routers, which is how the other routers ended up with no
-    audit trail at all.
-    """
-    return request.headers.get("X-Actor", "system") if request is not None else "system"
+    """Return the identity established by auth middleware, never a caller header."""
+    if request is None:
+        return "system"
+    return getattr(request.state, "audit_actor", "system")

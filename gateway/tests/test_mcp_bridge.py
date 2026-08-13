@@ -83,3 +83,88 @@ class TestMCPBridge:
         c = make_bridge(_gateway_handler)
         r = c.post("/mcp", json={"jsonrpc": "2.0", "id": 5, "method": "does/notExist"})
         assert r.json()["error"]["code"] == -32601
+
+    def test_auth_required_rejects_missing_token(self, make_bridge, monkeypatch):
+        from ostiari_gateway import oidc
+
+        class Validator:
+            def validate(self, token):
+                return {"agent_id": "chatgpt-user"}
+
+        monkeypatch.setattr(oidc, "auth_required", lambda: True)
+        monkeypatch.setattr(oidc, "get_validator", lambda: Validator())
+        client = make_bridge(_gateway_handler)
+
+        response = client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        )
+        assert response.status_code == 401
+
+    def test_verified_identity_and_token_are_forwarded(
+        self, make_bridge, monkeypatch
+    ):
+        from ostiari_gateway import oidc
+
+        received = {}
+
+        class Validator:
+            def validate(self, token):
+                assert token == "verified-token"
+                return {"agent_id": "chatgpt-user"}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            received.update(request.headers)
+            return _gateway_handler(request)
+
+        monkeypatch.setattr(oidc, "auth_required", lambda: True)
+        monkeypatch.setattr(oidc, "get_validator", lambda: Validator())
+        client = make_bridge(handler)
+
+        response = client.post(
+            "/mcp",
+            headers={"Authorization": "Bearer verified-token"},
+            json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        )
+        assert response.status_code == 200
+        assert received["authorization"] == "Bearer verified-token"
+        assert received["x-agent-id"] == "chatgpt-user"
+
+    def test_conflicting_agent_header_is_rejected(self, make_bridge, monkeypatch):
+        from ostiari_gateway import oidc
+
+        class Validator:
+            def validate(self, token):
+                return {"agent_id": "real-agent"}
+
+        monkeypatch.setattr(oidc, "auth_required", lambda: True)
+        monkeypatch.setattr(oidc, "get_validator", lambda: Validator())
+        client = make_bridge(_gateway_handler)
+
+        response = client.post(
+            "/mcp",
+            headers={
+                "Authorization": "Bearer verified-token",
+                "X-Agent-Id": "forged-agent",
+            },
+            json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        )
+        assert response.status_code == 403
+
+    def test_oversized_gateway_response_is_not_buffered(
+        self, make_bridge, monkeypatch
+    ):
+        monkeypatch.setenv("OSTIARI_MCP_MAX_RESPONSE_BYTES", "1024")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=b"x" * 2048)
+
+        client = make_bridge(handler)
+        response = client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        )
+        assert response.status_code == 200
+        error = response.json()["error"]
+        assert error["code"] == -32603
+        assert "1024 byte limit" in error["message"]

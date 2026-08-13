@@ -16,13 +16,13 @@ async def _make_gateway(client, gid="gw1", endpoint="http://localhost:9001"):
     })
 
 
-async def _audit_entries(client, resource_type=None):
+async def _audit_entries(client, resource_type=None, headers=None):
     """Audit entries in the order they were written.
 
     /api/audit lists newest-first (the useful order for a reader); these tests
     assert on sequences of actions, so reverse to chronological.
     """
-    r = await client.get("/api/audit")
+    r = await client.get("/api/audit", headers=headers)
     assert r.status_code == 200, r.text
     rows = r.json()
     rows = rows if isinstance(rows, list) else rows.get("entries", rows.get("items", []))
@@ -132,33 +132,22 @@ class TestBudgetAlerts:
         assert (await client.put("/api/quotas/alerts", json={})).status_code == 422
 
     async def test_alerts_survive_a_restart(self, client):
-        """The store is bounded, not disposable.
-
-        Every other in-memory store (quotas, experiments, models, providers) is
-        written to state.json on shutdown; alerts were the one that wasn't, so a
-        control-plane bounce silently discarded the record that a gateway had blown
-        through 100% of its budget.
-        """
+        """The SQL-backed store restores the bounded hot cache after a restart."""
         from collections import deque
 
-        from control_plane.routers.quotas import ALERT_HISTORY, BudgetAlert, _alerts
+        from control_plane.database import async_session
+        from control_plane.persistence import load_runtime_caches
+        from control_plane.routers.quotas import ALERT_HISTORY, _alerts
 
         await _make_gateway(client)
         for t in ("80%", "100%"):
             await client.post("/api/quotas/alerts", json={
                 "gateway_id": "gw1", "threshold": t, "spend_usd": 9.0, "budget_usd": 10.0})
 
-        # What the lifespan writes...
-        dumped = [{**rec.model_dump(), "_org": org}
-                  for org, seq in _alerts.items() for rec in seq]
-        assert [d["threshold"] for d in dumped] == ["80%", "100%"]
-
-        # ...survives a process boundary and reloads in the same order.
         _alerts.clear()
         assert (await client.get("/api/quotas/alerts")).json() == []
-        for a in dumped:
-            data = {k: v for k, v in a.items() if k != "_org"}
-            _alerts[a["_org"]].append(BudgetAlert(**data))
+        async with async_session() as db:
+            await load_runtime_caches(db)
 
         alerts = (await client.get("/api/quotas/alerts")).json()
         assert [a["threshold"] for a in alerts] == ["100%", "80%"]   # newest first
@@ -380,11 +369,27 @@ class TestAuditCoverage:
         actions = [e["action"] for e in await _audit_entries(client, "experiment")]
         assert actions == ["create", "toggle", "delete"]
 
-    async def test_actor_from_header(self, client):
+    async def test_actor_header_is_ignored(self, client):
         await client.post("/api/models", json={"name": "m1"},
                           headers={"X-Actor": "alice@example.com"})
         entry = (await _audit_entries(client, "model"))[0]
-        assert entry["actor"] == "alice@example.com"
+        assert entry["actor"] == "system"
+
+    async def test_actor_comes_from_authenticated_principal(
+        self, client, monkeypatch, admin_headers
+    ):
+        monkeypatch.setenv("OSTIARI_REQUIRE_AUTH", "true")
+        await client.post(
+            "/api/models",
+            json={"name": "m1"},
+            headers={**admin_headers, "X-Actor": "spoofed@example.com"},
+        )
+        entry = (await _audit_entries(
+            client,
+            "model",
+            headers=admin_headers,
+        ))[0]
+        assert entry["actor"] == "admin@test.io"
 
     async def test_chain_stays_valid_across_new_call_sites(self, client):
         """The new entries are hash-chained like the old ones — an audit entry

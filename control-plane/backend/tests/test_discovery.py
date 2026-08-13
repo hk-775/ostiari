@@ -432,40 +432,32 @@ class TestDiscoveryOrgIsolation:
         assert response.status_code == 404
 
 
-async def test_onboarded_agents_survive_a_graceful_restart(
-    app_and_db, tmp_path, monkeypatch
-):
-    import control_plane.persistence as persistence
-    from control_plane.app import lifespan
-    from control_plane.persistence import load_state
+async def test_onboarded_agents_survive_cache_loss(app_and_db):
+    from control_plane.database import async_session
+    from control_plane.persistence import load_runtime_caches
     from control_plane.routers.agents import AgentConfig, _agents
+    from control_plane.services.runtime_state import put_runtime_state
 
-    monkeypatch.setenv("OSTIARI_NO_DEMO", "1")
-    monkeypatch.setattr(persistence, "STATE_FILE", tmp_path / "state.json")
     _agents.clear()
-
-    async with lifespan(app_and_db):
-        _agents["org-a"]["cloud-agent"] = AgentConfig(
-            name="cloud-agent",
-            framework="bedrock",
-            gateway_id="gw-a",
-            status="registered_off_gateway",
+    agent = AgentConfig(
+        name="cloud-agent",
+        framework="bedrock",
+        gateway_id="gw-a",
+        status="registered_off_gateway",
+    )
+    async with async_session() as db:
+        await put_runtime_state(
+            db,
+            "org-a",
+            "agents",
+            agent.name,
+            agent.model_dump(mode="json"),
         )
-
-    saved = load_state()
-    assert saved["agents"] == [{
-        "name": "cloud-agent",
-        "framework": "bedrock",
-        "gateway_id": "gw-a",
-        "tools": [],
-        "description": "",
-        "status": "registered_off_gateway",
-        "model": "",
-        "_org": "org-a",
-    }]
+        await db.commit()
 
     _agents.clear()
-    async with lifespan(app_and_db):
-        restored = _agents["org-a"]["cloud-agent"]
-        assert restored.gateway_id == "gw-a"
-        assert restored.status == "registered_off_gateway"
+    async with async_session() as db:
+        await load_runtime_caches(db)
+    restored = _agents["org-a"]["cloud-agent"]
+    assert restored.gateway_id == "gw-a"
+    assert restored.status == "registered_off_gateway"
