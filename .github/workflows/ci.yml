@@ -150,10 +150,12 @@ jobs:
         run: |
           python -m venv .audit-venv
           .audit-venv/bin/pip install --upgrade pip
-          .audit-venv/bin/pip install -e . -e "./gateway[payments,redis]" \
-            -e "./control-plane/backend[aws,otlp]" pip-audit
-          .audit-venv/bin/pip-audit --strict --skip-editable
+          .audit-venv/bin/pip install . "./gateway[payments,redis]" \
+            "./control-plane/backend[aws,otlp]" pip-audit
           .audit-venv/bin/python tools/python_sbom.py python-sbom.cdx.json
+          .audit-venv/bin/pip uninstall --yes \
+            ostiari ostiari-gateway ostiari-control-plane
+          .audit-venv/bin/pip-audit --strict
 
       - name: Audit frontend production dependencies
         working-directory: control-plane/frontend
