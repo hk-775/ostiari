@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "operation": "prepare",
+  "account_id": "123456789012",
+  "region": "us-east-1",
+  "source_revision": "dddddddddddddddddddddddddddddddddddddddd",
+  "deployment_plan_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "deployment_descriptor_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "production": {
+    "partition": "aws",
+    "stack_name": "AxonLLMControlPlaneStack",
+    "stack_state_sha256": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "distribution_id": "E1234567890ABC",
+    "distribution_arn": "arn:aws:cloudfront::123456789012:distribution/E1234567890ABC",
+    "hostname": "d111111abcdef8.cloudfront.net",
+    "web_acl_arn": "arn:aws:wafv2:us-east-1:123456789012:global/webacl/axonllm/11111111-2222-3333-4444-555555555555",
+    "browser_client_id": "legacybrowserclient",
+    "state_table_name": "axonllm-agentcore-state",
+    "current_backend": "fargate",
+    "desired_backend": "fargate"
+  },
+  "serverless": {
+    "stack_name": "AxonLLMServerlessControlPlaneStack",
+    "stack_state_sha256": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "workers_stack_name": "AxonLLMServerlessWorkersStack",
+    "workers_stack_state_sha256": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "qualification_url": "https://d222222abcdef8.cloudfront.net",
+    "distribution_id": "EABCDEFGHIJKLM",
+    "browser_client_id": "serverlessbrowserclient",
+    "production_hostname": "d111111abcdef8.cloudfront.net",
+    "state_table_name": "axonllm-agentcore-state",
+    "source_revision": "dddddddddddddddddddddddddddddddddddddddd",
+    "control_api_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "static_assets_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "control_api_origin_domain_name": "abc123.execute-api.us-east-1.amazonaws.com",
+    "control_api_origin_path": "/prod",
+    "origin_credential_secret_arn": "arn:aws:secretsmanager:us-east-1:123456789012:secret:axonllm/origin-AbCd12",
+    "static_bucket_regional_domain_name": "axonllm-static-123456789012.s3.us-east-1.amazonaws.com"
+  },
+  "change_set": {
+    "name": "axonllm-edge-prepare",
+    "arn": "arn:aws:cloudformation:us-east-1:123456789012:changeSet/axonllm-edge-prepare/11111111-2222-3333-4444-555555555555",
+    "status": "CREATE_COMPLETE",
+    "execution_status": "AVAILABLE",
+    "template_sha256": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+    "stack_state_sha256": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "changes": [
+      {
+        "logical_id": "ServerlessStaticOriginAccessControl",
+        "resource_type": "AWS::CloudFront::OriginAccessControl",
+        "action": "Add",
+        "replacement": "False"
+      },
+      {
+        "logical_id": "Distribution830FAC52",
+        "resource_type": "AWS::CloudFront::Distribution",
+        "action": "Modify",
+        "replacement": "False"
+      },
+      {
+        "logical_id": "StripUntrustedIdentityHeaders",
+        "resource_type": "AWS::CloudFront::Function",
+        "action": "Modify",
+        "replacement": "False"
+      }
+    ]
+  },
+  "supplemental_evidence": [
+    {
+      "category": "authentication",
+      "evidence_id": "github-run:1001:authentication",
+      "report_sha256": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      "endpoint": "https://d222222abcdef8.cloudfront.net",
+      "status": "PASS"
+    },
+    {
+      "category": "configuration",
+      "evidence_id": "github-run:1001:configuration",
+      "report_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+      "endpoint": "https://d222222abcdef8.cloudfront.net",
+      "status": "PASS"
+    },
+    {
+      "category": "budgets",
+      "evidence_id": "github-run:1001:budgets",
+      "report_sha256": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "endpoint": "https://d222222abcdef8.cloudfront.net",
+      "status": "PASS"
+    },
+    {
+      "category": "audit",
+      "evidence_id": "github-run:1001:audit",
+      "report_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "endpoint": "https://d222222abcdef8.cloudfront.net",
+      "status": "PASS"
+    },
+    {
+      "category": "scim",
+      "evidence_id": "github-run:1001:scim",
+      "report_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "endpoint": "https://d222222abcdef8.cloudfront.net",
+      "status": "PASS"
+    },
+    {
+      "category": "exports",
+      "evidence_id": "github-run:1001:exports",
+      "report_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "endpoint": "https://d222222abcdef8.cloudfront.net",
+      "status": "PASS"
+    },
+    {
+      "category": "workers",
+      "evidence_id": "github-run:1001:workers",
+      "report_sha256": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "endpoint": "https://d222222abcdef8.cloudfront.net",
+      "status": "PASS"
+    }
+  ],
+  "rollback": {
+    "retain_fargate": true,
+    "window_hours": 24,
+    "not_before": "2026-08-17T18:00:00-04:00",
+    "previous_parameters_sha256": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  }
+}

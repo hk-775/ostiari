@@ -22,7 +22,10 @@ os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_DB_PATH}"
 
 # Fixed Fernet key so provider api-key encrypt/decrypt is stable across calls
 # (otherwise a fresh transient key is generated per call and decryption fails).
-os.environ.setdefault("OSTIARI_ENCRYPTION_KEY", "-oUl3c_Lb7U-Z1JawknrorCyThuwnRMc_6leonQpjeo=")
+os.environ.setdefault(  # gitleaks:allow - deterministic test-only Fernet key
+    "OSTIARI_ENCRYPTION_KEY",
+    "-oUl3c_Lb7U-Z1JawknrorCyThuwnRMc_6leonQpjeo=",
+)
 
 import atexit  # noqa: E402
 

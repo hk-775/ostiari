@@ -1,0 +1,38 @@
+{
+  "$id": "urn:axonllm:application-state-migration:v1",
+  "schema": "axonllm.application-state-migration/v1",
+  "source_stack": "AxonLLMAgentCoreStack",
+  "destination_stack": "AxonLLMApplicationStateStack",
+  "physical_name_context": {
+    "StateBackupVault4657BA35": "application_state_backup_vault_name",
+    "SecurityEventTopicE539676F": "application_state_security_event_topic_name"
+  },
+  "retention_prerequisites": [
+    "SecurityEventTopicE539676F",
+    "StateBackupPlan376F599D"
+  ],
+  "resources": {
+    "BackupKey60B97760": "AWS::KMS::Key",
+    "BackupKeyAliasA9FE2B6D": "AWS::KMS::Alias",
+    "DataKey17AFBB84": "AWS::KMS::Key",
+    "DataKeyAliasF989EB84": "AWS::KMS::Alias",
+    "ProviderCredentials9BA01DC4": "AWS::SecretsManager::Secret",
+    "RecoveredStateTableSelection": "AWS::Backup::BackupSelection",
+    "RoutingConfigSigningKeyAlias0A0BC7B4": "AWS::KMS::Alias",
+    "RoutingConfigSigningKeyC2E8D124": "AWS::KMS::Key",
+    "SecurityEventDeadLetterQueue6CE8E7E4": "AWS::SQS::Queue",
+    "SecurityEventDeadLetterQueuePolicy42A9541B": "AWS::SQS::QueuePolicy",
+    "SecurityEventLogGroup149A5904": "AWS::Logs::LogGroup",
+    "SecurityEventLogStreamEB1568DE": "AWS::Logs::LogStream",
+    "SecurityEventOutboxQueue2F8CBC89": "AWS::SQS::Queue",
+    "SecurityEventOutboxQueuePolicy5F2CC62F": "AWS::SQS::QueuePolicy",
+    "SecurityEventTopicE539676F": "AWS::SNS::Topic",
+    "SecurityEventTopicPolicy508048E3": "AWS::SNS::TopicPolicy",
+    "StateBackupPlan376F599D": "AWS::Backup::BackupPlan",
+    "StateBackupServiceRole0B170BF3": "AWS::IAM::Role",
+    "StateBackupServiceRoleDefaultPolicy4DC39337": "AWS::IAM::Policy",
+    "StateBackupVault4657BA35": "AWS::Backup::BackupVault",
+    "StateTable9728C7E5": "AWS::DynamoDB::Table",
+    "StateTableSelection": "AWS::Backup::BackupSelection"
+  }
+}

@@ -1,0 +1,1645 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AxonLLM — The Neural Control Plane for Enterprise LLMs</title>
+    <meta name="description" content="One API, any provider. AxonLLM routes each prompt to the right model, enforces budgets and guardrails, and gives you one audit trail across 13 providers.">
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%237c3aed'/%3E%3Cpath d='M8 22L16 10L24 22' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3Ccircle cx='16' cy='10' r='2.5' fill='white'/%3E%3C/svg%3E">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="architecture-flow.css">
+    <style>
+        :root {
+            /* Exact palette of the Ostiari Control Plane (the light UI on :9000),
+               taken from control-plane/frontend/src/index.css and resolved to hex
+               from its Tailwind v3 build. Stone rather than gray for the
+               neutrals: it is warm-tinted, which is what keeps a white-ish page
+               from reading as clinical.
+
+               Not the Ostiari *landing page* palette — that one is #0a0a0f dark. */
+            --bg: #fafaf9;          /* stone-50  — body */
+            --surface: #ffffff;     /* white     — cards */
+            --border: #e7e5e4;      /* stone-200 */
+            --border-soft: #f5f5f4; /* stone-100 — inner dividers */
+            --text: #1c1917;        /* stone-900 */
+            --text-mid: #57534e;    /* stone-600 — body copy */
+            --text-dim: #78716c;    /* stone-500 — the app's most-used color */
+            /* violet-600. Also AxonLLM's own --awsui-color-primary, so this
+               single value satisfies both "match Ostiari" and "match the
+               dashboard this page links to". */
+            --accent: #7c3aed;
+            --accent-hover: #6d28d9; /* violet-700 */
+            --accent-soft: #f5f3ff;  /* violet-50  — tinted fills */
+            --accent-ring: #ede9fe;  /* violet-100 — focus ring */
+            --accent-glow: rgba(139, 92, 246, 0.12); /* the .stat-card hover glow */
+            /* -700 rather than the app's -600: these are used at 0.65-0.85rem
+               (pipeline diagram, tier labels), which is body text, and -600
+               only clears the 3.0 large-text bar on white. */
+            --green: #047857;       /* emerald-700 */
+            --green-soft: #ecfdf5;  /* emerald-50 */
+            --red: #be123c;         /* rose-700 */
+            --red-soft: #fff1f2;    /* rose-50 */
+            --amber: #b45309;       /* amber-700 */
+            --amber-soft: #fffbeb;  /* amber-50 */
+            --blue: #0369a1;        /* sky-700 */
+            --blue-soft: #f0f9ff;   /* sky-50 */
+            /* The app uses rounded-2xl (16px) on cards, not the 12px the dark
+               landing page used. */
+            --radius: 16px;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        /* The page is all links and buttons on near-white surfaces, where the
+           browser default focus ring is close to invisible. :focus-visible
+           rather than :focus so a mouse click doesn't leave a ring behind. */
+        a:focus-visible,
+        button:focus-visible {
+            /* The app's focus idiom is a violet border plus a violet-100 ring.
+               Its border color (violet-400) measures 2.61 against stone-50,
+               under the 3.0 WCAG 1.4.11 wants for a focus indicator, so the
+               visible ring is violet-600 (5.46) and violet-100 stays as the
+               soft halo it is there. */
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+            box-shadow: 0 0 0 5px var(--accent-ring);
+            border-radius: 6px;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 24px;
+        }
+
+        nav {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 100;
+            padding: 16px 0;
+            background: rgba(250, 250, 249, 0.8);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
+        }
+
+        nav .container {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .logo {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 1.25rem;
+            font-weight: 800;
+            color: var(--accent);
+            text-decoration: none;
+            letter-spacing: -0.5px;
+        }
+
+        /* "Axon" violet, "LLM" stone-900 — the split the dashboard uses. */
+        .logo-text { color: var(--accent); }
+        .logo-text span { color: var(--text); }
+
+        .nav-links {
+            display: flex;
+            gap: 20px;
+            list-style: none;
+            /* The row is a fixed budget, and it is the *content* box that
+               matters: a 1200px container with 24px padding each side leaves
+               1152px, not 1200. Logo 130 + links + buttons must land near
+               1075px, so space-between has ~38px to put either side of the
+               links; at 1149px it had 3px and the logo sat against "How It
+               Works". nowrap keeps the shortfall from being taken out of the
+               links, which otherwise wrap to two lines each and grow the nav
+               from 73px to 84px. */
+            flex-shrink: 0;
+            white-space: nowrap;
+        }
+
+        .nav-links a {
+            color: var(--text-dim);
+            text-decoration: none;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: color 0.2s;
+        }
+
+        .nav-links a:hover { color: var(--text); }
+
+        /* 14px of side padding rather than 18: four buttons in the group means
+           every padding change costs or buys 8x itself, and 32px across the
+           group is the difference between the links having room and touching. */
+        .nav-cta {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            padding: 8px 14px;
+            background: var(--accent);
+            color: #fff;
+            border-radius: 8px;
+            text-decoration: none;
+            font-size: 0.85rem;
+            font-weight: 600;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .nav-cta:hover {
+            background: var(--accent-hover);
+            box-shadow: 0 4px 12px rgba(124, 58, 237, 0.2);
+        }
+
+        /* The demo trigger. A <button> rather than an <a>, because it opens a
+           dialog rather than navigating — so it reaches keyboard users on Space
+           as well as Enter, and needs the type/border/font reset a UA stylesheet
+           applies to buttons but not links. */
+        .nav-cta-demo {
+            background: var(--accent-soft);
+            color: var(--accent-hover);
+            border: 1px solid rgba(139, 92, 246, 0.35);
+            font-family: inherit;
+            cursor: pointer;
+        }
+
+        .nav-cta-demo:hover {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #fff;
+            box-shadow: 0 4px 12px rgba(124, 58, 237, 0.2);
+        }
+
+        /* ── The demo dialog ──────────────────────────────────────────────
+           A real <dialog>: the browser handles the top layer, the backdrop, the
+           focus trap and Escape, none of which a div-with-z-index gets right. */
+        .demo-modal {
+            /* Third term keeps a 16:9 box inside a short viewport: without it a
+               1120px-wide dialog is 630px tall and overhangs a 600px window. */
+            width: min(1120px, 92vw, (100vh - 80px) * 16 / 9);
+            padding: 0;
+            /* Restores what the UA stylesheet gives a modal dialog and the
+               `* { margin: 0 }` reset above takes away. Centring a dialog is
+               margin:auto against inset:0 — without it the reset pins it to the
+               top-left corner, over the nav. */
+            margin: auto;
+            /* Also the containing block for the close button's absolute
+               positioning, so it lands on the video's corner. */
+            position: fixed;
+            inset: 0;
+            height: fit-content;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            background: #0c0a09;   /* letterbox bars match the video, not the page */
+            overflow: hidden;
+            box-shadow: 0 24px 60px rgba(12, 10, 9, 0.4);
+        }
+
+        .demo-modal::backdrop {
+            background: rgba(12, 10, 9, 0.72);
+            backdrop-filter: blur(3px);
+        }
+
+        .demo-modal video {
+            display: block;
+            width: 100%;
+            aspect-ratio: 16 / 9;
+            background: #0c0a09;
+        }
+
+        /* Absolute against the dialog, which is positioned above — otherwise it
+           resolves against the initial containing block and lands in the page's
+           top-right corner rather than the video's. */
+        .demo-modal-close {
+            position: absolute;
+            top: 10px;
+            right: 12px;
+            width: 32px;
+            height: 32px;
+            display: grid;
+            place-items: center;
+            border: 0;
+            border-radius: 8px;
+            background: rgba(12, 10, 9, 0.55);
+            color: #fff;
+            font-size: 18px;
+            line-height: 1;
+            cursor: pointer;
+        }
+
+        .demo-modal-close:hover { background: rgba(12, 10, 9, 0.85); }
+
+        /* Opening the dialog no longer starts the video — this is what starts
+           it. A 76px target in the middle of the frame rather than the ~20px
+           triangle in the native control bar, because the person reaching for
+           it is usually presenting to a room and pointing at a projector.
+
+           Centred with translate rather than by a flex wrapper spanning the
+           frame: such a wrapper would also cover the native control bar and
+           swallow clicks on the scrubber, so the video could be started but
+           never seeked. */
+        .demo-modal-play {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 76px;
+            height: 76px;
+            display: grid;
+            place-items: center;
+            border: 1px solid rgba(255, 255, 255, 0.35);
+            border-radius: 999px;
+            background: rgba(12, 10, 9, 0.62);
+            color: #fff;
+            cursor: pointer;
+            transition: background 0.15s, transform 0.15s;
+        }
+
+        .demo-modal-play:hover,
+        .demo-modal-play:focus-visible {
+            background: var(--accent, #7c3aed);
+            transform: translate(-50%, -50%) scale(1.06);
+        }
+
+        /* Against the video, not the page background, so it stays visible on
+           the letterboxed black frame. */
+        .demo-modal-play:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+
+        /* The glyph is nudged right by a third of its width: a triangle's
+           optical centre sits left of its bounding box, so a centred polygon
+           reads as off-centre inside a circle. */
+        .demo-modal-play svg { width: 30px; height: 30px; margin-left: 4px; }
+
+        /* Hidden while the video runs so it does not sit over the picture. It
+           returns on pause, which is what a presenter who paused to talk over a
+           frame then reaches for. */
+        .demo-modal[data-playing] .demo-modal-play { display: none; }
+
+        .hero {
+            padding: 136px 0 72px;
+            text-align: center;
+            position: relative;
+        }
+
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: min(600px, 100%);
+            height: 600px;
+            background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%);
+            pointer-events: none;
+        }
+
+        /* The hero lockup: mark, wordmark, tagline — the composition Ostiari's
+           control-plane landing leads with (its public/logo.svg puts a 48-unit
+           mark beside a 26-unit wordmark over a letter-spaced 7.5-unit
+           tagline). Same arrangement and proportions, AxonLLM's own mark and
+           violet rather than Ostiari's doorway and indigo.
+
+           Built from HTML rather than as one <svg> the way Ostiari's is: SVG
+           <text> would not pick up the Inter webfont the rest of the page
+           loads, so the wordmark would silently fall back to system-ui and
+           look like a different logo. This way it also stays selectable and
+           scales with the surrounding type. */
+        /* A column, not a row: the mark and wordmark form the top line and the
+           tagline sits under both, so its width underlines the whole lockup
+           instead of jutting past a 7-character wordmark.
+
+           flex rather than inline-flex. As inline-flex this shared a line with
+           the .badge pill that follows it, which put the badge next to the
+           tagline. */
+        .hero-lockup {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 40px;
+            position: relative;
+        }
+
+        .hero-lockup-row {
+            display: flex;
+            align-items: center;
+            gap: 21px;
+        }
+
+        .hero-lockup svg {
+            /* 64px against a 3.7rem wordmark, the proportion Ostiari's logo.svg
+               uses: a 28-unit mark beside a 26-unit wordmark. */
+            width: 64px;
+            height: 64px;
+            flex-shrink: 0;
+        }
+
+        .hero-wordmark {
+            /* The largest thing on the page -- 1.7x the h1 below it.
+
+               Two earlier passes tuned this against the tagline and left it at
+               58% of a 4.5rem headline, which is the actual problem: the lockup
+               led by position while the headline led by size, so the page had
+               two competing primary elements and neither read as the hero.
+               One of them has to win outright, and on a product page it is the
+               brand.
+
+               A fixed size rather than a clamp: the tagline's width has to keep
+               tracking this line's width (see .hero-tagline), and two clamps on
+               different scales drift apart between breakpoints. Scaled as a set
+               at 768px instead. */
+            font-size: 3.7rem;
+            font-weight: 800;
+            /* -0.031em, the same optical tightness as the old -1.3px at 2.6rem,
+               scaled up rather than kept at a fixed px: tracking that reads as
+               tight at 42px reads as collapsed at 59px.
+
+               3.7rem and not larger because the tagline is pinned to 0.28x of
+               it, and past this the tagline reaches the 1.25rem body copy below
+               and stops being the hero's smallest text. */
+            letter-spacing: -1.8px;
+            line-height: 1;
+            color: var(--accent);
+        }
+
+        /* The same "Axon" violet / "LLM" stone-900 split as the nav and the
+           dashboard sidebar. */
+        .hero-wordmark span { color: var(--text); }
+
+        .hero-tagline {
+            /* 0.29x the wordmark and tracked to ~94% of the row width above it:
+               both numbers taken from Ostiari's logo.svg, where a 7.5-unit
+               tagline sits under a 26-unit wordmark. Sized so it underlines the
+               lockup rather than outgrowing it.
+
+               Both numbers move with the wordmark. The tracking is what sets
+               this line's width -- 24 tracked-out characters, so an em of
+               letter-spacing is worth 24px of width and the font size is worth
+               only ~16 -- which is why it is retuned rather than inherited
+               whenever the row above changes size.
+
+               0.98rem is solved from a headless-Chrome measurement of the real
+               laid-out widths, not from estimated advances: at 1.04rem this line
+               measured 350px under a 349px row, i.e. 100%, where estimating put
+               it at 94%. */
+            font-size: 0.98rem;
+            /* 600 in stone-500. At 700 in stone-600 it was heavier than the body
+               copy beneath it, which inverts the hierarchy — a caption
+               outweighing the sentence it captions. stone-500 measures 4.59 on
+               stone-50, still over the 4.5 AA bar for text this size. */
+            font-weight: 600;
+            color: var(--text-dim);
+            letter-spacing: 0.24em;
+            text-transform: uppercase;
+            /* The tracking on the last letter is real trailing space, which
+               pushes an otherwise centered line visibly left. */
+            text-indent: 0.24em;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 14px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 100px;
+            font-size: 0.8rem;
+            font-weight: 500;
+            color: var(--text-dim);
+            margin-bottom: 24px;
+        }
+
+        .badge-dot {
+            width: 6px;
+            height: 6px;
+            background: var(--green);
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        h1 {
+            /* Second line in the hierarchy, not the first. At 4.5rem this was
+               1.7x the wordmark, so the brand lockup led by position while the
+               headline led by size -- the page had two heroes. Capped at 73% of
+               the wordmark, which is a large enough step that the eye lands on
+               the lockup first and reads this as its subhead.
+
+               Stepped at the same breakpoint as the lockup, not a clamp. A
+               fluid headline measured against a fixed wordmark is the mechanism
+               that produced the inversion in the first place: the two scales
+               drift apart between breakpoints, so a ratio that holds at 1440px
+               silently crosses over at 800px. */
+            font-size: 2.7rem;
+            font-weight: 800;
+            /* -0.028em, the ratio the old -2px was at 4.5rem. */
+            letter-spacing: -1.2px;
+            line-height: 1.15;
+            margin-bottom: 24px;
+            position: relative;
+        }
+
+        h1 .highlight {
+            background: linear-gradient(135deg, var(--accent), #a855f7);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .hero-sub {
+            font-size: 1.25rem;
+            color: var(--text-mid);
+            max-width: 660px;
+            margin: 0 auto 32px;
+            line-height: 1.7;
+        }
+
+        .hero-actions {
+            display: flex;
+            gap: 16px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .btn-primary {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 14px 28px;
+            background: var(--accent);
+            color: #fff;
+            border-radius: 10px;
+            text-decoration: none;
+            font-size: 1rem;
+            font-weight: 600;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .btn-primary:hover {
+            background: var(--accent-hover);
+            box-shadow: 0 8px 20px rgba(124, 58, 237, 0.22);
+        }
+
+        .btn-secondary {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 14px 28px;
+            background: var(--surface);
+            color: var(--text-mid);
+            border: 1px solid var(--border);
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+            border-radius: 10px;
+            text-decoration: none;
+            font-size: 1rem;
+            font-weight: 500;
+            transition: border-color 0.2s, background 0.2s;
+        }
+
+        .btn-secondary:hover {
+            border-color: var(--border);
+            background: var(--border-soft);
+        }
+
+        button.btn-secondary {
+            font-family: inherit;
+            cursor: pointer;
+        }
+
+        .demo-context {
+            align-items: center;
+            color: var(--text-dim);
+            display: flex;
+            font-size: 0.78rem;
+            gap: 8px;
+            justify-content: center;
+            margin-top: 16px;
+        }
+
+        .demo-context::before {
+            background: var(--green);
+            border-radius: 50%;
+            box-shadow: 0 0 0 4px var(--green-soft);
+            content: '';
+            height: 7px;
+            width: 7px;
+        }
+
+        .hero-preview {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            box-shadow: 0 24px 54px rgba(28, 25, 23, 0.14);
+            margin: 50px auto 0;
+            max-width: 960px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .hero-preview-bar {
+            align-items: center;
+            background: var(--border-soft);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            min-height: 38px;
+            padding: 8px 12px;
+        }
+
+        .hero-preview-title,
+        .hero-preview-state {
+            color: var(--text-dim);
+            font-size: 0.7rem;
+            font-weight: 600;
+            letter-spacing: 0;
+            text-transform: uppercase;
+        }
+
+        .hero-preview-state {
+            align-items: center;
+            display: inline-flex;
+            gap: 6px;
+        }
+
+        .hero-preview-state::before {
+            background: var(--green);
+            border-radius: 50%;
+            content: '';
+            height: 6px;
+            width: 6px;
+        }
+
+        .hero-preview img {
+            aspect-ratio: 16 / 5;
+            display: block;
+            height: auto;
+            object-fit: cover;
+            object-position: top left;
+            width: 100%;
+        }
+
+        .install-bar {
+            margin-top: 48px;
+            display: flex;
+            justify-content: center;
+        }
+
+        .install-cmd {
+            display: inline-flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 20px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+            border-radius: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.9rem;
+            color: var(--text-dim);
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+
+        .install-cmd:hover { border-color: var(--accent); }
+        .install-cmd code { color: var(--text); }
+        .install-cmd .copy-icon { opacity: 0.5; transition: opacity 0.2s; }
+        .install-cmd:hover .copy-icon { opacity: 1; }
+
+        .stats {
+            padding: 0 0 40px;
+        }
+
+        .architecture-demo {
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            border-top: 1px solid var(--border);
+            padding: 96px 0;
+        }
+
+        .architecture-demo-head {
+            align-items: end;
+            display: flex;
+            gap: 24px;
+            justify-content: space-between;
+            margin-bottom: 28px;
+        }
+
+        .architecture-demo-head .section-desc {
+            margin-bottom: 0;
+        }
+
+        .architecture-demo-link {
+            flex: 0 0 auto;
+        }
+
+        .architecture-demo .axon-flow {
+            text-align: left;
+        }
+
+        .stat-row {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 24px;
+            padding: 32px;
+            background: var(--surface);
+            border: 1px solid rgba(214, 211, 209, 0.6);
+            border-radius: var(--radius);
+            box-shadow: 0 0 0 1px rgba(214, 211, 209, 0.3), 0 1px 3px rgba(0, 0, 0, 0.04);
+        }
+
+        .stat {
+            text-align: center;
+        }
+
+        .stat-num {
+            font-size: 2rem;
+            font-weight: 800;
+            color: var(--accent);
+            letter-spacing: -1px;
+        }
+
+        .stat-label {
+            font-size: 0.8rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 500;
+        }
+
+        .pipeline {
+            padding: 80px 0;
+        }
+
+        .pipeline-visual {
+            background: var(--surface);
+            border: 1px solid rgba(214, 211, 209, 0.6);
+            box-shadow: 0 0 0 1px rgba(214, 211, 209, 0.3), 0 1px 3px rgba(0, 0, 0, 0.04);
+            border-radius: var(--radius);
+            padding: 40px;
+            overflow-x: auto;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8rem;
+            line-height: 1.8;
+            color: var(--text-dim);
+        }
+
+        .pipeline-visual .allow { color: var(--green); }
+        .pipeline-visual .block { color: var(--red); }
+        .pipeline-visual .warn { color: var(--amber); }
+        .pipeline-visual .pick { color: var(--accent); }
+        .pipeline-visual .label { color: var(--text); }
+
+        .features {
+            padding: 80px 0;
+        }
+
+        .section-label {
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: var(--accent);
+            margin-bottom: 12px;
+        }
+
+        .section-title {
+            font-size: 2.5rem;
+            font-weight: 800;
+            letter-spacing: -1.5px;
+            margin-bottom: 16px;
+        }
+
+        .section-desc {
+            color: var(--text-mid);
+            font-size: 1.1rem;
+            max-width: 640px;
+            margin-bottom: 60px;
+        }
+
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 24px;
+        }
+
+        .feature-card {
+            padding: 32px;
+            background: var(--surface);
+            border: 1px solid rgba(214, 211, 209, 0.6);
+            border-radius: var(--radius);
+            box-shadow: 0 0 0 1px rgba(214, 211, 209, 0.3), 0 1px 3px rgba(0, 0, 0, 0.04);
+            transition: box-shadow 0.3s, border-color 0.3s, transform 0.3s;
+        }
+
+        /* Lifted from .stat-card:hover in the control plane's index.css. */
+        .feature-card:hover {
+            border-color: rgba(139, 92, 246, 0.3);
+            box-shadow: 0 0 20px var(--accent-glow), 0 0 0 1px rgba(139, 92, 246, 0.2), 0 8px 24px rgba(0, 0, 0, 0.06);
+            transform: translateY(-4px);
+        }
+
+        .feature-icon {
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--accent-soft);
+            border-radius: 12px;
+            margin-bottom: 16px;
+            font-size: 1.2rem;
+        }
+
+        .feature-card h3 {
+            font-size: 1.1rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .feature-card p {
+            color: var(--text-mid);
+            font-size: 0.9rem;
+            line-height: 1.6;
+        }
+
+        .code-section {
+            padding: 80px 0;
+        }
+
+        .code-block {
+            background: var(--surface);
+            border: 1px solid rgba(214, 211, 209, 0.6);
+            box-shadow: 0 0 0 1px rgba(214, 211, 209, 0.3), 0 1px 3px rgba(0, 0, 0, 0.04);
+            border-radius: var(--radius);
+            overflow: hidden;
+        }
+
+        .code-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 20px;
+            border-bottom: 1px solid var(--border-soft);
+        }
+
+        .code-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .code-dot.red { background: #ff5f57; }
+        .code-dot.yellow { background: #febc2e; }
+        .code-dot.green { background: #28c840; }
+
+        .code-header span {
+            margin-left: 12px;
+            font-size: 0.8rem;
+            color: var(--text-dim);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .code-body {
+            padding: 24px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            line-height: 1.8;
+            overflow-x: auto;
+        }
+
+        .code-body .kw { color: #7c3aed; }
+        .code-body .fn { color: #0369a1; }
+        .code-body .str { color: #047857; }
+        .code-body .cm { color: #78716c; }
+        .code-body .num { color: #c2410c; }
+        .code-body .var { color: #b45309; }
+
+        .providers {
+            padding: 80px 0;
+            text-align: center;
+        }
+
+        .provider-logos {
+            display: flex;
+            justify-content: center;
+            gap: 32px;
+            flex-wrap: wrap;
+            margin-top: 48px;
+        }
+
+        .provider-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            opacity: 0.6;
+            transition: opacity 0.3s;
+        }
+
+        .provider-item:hover { opacity: 1; }
+
+        .provider-icon {
+            width: 56px;
+            height: 56px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+            font-size: 1.1rem;
+            font-weight: 700;
+        }
+
+        .provider-item span {
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            font-weight: 500;
+        }
+
+        .tiers {
+            padding: 80px 0;
+        }
+
+        .tier-cards {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 24px;
+        }
+
+        .tier-card {
+            padding: 32px;
+            background: var(--surface);
+            border: 1px solid rgba(214, 211, 209, 0.6);
+            box-shadow: 0 0 0 1px rgba(214, 211, 209, 0.3), 0 1px 3px rgba(0, 0, 0, 0.04);
+            border-radius: var(--radius);
+        }
+
+        .tier-card.single { border-top: 3px solid var(--blue); }
+        .tier-card.smart { border-top: 3px solid var(--accent); }
+        .tier-card.ensemble { border-top: 3px solid var(--green); }
+
+        .tier-mode {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            margin-bottom: 12px;
+        }
+
+        .tier-card.single .tier-mode { color: var(--blue); }
+        .tier-card.smart .tier-mode { color: var(--accent); }
+        .tier-card.ensemble .tier-mode { color: var(--green); }
+
+        .tier-name {
+            font-size: 1.15rem;
+            font-weight: 700;
+            margin-bottom: 12px;
+        }
+
+        .tier-desc {
+            font-size: 0.9rem;
+            color: var(--text-mid);
+            line-height: 1.7;
+        }
+
+        .tier-cost {
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid var(--border-soft);
+            font-size: 0.8rem;
+            color: var(--text-dim);
+        }
+
+        .tier-cost strong { color: var(--text); }
+
+        .silent {
+            padding: 80px 0;
+        }
+
+        .silent-table-wrap {
+            max-width: 100%;
+            overflow-x: auto;
+            border-radius: var(--radius);
+        }
+
+        .silent-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: var(--surface);
+            border: 1px solid rgba(214, 211, 209, 0.6);
+            box-shadow: 0 0 0 1px rgba(214, 211, 209, 0.3), 0 1px 3px rgba(0, 0, 0, 0.04);
+            border-radius: var(--radius);
+            overflow: hidden;
+            font-size: 0.9rem;
+        }
+
+        .silent-table th {
+            text-align: left;
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border);
+            background: var(--border-soft);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-dim);
+            font-weight: 600;
+        }
+
+        .silent-table td {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border-soft);
+            color: var(--text-mid);
+            line-height: 1.6;
+        }
+
+        .silent-table tr:last-child td { border-bottom: none; }
+
+        .silent-table td:first-child {
+            color: var(--text);
+            font-weight: 500;
+            white-space: nowrap;
+        }
+
+        .silent-table code {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85em;
+            color: var(--accent);
+        }
+
+        /* The control plane's .badge-* classes: a soft tint with the matching
+           -700 text. Used on the middle column because that column is the
+           deceptively healthy signal — the reason each row is dangerous is that
+           it looks like this rather than like an error. */
+        .signal {
+            display: inline-flex;
+            align-items: center;
+            border-radius: 8px;
+            padding: 2px 8px;
+            font-size: 0.8rem;
+            font-weight: 500;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .signal-ok { background: var(--green-soft); color: var(--green); }
+        .signal-warn { background: var(--amber-soft); color: var(--amber); }
+        .signal-bad { background: var(--red-soft); color: var(--red); }
+
+        .cta-section {
+            padding: 100px 0;
+            text-align: center;
+        }
+
+        .cta-box {
+            background: linear-gradient(135deg, var(--accent-soft), var(--blue-soft));
+            border: 1px solid rgba(214, 211, 209, 0.6);
+            border-radius: 24px;
+            padding: 80px 40px;
+        }
+
+        .cta-box h2 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            letter-spacing: -1px;
+            margin-bottom: 16px;
+        }
+
+        .cta-box p {
+            color: var(--text-mid);
+            font-size: 1.1rem;
+            margin-bottom: 40px;
+        }
+
+        footer {
+            padding: 40px 0;
+            border-top: 1px solid var(--border);
+            text-align: center;
+        }
+
+        footer p {
+            color: var(--text-dim);
+            font-size: 0.85rem;
+        }
+
+        footer a {
+            color: var(--text-dim);
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+
+        footer a:hover { color: var(--text); }
+
+        /* Below 1200px the container narrows but the ribbon's contents do not,
+           so the gaps close at a fixed rate: measured, 37px at 1200 shrinking
+           10px per 20px of viewport, reaching the container's own 24px padding
+           rhythm just under 1180. Drop the two least-load-bearing links there —
+           both are anchors to sections a visitor scrolls past anyway — which
+           buys 152px and keeps Demo, Docs, Dashboard and GitHub intact, since
+           those are the only ways off this page. */
+        @media (max-width: 1180px) {
+            .nav-links li:nth-child(5),   /* Silent Failures */
+            .nav-links li:nth-child(1) {  /* How It Works */
+                display: none;
+            }
+        }
+
+        /* And here the same 24px floor arrives for the remaining four links:
+           measured 31px of gap at 960px, so below it they would touch the
+           buttons. The buttons stay; they are the navigation that matters. */
+        @media (max-width: 950px) {
+            .nav-links { display: none; }
+        }
+
+        @media (max-width: 700px) {
+            .nav-actions .nav-cta:last-child { display: none; }
+            .nav-actions .nav-cta { padding: 8px 10px; }
+        }
+
+        @media (max-width: 500px) {
+            .nav-actions .nav-cta-demo { display: none; }
+        }
+
+        @media (max-width: 768px) {
+            /* .nav-links is already hidden by the 950px rule above. */
+            /* Scaled as a set, so the tagline keeps matching the top line's
+               width rather than overrunning it on a narrow viewport, and the
+               headline keeps yielding to the wordmark. Same four ratios as
+               desktop: mark 1.08x the wordmark px, gap 0.36x, tagline 0.28x,
+               h1 0.73x. */
+            .hero-lockup { gap: 7px; margin-bottom: 28px; }
+            .hero-lockup-row { gap: 14px; }
+            .hero-lockup svg { width: 43px; height: 43px; }
+            .hero-wordmark { font-size: 2.5rem; letter-spacing: -1.2px; }
+            .hero-tagline { font-size: 0.66rem; letter-spacing: 0.24em; text-indent: 0.24em; }
+            /* The h1 lost its clamp, so the narrow-viewport size is set here.
+               1.8rem keeps the 0.73x step under a 2.5rem wordmark. */
+            h1 { font-size: 1.8rem; letter-spacing: -0.8px; }
+            .hero-sub { font-size: 1.05rem; }
+            .hero { padding: 120px 0 56px; }
+            .hero-actions { gap: 10px; }
+            .btn-primary, .btn-secondary {
+                justify-content: center;
+                padding: 12px 16px;
+                width: 100%;
+            }
+            .demo-context { align-items: flex-start; text-align: left; }
+            .hero-preview { margin-top: 34px; }
+            .hero-preview-bar { align-items: flex-start; gap: 8px; }
+            .hero-preview-title, .hero-preview-state { font-size: 0.62rem; }
+            .architecture-demo { padding: 72px 0; }
+            .architecture-demo-head { align-items: stretch; flex-direction: column; }
+            .architecture-demo-link { width: fit-content; }
+            .tier-cards { grid-template-columns: 1fr; }
+            .feature-grid { grid-template-columns: 1fr; }
+            .stat-row { grid-template-columns: repeat(2, 1fr); gap: 32px 16px; }
+            .pipeline-visual { font-size: 0.65rem; padding: 20px; }
+            .cta-box { padding: 48px 24px; }
+            .silent-table { font-size: 0.8rem; }
+            .silent-table th, .silent-table td { padding: 12px 14px; }
+        }
+    </style>
+</head>
+<body>
+
+<nav>
+    <div class="container">
+        <!-- The actual AxonLLM mark, lifted from the admin dashboard's
+             sidebar-logo so the page and the product share one identity rather
+             than the page inventing a wordmark. -->
+        <a href="/" class="logo">
+            <svg width="30" height="30" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+                <rect width="32" height="32" rx="8" fill="url(#axon-grad)"/>
+                <path d="M8 22L16 10L24 22" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                <circle cx="16" cy="10" r="2.5" fill="white"/>
+                <circle cx="8" cy="22" r="2" fill="white" opacity="0.7"/>
+                <circle cx="24" cy="22" r="2" fill="white" opacity="0.7"/>
+                <line x1="12" y1="16" x2="20" y2="16" stroke="white" stroke-width="1.5" opacity="0.5"/>
+                <defs><linearGradient id="axon-grad" x1="0" y1="0" x2="32" y2="32"><stop stop-color="#8b5cf6"/><stop offset="1" stop-color="#6d28d9"/></linearGradient></defs>
+            </svg>
+            <span class="logo-text">Axon<span>LLM</span></span>
+        </a>
+        <ul class="nav-links">
+            <li><a href="#how-it-works">How It Works</a></li>
+            <li><a href="#features">Features</a></li>
+            <li><a href="#routing">Routing</a></li>
+            <li><a href="#providers">Providers</a></li>
+            <li><a href="#silent">Silent Failures</a></li>
+            <li><a href="architecture.html">Architecture</a></li>
+        </ul>
+        <div class="nav-actions" style="display:flex;gap:8px;align-items:center;flex-shrink:0;">
+            <a href="/admin/dashboard?tour=1" class="nav-cta nav-cta-demo"
+               title="Start the narrated dashboard showcase">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.14v13.72a1 1 0 0 0 1.52.86l11.14-6.86a1 1 0 0 0 0-1.72L9.52 4.28A1 1 0 0 0 8 5.14z"/></svg>
+                Showcase
+            </a>
+            <a href="/admin/dashboard" class="nav-cta">
+                <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/></svg>
+                Dashboard
+            </a>
+            <a href="https://github.com/AxonLLM/axonllm" class="nav-cta" style="background:var(--surface);color:var(--text);border:1px solid var(--border);">
+                <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+                GitHub
+            </a>
+        </div>
+    </div>
+</nav>
+
+<section class="hero">
+    <div class="container">
+        <!-- The lockup the nav only hints at, at 30px. Its gradient id is
+             axon-grad-hero, not axon-grad: two <defs> sharing an id in one
+             document is a collision, and the browser resolves both fills to
+             whichever came first. -->
+        <div class="hero-lockup">
+            <div class="hero-lockup-row">
+                <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+                    <rect width="32" height="32" rx="8" fill="url(#axon-grad-hero)"/>
+                    <path d="M8 22L16 10L24 22" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    <circle cx="16" cy="10" r="2.5" fill="white"/>
+                    <circle cx="8" cy="22" r="2" fill="white" opacity="0.7"/>
+                    <circle cx="24" cy="22" r="2" fill="white" opacity="0.7"/>
+                    <line x1="12" y1="16" x2="20" y2="16" stroke="white" stroke-width="1.5" opacity="0.5"/>
+                    <defs><linearGradient id="axon-grad-hero" x1="0" y1="0" x2="32" y2="32"><stop stop-color="#8b5cf6"/><stop offset="1" stop-color="#6d28d9"/></linearGradient></defs>
+                </svg>
+                <span class="hero-wordmark">Axon<span>LLM</span></span>
+            </div>
+            <span class="hero-tagline">The Neural Control Plane</span>
+        </div>
+        <div class="badge">
+            <span class="badge-dot"></span>
+            Open Source &middot; MIT-0 &middot; Python 3.11+
+        </div>
+        <h1>One API.<br>Every model. <span class="highlight">Full control.</span></h1>
+        <p class="hero-sub">
+            AxonLLM is the neural control plane for enterprise LLMs. Point your existing OpenAI SDK at it and get intent-aware routing across 13 providers, hierarchy-driven budgets that block before you overspend, and one audit trail for all of it.
+        </p>
+        <div class="hero-actions">
+            <a href="/admin/dashboard?tour=1" class="btn-primary">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+                Start Guided Showcase
+            </a>
+            <a href="/admin/dashboard" class="btn-secondary">
+                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/></svg>
+                Open Seeded Dashboard
+            </a>
+            <button type="button" class="btn-secondary" data-demo-open>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+                Watch Product Film
+            </button>
+        </div>
+        <p class="demo-context">Local non-production demo seeded with Acme Corp, projects, users, policies, usage, and audit history.</p>
+        <div class="hero-preview">
+            <div class="hero-preview-bar">
+                <span class="hero-preview-title">AxonLLM control plane · Acme Corp</span>
+                <span class="hero-preview-state">Seeded demo</span>
+            </div>
+            <img src="dashboard-showcase.png"
+                 alt="AxonLLM seeded dashboard showing populated gateway metrics, spend, projects, users, and provider activity"
+                 width="1440" height="900">
+        </div>
+    </div>
+</section>
+
+<section class="stats">
+    <div class="container">
+        <div class="stat-row">
+            <div class="stat">
+                <div class="stat-num">13</div>
+                <div class="stat-label">Provider adapters</div>
+            </div>
+            <div class="stat">
+                <div class="stat-num">51</div>
+                <div class="stat-label">Models configured</div>
+            </div>
+            <div class="stat">
+                <div class="stat-num">6</div>
+                <div class="stat-label">Routing strategies</div>
+            </div>
+            <div class="stat">
+                <div class="stat-num">4,600</div>
+                <div class="stat-label">Tests passing</div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="architecture-demo" id="interactive-architecture">
+    <div class="container">
+        <div class="architecture-demo-head">
+            <div>
+                <p class="section-label">Interactive Architecture</p>
+                <h2 class="section-title">Follow the decision, not just the arrow</h2>
+                <p class="section-desc">Play four real request paths: smart multi-provider routing, provider fallback, governed Athena SELECT, and tenant-admin RBAC.</p>
+            </div>
+            <a href="architecture.html#interactive-flow" class="btn-secondary architecture-demo-link">
+                Full Architecture
+                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+            </a>
+        </div>
+        <div class="axon-flow axon-flow--compact" data-axon-flow aria-label="Interactive AxonLLM request architecture"></div>
+    </div>
+</section>
+
+<section class="pipeline" id="how-it-works">
+    <div class="container">
+        <p class="section-label">How It Works</p>
+        <h2 class="section-title">Fifteen steps, one request</h2>
+        <p class="section-desc">Every call runs the same pipeline. Guardrails and quotas are checked <em>before</em> a provider is billed, not after.</p>
+        <div class="pipeline-visual">
+<pre>
+<span class="label">Client</span>                      <span class="label">AxonLLM</span>                              <span class="label">Providers</span>
+
+  POST /v1/chat/completions
+       |
+       |------> <span class="label">Validate</span> --> <span class="label">Injection Scan</span> --> <span class="label">PII Redact</span>
+       |                              |                  |
+       |                        score: 12          [EMAIL_1]
+       |                              |
+       |                        <span class="label">Quota Hierarchy</span>
+       |                        +-----------------------------------------+
+       |                        |  org --> business unit --> project --> env |
+       |                        |  rpm, budget, max_tokens, allowed models  |
+       |                        +-----------------------------------------+
+       |                              |
+       |                     <span class="allow">within budget</span>
+       |                              |
+       |                        <span class="label">Classifier</span> --> task: <span class="pick">math</span>  (conf 1.00)
+       |                              |
+       |                        <span class="label">Router</span>
+       |                        +-----------------------------------------+
+       |                        |  benchmark score  x  cost  =  ranking   |
+       |                        |  70% quality / 30% cost, configurable   |
+       |                        +-----------------------------------------+
+       |                              |
+       |                     picked: <span class="pick">claude-sonnet</span> via bedrock
+       |                              |                                  |
+       |                              +----------------------------------> completion
+       |                                                                 |
+       |                        <span class="label">PII Re-inject</span> <---------------------------+
+       |                              |
+       |                        <span class="label">Cost + Audit</span>  (SHA-256 hash chain)
+       |                              |
+       +<-----------------------------+  200 OK  +  usage  +  routing trace
+
+  On provider failure: fall back down the chain. Mid-stream, no switch —
+  the client already has bytes, so the error surfaces honestly instead.
+</pre>
+        </div>
+    </div>
+</section>
+
+<section class="features" id="features">
+    <div class="container">
+        <p class="section-label">Capabilities</p>
+        <h2 class="section-title">A gateway, not a proxy</h2>
+        <p class="section-desc">Forwarding requests is the easy part. The value is in everything that happens around the forward.</p>
+
+        <div class="feature-grid">
+            <div class="feature-card">
+                <div class="feature-icon">&#9889;</div>
+                <h3>Smart Routing</h3>
+                <p>A classifier reads the prompt's intent — math, coding, reasoning, summarization, creative writing — and ranks candidates by benchmark score against cost. An unpriced model scores as <em>unknown</em>, not free, so it can't win for being unmeasured.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#127917;</div>
+                <h3>Ensemble Mode</h3>
+                <p>Scatter one prompt across a panel of models, gather the survivors, and have a judge model synthesize the answer. Configurable quorum, cost ceiling, and best-single fallback when the panel comes up short.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#128273;</div>
+                <h3>Tool Calling, Translated</h3>
+                <p>Write one OpenAI-shaped tool definition. Each adapter translates it into its provider's own dialect — Anthropic <code>input_schema</code>, Bedrock <code>toolSpec</code>, Gemini <code>functionDeclarations</code>, Cohere <code>parameter_definitions</code> — and translates the call back.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#128176;</div>
+                <h3>Budgets That Block</h3>
+                <p>Policy hierarchy from org down to environment, where a child can only tighten what it inherits. Rate limits, spend caps, token ceilings and model allow-lists all resolve from the same tree — and stop a request before it bills.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#128737;</div>
+                <h3>Guardrails Both Ways</h3>
+                <p>PII is redacted before the model sees the prompt and re-injected into the response — including across streaming chunk boundaries, where the placeholder can split in half. Prompt injection is scored on the way in.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#128220;</div>
+                <h3>Tamper-Evident Audit</h3>
+                <p>Every request lands in a SHA-256 hash chain with DynamoDB persistence, so a deleted or edited record breaks the chain visibly instead of quietly.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#127760;</div>
+                <h3>Multi-Region Failover</h3>
+                <p>Hub-and-spoke across regions: single, active-passive, or active-active with weighted distribution. Strict data-residency mode filters spokes by zone so in-region data stays in region.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#128100;</div>
+                <h3>Enterprise Identity</h3>
+                <p>ALB OIDC, bearer tokens, and scoped API keys. Cognito validates enterprise SAML and the gateway resolves its OIDC result through canonical tenant authority. SCIM 2.0 handles joiner/mover/leaver provisioning.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#128202;</div>
+                <h3>Efficiency Analytics</h3>
+                <p>Per-user profiles from real usage: dominant task type, typical vs. optimal model, prompt-quality scoring, and where tokens are being wasted on over-provisioned models or bloated conversation history.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="code-section">
+    <div class="container">
+        <p class="section-label">Quick Start</p>
+        <h2 class="section-title">Change one line</h2>
+        <p class="section-desc">AxonLLM speaks the OpenAI wire format at <code>/v1</code>. Existing code moves over by changing <code>base_url</code> — no reshaping requests, no new SDK. Routing, quotas, guardrails and cost attribution all still apply.</p>
+
+        <div class="code-block">
+            <div class="code-header">
+                <div class="code-dot red"></div>
+                <div class="code-dot yellow"></div>
+                <div class="code-dot green"></div>
+                <span>main.py</span>
+            </div>
+            <div class="code-body">
+<pre><span class="kw">from</span> <span class="fn">openai</span> <span class="kw">import</span> OpenAI
+
+client = OpenAI(
+    base_url=<span class="str">"http://localhost:8000/v1"</span>,   <span class="cm"># AxonLLM, not api.openai.com</span>
+    api_key=<span class="str">"axon_your_key_here"</span>,          <span class="cm"># an AxonLLM key</span>
+)
+
+<span class="cm"># Any model in the registry — the gateway picks the provider</span>
+resp = client.chat.completions.create(
+    model=<span class="str">"claude-sonnet"</span>,
+    messages=[{<span class="str">"role"</span>: <span class="str">"user"</span>, <span class="str">"content"</span>: <span class="str">"Explain CRDTs"</span>}],
+)
+
+<span class="cm"># Or let the classifier choose the model for you</span>
+resp = client.chat.completions.create(
+    model=<span class="str">""</span>,                              <span class="cm"># empty = smart routing</span>
+    messages=[{<span class="str">"role"</span>: <span class="str">"user"</span>, <span class="str">"content"</span>: <span class="str">"what is 4!"</span>}],
+)
+
+<span class="cm"># Or ask a panel and have a judge synthesize the answer</span>
+resp = client.chat.completions.create(
+    model=<span class="str">"ensemble:quality"</span>,
+    messages=[{<span class="str">"role"</span>: <span class="str">"user"</span>, <span class="str">"content"</span>: <span class="str">"Explain CRDTs"</span>}],
+)
+</pre>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="tiers" id="routing">
+    <div class="container">
+        <p class="section-label">Routing Modes</p>
+        <h2 class="section-title">Pick a model, or don't</h2>
+        <p class="section-desc">The same endpoint serves all three. The <code>model</code> field decides which one you get.</p>
+
+        <div class="tier-cards">
+            <div class="tier-card single">
+                <div class="tier-mode">model: "claude-sonnet"</div>
+                <div class="tier-name">Direct</div>
+                <p class="tier-desc">You name the model; AxonLLM picks the provider and falls back down the chain on failure. Round-robin, weighted, least-latency or cost-optimized distribution across 55 mappings and 51 configured models; 46 models are production-price-ready with shipped pricing.</p>
+                <div class="tier-cost"><strong>1&times;</strong> the cost of one call</div>
+            </div>
+            <div class="tier-card smart">
+                <div class="tier-mode">model: ""</div>
+                <div class="tier-name">Smart</div>
+                <p class="tier-desc">The classifier reads intent and the router ranks candidates on benchmark score blended with real price — resolved from the same table that bills you, so the cost used to choose can't disagree with the cost charged.</p>
+                <div class="tier-cost"><strong>1&times;</strong> plus sub-millisecond classification</div>
+            </div>
+            <div class="tier-card ensemble">
+                <div class="tier-mode">model: "ensemble:quality"</div>
+                <div class="tier-name">Ensemble</div>
+                <p class="tier-desc">A panel answers in parallel, a judge synthesizes. Quorum decides how many must survive; a cost ceiling caps the blast radius; <code>best-single</code> fallback returns the strongest answer rather than an error.</p>
+                <div class="tier-cost"><strong>N+1&times;</strong> — panel size plus the judge</div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="providers" id="providers">
+    <div class="container">
+        <p class="section-label">Providers</p>
+        <h2 class="section-title">Thirteen adapters, one wire format</h2>
+        <p class="section-desc" style="margin: 0 auto 0;">Each provider gets a real translation layer, not a lowest-common-denominator passthrough. Bedrock and Bedrock Mantle authenticate through AWS credentials, so they work with no API key at all.</p>
+
+        <div class="provider-logos">
+            <div class="provider-item"><div class="provider-icon">BR</div><span>Bedrock</span></div>
+            <div class="provider-item"><div class="provider-icon">MT</div><span>Mantle</span></div>
+            <div class="provider-item"><div class="provider-icon">A</div><span>Anthropic</span></div>
+            <div class="provider-item"><div class="provider-icon">O</div><span>OpenAI</span></div>
+            <div class="provider-item"><div class="provider-icon">AZ</div><span>Azure</span></div>
+            <div class="provider-item"><div class="provider-icon">V</div><span>Vertex AI</span></div>
+            <div class="provider-item"><div class="provider-icon">G</div><span>Google AI</span></div>
+            <div class="provider-item"><div class="provider-icon">C</div><span>Cohere</span></div>
+            <div class="provider-item"><div class="provider-icon">21</div><span>AI21</span></div>
+            <div class="provider-item"><div class="provider-icon">F</div><span>Fireworks</span></div>
+            <div class="provider-item"><div class="provider-icon">GQ</div><span>Groq</span></div>
+            <div class="provider-item"><div class="provider-icon">T</div><span>Together</span></div>
+            <div class="provider-item"><div class="provider-icon">X</div><span>xAI</span></div>
+        </div>
+    </div>
+</section>
+
+<section class="silent" id="silent">
+    <div class="container">
+        <p class="section-label">Readiness</p>
+        <h2 class="section-title">The failures that don't raise</h2>
+        <p class="section-desc">The dangerous misconfigurations aren't the ones that 500. They're the ones that serve traffic happily while being wrong. AxonLLM ships a checklist for the class of bug that leaves no error in any log.</p>
+
+        <div class="silent-table-wrap" role="region" aria-label="Silent failure comparison" tabindex="0">
+            <table class="silent-table">
+                <thead>
+                    <tr>
+                        <th>What's wrong</th>
+                        <th>What you see</th>
+                        <th>Why nobody notices</th>
+                    </tr>
+                </thead>
+                <tbody>
+                <tr>
+                    <td>Model has no price</td>
+                    <td><span class="signal signal-ok">$0.00 spend</span> Requests succeed.</td>
+                    <td>A budget cap on a free-looking model can never trigger. The dashboard renders a number; it's just the wrong one.</td>
+                </tr>
+                <tr>
+                    <td>Provider retired a model id</td>
+                    <td><span class="signal signal-ok">200 OK</span> An undocumented alias answers.</td>
+                    <td>You're billed for a different model than you asked for — and aliases appear on no price list, so it bills $0.00 too.</td>
+                </tr>
+                <tr>
+                    <td>Credentials missing</td>
+                    <td><span class="signal signal-ok">clean boot</span> No warning logged.</td>
+                    <td>Uncredentialled providers are dropped without raising. Invisible until a request happens to route there.</td>
+                </tr>
+                <tr>
+                    <td><code>AXON_AUTH_MODE=LOG_ONLY</code></td>
+                    <td><span class="signal signal-ok">200 OK</span> Every request is served.</td>
+                    <td>The log records a denial that never happened, so the audit trail reads like the control is working.</td>
+                </tr>
+                <tr>
+                    <td>Demo data loaded</td>
+                    <td><span class="signal signal-ok">healthy metrics</span> A populated dashboard.</td>
+                    <td>Fabricated spend in a real deployment, because the container's default seeds it.</td>
+                </tr>
+                <tr>
+                    <td>Persistence unreachable</td>
+                    <td><span class="signal signal-ok">200 OK</span> Requests succeed normally.</td>
+                    <td>DynamoDB writes are swallowed by design — a provider call shouldn't 500 over a Dynamo hiccup — so billing records vanish silently.</td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+        <p class="section-desc" style="margin-top: 32px; margin-bottom: 0;">A check that <em>couldn't run</em> reports <span class="signal signal-warn">UNKNOWN</span>, never <span class="signal signal-ok">PASS</span> — collapsing those is exactly how an expired credential renders as a green checklist. And nothing here is enforced: no check can refuse a boot or reject a request, because a readiness page that can take down a deployment is one nobody enables.</p>
+    </div>
+</section>
+
+<section class="cta-section">
+    <div class="container">
+        <div class="cta-box">
+            <h2>Put a control plane in front of it</h2>
+            <p>Open source under MIT-0. One <code>docker compose up</code> to a working gateway.</p>
+            <div class="hero-actions">
+                <a href="/admin/dashboard" class="btn-primary">
+                    Open the Dashboard
+                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                </a>
+                <a href="https://github.com/AxonLLM/axonllm#quick-start" class="btn-secondary">
+                    Get Started
+                </a>
+            </div>
+            <div class="install-bar">
+                <div class="install-cmd" onclick="navigator.clipboard.writeText('docker compose up')">
+                    $ <code>git clone … &amp;&amp; docker compose up</code>
+                    <svg class="copy-icon" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<footer>
+    <div class="container">
+        <p>AxonLLM is open source under the MIT-0 License &middot; <a href="https://github.com/AxonLLM/axonllm">GitHub</a> &middot; <a href="https://github.com/AxonLLM/axonllm/blob/main/CHANGELOG.md">Changelog</a></p>
+    </div>
+</footer>
+
+<!-- No `src` and no `preload` until the dialog is opened: the file is ~5.7MB and
+     most visitors never press play, so naming it here would cost every one of
+     them the download. The script sets src on first open. -->
+<dialog class="demo-modal" id="demo-modal" aria-label="AxonLLM product demo">
+    <button type="button" class="demo-modal-close" data-demo-close aria-label="Close demo">&times;</button>
+    <!-- After the <video> in the DOM would be tidier, but this must come before
+         it so the close button stays the first thing Tab reaches: Escape aside,
+         a keyboard user who cannot find the way out of a modal is stuck. -->
+    <button type="button" class="demo-modal-play" data-demo-play aria-label="Play the demo">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <polygon points="6 4 20 12 6 20 6 4"></polygon>
+        </svg>
+    </button>
+    <video id="demo-video" controls preload="none" playsinline
+           poster="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 9'%3E%3Crect width='16' height='9' fill='%230c0a09'/%3E%3C/svg%3E">
+        <!-- Cue timings are the measured MP3 lengths the encoder set each
+             scene's frame rate from, so the captions cannot drift from the
+             voice. `default` because the demo is watched muted more often than
+             not — in a meeting, on a laptop in an office. -->
+        <track kind="captions" src="axonllm-demo.vtt" srclang="en" label="English" default>
+        Your browser cannot play this video.
+        <a href="axonllm-demo.mp4">Download it instead.</a>
+    </video>
+</dialog>
+
+<script>
+document.querySelectorAll('.install-cmd').forEach(el => {
+    el.addEventListener('click', () => {
+        const code = el.querySelector('code');
+        const orig = code.textContent;
+        code.textContent = 'Copied!';
+        setTimeout(() => { code.textContent = orig; }, 1500);
+    });
+});
+
+// ── Demo dialog ──────────────────────────────────────────────────────────
+(() => {
+    const modal = document.getElementById('demo-modal');
+    const video = document.getElementById('demo-video');
+    if (!modal || !video || typeof modal.showModal !== 'function') return;
+
+    document.querySelectorAll('[data-demo-open]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            // Assigned on first open, not in the markup: see the comment on the
+            // <dialog>. Guarded so reopening does not reload and restart it.
+            if (!video.getAttribute('src')) video.setAttribute('src', 'axonllm-demo.mp4');
+            modal.showModal();
+            // Deliberately does NOT play. Opening the dialog and starting the
+            // narration are two decisions: someone demoing in a meeting opens
+            // this while still talking, and audio that begins on its own talks
+            // over them. The overlay button below is the second decision.
+        });
+    });
+
+    document.querySelectorAll('[data-demo-play]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            // A rejection here is a missing file rather than the autoplay
+            // policy — this is inside a click. Either way the overlay must come
+            // back rather than leaving a frame with no way to start it, which
+            // the 'pause' listener below handles.
+            video.play().catch(() => {});
+        });
+    });
+
+    // Driven by the events, not set alongside the calls above: the native
+    // control bar can play and pause too, and an overlay tracking only our own
+    // button would sit over a running video the moment someone used it.
+    video.addEventListener('play', () => { modal.dataset.playing = ''; });
+    video.addEventListener('pause', () => { delete modal.dataset.playing; });
+    // 'ended' does not imply 'pause' on every engine, so the overlay is
+    // restored here as well — a finished demo is the case where someone most
+    // wants to replay it.
+    video.addEventListener('ended', () => { delete modal.dataset.playing; });
+
+    document.querySelectorAll('[data-demo-close]').forEach(btn => {
+        btn.addEventListener('click', () => modal.close());
+    });
+
+    // Click the backdrop to dismiss. The backdrop is not its own element, so
+    // the test is whether the click landed outside the dialog's box rather than
+    // on a child of it.
+    modal.addEventListener('click', e => {
+        // Keyboard activation of a button inside the dialog also arrives here
+        // as a click, with detail 0 and coordinates 0,0 — which is outside any
+        // centred dialog, so without this guard pressing Enter on the play
+        // button dismisses the demo instead of starting it. A real pointer
+        // click always carries detail >= 1.
+        if (!e.detail) return;
+        const r = modal.getBoundingClientRect();
+        const outside = e.clientX < r.left || e.clientX > r.right ||
+                        e.clientY < r.top || e.clientY > r.bottom;
+        if (outside) modal.close();
+    });
+
+    // Covers Escape and the close button alike — `close` fires for both, so the
+    // video cannot be left playing to an invisible dialog.
+    modal.addEventListener('close', () => video.pause());
+})();
+</script>
+<script src="architecture-flow.js"></script>
+
+</body>
+</html>

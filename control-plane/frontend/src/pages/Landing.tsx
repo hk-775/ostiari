@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { Shield, ArrowRight, Brain, Wrench, Radio, Lock, EyeOff, Network, Wallet, Coins, TrendingUp, Gauge, FileCheck } from "lucide-react";
 import { api } from "../lib/api";

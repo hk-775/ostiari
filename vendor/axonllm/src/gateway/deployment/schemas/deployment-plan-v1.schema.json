@@ -1,0 +1,382 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:axonllm:deployment-plan:v1",
+  "title": "AxonLLM deployment plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "plan_id",
+    "schema",
+    "schema_version",
+    "operation",
+    "mutating",
+    "target",
+    "deployment_profile",
+    "account_id",
+    "region",
+    "desired_runtime_state",
+    "inputs",
+    "descriptor",
+    "inventory",
+    "changes",
+    "cost_summary",
+    "summary"
+  ],
+  "properties": {
+    "plan_id": {
+      "$ref": "#/$defs/sha256"
+    },
+    "schema": {
+      "const": "urn:axonllm:deployment-plan:v1"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "operation": {
+      "const": "plan"
+    },
+    "mutating": {
+      "const": false
+    },
+    "target": {
+      "const": "agentcore"
+    },
+    "deployment_profile": {
+      "enum": [
+        "development",
+        "production"
+      ]
+    },
+    "account_id": {
+      "type": "string",
+      "pattern": "^[0-9]{12}$"
+    },
+    "region": {
+      "type": "string",
+      "pattern": "^[a-z]{2,8}(?:-[a-z0-9]+)+-[0-9]+$"
+    },
+    "desired_runtime_state": {
+      "enum": [
+        "active",
+        "parked"
+      ]
+    },
+    "inputs": {
+      "$ref": "#/$defs/inputs"
+    },
+    "descriptor": {
+      "type": "object"
+    },
+    "inventory": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/inventory"
+      }
+    },
+    "changes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/change"
+      }
+    },
+    "cost_summary": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "$ref": "#/$defs/cost_summary"
+      }
+    },
+    "summary": {
+      "$ref": "#/$defs/summary"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "sha256"
+      ],
+      "properties": {
+        "revision": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "reference"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "reference": {
+          "type": "string",
+          "pattern": "^[^\\s@]+@sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "stack_input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "template_sha256",
+        "stack_state_sha256"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "template_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "stack_state_sha256": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "configuration_sha256",
+        "source",
+        "images",
+        "stacks",
+        "descriptor_sha256"
+      ],
+      "properties": {
+        "configuration_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "images": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/image"
+          }
+        },
+        "stacks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/stack_input"
+          }
+        },
+        "descriptor_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "kind",
+        "ownership",
+        "lifecycle",
+        "desired",
+        "quantity",
+        "cost_classes",
+        "reason"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "kind": {
+          "$ref": "#/$defs/name"
+        },
+        "ownership": {
+          "enum": [
+            "axonllm",
+            "customer"
+          ]
+        },
+        "lifecycle": {
+          "enum": [
+            "imported",
+            "retained",
+            "runtime"
+          ]
+        },
+        "desired": {
+          "enum": [
+            "absent",
+            "present",
+            "referenced"
+          ]
+        },
+        "quantity": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cost_classes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/cost_class"
+          }
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stack",
+        "logical_id",
+        "resource_type",
+        "action",
+        "replacement"
+      ],
+      "properties": {
+        "stack": {
+          "$ref": "#/$defs/name"
+        },
+        "logical_id": {
+          "$ref": "#/$defs/name"
+        },
+        "resource_type": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9]+(?:::[A-Za-z0-9]+){1,2}$"
+        },
+        "action": {
+          "enum": [
+            "Add",
+            "Import",
+            "Modify",
+            "Remove"
+          ]
+        },
+        "replacement": {
+          "enum": [
+            "False",
+            "True",
+            "Conditional",
+            "NotApplicable"
+          ]
+        }
+      }
+    },
+    "cost_class": {
+      "enum": [
+        "fixed-monthly",
+        "hourly",
+        "storage",
+        "request-based"
+      ]
+    },
+    "cost_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cost_class",
+        "resources"
+      ],
+      "properties": {
+        "cost_class": {
+          "$ref": "#/$defs/cost_class"
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/name"
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "resource_counts_by_ownership",
+        "change_counts_by_action",
+        "replacement_review_required",
+        "replacement_count",
+        "chargeable_networking"
+      ],
+      "properties": {
+        "resource_counts_by_ownership": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "change_counts_by_action": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "Add",
+            "Import",
+            "Modify",
+            "Remove"
+          ],
+          "properties": {
+            "Add": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "Import": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "Modify": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "Remove": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "replacement_review_required": {
+          "type": "boolean"
+        },
+        "replacement_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "chargeable_networking": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

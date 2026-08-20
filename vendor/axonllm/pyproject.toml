@@ -1,0 +1,161 @@
+[project]
+name = "axon-llm"
+version = "0.3.1"
+description = "Open-source multi-provider LLM gateway and control plane"
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.11"
+license = "MIT-0"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+authors = [{ name = "AxonLLM contributors" }]
+maintainers = [{ name = "AxonLLM maintainers" }]
+keywords = ["llm", "gateway", "ai", "routing", "enterprise", "bedrock", "openai", "anthropic"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "pyyaml>=6.0",
+    "tiktoken>=0.7.0",
+    "aiohttp>=3.9.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/AxonLLM/axonllm"
+Repository = "https://github.com/AxonLLM/axonllm"
+Issues = "https://github.com/AxonLLM/axonllm/issues"
+Documentation = "https://github.com/AxonLLM/axonllm/tree/main/docs"
+Changelog = "https://github.com/AxonLLM/axonllm/blob/main/CHANGELOG.md"
+Security = "https://github.com/AxonLLM/axonllm/security/policy"
+
+[project.optional-dependencies]
+# Provider and host dependencies are explicit so embedded users do not install
+# an HTTP server or AWS control-plane SDKs they do not use.
+bedrock = [
+    "boto3>=1.28.0",
+]
+google = [
+    "google-auth[requests]>=2.40.0,<3",
+]
+server = [
+    "boto3>=1.28.0",
+    "google-auth[requests]>=2.40.0,<3",
+    "sqlglot>=27.0.0",
+    "starlette>=0.37.0",
+    "uvicorn[standard]>=0.27.0",
+]
+aws-control = [
+    "boto3>=1.28.0",
+    "sqlglot>=27.0.0",
+    "starlette>=0.37.0",
+]
+serverless-control = [
+    "boto3>=1.28.0",
+    "httpx>=0.25.0",
+    "mangum>=0.21.0,<1",
+    "python-jose[cryptography]>=3.3",
+    "sqlglot>=27.0.0",
+    "starlette>=0.37.0",
+]
+# Native OTLP span export (standalone observability). Opt-in at deploy time
+# via OTEL_EXPORTER_OTLP_ENDPOINT; the exporter degrades to a no-op if absent.
+otel = [
+    "opentelemetry-exporter-otlp-proto-http>=1.20",
+]
+# OIDC JWT signature verification. Without it OIDCService logs an error and
+# declines to verify rather than trusting an unverified token — safe, but it
+# means SSO does not work, so this is required for OIDC and Cognito-federated
+# SAML deployments.
+oidc = [
+    "httpx>=0.25.0",
+    "python-jose[cryptography]>=3.3",
+]
+agentcore = [
+    "bedrock-agentcore>=1.21.0,<2",
+    "boto3>=1.28.0",
+    "google-auth[requests]>=2.40.0,<3",
+    "sqlglot>=27.0.0",
+    "starlette>=0.37.0",
+]
+deployment = [
+    "jsonschema>=4.25.1,<5",
+]
+dev = [
+    # Exercise every supported provider and host assembly in the test suite.
+    "boto3>=1.28.0",
+    "google-auth[requests]>=2.40.0,<3",
+    "hypothesis>=6.100.0",
+    # Floor is deliberately low for library consumers; the pinned version CI and
+    # local dev actually resolve to lives in uv.lock. Install with `uv sync`, not
+    # bare pip, or you get this floor.
+    "httpx>=0.25.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-mock>=3.12.0",
+    # so CI exercises the OTLP span-mapping path
+    "opentelemetry-exporter-otlp-proto-http>=1.20",
+    # so CI exercises OIDC JWT signature verification
+    "python-jose[cryptography]>=3.3",
+    # Deployment configuration is validated against the packaged JSON Schema.
+    "jsonschema>=4.25.1,<5",
+    "sqlglot>=27.0.0",
+    "starlette>=0.37.0",
+    "uvicorn[standard]>=0.27.0",
+    # Production control-plane launch canaries acquire real ALB/Cognito sessions.
+    "playwright>=1.55.0,<2",
+    # CI tooling is resolved through uv.lock rather than downloaded by uvx.
+    "ruff==0.16.2",
+    # Clean-wheel tests use the same backend pin as isolated release builds.
+    "setuptools==83.0.0",
+]
+security = [
+    "pip-audit==2.10.1",
+]
+
+[project.scripts]
+axon = "src.gateway.cli:main"
+axon-demo = "src.gateway.cli:demo"
+axon-agentcore-deploy = "src.gateway.deployment.agentcore_deploy:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "routing_conformance: shared v0.3 contract across every delivery mode",
+]
+# Put the repo root on sys.path so `import src.gateway...` resolves without
+# relying on the CWD happening to be the repo root.
+pythonpath = ["."]
+
+[build-system]
+requires = ["setuptools==83.0.0"]
+build-backend = "setuptools.build_meta"
+
+# The implementation still imports `src.gateway.*` internally, while new
+# consumers import the stable `axonllm` facade. Package both roots explicitly.
+# Using find(where=["src"]) would install a top-level `gateway` that fails on
+# its internal `from src.gateway...` imports when run out-of-tree.
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["axonllm*", "src*"]
+
+[tool.setuptools.package-data]
+"axonllm" = ["py.typed"]
+"src.gateway" = [
+    "py.typed",
+    "admin/static/*",
+    "admin/static/tour/*",
+    "admin/static/vendor/*",
+    "chat/static/*",
+    "chat/static/vendor/*",
+    "deployment/schemas/*.json",
+    "deployment/infra/*.json",
+    "deployment/infra/*.py",
+    "deployment/infra/*.txt",
+    "resources/runtime/config/*",
+    "resources/runtime/site/*",
+    "resources/runtime/site/narration/*",
+]

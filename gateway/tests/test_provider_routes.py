@@ -47,6 +47,28 @@ class _Factory:
         ]
 
 
+class _EmbeddedRouter:
+    def __init__(self, factory: _Factory, core: SimpleNamespace) -> None:
+        self._factory = factory
+        self._runtime = SimpleNamespace(
+            router=core,
+            provider_factory=factory,
+        )
+
+    def configure_routes(self, routes: list[dict]) -> dict[str, int]:
+        result = self._factory.configure_routes(routes)
+        self._runtime.router.available_providers = (
+            self._factory.available_providers
+        )
+        return result
+
+    def route_snapshot(self) -> list[dict]:
+        return self._factory.route_snapshot()
+
+    async def close(self) -> None:
+        return None
+
+
 def _route(
     route_id: str = "openai:primary",
     *,
@@ -75,10 +97,7 @@ def _ready_axon() -> tuple[AxonRouter, _Factory, SimpleNamespace]:
     axon = AxonRouter()
     axon._built = True
     axon._available = True
-    axon._agent = SimpleNamespace(
-        provider_fn_factory=factory,
-        router=router,
-    )
+    axon._router = _EmbeddedRouter(factory, router)
     return axon, factory, router
 
 
@@ -155,13 +174,11 @@ def test_config_endpoints_apply_clear_and_redact_routes(monkeypatch):
         self._available = True
         self._error = ""
         self._root = "/fake/axon"
-        self._agent = SimpleNamespace(
-            provider_fn_factory=factory,
-            router=SimpleNamespace(
-                available_providers=None,
-                model_registry=SimpleNamespace(models={}),
-            ),
+        core = SimpleNamespace(
+            available_providers=None,
+            model_registry=SimpleNamespace(models={}),
         )
+        self._router = _EmbeddedRouter(factory, core)
 
     monkeypatch.setattr(AxonRouter, "_ensure", fake_ensure)
     monkeypatch.delenv("OSTIARI_CONFIG_ADMIN_KEY", raising=False)

@@ -16,6 +16,7 @@ data:
   OSTIARI_OIDC_ISSUER: "https://REPLACE_OIDC_ISSUER"
   OSTIARI_OIDC_AUDIENCE: "REPLACE_GATEWAY_AUDIENCE"
   OSTIARI_REQUIRE_REDIS: "true"
+  OSTIARI_REQUIRE_AXON: "true"
   OSTIARI_GATEWAY_RATE_LIMIT_RPM: "600"
   OSTIARI_FAIL_CLOSED_ON_CP_LOSS: "true"
   OSTIARI_HITL: "on"
@@ -99,7 +100,7 @@ spec:
           valueFrom:
             secretKeyRef:
               name: ostiari-secrets
-              key: x402-private-key
+              key: x402-private-key # gitleaks:allow - Kubernetes Secret key name
         - name: OSTIARI_X402_ALLOWED_ASSETS
           valueFrom:
             secretKeyRef:
@@ -133,11 +134,11 @@ spec:
         timeoutSeconds: 3
       resources:
         requests:
-          cpu: 100m
-          memory: 128Mi
-        limits:
-          cpu: 500m
+          cpu: 250m
           memory: 256Mi
+        limits:
+          cpu: "1"
+          memory: 512Mi
       volumeMounts:
         - name: tmp
           mountPath: /tmp

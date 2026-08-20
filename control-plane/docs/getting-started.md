@@ -195,7 +195,7 @@ graph TB
 - Python 3.11+ for the control-plane backend (`control-plane/backend/pyproject.toml`
   sets `requires-python = ">=3.11"`); the Guard library and the gateway both
   accept 3.10+. CI runs a single Python 3.11 / `ubuntu-latest` job.
-- Node.js 18+ (for the frontend)
+- Node.js 20+ (for the frontend)
 - Docker (optional, for containerized deployment)
 
 ---
@@ -216,9 +216,10 @@ deploy one gateway per agent (or per group of agents).
 git clone https://github.com/hk-775/ostiari.git
 cd ostiari
 
-# Install the core library, then the gateway package
+# Install the core library, bundled AxonLLM, then the gateway package
 pip install -e .
-pip install -e gateway/
+pip install -e "vendor/axonllm[server]"
+pip install -e "gateway[payments,redis]"
 
 # Start (empty — will be configured via control plane)
 ostiari-gateway --sidecar-id crm-agent --port 8421
@@ -326,7 +327,7 @@ curl http://localhost:8400/api/health
 
 ```bash
 cd control-plane/frontend
-npm install
+npm ci
 npm run dev
 ```
 
@@ -2432,7 +2433,7 @@ These features are already built and ready to use:
 ### LLM Gateway Module
 
 Enable in the gateway config to get:
-- **Smart model routing** — TaskClassifier picks the best model for each prompt (code → Sonnet, simple QA → Haiku)
+- **Smart model routing** — the embedded Axon router picks a healthy, policy-allowed model for each prompt
 - **Fallback chains** — if primary model fails, auto-retry with next model
 - **PII redaction** — strips emails, SSNs, credit cards before LLM sees them (reversible)
 - **Prompt injection detection** — blocks suspicious prompts

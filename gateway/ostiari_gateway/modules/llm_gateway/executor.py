@@ -100,8 +100,8 @@ class AgenticExecutor:
         self._broker_policy = broker_policy
         self._router = ModelRouter(config)
         self._provider = LLMProvider(config.credentials)
-        # AxonLLM as the embedded LLM router (health-aware fallback, smart, ensemble,
-        # multi-provider) — used when available; otherwise the direct provider path.
+        # AxonLLM is the embedded routing authority. Development retains a
+        # direct-provider diagnostic path; production fails closed.
         from ostiari_gateway.modules.llm_gateway.axon_router import AxonRouter
         self._axon = AxonRouter(broker_policy=broker_policy)
         self._security = SecurityLayer(config.security if hasattr(config, "security") else None)
@@ -118,6 +118,11 @@ class AgenticExecutor:
         self._router.update_config(config)
         self._provider.update_credentials(config.credentials)
         self._security = SecurityLayer(config.security if hasattr(config, "security") else None)
+
+    async def close(self) -> None:
+        """Flush accounting and release embedded Axon provider resources."""
+        await self._cost_reporter.close()
+        await self._axon.close()
 
     async def invoke(self, request: InvokeRequest) -> InvokeResponse:
         """Run the full agentic loop."""
@@ -236,7 +241,7 @@ class AgenticExecutor:
                 use_cached_plan = False  # only use cache for first round
             else:
                 # CACHE MISS or subsequent rounds: call LLM (AxonLLM router if
-                # available, else direct provider fallback).
+                # available, else the explicit development diagnostic path).
                 agent_reservation_id: int | None = None
                 if self._agent_auth is not None:
                     estimated_agent_cost = 0.0
@@ -479,7 +484,7 @@ class AgenticExecutor:
         max_tokens: int | None = None,
         context: dict[str, Any] | None = None,
     ) -> LLMResponse:
-        """Route the call through AxonLLM if available, else the direct provider path.
+        """Route through AxonLLM, with a development-only direct fallback.
 
         AxonLLM owns model/provider selection, health-aware fallback, smart
         routing and ensemble. Ensemble/smart are opt-in via context flags:
@@ -489,11 +494,18 @@ class AgenticExecutor:
         effective_max_tokens = max_tokens or self._config.max_tokens
         # Tool-bearing rounds route through AxonLLM like everything else — it
         # translates tool specs into each provider's dialect. The supports_tools()
-        # check is a version guard (Ostiari doesn't pin an AxonLLM version): an
-        # older checkout drops the specs and returns a fluent tool-free answer —
-        # the model denies having any tools — which looks like success and isn't.
+        # check is a source-integrity guard: Ostiari pins AxonLLM, but an
+        # incompatible override must fail rather than silently drop tool specs.
+        from ostiari_gateway.modules.llm_gateway.axon_router import (
+            governed_routing_required,
+        )
+
         route_via_axon = self._axon.available and not (tools and not self._axon.supports_tools())
         if tools and self._axon.available and not route_via_axon:
+            if governed_routing_required():
+                raise RuntimeError(
+                    "The embedded AxonLLM version cannot carry tool definitions"
+                )
             log.warning(
                 "AxonLLM predates tool pass-through — calling the provider directly "
                 "for %d tool(s); routing governance and cost tracking are bypassed "
@@ -532,9 +544,13 @@ class AgenticExecutor:
                     input_tokens=res.input_tokens,
                     output_tokens=res.output_tokens,
                 )
-            except Exception as e:  # noqa: BLE001 — fall back to direct provider path
+            except Exception as e:
+                if governed_routing_required():
+                    raise RuntimeError("AxonLLM routing failed closed") from e
                 log.warning("AxonLLM route failed (%s) — using direct provider fallback", e)
 
+        if governed_routing_required():
+            self._axon.require()
         return self._call_with_fallback(primary, fallback_chain, messages, tools, max_tokens)
 
     def _call_with_fallback(

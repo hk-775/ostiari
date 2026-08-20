@@ -1,0 +1,187 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:axonllm:runtime-lifecycle-status:v1",
+  "title": "AxonLLM runtime lifecycle observed status v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "plan_id",
+    "observed_at",
+    "account_id",
+    "partition",
+    "region",
+    "operation",
+    "desired_state",
+    "runtime",
+    "managed_network",
+    "retained_stacks",
+    "control_plane"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "plan_id": {"$ref": "#/$defs/sha256"},
+    "observed_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$"
+    },
+    "account_id": {
+      "type": "string",
+      "pattern": "^[0-9]{12}$"
+    },
+    "partition": {
+      "enum": ["aws", "aws-cn", "aws-us-gov"]
+    },
+    "region": {
+      "type": "string",
+      "pattern": "^[a-z]{2,8}(?:-[a-z0-9]+)+-[0-9]+$"
+    },
+    "operation": {
+      "enum": ["park", "resume"]
+    },
+    "desired_state": {
+      "enum": ["active", "parked"]
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stack_name",
+        "stack_status",
+        "template_sha256",
+        "runtime_count",
+        "ready_runtime_count",
+        "endpoint_count",
+        "ready_endpoint_count"
+      ],
+      "properties": {
+        "stack_name": {"$ref": "#/$defs/stack_name"},
+        "stack_status": {"$ref": "#/$defs/stable_stack_status"},
+        "template_sha256": {"$ref": "#/$defs/sha256"},
+        "runtime_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "ready_runtime_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "endpoint_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32
+        },
+        "ready_endpoint_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32
+        }
+      }
+    },
+    "managed_network": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "stack_name",
+            "stack_status",
+            "template_sha256",
+            "vpc_count",
+            "subnet_count",
+            "nat_gateway_count",
+            "vpc_endpoint_count"
+          ],
+          "properties": {
+            "stack_name": {"$ref": "#/$defs/stack_name"},
+            "stack_status": {
+              "$ref": "#/$defs/stable_stack_status"
+            },
+            "template_sha256": {"$ref": "#/$defs/sha256"},
+            "vpc_count": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "subnet_count": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 16
+            },
+            "nat_gateway_count": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4
+            },
+            "vpc_endpoint_count": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 32
+            }
+          }
+        }
+      ]
+    },
+    "retained_stacks": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {"$ref": "#/$defs/retained_stack"}
+    },
+    "control_plane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "available",
+        "administration_probe_passed",
+        "runtime_health"
+      ],
+      "properties": {
+        "available": {"type": "boolean"},
+        "administration_probe_passed": {"type": "boolean"},
+        "runtime_health": {
+          "enum": ["passed", "not-applicable"]
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "stack_name": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9-]{0,127}$"
+    },
+    "stable_stack_status": {
+      "enum": ["CREATE_COMPLETE", "UPDATE_COMPLETE"]
+    },
+    "retained_stack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "stack_name",
+        "stack_status",
+        "stack_state_sha256"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "application-state",
+            "control-plane",
+            "identity",
+            "workers"
+          ]
+        },
+        "stack_name": {"$ref": "#/$defs/stack_name"},
+        "stack_status": {"$ref": "#/$defs/stable_stack_status"},
+        "stack_state_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

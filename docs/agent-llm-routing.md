@@ -1,86 +1,89 @@
-# Per-agent LLM routing (round-robin across models)
+# Per-agent LLM routing
 
-Rotate one agent's calls across several LLMs — e.g. `claude-code` round-robins
-across `claude-sonnet-4-6` and `gpt-4o`. Configured in the control plane,
-**enforced at the gateway** on every `/v1/messages` (shim) and `/invoke` call.
+Ostiari and AxonLLM own different routing layers:
 
-## Two layers of "routing" — don't confuse them
-
-| Layer | Question | Where |
+| Layer | Question | Owner |
 |---|---|---|
-| **Model selection** (this feature) | *Which LLM* does this agent's call use? | Ostiari `ModelRouter` |
-| Backend load-balancing | For a *chosen* model, which replica/region/key? | AxonLLM (round-robin/weighted/least-latency across a model's backends) |
+| Model policy | Which logical model should this agent use? | Ostiari |
+| Provider route | Which credential, endpoint, region, or backend serves that model? | Embedded AxonLLM |
 
-The strategies on the Models page (`round-robin`, `least-latency`, …) are the
-**second** layer — balancing one model across its provider backends. This
-feature is the **first** layer: choosing *which model* per agent. "Round-robin
-across different LLMs" only makes sense here.
+This separation keeps tenant policy and experiment assignment in Ostiari while
+AxonLLM performs provider-aware routing, health tracking, and fallback.
 
-## How selection is prioritized
+## Ostiari model-selection order
 
-`ModelRouter.select_model` order:
+`ModelRouter.select_model()` applies:
 
-1. **Per-agent routing policy** (this feature) ← highest
-2. A/B experiments
-3. Explicit routing rules
-4. Operator keyword classification
-5. AxonLLM task classification
-6. Default model
+1. per-agent round-robin policy;
+2. enabled A/B experiments;
+3. explicit operator routing conditions;
+4. operator-defined keyword categories;
+5. the configured default model.
 
-So an agent opted into round-robin always rotates, regardless of other rules.
+The selected name is then handed to AxonLLM. If it is not a known concrete
+model in the Axon catalog, Axon performs smart routing through its embedded
+public API.
 
-## Scope: per-request vs per-session
+## Endpoint scope
 
-- **`request`** — advance the rotation on *every* call (true round-robin; good
-  for stateless / batch / cost-spreading).
-- **`session`** — all calls sharing an `X-Session-Id` use one model; the
-  rotation advances between sessions. Better for an interactive coding agent so
-  it doesn't switch models mid-conversation. With no session id on the request,
-  `session` degrades to `request` scope rather than pinning everything to one
-  model.
+| Endpoint | Ostiari model policy |
+|---|---|
+| `POST /invoke` | Applies the complete selection order. |
+| `POST /v1/messages` | Applies the complete selection order. |
+| `POST /v1/chat/completions` | Uses the requested model when known; otherwise Axon smart-routes. |
+| `POST /v1/responses` | Same model behavior as Chat Completions after request translation. |
 
-Policies are keyed per `agent_id`; a `"*"` key applies to any agent without a
-specific entry. A single-model list acts as a pin.
+Per-agent round-robin and A/B assignment therefore do not override an explicit
+model on the OpenAI-compatible endpoints.
 
-## Configure it
+## Round-robin policy
 
-**Control plane UI:** Agents page → **Per-Agent Model Routing** → pick agent,
-scope, add models, **Save & Push**.
+Policies are keyed by `agent_id`; `*` is the fallback policy. A one-model list
+acts as a pin.
 
-**HTTP (control plane, persists + pushes to the gateway):**
-
-```bash
-curl -X POST http://localhost:8400/api/agent-routing -H 'Content-Type: application/json' -d '{
-  "agent_id": "claude-code",
-  "gateway_id": "crm-agent",
-  "strategy": "round_robin",
-  "models": ["claude-sonnet-4-6", "gpt-4o"],
-  "scope": "session"
-}'
+```json
+{
+  "agent_routing": {
+    "claude-code": {
+      "strategy": "round_robin",
+      "models": ["claude-sonnet-4-6", "gpt-4o"],
+      "scope": "session"
+    }
+  }
+}
 ```
 
-The control plane pushes the gateway's full agent-routing map to
-`POST /config/agent-routing` — a **partial** update that never touches the
-gateway's provider credentials.
+Scopes:
 
-**Gateway (direct):** `POST /config/agent-routing` with
-`{"agent_routing": {"claude-code": {"strategy": "round_robin", "models": [...], "scope": "request"}}}`.
-`GET /config/agent-routing` returns the current policies.
+- `request`: advance on every call;
+- `session`: keep one model for the same `X-Session-Id`, then advance for a new
+  session; without a session id it behaves like request scope.
 
-## Caveats
+Only `round_robin` is implemented. Unknown strategy names are ignored and
+selection continues through experiments, rules, keyword categories, and the
+default.
 
-- Every model in the list must be a valid, credentialed model on that gateway
-  (a bad model ID returns the provider's error for that one call — rotation
-  itself is unaffected).
-- Cross-provider models (e.g. `gpt-4o` alongside Claude) work because the shim
-  translates to/from Anthropic format — but for an interactive coding agent,
-  rotating across *families* can produce inconsistent behavior; prefer
-  `session` scope or same-family models there.
-- Control-plane policies are serialized with the other desired-state registries
-  and included in registration/reconnect bundles. They are keyed per org, so a
-  policy set in one tenant doesn't leak into another.
-- The **Codex shim** (`POST /v1/chat/completions`) does not apply per-agent
-  routing — it forwards the requested model to AxonLLM as-is. Only `/v1/messages`
-  and `/invoke` go through `ModelRouter.select_model`.
-- Only `strategy: "round_robin"` is implemented; a policy with any other strategy
-  is ignored and selection falls through to A/B, rules, smart routing, and default.
+## Configuration
+
+The control plane pushes the full routing map to:
+
+```text
+POST /config/agent-routing
+```
+
+`GET /config/agent-routing` returns the current map. This is a partial
+configuration endpoint and does not replace provider credentials or tools.
+
+The control-plane UI exposes the same operation on the Agents page under
+**Per-Agent Model Routing**.
+
+## Operational requirements
+
+- Every configured model must be known or intentionally smart-routable by the
+  embedded Axon catalog.
+- Every selected model needs at least one funded, healthy provider route.
+- Interactive agents should prefer session scope to avoid changing model
+  families mid-conversation.
+- Policies are tenant-scoped and included in reconnect configuration bundles.
+- Production router failures fail closed; they never switch to the diagnostic
+  direct-provider path.

@@ -492,7 +492,8 @@ the same thing on every entry point:
 - On **`/invoke`**, where Ostiari owns the loop, messages really are redacted in
   place and the redacted set is what goes upstream (`pii_reversible: true` keeps a
   map so the response is restored on the way back).
-- On the **`/v1/messages` and `/v1/chat/completions` shims** it acts as a
+- On the **`/v1/messages`, `/v1/chat/completions`, and `/v1/responses` shims**
+  it acts as a
   *detector*: the proxies treat `pii_redacted` the same as `blocked` and return
   **403**. That's deliberate — those clients drive their own tool loops off the
   exact text they sent, and silently swapping in redacted content would
@@ -510,12 +511,11 @@ traffic, then switch to `block`.
 **What to avoid — the failure mode that makes this worth its own warning:** these
 controls are **fail-closed by design**. An enabled control that is unavailable or
 that raises **blocks the request**. That is the correct posture, and it is also how
-this feature was once completely broken: both detectors used to import from
-AxonLLM, which was an *optional* install, so on any machine without it, turning
-either switch on blocked **every** request — benign ones included. They now come
-from a hard dependency, so the import can't fail that way. Keep the property in
-mind anyway when you enable them: a broken detector means no traffic, not
-unchecked traffic.
+this feature was once completely broken: both detectors imported private AxonLLM
+internals from a separate checkout, so a missing checkout made either switch
+block **every** request. They now come from Ostiari's hard dependency, while the
+separately bundled AxonLLM router handles routing. Keep the property in mind:
+a broken detector means no traffic, not unchecked traffic.
 
 ---
 

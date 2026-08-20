@@ -25,12 +25,14 @@ class LLMGatewayModule:
         self._config: LLMConfig = LLMConfig()
         self._messages_proxy: MessagesProxy | None = None
         self._chat_proxy: Any = None
+        self._responses_proxy: Any = None
 
     def _resync_proxy(self) -> None:
         """Point the /v1/* shims at the current config/router/provider/security.
 
         Called after every config mutation so a hot reload reaches both the
-        /invoke path and the Claude Code / Codex shims, not just the executor.
+        /invoke, Messages, Chat Completions, and Responses paths, not just the
+        executor.
         """
         if self._messages_proxy and self._executor:
             self._messages_proxy._config = self._config
@@ -42,6 +44,12 @@ class LLMGatewayModule:
             self._chat_proxy._config = self._config
             self._chat_proxy._security = self._executor._security
             self._chat_proxy._axon = self._executor._axon
+        if self._responses_proxy and self._executor:
+            self._responses_proxy.update(
+                config=self._config,
+                security=self._executor._security,
+                axon=self._executor._axon,
+            )
 
     def apply_ab_experiments(self, experiments: list[dict[str, Any]]) -> None:
         """Replace the A/B experiment set, preserving all other LLM config.
@@ -139,8 +147,8 @@ class LLMGatewayModule:
             broker_policy=broker_policy,
         )
 
-        # Codex CLI / OpenAI-SDK shim: /v1/chat/completions in the OpenAI wire
-        # format. Same governance + AxonLLM routing as the messages shim.
+        # Generic OpenAI Chat Completions compatibility. Same governance and
+        # AxonLLM routing as the Messages surface.
         from ostiari_gateway.modules.llm_gateway.chat_proxy import ChatProxy
         self._chat_proxy = ChatProxy(
             config=llm_config,
@@ -152,6 +160,28 @@ class LLMGatewayModule:
             cost_reporter=self._executor._cost_reporter,
             broker_policy=broker_policy,
         )
+
+        # Stateless Responses compatibility translated onto the same governed
+        # routing path as Chat Completions. Full Codex conformance is a separate
+        # release gate because unsupported stateful/reasoning fields fail closed.
+        from ostiari_gateway.modules.llm_gateway.responses_proxy import (
+            ResponsesProxy,
+        )
+
+        self._responses_proxy = ResponsesProxy(ChatProxy(
+            config=llm_config,
+            axon=self._executor._axon,
+            security=self._executor._security,
+            quota_enforcer=quota_enforcer,
+            trace_reporter=trace_reporter,
+            agent_auth=agent_auth,
+            cost_reporter=self._executor._cost_reporter,
+            broker_policy=broker_policy,
+            endpoint="/v1/responses",
+            default_framework="openai-responses",
+            trace_action="llm.responses",
+            cost_action="responses",
+        ))
 
         @app.post("/v1/messages")
         async def messages(request: Request) -> Any:
@@ -165,12 +195,27 @@ class LLMGatewayModule:
 
         @app.post("/v1/chat/completions")
         async def chat_completions(request: Request) -> Any:
-            """OpenAI Chat Completions shim — Codex CLI target; govern + route."""
+            """OpenAI Chat Completions compatibility; govern and route."""
             if self._chat_proxy is None:
                 return JSONResponse(status_code=503,
                                     content={"error": {"type": "api_error",
                                                        "message": "LLM Gateway not initialized"}})
             return await self._chat_proxy.handle(request)
+
+        @app.post("/v1/responses")
+        async def responses(request: Request) -> Any:
+            """OpenAI Responses API shim — stateless, governed, and Axon-routed."""
+            if self._responses_proxy is None:
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "error": {
+                            "type": "api_error",
+                            "message": "LLM Gateway not initialized",
+                        }
+                    },
+                )
+            return await self._responses_proxy.handle(request)
 
         @app.post("/invoke")
         async def invoke(request: Request) -> Any:
@@ -395,12 +440,16 @@ class LLMGatewayModule:
             """Return the current A/B experiments."""
             return {"ab_experiments": [e.model_dump() for e in self._config.ab_experiments]}
 
-        log.info("LLM Gateway module registered: POST /v1/messages, POST /invoke, "
+        log.info("LLM Gateway module registered: POST /v1/messages, "
+                 "POST /v1/chat/completions, POST /v1/responses, POST /invoke, "
                  "GET /models, POST /config/llm, POST /config/agent-routing, "
                  "POST /config/task-classification, POST /config/model-registry, "
                  "POST /config/provider-routes, POST /config/ab-experiments")
 
-    def shutdown(self) -> None:
+    async def shutdown(self) -> None:
+        if self._executor is not None:
+            await self._executor.close()
         self._executor = None
         self._messages_proxy = None
         self._chat_proxy = None
+        self._responses_proxy = None
