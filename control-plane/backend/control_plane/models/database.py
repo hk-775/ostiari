@@ -40,6 +40,13 @@ class Organization(Base):
 
 class Gateway(Base):
     __tablename__ = "gateways"
+    __table_args__ = (
+        UniqueConstraint(
+            "workload_issuer",
+            "workload_subject",
+            name="uq_gateways_workload_identity",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     org_id: Mapped[str] = mapped_column(String(64), default=DEFAULT_ORG, index=True, nullable=True)
@@ -49,6 +56,8 @@ class Gateway(Base):
     status: Mapped[str] = mapped_column(String(20), default="registered")
     last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     config: Mapped[dict] = mapped_column(JSON, default=dict)
+    workload_issuer: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    workload_subject: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

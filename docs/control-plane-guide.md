@@ -1028,49 +1028,25 @@ An unknown or empty gateway falls back to the default org, so its records are st
 kept rather than silently dropped — the demo posture, consistent across ingest paths.
 
 **3. Who may ingest at all.** Deriving the org from the gateway row only helps if the
-caller *is* a gateway. Trace ingest authenticates machine callers with a shared secret,
-`OSTIARI_INGEST_KEY`, presented as an `X-Ingest-Key` header (constant-time compared) —
-not a user JWT, since a gateway has no user identity:
+caller *is* that gateway. Production machine APIs therefore use a dedicated workload
+OIDC trust boundary, separate from browser/user OIDC:
 
-| `OSTIARI_INGEST_KEY` | `OSTIARI_ENV` | Behavior |
-|---|---|---|
-| set | any | header must match, else **401** |
-| unset | dev/demo | **open** — anyone reachable may ingest |
-| unset | `production` | every ingest is **401**; the control plane will not accept anonymous traces |
+- each gateway uses either a projected short-lived token file or its own OAuth 2.0
+  client credentials;
+- the control plane validates the dedicated issuer, signature, expiry, and audience;
+- first registration binds the verified issuer/subject pair to exactly one gateway;
+- every later lifecycle, config, approval, trace, cost, payment, quota-alert, and
+  spend request checks that binding and the gateway id in its path or body;
+- a configurable gateway-id claim is enforced when present, while standard OAuth
+  client-credentials tokens may rely on the immutable issuer/subject binding;
+- issuer/JWKS outages fail closed with a retryable **503**, rather than falling back
+  to a shared key.
 
-The production refusal exists because forged traces poison everything downstream —
-compliance reports, ROI, metering, billing.
-
-**Two gaps to know before you rely on it,** both verified against a running control
-plane with `OSTIARI_INGEST_KEY=secret123`:
-
-1. **The check is on `/api/traces/ingest` only.** The other machine-ingest paths
-   have no `_require_ingest_auth` dependency and accept an anonymous POST with the
-   key set:
-
-   | Ingest path | No header, key set |
-   |---|---|
-   | `POST /api/traces/ingest` | **401** |
-   | `POST /api/costs/record`, `/record/batch` | **200** |
-   | `POST /api/approvals` | **200** |
-   | `POST /api/payments/ingest` | **200** |
-
-   So metering, cost, approval, and payment records can still be forged. Traces are
-   the one path closed; the "billing" half of the threat model is not.
-
-2. **The gateway never sends the header.** `trace_reporter.py` posts to
-   `/api/traces/ingest` with `json=event` and no headers, and nothing in the gateway
-   reads `OSTIARI_INGEST_KEY` — grep it and the only hits are in the control plane
-   and the deploy docs. So setting the key **breaks trace reporting**: every report
-   401s, and because `report()` swallows failures at debug level, Live Traces simply
-   goes quiet with no error surfaced anywhere.
-
-Until the gateway learns to send it, setting `OSTIARI_INGEST_KEY` trades forged
-traces for *no* traces. In production that is still arguably the right trade — an
-empty trace view is honest, a poisoned one is not — but go in knowing the dashboard
-will be blank, and don't set it expecting the demo to keep working. The
-[deploy README](../deploy/README.md) documents it as required on the control plane
-*and every gateway*; the gateway half of that is aspirational.
+Production startup rejects `OSTIARI_SERVICE_TOKEN` and `OSTIARI_INGEST_KEY`. They
+remain only for the local development stack. Configure the control plane with
+`OSTIARI_WORKLOAD_OIDC_ISSUER` and `OSTIARI_WORKLOAD_OIDC_AUDIENCE`, then give each
+gateway its own projected token or OAuth client. Reusing one OAuth subject for two
+gateway ids is rejected.
 
 **Approvals are the subtle one.** The queue holds an agent's raw tool parameters —
 SQL, recipients, payloads — plus the reviewer's identity. A flat id-keyed store put
@@ -1090,7 +1066,7 @@ For a real deployment, in order:
 
 1. Set the production secrets **before first boot**: `OSTIARI_ADMIN_PASSWORD`
    (the control plane refuses to seed an admin without it), `OSTIARI_JWT_SECRET`,
-   `OSTIARI_ENCRYPTION_KEY`, and `OSTIARI_INGEST_KEY` — reading §10a first, because
+   `OSTIARI_ENCRYPTION_KEY`, and workload OIDC settings — reading §10a first, because
    the gateway does not yet send the ingest header, so setting the key silences
    Live Traces rather than authenticating it.
 2. **Register** gateways, agents, tools, MCP servers (Configure).
@@ -1138,8 +1114,8 @@ For a real deployment, in order:
 | Caller ignores the 202 | Approved call never re-submitted, looks lost | Retry with `X-Approval-Id` |
 | Assigning a write-capable role to a read-only user | Operator/admin tokens can mutate governance | Keep read-only users on `viewer`; backend RBAC rejects viewer writes (§9.2) |
 | Enabling detection straight to `block` | Fail-closed + untuned = blocked traffic | `injection_mode: flag` first (§5.5) |
-| No `OSTIARI_INGEST_KEY` outside dev | Forged traces poison compliance evidence | Production startup refuses it; set the same key on control plane and gateways |
-| Missing gateway service credential | Lifecycle, cost, approval, payment, and alert ingest fail | Set the same `OSTIARI_SERVICE_TOKEN` on the control plane and every trusted gateway |
+| Missing workload OIDC configuration | Lifecycle, cost, approval, payment, and alert ingest fail closed | Configure the dedicated issuer/audience and one projected token or OAuth client per gateway |
+| Reusing one workload subject across gateway ids | One machine identity could impersonate multiple gateways | The control plane rejects the second binding; provision a distinct client or subject |
 
 ---
 

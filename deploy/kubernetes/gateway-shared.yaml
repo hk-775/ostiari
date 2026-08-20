@@ -15,6 +15,9 @@ data:
   OSTIARI_GATEWAY_AUTH: "required"
   OSTIARI_OIDC_ISSUER: "https://REPLACE_OIDC_ISSUER"
   OSTIARI_OIDC_AUDIENCE: "REPLACE_GATEWAY_AUDIENCE"
+  OSTIARI_WORKLOAD_TOKEN_URL: "https://REPLACE_WORKLOAD_ISSUER/oauth2/token"
+  OSTIARI_WORKLOAD_CLIENT_ID: "REPLACE_GATEWAY_WORKLOAD_CLIENT_ID"
+  OSTIARI_WORKLOAD_TOKEN_AUDIENCE: "ostiari-control-plane"
   OSTIARI_REQUIRE_REDIS: "true"
   OSTIARI_REQUIRE_AXON: "true"
   OSTIARI_GATEWAY_RATE_LIMIT_RPM: "600"
@@ -87,16 +90,11 @@ spec:
                 secretKeyRef:
                   name: ostiari-secrets
                   key: config-admin-key
-            - name: OSTIARI_SERVICE_TOKEN
+            - name: OSTIARI_WORKLOAD_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
                   name: ostiari-secrets
-                  key: service-token
-            - name: OSTIARI_INGEST_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: ostiari-secrets
-                  key: ingest-key
+                  key: workload-client-secret
             - name: OSTIARI_X402_PRIVATE_KEY
               valueFrom:
                 secretKeyRef:

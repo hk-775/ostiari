@@ -336,7 +336,7 @@ and idempotency key.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/traces/ingest` | POST | Receive a trace event from a gateway. Requires a matching `X-Ingest-Key` header when `OSTIARI_INGEST_KEY` is set (constant-time compare). Open when unset in dev; **401 when unset under `OSTIARI_ENV=production`**. The gateway reporter sends the configured key. |
+| `/api/traces/ingest` | POST | Receive a trace event from a gateway. Production requires a short-lived workload OIDC Bearer token bound to the reporting gateway. Legacy `X-Ingest-Key` authentication remains development-only. |
 | `/api/traces/recent` | GET | Get recent traces (`?limit=50`) |
 | `/api/traces/spans` | GET | Traces grouped into session/plan/step spans |
 | `/api/traces/shadow-report` | GET | What shadow-mode gateways would have blocked |

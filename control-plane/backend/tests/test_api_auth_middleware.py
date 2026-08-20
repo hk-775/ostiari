@@ -40,12 +40,15 @@ class TestAuthMiddleware:
         r = await client.post("/api/auth/login", json={"email": "x@y.z", "password": "wrong"})
         assert r.status_code != 401 or r.headers.get("WWW-Authenticate") is None
 
-    async def test_trace_ingest_public_when_enforced(self, client, monkeypatch):
-        # machine ingest has its own shared-secret guard; middleware must not 401 it
+    async def test_trace_ingest_requires_machine_auth_when_enforced(
+        self,
+        client,
+        monkeypatch,
+    ):
         monkeypatch.setenv("OSTIARI_REQUIRE_AUTH", "true")
         monkeypatch.delenv("OSTIARI_INGEST_KEY", raising=False)
         r = await client.post("/api/traces/ingest", json={"action": "x", "tier": "allow"})
-        assert r.status_code == 200
+        assert r.status_code == 401
 
     async def test_valid_token_allowed_when_enforced(self, client, monkeypatch, admin_headers):
         monkeypatch.setenv("OSTIARI_REQUIRE_AUTH", "true")
@@ -80,7 +83,7 @@ class TestAuthMiddleware:
 
         assert registered.status_code == 401
         assert registered.json()["detail"] == (
-            "Gateway service authentication required"
+            "Gateway workload authentication required"
         )
 
     async def test_service_key_allows_cost_ingest(self, client, monkeypatch, admin_headers):

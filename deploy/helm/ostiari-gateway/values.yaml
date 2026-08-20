@@ -29,6 +29,16 @@ gateway:
   rateLimitRpm: 600
   failClosedOnControlPlaneLoss: true
 
+workloadIdentity:
+  # Per-gateway OAuth client credentials. The gateway exchanges this client
+  # identity for short-lived access tokens and refreshes them before expiry.
+  tokenUrl: ""
+  clientId: ""
+  clientSecretKey: "workload-client-secret"
+  scope: ""
+  audience: "ostiari-control-plane"
+  clientAuthMethod: "client_secret_basic"
+
   # Human-in-the-loop for the *intervene* tier (the middle of allow/intervene/
   # block). On, a call scoring in that band does not execute: the gateway answers
   # HTTP 202 with an approval id, a human decides in the control plane's Approvals
@@ -94,6 +104,6 @@ autoscaling:
 
 secrets:
   # Required secret keys:
-  # config-admin-key, service-token, ingest-key, redis-url,
+  # config-admin-key, workload-client-secret, redis-url,
   # x402-private-key, x402-allowed-assets.
   existingSecret: "ostiari-secrets"

@@ -8,13 +8,13 @@ remain buffered and are retried on the next flush.
 import asyncio
 import contextlib
 import logging
-import os
 from typing import Any
 from uuid import uuid4
 
 import httpx
 
 from ostiari_gateway.event_outbox import EventOutbox, scoped_stream
+from ostiari_gateway.workload_identity import machine_headers
 
 log = logging.getLogger("ostiari.sidecar.llm.cost")
 
@@ -52,9 +52,8 @@ class CostReporter:
             self._outbox.attach_store(shared_store)
 
     @staticmethod
-    def _service_headers() -> dict[str, str]:
-        token = os.environ.get("OSTIARI_SERVICE_TOKEN", "").strip()
-        return {"X-Ostiari-Service-Key": token} if token else {}
+    async def _service_headers() -> dict[str, str]:
+        return await machine_headers()
 
     def configure(self, control_plane_url: str, sidecar_id: str) -> None:
         self._outbox.rebind(scoped_stream("costs", sidecar_id))
@@ -137,7 +136,7 @@ class CostReporter:
                 response = await self._client.post(
                     f"{self._url}/api/costs/record/batch",
                     json=records,
-                    headers=self._service_headers(),
+                    headers=await self._service_headers(),
                 )
                 self._apply_broker_snapshot(response)
                 response.raise_for_status()

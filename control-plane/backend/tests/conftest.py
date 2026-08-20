@@ -12,8 +12,10 @@ control_plane.database so the module-level engine binds to it.
 
 from __future__ import annotations
 
+import base64
 import os
 import tempfile
+import time
 
 # Unique temp DB file, set before any control_plane import (module-level engine).
 _DB_FD, _DB_PATH = tempfile.mkstemp(suffix=".db")
@@ -29,10 +31,16 @@ os.environ.setdefault(  # gitleaks:allow - deterministic test-only Fernet key
 
 import atexit  # noqa: E402
 
+import jwt  # noqa: E402
 import pytest  # noqa: E402
+from cryptography.hazmat.primitives import serialization  # noqa: E402
+from cryptography.hazmat.primitives.asymmetric import rsa  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 
 atexit.register(lambda: os.path.exists(_DB_PATH) and os.remove(_DB_PATH))
+
+WORKLOAD_ISSUER = "https://workload.test/issuer"
+WORKLOAD_AUDIENCE = "ostiari-control-plane"
 
 
 @pytest.fixture
@@ -42,6 +50,7 @@ def anyio_backend() -> str:
 
 def _reset_in_memory_state() -> None:
     """Clear module-level state used by in-memory routers between tests."""
+    from control_plane.auth import router as auth_router
     from control_plane.auth import sso, sso_router
     from control_plane.routers import (
         agent_routing,
@@ -82,6 +91,7 @@ def _reset_in_memory_state() -> None:
         obj = getattr(mod, attr, None)
         if obj is not None and hasattr(obj, "clear"):
             obj.clear()
+    auth_router._seeded = False
     sso.clear_caches()
 
 
@@ -124,3 +134,75 @@ def admin_headers() -> dict[str, str]:
 @pytest.fixture
 def viewer_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {_token(2, 'viewer@test.io', 'viewer')}"}
+
+
+def _base64url_uint(value: int) -> str:
+    raw = value.to_bytes((value.bit_length() + 7) // 8, "big")
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+@pytest.fixture
+def workload_signer(monkeypatch):
+    """Issue signed gateway workload tokens through a real JWKS validator."""
+    from control_plane.auth import oidc, workload
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public = key.public_key().public_numbers()
+    jwks = {
+        "keys": [
+            {
+                "kty": "RSA",
+                "kid": "workload-key",
+                "use": "sig",
+                "alg": "RS256",
+                "n": _base64url_uint(public.n),
+                "e": _base64url_uint(public.e),
+            }
+        ]
+    }
+    private_key = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    validator = oidc.OIDCValidator(
+        issuer=WORKLOAD_ISSUER,
+        jwks_url=f"{WORKLOAD_ISSUER}/jwks",
+        audience=WORKLOAD_AUDIENCE,
+        http_get=lambda _: jwks,
+    )
+    monkeypatch.setenv("OSTIARI_REQUIRE_AUTH", "true")
+    monkeypatch.setenv("OSTIARI_WORKLOAD_OIDC_ISSUER", WORKLOAD_ISSUER)
+    monkeypatch.setenv("OSTIARI_WORKLOAD_OIDC_AUDIENCE", WORKLOAD_AUDIENCE)
+    monkeypatch.setattr(workload, "get_workload_validator", lambda: validator)
+
+    def issue(
+        gateway_id: str,
+        *,
+        subject: str | None = None,
+        tenant_id: str | None = "default",
+        include_gateway_id: bool = True,
+    ) -> dict[str, str]:
+        now = int(time.time())
+        claims = {
+            "sub": subject or f"subject:{gateway_id}",
+            "iss": WORKLOAD_ISSUER,
+            "aud": WORKLOAD_AUDIENCE,
+            "iat": now,
+            "exp": now + 300,
+            "client_id": f"client:{gateway_id}",
+        }
+        if tenant_id is not None:
+            claims["tenant_id"] = tenant_id
+        if include_gateway_id:
+            claims["gateway_id"] = gateway_id
+        token = jwt.encode(
+            claims,
+            private_key,
+            algorithm="RS256",
+            headers={"kid": "workload-key"},
+        )
+        return {"Authorization": f"Bearer {token}"}
+
+    yield issue
+    workload.reset_workload_validator()

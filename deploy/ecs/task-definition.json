@@ -49,6 +49,9 @@
         { "name": "OSTIARI_GATEWAY_AUTH", "value": "required" },
         { "name": "OSTIARI_OIDC_ISSUER", "value": "https://REPLACE_OIDC_ISSUER" },
         { "name": "OSTIARI_OIDC_AUDIENCE", "value": "REPLACE_GATEWAY_AUDIENCE" },
+        { "name": "OSTIARI_WORKLOAD_TOKEN_URL", "value": "https://REPLACE_WORKLOAD_ISSUER/oauth2/token" },
+        { "name": "OSTIARI_WORKLOAD_CLIENT_ID", "value": "REPLACE_GATEWAY_WORKLOAD_CLIENT_ID" },
+        { "name": "OSTIARI_WORKLOAD_TOKEN_AUDIENCE", "value": "ostiari-control-plane" },
         { "name": "OSTIARI_GATEWAY_RATE_LIMIT_RPM", "value": "600" },
         { "name": "OSTIARI_REQUIRE_REDIS", "value": "true" },
         { "name": "OSTIARI_REQUIRE_AXON", "value": "true" },
@@ -62,12 +65,8 @@
           "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:ostiari/config-admin-key"
         },
         {
-          "name": "OSTIARI_SERVICE_TOKEN",
-          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:ostiari/service-token"
-        },
-        {
-          "name": "OSTIARI_INGEST_KEY",
-          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:ostiari/ingest-key"
+          "name": "OSTIARI_WORKLOAD_CLIENT_SECRET",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:ostiari/gateway-workload-client-secret"
         },
         {
           "name": "ANTHROPIC_API_KEY",

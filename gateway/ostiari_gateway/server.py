@@ -88,13 +88,17 @@ def _check_production_posture() -> None:
         return
 
     open_controls: list[str] = []
-    for name in (
-        "OSTIARI_CONFIG_ADMIN_KEY",
-        "OSTIARI_SERVICE_TOKEN",
-        "OSTIARI_INGEST_KEY",
-    ):
+    for name in ("OSTIARI_CONFIG_ADMIN_KEY",):
         if len(_os.environ.get(name, "").strip()) < 32:
             open_controls.append(f"{name} must be set and at least 32 characters")
+    try:
+        from ostiari_gateway.workload_identity import (
+            validate_production_credential,
+        )
+
+        validate_production_credential()
+    except RuntimeError as exc:
+        open_controls.append(str(exc))
 
     if _os.environ.get("OSTIARI_GATEWAY_AUTH", "off").strip().lower() != "required":
         open_controls.append(
@@ -378,8 +382,9 @@ async def _check_approval(control_plane_url: str, approval_id: str) -> str | Non
     if not (control_plane_url and approval_id):
         return None
     try:
-        service_token = _os.environ.get("OSTIARI_SERVICE_TOKEN", "").strip()
-        headers = {"X-Ostiari-Service-Key": service_token} if service_token else {}
+        from ostiari_gateway.workload_identity import machine_headers
+
+        headers = await machine_headers()
         async with _httpx.AsyncClient(timeout=5.0, headers=headers) as c:
             r = await c.get(f"{control_plane_url.rstrip('/')}/api/approvals/{approval_id}")
             if r.status_code == 200:
@@ -394,8 +399,9 @@ async def _create_approval(control_plane_url: str, payload: dict) -> dict | None
     if not control_plane_url:
         return None
     try:
-        service_token = _os.environ.get("OSTIARI_SERVICE_TOKEN", "").strip()
-        headers = {"X-Ostiari-Service-Key": service_token} if service_token else {}
+        from ostiari_gateway.workload_identity import machine_headers
+
+        headers = await machine_headers()
         async with _httpx.AsyncClient(timeout=5.0, headers=headers) as c:
             r = await c.post(f"{control_plane_url.rstrip('/')}/api/approvals", json=payload)
             if r.status_code == 200:

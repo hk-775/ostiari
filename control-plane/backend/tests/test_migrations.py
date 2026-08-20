@@ -52,6 +52,22 @@ def test_upgrade_head_creates_org_schema():
             for t in ("gateways", "tools", "policies", "wallets", "usage_records", "audit_logs", "users"):
                 cols = {r[1] for r in con.execute(f"PRAGMA table_info({t})")}
                 assert "org_id" in cols, f"{t} missing org_id"
+            gateway_cols = {
+                r[1] for r in con.execute("PRAGMA table_info(gateways)")
+            }
+            assert {"workload_issuer", "workload_subject"} <= gateway_cols
+            gateway_indexes = {
+                row[1]
+                for row in con.execute("PRAGMA index_list(gateways)")
+            }
+            assert "sqlite_autoindex_gateways_2" in gateway_indexes or any(
+                {
+                    column[2]
+                    for column in con.execute(f"PRAGMA index_info({index_name})")
+                }
+                == {"workload_issuer", "workload_subject"}
+                for index_name in gateway_indexes
+            )
             usage_cols = {
                 r[1] for r in con.execute("PRAGMA table_info(usage_records)")
             }

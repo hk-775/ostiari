@@ -79,6 +79,11 @@ async def get_current_org(request: Request) -> str:
     OSTIARI_REQUIRE_AUTH is on, AuthMiddleware has already 401'd tokenless
     requests before they reach a route, so this fallback is demo-only.
     """
+    workload_identity = getattr(request.state, "workload_identity", None)
+    workload_tenant = getattr(workload_identity, "tenant_id", "")
+    if workload_tenant:
+        return str(workload_tenant)
+
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
         return configured_org_id()

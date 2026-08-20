@@ -16,6 +16,11 @@ data:
   OSTIARI_GATEWAY_AUTH: {{ ternary "required" "off" (or (eq .Values.gateway.env "production") (eq .Values.gateway.env "prod")) | quote }}
   OSTIARI_OIDC_ISSUER: {{ .Values.gateway.oidcIssuer | quote }}
   OSTIARI_OIDC_AUDIENCE: {{ .Values.gateway.oidcAudience | quote }}
+  OSTIARI_WORKLOAD_TOKEN_URL: {{ .Values.workloadIdentity.tokenUrl | quote }}
+  OSTIARI_WORKLOAD_CLIENT_ID: {{ .Values.workloadIdentity.clientId | quote }}
+  OSTIARI_WORKLOAD_SCOPE: {{ .Values.workloadIdentity.scope | quote }}
+  OSTIARI_WORKLOAD_TOKEN_AUDIENCE: {{ .Values.workloadIdentity.audience | quote }}
+  OSTIARI_WORKLOAD_CLIENT_AUTH_METHOD: {{ .Values.workloadIdentity.clientAuthMethod | quote }}
   OSTIARI_GATEWAY_RATE_LIMIT_RPM: {{ .Values.gateway.rateLimitRpm | quote }}
   OSTIARI_REQUIRE_REDIS: {{ ternary "true" "false" .Values.redis.enabled | quote }}
   OSTIARI_REQUIRE_AXON: {{ ternary "true" "false" (or (eq .Values.gateway.env "production") (eq .Values.gateway.env "prod")) | quote }}

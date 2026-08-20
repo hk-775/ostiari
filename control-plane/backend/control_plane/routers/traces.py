@@ -1,6 +1,5 @@
 """Live trace viewer — receives traces from gateways and broadcasts via WebSocket."""
 
-import hmac
 import logging
 import os
 import time
@@ -12,7 +11,6 @@ from typing import Any
 from fastapi import (
     APIRouter,
     Depends,
-    HTTPException,
     Request,
     WebSocket,
     WebSocketDisconnect,
@@ -25,6 +23,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.auth.dependencies import get_current_org, principal_from_token
+from control_plane.auth.workload import authorize_reported_gateway
 from control_plane.database import get_db
 from control_plane.env import is_production
 from control_plane.models.database import TraceRecord
@@ -32,42 +31,6 @@ from control_plane.models.database import TraceRecord
 log = logging.getLogger("control_plane.traces")
 
 router = APIRouter(tags=["traces"])
-
-# Shared secret that gateways/sidecars must present to push traces. Mirrors the
-# OSTIARI_JWT_SECRET pattern in auth/service.py. Machine callers aren't users, so
-# trace ingest uses a shared key (X-Ingest-Key header) rather than a user JWT.
-#
-# Fail-open when unset: the demo and local dev run without it, matching the
-# control plane's dev-friendly defaults. Set OSTIARI_INGEST_KEY in any shared or
-# production deployment to require authenticated ingest.
-_INGEST_KEY_ENV = "OSTIARI_INGEST_KEY"
-
-
-def _require_ingest_auth(request: Request) -> None:
-    """Enforce the ingest shared secret when OSTIARI_INGEST_KEY is configured.
-
-    No-op (with a one-time warning elsewhere) when the key is unset, so existing
-    demo/dev setups keep working. When set, a request must present a matching
-    ``X-Ingest-Key`` header or it is rejected with 401.
-    """
-    expected = os.environ.get(_INGEST_KEY_ENV, "").strip()
-    if not expected:
-        # Dev/demo: open. In production, refuse anonymous ingest (forged traces
-        # poison compliance + billing) — require OSTIARI_INGEST_KEY to be set.
-        from control_plane.env import is_production
-        if is_production():
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Trace ingest requires OSTIARI_INGEST_KEY in production",
-            )
-        return
-    presented = request.headers.get("X-Ingest-Key", "")
-    # Constant-time compare to avoid leaking the key via timing.
-    if not presented or not hmac.compare_digest(presented, expected):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing X-Ingest-Key",
-        )
 
 # All trace state is keyed by org (tenant) so one org's traces are never
 # stored in, listed from, or broadcast to another org's buffer/sockets.
@@ -436,10 +399,12 @@ async def ingest_trace(request: Request, db: AsyncSession = Depends(get_db)) -> 
     trace_id get one synthesized so downstream consumers always have a stable
     handle.
     """
-    _require_ingest_auth(request)
     event = await request.json()
     if not event.get("trace_id"):
         event["trace_id"] = uuid.uuid4().hex
+
+    gateway_id = event.get("sidecar_id") or event.get("gateway_id") or ""
+    await authorize_reported_gateway(request, db, gateway_id)
 
     # The org this event belongs to, derived from the reporting gateway — never
     # from the payload. All storage + fan-out below is confined to this org.

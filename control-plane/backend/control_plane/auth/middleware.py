@@ -29,11 +29,11 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from control_plane.auth import oidc
+from control_plane.auth import oidc, workload
 from control_plane.auth.roles import WRITE_ROLES, normalize_role
 from control_plane.auth.schemas import AuthUser
 from control_plane.auth.service import decode_token
-from control_plane.env import tenant_is_allowed
+from control_plane.env import is_production, tenant_is_allowed
 
 # Paths that must remain reachable without a token. Prefix match on the URL path.
 _PUBLIC_PREFIXES = (
@@ -42,7 +42,6 @@ _PUBLIC_PREFIXES = (
     "/api/auth/login",
     "/api/auth/register",       # first-run bootstrap; tighten separately if desired
     "/api/auth/sso/",           # SSO login/callback/config (browser flow, pre-token)
-    "/api/traces/ingest",       # machine ingest — guarded by its own X-Ingest-Key
     "/docs", "/openapi.json", "/redoc",
 )
 
@@ -95,6 +94,7 @@ _MACHINE_ROUTES = (
     ("POST", re.compile(r"^/api/costs/record(?:/batch)?$")),
     ("POST", re.compile(r"^/api/payments/ingest$")),
     ("POST", re.compile(r"^/api/quotas/alerts$")),
+    ("POST", re.compile(r"^/api/traces/ingest$")),
 )
 
 _OPERATOR_VISIBLE_MACHINE_ROUTES = (
@@ -114,10 +114,34 @@ def _is_operator_visible_machine_route(method: str, path: str) -> bool:
     )
 
 
-def _valid_service_key(request: Request) -> bool:
-    expected = os.environ.get("OSTIARI_SERVICE_TOKEN", "").strip()
-    presented = request.headers.get("X-Ostiari-Service-Key", "")
+def _valid_legacy_machine_key(request: Request) -> bool:
+    if is_production():
+        return False
+    if request.url.path == "/api/traces/ingest":
+        expected = os.environ.get("OSTIARI_INGEST_KEY", "").strip()
+        presented = request.headers.get("X-Ingest-Key", "")
+    else:
+        expected = os.environ.get("OSTIARI_SERVICE_TOKEN", "").strip()
+        presented = request.headers.get("X-Ostiari-Service-Key", "")
     return bool(expected and presented and secrets.compare_digest(presented, expected))
+
+
+def _legacy_machine_key_configured(request: Request) -> bool:
+    if request.url.path == "/api/traces/ingest":
+        return bool(os.environ.get("OSTIARI_INGEST_KEY", "").strip())
+    return bool(os.environ.get("OSTIARI_SERVICE_TOKEN", "").strip())
+
+
+def _workload_identity(request: Request):
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    try:
+        return workload.validate_workload_token(auth.removeprefix("Bearer "))
+    except workload.WorkloadOIDCUnavailableError:
+        raise
+    except oidc.OIDCError:
+        return None
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -129,14 +153,41 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
-        if (
-            path.startswith("/api/")
-            and _is_machine_route(request.method, path)
-            and _valid_service_key(request)
-        ):
-            request.state.machine_authenticated = True
-            request.state.audit_actor = "gateway-service"
-            return await call_next(request)
+        is_machine_route = path.startswith("/api/") and _is_machine_route(
+            request.method,
+            path,
+        )
+        if is_machine_route:
+            try:
+                identity = _workload_identity(request)
+            except workload.WorkloadOIDCUnavailableError:
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "detail": "Gateway workload authentication is unavailable"
+                    },
+                    headers={"Retry-After": "5"},
+                )
+            if identity is not None:
+                request.state.machine_authenticated = True
+                request.state.machine_auth_kind = "oidc"
+                request.state.workload_identity = identity
+                request.state.audit_actor = identity.audit_actor
+                return await call_next(request)
+            if _valid_legacy_machine_key(request):
+                request.state.machine_authenticated = True
+                request.state.machine_auth_kind = "legacy"
+                request.state.audit_actor = "gateway-service-legacy"
+                return await call_next(request)
+            if is_production() or (
+                path == "/api/traces/ingest"
+                and _legacy_machine_key_configured(request)
+            ):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Gateway workload authentication required"},
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
 
         if not _require_auth_enabled():
             return await call_next(request)
@@ -146,13 +197,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if (
-            _is_machine_route(request.method, path)
+            is_machine_route
             and not _is_operator_visible_machine_route(request.method, path)
         ):
             return JSONResponse(
                 status_code=401,
-                content={"detail": "Gateway service authentication required"},
-                headers={"WWW-Authenticate": "X-Ostiari-Service-Key"},
+                content={"detail": "Gateway workload authentication required"},
+                headers={"WWW-Authenticate": "Bearer"},
             )
 
         # Some lifecycle resources are also visible to signed-in operators.

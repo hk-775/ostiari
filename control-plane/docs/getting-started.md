@@ -2141,7 +2141,7 @@ The gateway calculates LLM cost locally (no round-trip to control plane) and enf
 
 > **Where a budget alert goes.** The gateway subscribes to `on_budget_alert` at
 > startup and reports each crossing to the control plane at
-> `POST /api/quotas/alerts` using the gateway service credential. The org is
+> `POST /api/quotas/alerts` using its rotating workload OIDC credential. The org is
 > resolved from the reporting gateway's row, never from the payload.
 > `record_spend` is synchronous, so the report is handed to the
 > running event loop as a task; if there's no loop (a sync script or test), the
@@ -2407,7 +2407,7 @@ surfaces as a 500 rather than being passed through.
 | MCP remote: connection refused | MCP server not running | Start the MCP server, verify URL |
 | MCP stdio: command not found | Binary not in PATH | Install the MCP server binary in the gateway image |
 | Cost dashboard shows $0 | LLM Gateway not enabled on gateways | Enable `llm_gateway` module in gateway config |
-| Traces not appearing | Gateway not reporting to control plane, or `OSTIARI_INGEST_KEY` mismatch | Verify gateway knows the control plane URL; if ingest auth is on, both sides need the same key (ingest is *required* in production) |
+| Traces not appearing | Gateway is not reporting, its workload token cannot be refreshed, or its identity is not bound to the named gateway | Verify the control-plane URL, workload issuer/audience, per-gateway OAuth client or projected token file, and the gateway registration response. Production rejects legacy shared ingest keys. |
 | Traces vanished after a restart | The database migration was not applied or the application is pointed at a different database | Run `alembic upgrade head`, verify `DATABASE_URL`, and confirm the `trace_records` table is populated |
 | Traces missing /invoke tool calls | Old gateway version | Update gateway — trace reporter in executor is now automatic |
 | Experiment results empty | Not enough time elapsed | Wait for traffic to accumulate, check period_days |
