@@ -38,6 +38,7 @@ from control_plane.env import tenant_is_allowed
 # Paths that must remain reachable without a token. Prefix match on the URL path.
 _PUBLIC_PREFIXES = (
     "/api/health",
+    "/api/ready",
     "/api/auth/login",
     "/api/auth/register",       # first-run bootstrap; tighten separately if desired
     "/api/auth/sso/",           # SSO login/callback/config (browser flow, pre-token)

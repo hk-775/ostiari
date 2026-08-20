@@ -58,7 +58,13 @@ class LifecycleManager:
                     self.apply_config(update)
             return data
         except httpx.HTTPStatusError as e:
-            log.error(f"Registration failed: HTTP {e.response.status_code}")
+            detail = " ".join(e.response.text.split())[:500]
+            suffix = f": {detail}" if detail else ""
+            log.error(
+                "Registration failed: HTTP %s%s",
+                e.response.status_code,
+                suffix,
+            )
             raise
         except httpx.ConnectError as e:
             log.error(f"Cannot reach control plane at {self._cp_url}: {e}")

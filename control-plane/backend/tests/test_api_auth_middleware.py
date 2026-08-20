@@ -26,6 +26,13 @@ class TestAuthMiddleware:
         monkeypatch.setenv("OSTIARI_REQUIRE_AUTH", "true")
         assert (await client.get("/api/health")).status_code == 200
 
+    async def test_ready_public_when_enforced(self, client, monkeypatch):
+        monkeypatch.setenv("OSTIARI_REQUIRE_AUTH", "true")
+        response = await client.get("/api/ready")
+
+        assert response.status_code == 200
+        assert response.json()["database"] == "available"
+
     async def test_login_public_when_enforced(self, client, monkeypatch):
         monkeypatch.setenv("OSTIARI_REQUIRE_AUTH", "true")
         # login must stay reachable to obtain a token; 401 here would be a lockout,
