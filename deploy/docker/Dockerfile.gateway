@@ -1,40 +1,39 @@
-# Ostiari gateway image. Built from the REPO ROOT context so it can install the
-# local `ostiari` core package (a dependency of ostiari-gateway that is not
-# published to PyPI).
+# Ostiari gateway image. Built from the repository root so the local `ostiari`
+# package can be installed before the gateway package.
 #
 #   docker build -f deploy/docker/Dockerfile.gateway -t ostiari-gateway:latest .
-FROM python:3.12-slim
+FROM python:3.12-alpine@sha256:4b5b91c1040aeb90137a7ed5235e3caf7a1a45da015066c5305fb64e70262ba2 AS builder
 
-WORKDIR /app
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 
-# curl is used by the container healthcheck.
-RUN apt-get update && apt-get install -y --no-install-recommends curl \
-    && rm -rf /var/lib/apt/lists/*
+RUN python -m venv "${VIRTUAL_ENV}"
 
-# Install the core package first (gateway depends on `ostiari>=0.1.0`).
+WORKDIR /build
+
 COPY pyproject.toml README.md ./
 COPY src/ src/
 RUN pip install --no-cache-dir .
 
-# Install the gateway package.
 COPY gateway/pyproject.toml gateway/
 COPY gateway/ostiari_gateway/ gateway/ostiari_gateway/
 RUN pip install --no-cache-dir "./gateway[payments,redis]"
 
-EXPOSE 8421
+FROM python:3.12-alpine@sha256:4b5b91c1040aeb90137a7ed5235e3caf7a1a45da015066c5305fb64e70262ba2
 
-# Run as a non-root user. Every pip install above has already happened as root,
-# so the site-packages tree stays root-owned and read-only to this user — which
-# is the point: a compromised gateway can't rewrite its own code or install
-# anything.
-#
-# 8421 is above 1024, so no capability is needed to bind it. Nothing here writes
-# to the image: the only runtime write is the rendered policy file, which goes to
-# a tempfile under /tmp (see config_manager._policy_file).
-RUN useradd --system --create-home --uid 10001 --shell /usr/sbin/nologin ostiari
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
+
+WORKDIR /app
+
+COPY --from=builder /opt/venv /opt/venv
+
+RUN addgroup -S -g 10001 ostiari \
+    && adduser -S -D -H -u 10001 -G ostiari ostiari
+
 USER 10001:10001
 
-# Config is driven by env vars (OSTIARI_GATEWAY_ID / OSTIARI_CONTROL_PLANE_URL /
-# OSTIARI_PORT), so no CLI flags are needed here.
+EXPOSE 8421
+
 ENTRYPOINT ["ostiari-gateway"]
 CMD ["--host", "0.0.0.0"]
