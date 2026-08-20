@@ -112,6 +112,33 @@ class TestBudgetAlerts:
         assert (await client.request("DELETE", "/api/quotas/alerts")).json() == {"cleared": 3}
         assert (await client.get("/api/quotas/alerts")).json() == []
 
+    async def test_retries_are_idempotent_and_conflicts_fail_closed(self, client):
+        await _make_gateway(client)
+        event = {
+            "event_id": "budget-event-1",
+            "gateway_id": "gw1",
+            "threshold": "90%",
+            "spend_usd": 9.0,
+            "budget_usd": 10.0,
+            "timestamp": 1_787_000_000.0,
+        }
+        first = await client.post("/api/quotas/alerts", json=event)
+        duplicate = await client.post("/api/quotas/alerts", json=event)
+
+        assert first.json() == {"recorded": True}
+        assert duplicate.json() == {
+            "recorded": True,
+            "duplicate": True,
+            "event_id": "budget-event-1",
+        }
+        assert len((await client.get("/api/quotas/alerts")).json()) == 1
+
+        conflict = await client.post(
+            "/api/quotas/alerts",
+            json={**event, "threshold": "100%"},
+        )
+        assert conflict.status_code == 409
+
     async def test_alerts_route_not_shadowed_by_quota_id(self, client):
         """/alerts must be declared before /{quota_id}, or DELETE /alerts would
         try to parse "alerts" as an int quota id and 422."""

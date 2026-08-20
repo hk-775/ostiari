@@ -889,6 +889,8 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: Any) -> Any:
         registration_task: _asyncio.Task | None = None
+        await trace_reporter.start_delivery()
+        await module_registry.start_all()
         if initial_config and initial_config.budget_reset:
             budget_reset_scheduler.configure(initial_config.budget_reset)
 
@@ -930,6 +932,7 @@ def create_app(
         shared_store_required,
     )
     shared_store = get_shared_store()
+    trace_reporter.attach_shared_store(shared_store)
     quota_enforcer.attach_shared_store(shared_store)
     agent_auth.attach_shared_store(
         shared_store,
@@ -988,6 +991,7 @@ def create_app(
                 "quota_enforcer": quota_enforcer,
                 "agent_auth": agent_auth,
                 "broker_policy": broker_policy,
+                "shared_store": shared_store,
             },
         )
         if initial_config.model_registry:
@@ -1919,6 +1923,10 @@ def create_app(
 
     @app.get("/ready")
     async def ready() -> Any:
+        delivery_status = {
+            **trace_reporter.delivery_status(),
+            **module_registry.delivery_status(),
+        }
         redis_status = (
             shared_store.status(check=True)
             if shared_store is not None
@@ -1936,6 +1944,20 @@ def create_app(
                     "status": "not_ready",
                     "control_plane": dict(control_plane_status),
                     "redis": redis_status,
+                    "delivery": delivery_status,
+                },
+            )
+        if any(
+            state["required"] and not state["healthy"]
+            for state in delivery_status.values()
+        ):
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "not_ready",
+                    "control_plane": dict(control_plane_status),
+                    "redis": redis_status,
+                    "delivery": delivery_status,
                 },
             )
         if (
@@ -1948,12 +1970,14 @@ def create_app(
                     "status": "not_ready",
                     "control_plane": dict(control_plane_status),
                     "redis": redis_status,
+                    "delivery": delivery_status,
                 },
             )
         return {
             "status": "ready",
             "control_plane": dict(control_plane_status),
             "redis": redis_status,
+            "delivery": delivery_status,
         }
 
     @app.get("/modules")

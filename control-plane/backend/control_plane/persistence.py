@@ -209,7 +209,13 @@ async def load_runtime_caches(db: AsyncSession) -> None:
                 await ensure_runtime_sequence(db, org, "quotas", next_value)
             elif namespace == "budget_alerts":
                 _alerts[org].clear()
-                for row in records:
+                for row in sorted(
+                    records,
+                    key=lambda item: (
+                        float((item.value or {}).get("timestamp") or 0.0),
+                        item.item_key,
+                    ),
+                ):
                     _alerts[org].append(BudgetAlert(**row.value))
             elif namespace == "roi_cost_model":
                 _cost_model[org].update(records[-1].value)

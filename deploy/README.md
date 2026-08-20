@@ -120,8 +120,8 @@ sam deploy --guided
 | `OSTIARI_GATEWAY_AUTH` | `off` | Must be `required` in production. Authentication covers tool, validation, LLM shim, native invoke, model metadata, MCP, and A2A ingress. |
 | `OSTIARI_OIDC_ISSUER` / `OSTIARI_OIDC_AUDIENCE` | _(none)_ | HTTPS token issuer and exact audience required for gateway agent authentication in production. Verified token claims determine the effective agent identity. |
 | `OSTIARI_GATEWAY_RATE_LIMIT_RPM` | `0` | Must be a positive integer in production. Redis makes the per-caller window fleet-wide. |
-| `OSTIARI_REQUIRE_REDIS` | _(false)_ | Must be true in production. Redis startup/runtime failure denies shared enforcement and makes `/ready` return 503. |
-| `REDIS_ENDPOINT` | _(none)_ | Redis host for fleet-wide rate-limit / budget / wallet state |
+| `OSTIARI_REQUIRE_REDIS` | _(false)_ | Must be true in production. Redis startup/runtime failure denies shared enforcement and durable event delivery, and makes `/ready` return 503. |
+| `REDIS_ENDPOINT` | _(none)_ | Redis host for fleet-wide rate-limit / budget / wallet state and gateway-scoped trace, cost, payment, and budget-alert outboxes |
 | `REDIS_PORT` | `6379` | Redis port |
 | `OSTIARI_REDIS_URL` | _(none)_ | Full URL alternative to the two above (`redis://[:pass@]host:port/db`); checked first |
 | `OSTIARI_REDIS_PREFIX` | `ostiari` | Key namespace, so several gateways or tenants can share one Redis |

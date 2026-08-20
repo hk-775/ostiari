@@ -118,6 +118,49 @@ async def put_runtime_state(
     await db.execute(statement)
 
 
+async def put_runtime_state_once(
+    db: AsyncSession,
+    org: str,
+    namespace: str,
+    item_key: str,
+    value: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """Insert one immutable event, returning the existing value on conflict."""
+    values = {
+        "org_id": org,
+        "namespace": namespace,
+        "item_key": item_key,
+        "value": value,
+        "updated_at": datetime.now(timezone.utc),
+    }
+    dialect = db.get_bind().dialect.name
+    insert_fn = postgresql_insert if dialect == "postgresql" else sqlite_insert
+    inserted = (
+        await db.execute(
+            insert_fn(RuntimeStateRecord)
+            .values(**values)
+            .on_conflict_do_nothing(
+                index_elements=[
+                    RuntimeStateRecord.org_id,
+                    RuntimeStateRecord.namespace,
+                    RuntimeStateRecord.item_key,
+                ]
+            )
+            .returning(RuntimeStateRecord.item_key)
+        )
+    ).scalar_one_or_none()
+    stored = (
+        await db.execute(
+            select(RuntimeStateRecord.value).where(
+                RuntimeStateRecord.org_id == org,
+                RuntimeStateRecord.namespace == namespace,
+                RuntimeStateRecord.item_key == item_key,
+            )
+        )
+    ).scalar_one()
+    return inserted is not None, dict(stored or {})
+
+
 async def delete_runtime_state(
     db: AsyncSession,
     org: str,

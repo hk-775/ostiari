@@ -90,3 +90,19 @@ class ModuleRegistry:
     async def shutdown_all(self) -> None:
         for name in list(self._active.keys()):
             await self.deactivate(name)
+
+    async def start_all(self) -> None:
+        """Start background workers for active modules."""
+        for module in self._active.values():
+            start = getattr(module, "start", None)
+            if start is not None:
+                await start()
+
+    def delivery_status(self) -> dict[str, Any]:
+        """Return durable delivery health from active modules."""
+        status: dict[str, Any] = {}
+        for module in self._active.values():
+            inspect = getattr(module, "delivery_status", None)
+            if inspect is not None:
+                status.update(inspect())
+        return status

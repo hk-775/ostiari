@@ -119,6 +119,7 @@ class LLMGatewayModule:
         quota_enforcer = context.get("quota_enforcer")
         agent_auth = context.get("agent_auth")
         broker_policy = context.get("broker_policy")
+        shared_store = context.get("shared_store")
         llm_config = context.get("llm_config", LLMConfig())
         self._config = llm_config
         self._executor = AgenticExecutor(
@@ -129,6 +130,7 @@ class LLMGatewayModule:
             quota_enforcer=quota_enforcer,
             agent_auth=agent_auth,
             broker_policy=broker_policy,
+            shared_store=shared_store,
         )
 
         # Claude Code shim: intercept the Anthropic /v1/messages API, govern +
@@ -445,6 +447,15 @@ class LLMGatewayModule:
                  "GET /models, POST /config/llm, POST /config/agent-routing, "
                  "POST /config/task-classification, POST /config/model-registry, "
                  "POST /config/provider-routes, POST /config/ab-experiments")
+
+    async def start(self) -> None:
+        if self._executor is not None:
+            await self._executor.start()
+
+    def delivery_status(self) -> dict[str, Any]:
+        if self._executor is None:
+            return {}
+        return self._executor._cost_reporter.delivery_status()
 
     async def shutdown(self) -> None:
         if self._executor is not None:

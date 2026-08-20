@@ -32,6 +32,11 @@ until the corresponding items below are complete.
   durable in SQL.
 - Shared gateway rate, budget, and wallet enforcement is atomic in Redis and
   fails readiness closed in production.
+- Trace, cost, payment, and budget-alert events are persisted to gateway-scoped
+  Redis Streams before delivery, acknowledged only after a successful
+  control-plane commit, and recovered after gateway restarts. Their receiving
+  APIs are idempotent on stable event IDs, and production readiness fails
+  closed when the durable stream path is unavailable.
 - Gateway callback destinations are restricted to an explicit hostname/CIDR
   allowlist and may never target link-local metadata addresses.
 - Production manifests run migrations first, use non-root/read-only containers,
@@ -53,47 +58,42 @@ until the corresponding items below are complete.
 
 ## Remaining Ostiari gates
 
-1. **Durable gateway event outbox.** Trace, cost, payment, and budget-alert
-   reporters retry in memory. A gateway process crash during a control-plane
-   outage can still lose an unconfirmed event. Persist idempotent events in a
-   Redis Stream (or equivalent) and acknowledge only after control-plane commit.
-
-2. **Per-gateway machine identity.** Gateway lifecycle/event APIs currently use
+1. **Per-gateway machine identity.** Gateway lifecycle/event APIs currently use
    one fleet service token. Replace it with workload-specific OIDC credentials
    and bind the verified client identity to the gateway path/body.
 
-3. **Control-plane horizontal scaling.** SQL is authoritative, but several
+2. **Control-plane horizontal scaling.** SQL is authoritative, but several
    routers retain process-local hot caches. Add transactional cache invalidation
    or read-through SQL before running more than one control-plane replica.
 
-4. **Multi-tenant schema.** Several legacy tables still use globally scoped
+3. **Multi-tenant schema.** Several legacy tables still use globally scoped
    primary or unique keys. Convert them to tenant-qualified constraints before
    changing production tenancy mode from `single`.
 
-5. **Registry and image publication authorization.** The workflow now publishes
+4. **Registry and image publication authorization.** The workflow now publishes
    the complete Python release set, but the maintainers must configure and test
    trusted-publisher ownership for all four package names and publish signed,
    digest-pinned platform images before claiming a public package/container
    install path.
 
-6. **Codex CLI conformance.** The stateless Responses subset is implemented,
+5. **Codex CLI conformance.** The stateless Responses subset is implemented,
    but current Codex uses the Responses wire API and may send reasoning or
    stateful fields that Ostiari deliberately rejects. Capture a supported Codex
    version and pass request, tool, streaming, cancellation, and error-shape
    conformance before advertising Codex compatibility.
 
-7. **Immutable upstream inputs.** Pin the remaining Docker base images by
+6. **Immutable upstream inputs.** Pin the remaining Docker base images by
    verified digest and GitHub Actions by verified commit SHA. The gateway and
    control-plane Python bases are already digest-pinned; frontend and local
    Redis inputs remain to be resolved from their official registries. Do not
    guess these values.
 
-8. **Retained production evidence.** Complete and archive dependency/container
+7. **Retained production evidence.** Complete and archive dependency/container
    scan results, load and failure tests, PostgreSQL backup restore, rollback,
    alarm delivery, authenticated canary, and capped live-payment evidence for
    the exact release digest.
 
-9. **Legal release approval.** Confirm authorization for repository copyright,
+8. **Legal release approval.** Confirm authorization for repository copyright,
    trademarks, and third-party notices before the public release.
 
 ## AxonLLM dependency record
