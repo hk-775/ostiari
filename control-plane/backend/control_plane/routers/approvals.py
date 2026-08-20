@@ -24,6 +24,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.auth.dependencies import get_current_org
+from control_plane.auth.workload import authorize_reported_gateway
 from control_plane.database import get_db
 from control_plane.models.database import ApprovalRecord
 from control_plane.models.scoping import org_of_gateway
@@ -170,6 +171,7 @@ async def create_approval(
     The reporting gateway has no user token, so the owning org is derived from
     its `gateways` row rather than from the caller or the payload.
     """
+    await authorize_reported_gateway(request, db, body.gateway_id)
     aid = f"apr-{uuid.uuid4().hex[:12]}"
     owner_org = await org_of_gateway(db, body.gateway_id)
     created_at = datetime.now(timezone.utc)
@@ -256,6 +258,8 @@ async def get_approval(request: Request, approval_id: str,
                        db: AsyncSession = Depends(get_db)) -> Approval:
     record = await _record_by_id(db, approval_id)
     if record is not None:
+        if getattr(request.state, "machine_authenticated", False):
+            await authorize_reported_gateway(request, db, record.gateway_id)
         _org_guard(None if _tokenless(request.headers) else org, record.org_id)
         return _from_record(record)
 
@@ -263,6 +267,8 @@ async def get_approval(request: Request, approval_id: str,
     if found is None:
         raise HTTPException(status_code=404, detail="Approval not found")
     owner_org, appr = found
+    if getattr(request.state, "machine_authenticated", False):
+        await authorize_reported_gateway(request, db, appr.gateway_id)
     _org_guard(None if _tokenless(request.headers) else org, owner_org)
     return appr
 

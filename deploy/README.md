@@ -115,8 +115,12 @@ sam deploy --guided
 | `OSTIARI_HITL` | `off` | `on` enables human-in-the-loop for the *intervene* tier: a mid-band call returns **202** with an approval id instead of executing, and the caller re-submits with `X-Approval-Id` once a human approves. **Set this in production** — see below. |
 | `OSTIARI_REQUIRE_AXON` | _(unset)_ | Apply the production fail-closed embedded-router contract outside production. The gateway image already contains pinned AxonLLM `v0.3.1`; `OSTIARI_ENV=production` makes it mandatory whenever the LLM module is active. Tool-only gateways may leave the module disabled. |
 | `OSTIARI_CONFIG_ADMIN_KEY` | _(none)_ | Required in production and must be at least 32 characters. Protects gateway configuration reads and writes. |
-| `OSTIARI_SERVICE_TOKEN` | _(none)_ | Shared machine credential sent to the control plane for registration, heartbeat, HITL, payment/quota events, and spend persistence. Set the same value on the gateway and control plane. |
-| `OSTIARI_INGEST_KEY` | _(none)_ | Shared trace/payment ingest credential. Required in production and sent by the gateway as `X-Ingest-Key`. |
+| `OSTIARI_WORKLOAD_TOKEN_FILE` | _(none)_ | Path to a short-lived projected workload token. The file is reread for every control-plane request so rotation does not require a restart. Configure this **or** OAuth client credentials. |
+| `OSTIARI_WORKLOAD_TOKEN_URL` / `OSTIARI_WORKLOAD_CLIENT_ID` | _(none)_ | Per-gateway OAuth 2.0 client-credentials endpoint and client id. Required for OAuth mode; the gateway refreshes access tokens before expiry. Production requires an HTTPS token URL. |
+| `OSTIARI_WORKLOAD_CLIENT_SECRET` / `_FILE` | _(none)_ | Per-gateway OAuth client secret, injected directly or read from a mounted file. Configure exactly one. Do not reuse one client across gateway ids. |
+| `OSTIARI_WORKLOAD_SCOPE` / `OSTIARI_WORKLOAD_TOKEN_AUDIENCE` | _(none)_ | Optional token-request scope and audience. The audience must match the control plane's `OSTIARI_WORKLOAD_OIDC_AUDIENCE`. |
+| `OSTIARI_WORKLOAD_CLIENT_AUTH_METHOD` | `client_secret_basic` | OAuth token endpoint authentication: `client_secret_basic` or `client_secret_post`. |
+| `OSTIARI_SERVICE_TOKEN` / `OSTIARI_INGEST_KEY` | _(none)_ | Legacy local-development compatibility only. Production startup rejects both fleet-wide shared credentials. |
 | `OSTIARI_GATEWAY_AUTH` | `off` | Must be `required` in production. Authentication covers tool, validation, LLM shim, native invoke, model metadata, MCP, and A2A ingress. |
 | `OSTIARI_OIDC_ISSUER` / `OSTIARI_OIDC_AUDIENCE` | _(none)_ | HTTPS token issuer and exact audience required for gateway agent authentication in production. Verified token claims determine the effective agent identity. |
 | `OSTIARI_GATEWAY_RATE_LIMIT_RPM` | `0` | Must be a positive integer in production. Redis makes the per-caller window fleet-wide. |
@@ -146,8 +150,10 @@ sam deploy --guided
 | `OSTIARI_ENV` | _(unset = dev)_ | `production` activates a fatal posture check requiring authentication, no demo seed, PostgreSQL, strong machine secrets, durable encryption, and explicit HTTPS origins. |
 | `OSTIARI_ADMIN_PASSWORD` | _(dev seed)_ | **Required in production.** Without it the control plane refuses to seed an admin at all. |
 | `OSTIARI_JWT_SECRET` | _(dev default)_ | **Required in production**, ≥32 chars. Startup fails otherwise. |
-| `OSTIARI_INGEST_KEY` | _(none)_ | Gates `POST /api/traces/ingest` with an `X-Ingest-Key` header; unset in production, every trace ingest is 401. **Read the caveats before setting it** — see below. |
-| `OSTIARI_SERVICE_TOKEN` | _(none)_ | Shared machine credential for the restricted gateway lifecycle/ingest routes. Required when `OSTIARI_REQUIRE_AUTH=true`; set the same value on every trusted gateway. |
+| `OSTIARI_WORKLOAD_OIDC_ISSUER` / `OSTIARI_WORKLOAD_OIDC_AUDIENCE` | _(none)_ | Dedicated workload-token issuer and exact audience. Both are required in production; the issuer must use HTTPS. |
+| `OSTIARI_WORKLOAD_OIDC_JWKS_URL` | issuer discovery | Optional explicit JWKS endpoint for issuers whose discovery document does not expose the correct key URL. |
+| `OSTIARI_WORKLOAD_GATEWAY_ID_CLAIM` | `gateway_id` | Optional claim name that binds a token directly to a gateway id. Standard OAuth client-credentials tokens may omit it; the verified issuer/subject pair is still bound immutably to one gateway on first registration. |
+| `OSTIARI_SERVICE_TOKEN` / `OSTIARI_INGEST_KEY` | _(none)_ | Legacy local-development compatibility only. The production posture check rejects both values. |
 | `OSTIARI_CONFIG_ADMIN_KEY` | _(none)_ | Credential the control plane sends on gateway `/config/*` calls. Set the same value on the control plane and gateways. |
 | `OSTIARI_GATEWAY_AGENT_TOKEN` / `OSTIARI_GATEWAY_AGENT_ID` | _(none)_ | Dedicated agent credential used for control-plane initiated execution. Required in production; browser JWTs are never forwarded to gateways. |
 | `OSTIARI_SANDBOX_GATEWAY_TOKEN` | _(caller bearer)_ | Optional dedicated bearer credential for Sandbox Code tool calls to protected gateways. Store it as a secret. |
@@ -159,18 +165,18 @@ sam deploy --guided
 | `OSTIARI_AUTH_MODE=oidc` + `OSTIARI_OIDC_*` | _(local tokens)_ | Direct IdP bearer-token validation for API clients. This is separate from dashboard SSO. |
 | `OSTIARI_PROXY_MAX_RESPONSE_BYTES` / `OSTIARI_PROXY_TIMEOUT_SECONDS` | `1048576` / `30` | Byte cap and absolute deadline for dashboard-to-gateway proxy responses. |
 
-The gateway sends `OSTIARI_INGEST_KEY` as `X-Ingest-Key`. Other gateway machine
-traffic uses `OSTIARI_SERVICE_TOKEN`; the service token is accepted only on the
-explicit lifecycle and ingest route allowlist, not on general control-plane APIs.
+Every production lifecycle and event request uses a short-lived workload Bearer
+token. On first registration the control plane binds the token's verified
+issuer/subject pair to that gateway row. Every subsequent heartbeat, config,
+approval, trace, cost, payment, quota-alert, and spend request must match that
+binding and the gateway id carried in the path or body. If the token includes
+the configured gateway-id claim, that claim must also match. JWKS/provider
+outages fail closed with a retryable 503.
 
 For dashboard SSO, leave `OSTIARI_AUTH_MODE` unset (`local`). The backend
 exchanges the authorization code, provisions or updates the local user, and
 issues an Ostiari JWT that the frontend validates before storing. Set
 `OSTIARI_AUTH_MODE=oidc` only when callers present IdP access tokens directly.
-
-In production, an empty trace view beats a poisoned one, so setting it is still
-defensible — but expect a blank dashboard, and don't read it as "ingest is
-authenticated."
 
 ## Secrets Management
 
@@ -183,8 +189,7 @@ kubectl create secret generic ostiari-secrets \
   --from-literal=admin-password='...' \
   --from-literal=encryption-key='...' \
   --from-literal=config-admin-key='...' \
-  --from-literal=service-token='...' \
-  --from-literal=ingest-key='...' \
+  --from-literal=workload-client-secret='one-client-secret-per-gateway' \
   --from-literal=gateway-agent-token='...' \
   --from-literal=redis-url='rediss://...' \
   --from-literal=oidc-client-id='...' \

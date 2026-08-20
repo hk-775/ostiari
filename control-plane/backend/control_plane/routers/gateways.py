@@ -13,6 +13,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.auth.dependencies import get_current_org
+from control_plane.auth.workload import (
+    authorize_gateway,
+    bind_gateway_identity,
+    require_gateway_claim,
+)
 from control_plane.database import async_session, get_db
 from control_plane.env import configured_org_id, is_production, tenancy_mode
 from control_plane.models.database import Gateway, Tool
@@ -305,6 +310,7 @@ async def gateway_register(
     # http://host/config with no port → connection refused).
     callback_url = ""
     reg_org = configured_org_id()
+    identity = require_gateway_claim(request, gateway_id)
     try:
         body = await request.json()
         if isinstance(body, dict):
@@ -317,6 +323,11 @@ async def gateway_register(
             # A gateway declares its org at registration (no user token on this
             # path). Absent that, it lands in the default org.
             requested_org = (body.get("org_id") or reg_org).strip() or reg_org
+            if identity is not None and requested_org != identity.tenant_id:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Registration tenant does not match workload identity",
+                )
             if tenancy_mode() == "single" and requested_org != reg_org:
                 raise HTTPException(
                     status_code=403,
@@ -327,6 +338,8 @@ async def gateway_register(
         raise
     except Exception:
         pass
+    if identity is not None:
+        reg_org = identity.tenant_id
 
     if not callback_url and is_production():
         raise HTTPException(
@@ -357,6 +370,13 @@ async def gateway_register(
         # Keep the endpoint current — a gateway may restart on a new port, or an
         # earlier portless auto-register needs correcting so pushes can reach it.
         gateway.endpoint = callback_url
+
+    require_gateway_claim(
+        request,
+        gateway_id,
+        tenant_id=gateway.org_id or reg_org,
+    )
+    await bind_gateway_identity(db, gateway, identity)
 
     gateway.status = "healthy"
     gateway.last_heartbeat = datetime.now(timezone.utc)
@@ -398,11 +418,16 @@ async def gateway_register(
 
 
 @router.post("/{gateway_id}/heartbeat")
-async def gateway_heartbeat(gateway_id: str, db: AsyncSession = Depends(get_db)):
+async def gateway_heartbeat(
+    gateway_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
     """Gateway heartbeat every 30s. Returns pending config changes if any."""
     gateway = await db.get(Gateway, gateway_id)
     if not gateway:
         raise HTTPException(status_code=404, detail="Gateway not found")
+    await authorize_gateway(request, db, gateway_id, gateway=gateway)
 
     was_unhealthy = gateway.status != "healthy"
     gateway.status = "healthy"
@@ -452,7 +477,7 @@ async def get_config_bundle(
 ):
     """Returns full current config for a gateway."""
     if getattr(request.state, "machine_authenticated", False):
-        gateway = await db.get(Gateway, gateway_id)
+        gateway = await authorize_gateway(request, db, gateway_id)
     else:
         gateway = await get_scoped(db, Gateway, gateway_id, org)
     if not gateway:
@@ -531,9 +556,17 @@ async def push_config_lifecycle(
 
 
 @router.get("/{gateway_id}/spend")
-async def get_gateway_spend(gateway_id: str, db: AsyncSession = Depends(get_db)):
+async def get_gateway_spend(
+    gateway_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+):
     """Return the gateway's durable per-agent spend snapshot."""
-    gateway = await db.get(Gateway, gateway_id)
+    if getattr(request.state, "machine_authenticated", False):
+        gateway = await authorize_gateway(request, db, gateway_id)
+    else:
+        gateway = await get_scoped(db, Gateway, gateway_id, org)
     if gateway is None:
         raise HTTPException(status_code=404, detail="Gateway not found")
     return {"spend": (gateway.config or {}).get("agent_spend", {})}
@@ -547,6 +580,7 @@ async def set_gateway_spend(
     gateway = await db.get(Gateway, gateway_id)
     if gateway is None:
         raise HTTPException(status_code=404, detail="Gateway not found")
+    await authorize_gateway(request, db, gateway_id, gateway=gateway)
     body = await request.json()
     spend = body.get("spend", {}) if isinstance(body, dict) else {}
     if not isinstance(spend, dict):

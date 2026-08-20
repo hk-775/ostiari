@@ -14,6 +14,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.auth.dependencies import get_current_org
+from control_plane.auth.workload import authorize_reported_gateway
 from control_plane.database import get_db
 from control_plane.models.database import Gateway, UsageRecord
 from control_plane.models.scoping import get_scoped, scoped
@@ -318,7 +319,7 @@ async def create_quota(
 
 
 @router.post("/alerts")
-async def ingest_budget_alert(body: BudgetAlert):
+async def ingest_budget_alert(request: Request, body: BudgetAlert):
     """Receive a budget threshold crossing (80/90/100%) from a gateway.
 
     Unauthenticated gateway path, like payment/approval ingest: the org comes from
@@ -329,6 +330,7 @@ async def ingest_budget_alert(body: BudgetAlert):
     from control_plane.models.scoping import org_of_gateway
 
     async with async_session() as db:
+        await authorize_reported_gateway(request, db, body.gateway_id)
         alert_org = await org_of_gateway(db, body.gateway_id)
         if not body.event_id:
             body.event_id = uuid.uuid4().hex

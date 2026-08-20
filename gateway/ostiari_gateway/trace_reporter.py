@@ -7,7 +7,6 @@ and restores on gateway startup.
 import asyncio
 import contextlib
 import logging
-import os
 import time
 import uuid
 from datetime import datetime, timezone
@@ -16,6 +15,7 @@ from typing import Any
 import httpx
 
 from ostiari_gateway.event_outbox import EventOutbox, scoped_stream
+from ostiari_gateway.workload_identity import machine_headers
 
 log = logging.getLogger("ostiari.sidecar.traces")
 
@@ -63,14 +63,12 @@ class TraceReporter:
         )
 
     @staticmethod
-    def _service_headers() -> dict[str, str]:
-        token = os.environ.get("OSTIARI_SERVICE_TOKEN", "").strip()
-        return {"X-Ostiari-Service-Key": token} if token else {}
+    async def _service_headers() -> dict[str, str]:
+        return await machine_headers()
 
     @staticmethod
-    def _ingest_headers() -> dict[str, str]:
-        key = os.environ.get("OSTIARI_INGEST_KEY", "").strip()
-        return {"X-Ingest-Key": key} if key else {}
+    async def _ingest_headers() -> dict[str, str]:
+        return await machine_headers(legacy="ingest")
 
     def configure(self, control_plane_url: str, sidecar_id: str) -> None:
         self._trace_outbox.rebind(scoped_stream("traces", sidecar_id))
@@ -163,7 +161,7 @@ class TraceReporter:
             self._trace_outbox,
             lock=self._flush_locks["traces"],
             path="/api/traces/ingest",
-            headers=self._ingest_headers(),
+            headers=await self._ingest_headers(),
             label="trace",
         )
 
@@ -209,7 +207,7 @@ class TraceReporter:
             self._payment_outbox,
             lock=self._flush_locks["payments"],
             path="/api/payments/ingest",
-            headers=self._service_headers(),
+            headers=await self._service_headers(),
             label="payment",
         )
 
@@ -244,7 +242,7 @@ class TraceReporter:
             self._alert_outbox,
             lock=self._flush_locks["budget_alerts"],
             path="/api/quotas/alerts",
-            headers=self._service_headers(),
+            headers=await self._service_headers(),
             label="budget alert",
         )
 
@@ -323,7 +321,7 @@ class TraceReporter:
                     "reset": pending_reset_at is not None,
                     "reset_at": pending_reset_at,
                 },
-                headers=self._service_headers(),
+                headers=await self._service_headers(),
             )
             response.raise_for_status()
             if self._pending_reset_at == pending_reset_at:
@@ -342,7 +340,7 @@ class TraceReporter:
         try:
             resp = await self._client.get(
                 f"{self._url}/api/gateways/{self._sidecar_id}/spend",
-                headers=self._service_headers(),
+                headers=await self._service_headers(),
             )
             if resp.status_code == 200:
                 data = resp.json()

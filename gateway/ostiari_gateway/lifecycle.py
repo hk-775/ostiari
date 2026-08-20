@@ -3,10 +3,11 @@
 import asyncio
 import contextlib
 import logging
-import os
 from typing import Any
 
 import httpx
+
+from ostiari_gateway.workload_identity import machine_headers
 
 log = logging.getLogger("ostiari.lifecycle")
 
@@ -25,9 +26,8 @@ class LifecycleManager:
         self._config_callback: Any = None
 
     @staticmethod
-    def _headers() -> dict[str, str]:
-        token = os.environ.get("OSTIARI_SERVICE_TOKEN", "").strip()
-        return {"X-Ostiari-Service-Key": token} if token else {}
+    async def _headers() -> dict[str, str]:
+        return await machine_headers()
 
     @property
     def gateway_id(self) -> str:
@@ -43,7 +43,11 @@ class LifecycleManager:
         # Advertise our callback URL so the control plane can push config back.
         body = {"callback_url": self._callback_url} if self._callback_url else {}
         try:
-            resp = await self._client.post(url, json=body, headers=self._headers())
+            resp = await self._client.post(
+                url,
+                json=body,
+                headers=await self._headers(),
+            )
             resp.raise_for_status()
             data = resp.json()
             log.info(f"Registered with control plane: {self._cp_url}")
@@ -83,7 +87,10 @@ class LifecycleManager:
         while True:
             await asyncio.sleep(interval)
             try:
-                resp = await self._client.post(url, headers=self._headers())
+                resp = await self._client.post(
+                    url,
+                    headers=await self._headers(),
+                )
                 if resp.status_code == 200:
                     data = resp.json()
                     # Apply config if the CP sent updates (reconnect or queued)
@@ -102,7 +109,7 @@ class LifecycleManager:
     async def pull_config(self) -> dict[str, Any]:
         """GET /api/gateways/{id}/config-bundle — fetch full config."""
         url = f"{self._cp_url}/api/gateways/{self._gateway_id}/config-bundle"
-        resp = await self._client.get(url, headers=self._headers())
+        resp = await self._client.get(url, headers=await self._headers())
         resp.raise_for_status()
         bundle = resp.json()
         if self._config_callback:

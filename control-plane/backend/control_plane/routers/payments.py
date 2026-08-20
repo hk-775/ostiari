@@ -19,6 +19,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.auth.dependencies import get_current_org
+from control_plane.auth.workload import authorize_reported_gateway
 from control_plane.database import get_db
 from control_plane.models.database import Gateway, PaymentRecord, Wallet
 from control_plane.models.scoping import get_scoped, org_of_gateway, scoped, stamp
@@ -79,7 +80,11 @@ class PaymentIngest(BaseModel):
 # ─── Ingest (from gateways) ──────────────────────────────────────────────────
 
 @router.post("/ingest")
-async def ingest_payment(body: PaymentIngest, db: AsyncSession = Depends(get_db)):
+async def ingest_payment(
+    body: PaymentIngest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
     """Record a charge reported by a gateway; mirror the settled balance in DB.
 
     The gateway authorizes against its local/shared policy wallet and reports
@@ -87,8 +92,8 @@ async def ingest_payment(body: PaymentIngest, db: AsyncSession = Depends(get_db)
     wallet is decremented when that allowance was consumed, which can be true
     for an unconfirmed live attempt without falsely marking it settled.
     """
-    # Unauthenticated gateway path — org comes from the reporting gateway's row
-    # (default when the gateway is unknown/empty), not a user token.
+    await authorize_reported_gateway(request, db, body.gateway_id)
+    # The org comes from the reporting gateway's row, never the payload.
     rec_org = await org_of_gateway(db, body.gateway_id)
     record, created = await _upsert_payment(db, body, rec_org)
     if created and record.wallet_debited:

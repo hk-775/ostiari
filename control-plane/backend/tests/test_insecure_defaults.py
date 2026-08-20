@@ -27,8 +27,16 @@ def _secure_production_env(monkeypatch):
     )
     monkeypatch.setenv("OSTIARI_JWT_SECRET", "j" * 40)
     monkeypatch.setenv("OSTIARI_ADMIN_PASSWORD", "a" * 20)
-    monkeypatch.setenv("OSTIARI_INGEST_KEY", "i" * 40)
-    monkeypatch.setenv("OSTIARI_SERVICE_TOKEN", "s" * 40)
+    monkeypatch.delenv("OSTIARI_INGEST_KEY", raising=False)
+    monkeypatch.delenv("OSTIARI_SERVICE_TOKEN", raising=False)
+    monkeypatch.setenv(
+        "OSTIARI_WORKLOAD_OIDC_ISSUER",
+        "https://workload.example.com",
+    )
+    monkeypatch.setenv(
+        "OSTIARI_WORKLOAD_OIDC_AUDIENCE",
+        "ostiari-control-plane",
+    )
     monkeypatch.setenv("OSTIARI_CONFIG_ADMIN_KEY", "c" * 40)
     monkeypatch.setenv("OSTIARI_GATEWAY_AGENT_TOKEN", "g" * 40)
     monkeypatch.setenv("OSTIARI_GATEWAY_AGENT_ID", "control-plane")
@@ -90,6 +98,22 @@ class TestProductionPosture:
         _secure_production_env(monkeypatch)
         monkeypatch.delenv("OSTIARI_GATEWAY_CALLBACK_ALLOW")
         with pytest.raises(RuntimeError, match="OSTIARI_GATEWAY_CALLBACK_ALLOW"):
+            validate_production_posture()
+
+    def test_workload_oidc_is_required(self, monkeypatch):
+        from control_plane.env import validate_production_posture
+
+        _secure_production_env(monkeypatch)
+        monkeypatch.delenv("OSTIARI_WORKLOAD_OIDC_ISSUER")
+        with pytest.raises(RuntimeError, match="OSTIARI_WORKLOAD_OIDC_ISSUER"):
+            validate_production_posture()
+
+    def test_legacy_machine_credentials_are_rejected(self, monkeypatch):
+        from control_plane.env import validate_production_posture
+
+        _secure_production_env(monkeypatch)
+        monkeypatch.setenv("OSTIARI_SERVICE_TOKEN", "legacy-secret")
+        with pytest.raises(RuntimeError, match="legacy shared credential"):
             validate_production_posture()
 
 
@@ -173,15 +197,19 @@ class TestIngest:
         r = await client.post("/api/traces/ingest", json={"action": "x", "tier": "allow"})
         assert r.status_code == 200
 
-    async def test_prod_ingest_requires_key(self, client, monkeypatch):
+    async def test_prod_ingest_requires_workload_identity(
+        self,
+        client,
+        monkeypatch,
+    ):
         monkeypatch.setenv("OSTIARI_ENV", "production")
         monkeypatch.delenv("OSTIARI_INGEST_KEY", raising=False)
         r = await client.post("/api/traces/ingest", json={"action": "x", "tier": "allow"})
         assert r.status_code == 401
 
-    async def test_prod_ingest_with_key_ok(self, client, monkeypatch):
+    async def test_prod_ingest_rejects_legacy_key(self, client, monkeypatch):
         monkeypatch.setenv("OSTIARI_ENV", "production")
         monkeypatch.setenv("OSTIARI_INGEST_KEY", "sekret")
         r = await client.post("/api/traces/ingest", json={"action": "x", "tier": "allow"},
                               headers={"X-Ingest-Key": "sekret"})
-        assert r.status_code == 200
+        assert r.status_code == 401

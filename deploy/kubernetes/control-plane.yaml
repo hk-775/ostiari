@@ -82,6 +82,10 @@ spec:
               value: "https://REPLACE_API_HOST/api/auth/sso/callback"
             - name: OIDC_DEFAULT_ROLE
               value: "viewer"
+            - name: OSTIARI_WORKLOAD_OIDC_ISSUER
+              value: "https://REPLACE_WORKLOAD_ISSUER"
+            - name: OSTIARI_WORKLOAD_OIDC_AUDIENCE
+              value: "ostiari-control-plane"
             - name: OSTIARI_GATEWAY_AGENT_ID
               value: "control-plane"
             - name: OSTIARI_BROKER_BILLING
@@ -103,16 +107,6 @@ spec:
                 secretKeyRef:
                   name: ostiari-secrets
                   key: admin-password
-            - name: OSTIARI_INGEST_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: ostiari-secrets
-                  key: ingest-key
-            - name: OSTIARI_SERVICE_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: ostiari-secrets
-                  key: service-token
             - name: OSTIARI_CONFIG_ADMIN_KEY
               valueFrom:
                 secretKeyRef:

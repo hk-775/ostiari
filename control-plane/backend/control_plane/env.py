@@ -73,14 +73,28 @@ def validate_production_posture() -> None:
     for name, minimum in (
         ("OSTIARI_JWT_SECRET", 32),
         ("OSTIARI_ADMIN_PASSWORD", 16),
-        ("OSTIARI_INGEST_KEY", 32),
-        ("OSTIARI_SERVICE_TOKEN", 32),
         ("OSTIARI_CONFIG_ADMIN_KEY", 32),
         ("OSTIARI_GATEWAY_AGENT_TOKEN", 32),
     ):
         value = os.environ.get(name, "").strip()
         if len(value) < minimum:
             errors.append(f"{name} must be set and at least {minimum} characters")
+
+    workload_issuer = os.environ.get(
+        "OSTIARI_WORKLOAD_OIDC_ISSUER",
+        "",
+    ).strip()
+    if urlparse(workload_issuer).scheme != "https" or not urlparse(
+        workload_issuer
+    ).netloc:
+        errors.append("OSTIARI_WORKLOAD_OIDC_ISSUER must be an HTTPS issuer")
+    if not os.environ.get("OSTIARI_WORKLOAD_OIDC_AUDIENCE", "").strip():
+        errors.append("OSTIARI_WORKLOAD_OIDC_AUDIENCE must be set")
+    for name in ("OSTIARI_SERVICE_TOKEN", "OSTIARI_INGEST_KEY"):
+        if os.environ.get(name, "").strip():
+            errors.append(
+                f"{name} is a legacy shared credential and may not be set in production"
+            )
 
     if not os.environ.get("OSTIARI_GATEWAY_AGENT_ID", "").strip():
         errors.append("OSTIARI_GATEWAY_AGENT_ID must be set")

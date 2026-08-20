@@ -258,7 +258,9 @@ jobs:
             --set image.digest="sha256:$(printf 'a%.0s' {1..64})" \
             --set gateway.tenantId="production-org" \
             --set gateway.oidcIssuer="https://issuer.example.com" \
-            --set gateway.oidcAudience="ostiari-gateway"
+            --set gateway.oidcAudience="ostiari-gateway" \
+            --set workloadIdentity.tokenUrl="https://issuer.example.com/oauth2/token" \
+            --set workloadIdentity.clientId="gateway-production"
           ! rg 'image:\\s+[^#\\n]*:latest' deploy
 
       - name: Build production images

@@ -5,7 +5,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane import broker_pilot
 from control_plane.auth.dependencies import get_current_org
+from control_plane.auth.workload import authorize_reported_gateway
 from control_plane.database import get_db
 from control_plane.models.database import DEFAULT_ORG, UsageRecord
 from control_plane.models.schemas import CostSummary, UsageRecordCreate, UsageRecordResponse
@@ -44,8 +45,13 @@ def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
 
 
 @router.post("/record", response_model=UsageRecordResponse)
-async def record_usage(body: UsageRecordCreate, db: AsyncSession = Depends(get_db)):
+async def record_usage(
+    body: UsageRecordCreate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
     """Record a usage event from a gateway (called after each LLM invocation)."""
+    await authorize_reported_gateway(request, db, body.gateway_id)
     org = await org_of_gateway(db, body.gateway_id)
     record, created = await _upsert_usage(db, body, org)
     if created:
@@ -229,7 +235,11 @@ async def _collect_broker_charge(record: UsageRecord, org: str) -> str | None:
 
 
 @router.post("/record/batch")
-async def record_usage_batch(records: list[UsageRecordCreate], db: AsyncSession = Depends(get_db)):
+async def record_usage_batch(
+    records: list[UsageRecordCreate],
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
     """Record, debit, and bill a retry-safe batch of usage events."""
     created = 0
     duplicates = 0
@@ -237,6 +247,7 @@ async def record_usage_batch(records: list[UsageRecordCreate], db: AsyncSession 
     processed: dict[int, tuple[UsageRecord, str]] = {}
     for body in records:
         if body.gateway_id not in org_cache:
+            await authorize_reported_gateway(request, db, body.gateway_id)
             org_cache[body.gateway_id] = await org_of_gateway(db, body.gateway_id)
         org = org_cache[body.gateway_id]
         record, was_created = await _upsert_usage(db, body, org)
