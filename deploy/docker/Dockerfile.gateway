@@ -15,6 +15,13 @@ COPY pyproject.toml README.md ./
 COPY src/ src/
 RUN pip install --no-cache-dir .
 
+COPY vendor/axonllm/pyproject.toml vendor/axonllm/README.md \
+     vendor/axonllm/LICENSE vendor/axonllm/THIRD_PARTY_NOTICES.md \
+     vendor/axonllm/
+COPY vendor/axonllm/axonllm/ vendor/axonllm/axonllm/
+COPY vendor/axonllm/src/ vendor/axonllm/src/
+RUN pip install --no-cache-dir "./vendor/axonllm[server]"
+
 COPY gateway/pyproject.toml gateway/
 COPY gateway/ostiari_gateway/ gateway/ostiari_gateway/
 RUN pip install --no-cache-dir "./gateway[payments,redis]"
@@ -23,10 +30,13 @@ FROM python:3.12-alpine@sha256:4b5b91c1040aeb90137a7ed5235e3caf7a1a45da015066c53
 
 ENV VIRTUAL_ENV=/opt/venv
 ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
+ENV OSTIARI_AXON_ROOT=/opt/axonllm
 
 WORKDIR /app
 
 COPY --from=builder /opt/venv /opt/venv
+COPY vendor/axonllm/config/ /opt/axonllm/config/
+COPY vendor/axonllm/LICENSE vendor/axonllm/THIRD_PARTY_NOTICES.md /opt/axonllm/
 
 RUN addgroup -S -g 10001 ostiari \
     && adduser -S -D -H -u 10001 -G ostiari ostiari

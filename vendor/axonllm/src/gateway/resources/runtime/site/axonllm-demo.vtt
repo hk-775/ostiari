@@ -1,0 +1,89 @@
+WEBVTT
+
+1
+00:00:00.000 --> 00:00:08.006
+Most teams reach a point where language models are running in five places, on three vendors, with no shared record of what any of it costs.
+
+2
+00:00:08.006 --> 00:00:10.540
+AxonLLM is a control plane for that problem.
+
+3
+00:00:10.540 --> 00:00:16.048
+AxonLLM configures 51 models across thirteen provider adapters.
+
+4
+00:00:16.048 --> 00:00:19.010
+Forty-six are production-price-ready with shipped pricing, all behind one OpenAI-compatible wire format.
+
+5
+00:00:19.010 --> 00:00:32.019
+Every request crosses the same fifteen stages: authentication, injection scanning, PII redaction, then the quota hierarchy of organisation, business unit, project and environment.
+
+6
+00:00:32.019 --> 00:00:36.670
+The budget check happens before a provider is billed, not after.
+
+7
+00:00:36.670 --> 00:00:39.290
+Adopting it is a one-line change.
+
+8
+00:00:39.290 --> 00:00:46.040
+You keep the OpenAI SDK your code already uses and point its base URL at the gateway.
+
+9
+00:00:46.040 --> 00:00:48.740
+No new client library, no rewrite.
+
+10
+00:00:48.740 --> 00:00:59.040
+Behind that one endpoint sit thirteen adapters — Bedrock, Anthropic, OpenAI, Google and the rest — each translated to a common format, including tool calls and streaming.
+
+11
+00:00:59.040 --> 00:01:07.750
+This is the operator's view of a running gateway: 66 requests, $1.26 of spend, and an 87.5% cache hit rate across two projects.
+
+12
+00:01:07.750 --> 00:01:16.940
+Ten providers, health-checked continuously, so cost and availability are things you watch, not things you reconstruct from an invoice.
+
+13
+00:01:16.940 --> 00:01:27.695
+Every call is recorded individually: which model answered, which provider served it, the user it belonged to, tokens, cost and latency — averaging about 1.4 seconds here.
+
+14
+00:01:27.695 --> 00:01:32.250
+This is the audit trail, and it is one trail for all thirteen providers.
+
+15
+00:01:32.250 --> 00:01:34.868
+The catalogue is where routing is configured.
+
+16
+00:01:34.868 --> 00:01:43.245
+Each model carries its own strategy — least-latency, cost-optimised or round-robin — and its own ordered list of providers to fall back through.
+
+17
+00:01:43.245 --> 00:01:46.910
+Changing how traffic is routed does not touch application code.
+
+18
+00:01:46.910 --> 00:01:49.803
+And this page is the one worth showing a sceptic.
+
+19
+00:01:49.803 --> 00:01:58.068
+Five of 55 provider mappings lack verified prices, so production excludes them from routing.
+
+20
+00:01:58.068 --> 00:02:02.850
+That leaves 46 of 51 configured models production-price-ready, and makes the gap visible.
+
+21
+00:02:02.850 --> 00:02:05.973
+One API, every model, full control.
+
+22
+00:02:05.973 --> 00:02:13.290
+AxonLLM is open source under MIT-0, and runs with a single docker compose command.

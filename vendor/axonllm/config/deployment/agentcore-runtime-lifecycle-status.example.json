@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "plan_id": "sha256:da458067308c9ba70aa737f4a401d09519edc62c8bc0572db43e7717edf31e98",
+  "observed_at": "2026-08-16T22:00:00Z",
+  "account_id": "123456789012",
+  "partition": "aws",
+  "region": "us-east-1",
+  "operation": "park",
+  "desired_state": "parked",
+  "runtime": {
+    "stack_name": "AxonLLMAgentCoreStack",
+    "stack_status": "UPDATE_COMPLETE",
+    "template_sha256": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "runtime_count": 0,
+    "ready_runtime_count": 0,
+    "endpoint_count": 0,
+    "ready_endpoint_count": 0
+  },
+  "managed_network": {
+    "stack_name": "AxonLLMManagedNetworkStack",
+    "stack_status": "UPDATE_COMPLETE",
+    "template_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+    "vpc_count": 0,
+    "subnet_count": 0,
+    "nat_gateway_count": 0,
+    "vpc_endpoint_count": 0
+  },
+  "retained_stacks": [
+    {
+      "kind": "application-state",
+      "stack_name": "AxonLLMApplicationStateStack",
+      "stack_status": "UPDATE_COMPLETE",
+      "stack_state_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "kind": "identity",
+      "stack_name": "AxonLLMIdentityStack",
+      "stack_status": "UPDATE_COMPLETE",
+      "stack_state_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "kind": "control-plane",
+      "stack_name": "AxonLLMServerlessControlPlaneStack",
+      "stack_status": "UPDATE_COMPLETE",
+      "stack_state_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    {
+      "kind": "workers",
+      "stack_name": "AxonLLMServerlessWorkersStack",
+      "stack_status": "UPDATE_COMPLETE",
+      "stack_state_sha256": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  ],
+  "control_plane": {
+    "available": true,
+    "administration_probe_passed": true,
+    "runtime_health": "not-applicable"
+  }
+}

@@ -1,8 +1,8 @@
-"""Model router — selects LLM based on control plane rules + AxonLLM smart routing.
+"""Ostiari policy router for control-plane model selection.
 
-When AxonLLM is available, uses its TaskClassifier and SmartRoutingStrategy
-for intent-aware model selection. Falls back to simple rule evaluation
-if AxonLLM is not installed.
+This layer applies operator-owned policy: per-agent rotation, experiments,
+explicit conditions, and keyword categories. AxonLLM performs health-aware
+provider selection and smart/ensemble routing after this policy step.
 
 Supports A/B experiments: percentage-based traffic splitting between models.
 """
@@ -19,47 +19,19 @@ log = logging.getLogger("ostiari.sidecar.llm")
 class ModelRouter:
     """Selects which LLM model to use based on routing rules.
 
-    Supports two modes:
-    1. Simple rule evaluation (always available)
-    2. AxonLLM smart routing with task classification (when installed)
+    Smart task classification belongs to the embedded Axon router. Keeping that
+    work out of this class avoids constructing a second private Axon routing
+    stack and keeps Ostiari's control-plane policy deterministic.
     """
 
     def __init__(self, config: LLMConfig) -> None:
         self._config = config
-        self._smart_router: Any = None
-        self._task_classifier: Any = None
         # Round-robin state: per-agent request counter, and per-session sticky pick.
         self._rr_counter: dict[str, int] = {}
         self._session_pick: dict[str, str] = {}
-        self._init_smart_routing()
 
     def update_config(self, config: LLMConfig) -> None:
         self._config = config
-        self._init_smart_routing()
-
-    def _init_smart_routing(self) -> None:
-        """Initialize AxonLLM's smart routing (task classification).
-
-        AxonLLM imports itself as ``src.gateway``, but its editable install puts
-        ``<root>/src`` on sys.path — so the root has to be added first or the
-        import can never succeed. Same ordering trap that kept AxonRouter
-        permanently unavailable; ``_prepare_axon_path`` is shared with it.
-
-        A failure here degrades to explicit rules + default model, and is logged
-        (a silent no-op previously hid a broken embed).
-        """
-        from ostiari_gateway.modules.llm_gateway.axon_router import _prepare_axon_path
-
-        try:
-            _prepare_axon_path()
-            from src.gateway.task_classifier import TaskClassifier
-
-            self._task_classifier = TaskClassifier()
-            log.info("AxonLLM TaskClassifier embedded — smart routing active")
-        except ImportError as e:
-            self._task_classifier = None
-            log.warning("AxonLLM not importable (%s) — smart routing disabled, "
-                        "falling back to rules/default", e)
 
     def select_model(self, context: dict[str, Any]) -> str:
         """Select a model based on routing rules and context.
@@ -69,8 +41,11 @@ class ModelRouter:
         2. A/B experiments (percentage-based split)
         3. Explicit control plane rules (condition matching)
         4. Operator-defined keyword classification
-        5. AxonLLM smart routing (task classification) if available
-        6. Default model
+        5. Default model
+
+        The selected model is subsequently handed to AxonLLM. When the selected
+        name is absent from Axon's catalog, the embedded router smart-routes the
+        request through its own public routing API.
         """
         # Per-agent model-rotation policy takes precedence: an operator opting an
         # agent into round-robin means "spread this agent across these LLMs".
@@ -92,18 +67,6 @@ class ModelRouter:
         classified = self._check_task_classification(context)
         if classified is not None:
             return classified
-
-        # Try AxonLLM smart routing based on message content
-        if self._task_classifier and "messages" in context:
-            messages = context["messages"]
-            if messages:
-                last_msg = messages[-1].get("content", "") if isinstance(messages[-1], dict) else ""
-                if last_msg:
-                    result = self._task_classifier.classify(last_msg)
-                    model = self._task_type_to_model(result.task_type)
-                    if model:
-                        log.debug("Smart routing: task=%s → %s", result.task_type, model)
-                        return model
 
         return self._config.default_model
 
@@ -238,14 +201,6 @@ class ModelRouter:
              "traffic_pct_b": e.traffic_pct_b, "enabled": e.enabled}
             for e in self._config.ab_experiments
         ]
-
-    def _task_type_to_model(self, task_type: str) -> str | None:
-        """Map AxonLLM task types to models (configurable via routing rules)."""
-        # Check if there's a rule for this task type
-        for rule in self._config.routing_rules:
-            if rule.condition == f"task_type == '{task_type}'":
-                return rule.model
-        return None
 
     def get_fallback_chain(self, primary: str) -> list[str]:
         """Get the fallback chain starting after the primary model."""

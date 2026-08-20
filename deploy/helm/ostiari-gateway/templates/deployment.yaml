@@ -83,7 +83,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.secrets.existingSecret }}
-                  key: x402-private-key
+                  key: x402-private-key # gitleaks:allow - Kubernetes Secret key name
                   optional: {{ ne .Values.payments.x402Mode "live" }}
             - name: OSTIARI_X402_ALLOWED_ASSETS
               valueFrom:

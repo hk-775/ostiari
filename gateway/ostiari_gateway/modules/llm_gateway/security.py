@@ -2,13 +2,11 @@
 
 Backed by ``ostiari.detect``, Ostiari's own detection engine.
 
-This used to wrap AxonLLM's ``src.gateway.security.*``. That package is an
-optional, separately-installed dependency (``uv pip install -e ../AxonLLM``) and
-in practice it is usually absent — the running gateway logs
-``No module named 'src'`` at startup. Both controls therefore failed closed
-forever: enabling PII redaction or injection detection blocked *every* request,
-so nobody enabled them, so the gateway shipped with no content controls at all.
-A control that can only ever say "no" is not a control.
+This used to wrap AxonLLM's private ``src.gateway.security.*`` modules. Ostiari
+now bundles AxonLLM for routing, but content controls remain an Ostiari-owned
+host responsibility and use the stable ``ostiari.detect`` API. Keeping that
+boundary prevents routing-library internals from becoming part of Ostiari's
+security contract.
 
 ``ostiari.detect`` is part of the ``ostiari`` package, which is a hard dependency
 of this gateway (see ``pyproject.toml``), so the engine is always importable and

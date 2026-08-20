@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Server, Wrench, FileText, ArrowUpRight, Plug } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { api, Gateway } from "../lib/api";
 
 const STAT_COLORS = [

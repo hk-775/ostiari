@@ -1,252 +1,171 @@
-# AxonLLM as Ostiari's embedded LLM router
+# AxonLLM as Ostiari's embedded router
 
-Ostiari **governs** (auth, injection, quota, trace, HITL) and delegates the
-**routing of the actual model call** to AxonLLM's in-process `GatewayAgent`.
-AxonLLM owns model/provider selection, health-aware fallback, cost tracking,
-smart (task-classification) routing, ensemble, and concrete provider-route
-selection. There is **no extra network hop** — it is one Python call inside the
-gateway process.
-
-```
-Claude Code / caller
-   │  ① HTTP → Ostiari gateway   (govern: auth, injection, quota, trace)
-   │      in-process (no network):
-   │        AxonRouter → build_gateway_agent().handle_chat_completion(req, ctx)
-   │          → smart / ensemble / health-aware fallback, picks model + provider
-   │          → route pool picks credential + endpoint + pooled transport
-   │  ② the ONE outbound LLM call (Anthropic | Bedrock | OpenAI | …)
-   ◀── response → (translated) → caller
-```
-
-Two hops total, both irreducible (client→Ostiari, Ostiari→LLM). AxonLLM sits in
-the middle as embedded code, not a service.
-
-## AxonLLM is optional to install, but load-bearing when absent
-
-Routing governance and **token cost tracking** happen inside AxonLLM. A gateway
-running without it answers every request and reports healthy while enforcing none
-of that — which is precisely how it ran unnoticed for a while (see *Import
-ordering* below). That invisibility is the actual defect, so the dependency is
-checked once, loudly, at startup:
-
-```
-WARNING AxonLLM could not be embedded (ModuleNotFoundError: No module named
-'src'): routing governance and token cost tracking happen in AxonLLM, so LLM
-calls return 200s while enforcing neither. Install AxonLLM (pip install -e
-/path/to/AxonLLM) or point OSTIARI_AXON_ROOT at its checkout. Continuing WITHOUT
-AxonLLM: LLM calls take the direct provider path with NO routing governance and
-NO token cost tracking. GET /health reports llm_router for the machine-readable
-version. Set OSTIARI_REQUIRE_AXON=1 to refuse to start instead.
-```
-
-A warning and not a refusal, because AxonLLM is a separate repository and isn't
-on PyPI: requiring it makes it a *deployment* dependency of every gateway, CI
-runner, and contributor checkout — including the ones that only ever proxy tools
-and never make an LLM call. **Set `OSTIARI_REQUIRE_AXON=1` in production**, where
-silently ungoverned LLM traffic is not an acceptable degradation.
-
-`GET /health` reports the state under `llm_router`, because "the gateway is up"
-and "LLM calls are governed" are different facts and nothing else in that payload
-distinguishes them:
-
-```json
-"llm_router": {"embedded": true, "root": "/path/to/AxonLLM",
-               "governed": true, "cost_tracking": true, "tools": true}
-```
-
-`/invoke` and `/v1/messages` also keep a direct-provider fallback for a *mid-flight*
-failure (one call, logged as a warning), which is not a supported way to run the
-gateway. `/v1/chat/completions` deliberately has none.
-
-## Where it's wired
-
-All three LLM entry points — the `/invoke` own-the-loop path, the Claude Code
-`/v1/messages` shim, and the Codex `/v1/chat/completions` shim. AxonLLM is the
-single routing authority across the gateway; every model call goes through
-`AxonRouter`, tool-bearing or not.
-
-- **`/invoke`** — full delegate, all modes (fallback / smart / ensemble).
-- **`/v1/messages` shim** — routes through AxonLLM in **single-response mode
-  (ensemble disabled)**, since Claude Code needs exactly one Anthropic response
-  per call to drive its tool loop. AxonLLM's OpenAI-shaped result is translated
-  back to Anthropic Messages format (and re-emitted as Anthropic SSE when
-  streaming). This means the shim's streaming is buffered-then-chunked rather
-  than token-by-token — the tradeoff for a single routing authority that also
-  gives the shim AxonLLM's cost tracking, model access control, and
-  health-aware fallback.
-- **`/v1/chat/completions` shim** — same single-response mode, but already in
-  AxonLLM's own OpenAI wire format, so no translation on either leg. This is the
-  only path with **no** direct-provider fallback: it returns 503 when AxonLLM is
-  unavailable rather than answering ungoverned.
-
-### Model names
-
-AxonLLM selects from its own registry (e.g. `claude-sonnet`), which does not use
-Anthropic's dated IDs (`claude-sonnet-4-6`). When a caller sends a concrete model,
-`AxonRouter.knows_model()` checks AxonLLM's registry: if known, it's honored; if not,
-the call **smart-routes** so AxonLLM picks a model it can actually serve. The client's
-requested model is advisory once AxonLLM is the authority.
-
-Both `/invoke` and the shim apply this guard. `/invoke` previously passed a configured
-default straight through, which 404'd inside AxonLLM whenever that default was a dated
-ID its registry didn't carry.
-
-### Tool calls route through AxonLLM
-
-Tool specs are carried through AxonLLM and translated into each provider's own
-dialect, so tool-using traffic gets the same routing governance and cost tracking
-as everything else. `AxonRouter.route()` forwards `tools` OpenAI-shaped.
-
-This was not always true, and the failure was silent: `ChatCompletionRequest` had
-no `tools` field, so a `tools` key in the request dict was dropped without error.
-The model was never told any tools existed and answered confidently that it had no
-database access — a response that looks successful and isn't. It was fixed at the
-source (in AxonLLM) rather than worked around, because every workaround meant
-routing that traffic outside the governed path.
-
-`supports_tools()` remains as a **version guard** — Ostiari doesn't pin an AxonLLM
-version, so it probes the dataclass for the field rather than assuming. Against an
-older checkout:
-
-- `/invoke` and the `/v1/messages` shim log a warning naming what's bypassed and
-  take the direct provider path, so the tool loop keeps working;
-- `/v1/chat/completions` (Codex) has no direct-provider fallback, so it returns
-  **501** rather than a fluent tool-free answer.
-
-See AxonLLM's own `tests/unit/adapters/test_tool_translation.py` for the
-per-dialect coverage. The translations are not symmetric:
-
-| | Tool spec | Assistant call | Tool result | Signals a call via |
-|---|---|---|---|---|
-| **OpenAI** | `tools[].function.parameters` | `tool_calls[]` | `role:"tool"` | `finish_reason:"tool_calls"` |
-| **Anthropic** | `tools[].input_schema` | `tool_use` block | `tool_result` block | `stop_reason:"tool_use"` |
-| **Bedrock Converse** | `toolConfig..toolSpec` | `toolUse` block | `toolResult` block | `stopReason:"tool_use"` |
-| **Gemini** | `functionDeclarations` | `functionCall` part | `functionResponse` part | *the part itself* — `finishReason` stays `STOP` |
-| **Cohere** | `parameter_definitions` | history `tool_calls` | top-level `tool_results` | `tool_calls` present |
-
-Two cross-cutting details bit during implementation and are worth knowing:
-
-- **arguments encoding** — OpenAI carries tool arguments as a JSON *string*; every
-  other dialect uses an object. Callers `json.loads()` the field, so it is
-  re-encoded at each boundary. Malformed model output yields `{}` rather than
-  failing the request — the tool reports the bad call.
-- **Gemini schema filtering** — Gemini *rejects* unknown JSON Schema keys
-  (`additionalProperties`, `$schema`, `title`, `default`) instead of ignoring
-  them, so schemas are filtered recursively rather than passed through.
-
-The tool list is also part of AxonLLM's cache key now: the same prompt sent with
-tools can return a tool call and sent without them returns prose, so omitting them
-served a cached tool-free reply to a request that needed a tool call.
-
-### Import ordering (why the router silently never loaded)
-
-AxonLLM's modules import each other as `src.gateway.*`, but its editable install
-puts `<root>/src` on `sys.path` — which makes `gateway` importable and
-`src.gateway` **not**. `_ensure()` used to `import src.gateway` to locate the
-checkout, then call `_axon_root()`, which imported `src.gateway` again: a
-chicken-and-egg that could never succeed. `available` was therefore always False,
-every call took the direct-provider fallback, and nothing looked wrong.
-
-The fix finds the root with `importlib.util.find_spec("gateway")` — no import — and
-inserts it into `sys.path` *before* importing. This is what the startup
-requirement above is guarding against recurring.
-
-### Errors are not silent
-
-AxonLLM signals failure by *returning* `{"error": …, "status_code": …}` rather than
-raising. Such a payload has no `choices`, so parsing it optimistically yielded
-`content=""` with 0 tokens — an empty HTTP 200 that read as a successful call.
-`_to_result` now raises on it, so the caller falls back to the direct provider path.
-
-## Routing modes (opt-in via `/invoke` context)
-
-`POST /invoke` body `context` flags select the mode (matching AxonLLM's contract):
-
-| Mode | Trigger | Behavior |
-|---|---|---|
-| **Fallback** | a concrete `model` | health-aware fallback across that model's backends |
-| **Smart** | `context.smart_routing = true` (or empty model) | task classifier → best model |
-| **Ensemble** | `context.ensemble = true` or `"<preset>"` | fan out to a panel, synthesize |
-
-```bash
-# smart routing
-curl -X POST localhost:8421/invoke -d '{"messages":[...],"context":{"smart_routing":true}}'
-# ensemble (default preset, or a named preset string)
-curl -X POST localhost:8421/invoke -d '{"messages":[...],"context":{"ensemble":true}}'
-```
-
-## Install / embed
-
-AxonLLM is installed editable alongside the gateway (its package root is
-`src.gateway`), plus `tiktoken`. The gateway boots without it (warning above), and
-`/v1/chat/completions` is the one endpoint that hard-requires it, but treat this as
-a required step for any deployment that makes LLM calls:
-
-```bash
-uv pip install -e ../AxonLLM tiktoken
-```
-
-`AxonRouter` locates AxonLLM's repo root (which holds its `config/` dir) via
-`importlib.util.find_spec`, without importing it, then transiently `chdir`s there
-while building the agent (AxonLLM resolves its config files relative to cwd) and
-restores cwd. Override the root with `OSTIARI_AXON_ROOT` if needed.
-
-## Controls / fallback
-
-| Variable | Effect |
-|---|---|
-| `OSTIARI_AXON_ROOT` | Point at AxonLLM's checkout when auto-detection can't find it. |
-| `OSTIARI_DISABLE_AXON_ROUTER=1` | Force the direct provider path — LLM calls then run **ungoverned and untracked**. Used by the deterministic `/invoke` unit tests. |
-| `OSTIARI_REQUIRE_AXON=1` | Refuse to start when AxonLLM can't embed, instead of warning. **Set this in production.** |
-
-On startup you'll see `AxonLLM embedded — routing governance active (root=…)`, or
-a warning naming what is no longer being enforced. Check `GET /health` →
-`llm_router` to confirm from outside the process.
-
-## Concrete provider routes
-
-The model router and route pool have separate responsibilities:
+Ostiari bundles AxonLLM `v0.3.1` and runs its public `AsyncRouter` API inside
+the gateway process. There is no Axon service and no additional network hop.
 
 ```text
-Ostiari policy and Axon model router
-  -> logical model/provider
-  -> Axon route pool
-  -> concrete credential, endpoint, region, and connection pool
+client
+  -> Ostiari gateway
+       identity -> authorization -> content security -> quota/budget
+       -> embedded AxonLLM routing
+       -> provider API
+       -> usage + trace reconciliation
+  <- governed response
 ```
 
-Ostiari stores the tenant's route catalog in the control-plane database. Private
-route material is encrypted and is never returned by list or runtime-health
-APIs. An administrator can manage routes on the Providers page and push the
-complete catalog to every LLM-enabled gateway. The gateway applies it atomically
-through `POST /config/provider-routes`; no restart is required.
+The exact upstream tag, commit, license, and refresh procedure are recorded in
+[`vendor/axonllm/UPSTREAM.md`](../vendor/axonllm/UPSTREAM.md). The upstream
+MIT-0 license and third-party notices are retained beside the source.
 
-AxonLLM measures each route independently and adapts its effective weight using
-recent errors, token-adjusted latency, current capacity, and recovery state.
-Route priority supplies explicit failover tiers. `capacity_group` prevents
-multiple keys for one provider account from being counted as independent
-capacity.
+## Ownership boundary
 
-Connection sessions are pooled by endpoint and transport policy, not by secret.
-Keys sharing one host can reuse TCP/TLS connections safely because credentials
-are attached per request. Endpoint, proxy, TLS, timeout, or pool-policy changes
-create a distinct pool.
+Ostiari owns:
 
-Failure handling is route-aware: authentication and billing failures quarantine
-that credential, throttling cools the route, and network/server failures penalize
-the endpoint. Axon's existing Router remains the retry-budget owner for ordinary
-calls; Ostiari does not start a second retry loop. True streams may rotate routes
-only while opening the stream and before the first chunk. They are never replayed
-after output begins.
+- verified agent identity and tenant boundaries;
+- model/provider authorization;
+- prompt-injection and PII controls;
+- request, token, and budget quotas;
+- human approval and tool governance;
+- durable usage, cost, trace, and lifecycle reporting;
+- control-plane configuration and encrypted route credentials.
 
-Runtime health is available from the gateway at
-`GET /config/provider-routes` and is aggregated by the control plane at
-`GET /api/providers/routes/runtime`. Both surfaces omit credentials, custom
-headers, and private parameters.
+AxonLLM owns the in-process routing data plane:
 
-## Notes
+- model and concrete provider-route selection;
+- health-aware provider fallback;
+- smart and ensemble routing;
+- provider-dialect translation, including tool calls;
+- provider connection pools and route health.
 
-- AxonLLM's provider layer uses the ambient cloud credentials — in this
-  environment it routed to **Bedrock** (`us.anthropic.claude-*`). Which provider
-  serves a model is AxonLLM's registry/config decision.
-- Governance is unaffected: Ostiari still runs auth/injection/quota/trace around
-  the routed call; only model/provider *selection and execution* is delegated.
+Ostiari does **not** initialize AxonLLM's standalone server, identity service,
+database, admin API, or background workers.
+
+## Installation and packaging
+
+A source checkout is self-contained:
+
+```bash
+make install
+```
+
+That installs:
+
+1. the Ostiari core package;
+2. the pinned `vendor/axonllm[server]` distribution;
+3. the gateway and control plane.
+
+The production gateway image installs the same source snapshot and copies its
+routing configuration to `/opt/axonllm`. CI verifies the installed package
+version, constructs the real router, and exercises the gateway suite with Axon
+enabled.
+
+The standalone `ostiari-gateway` wheel cannot name an unpublished local path in
+Python package metadata. If wheels are distributed separately, install the
+matching `axon-llm` wheel from the same release bundle beside it. Source and
+container installations do this automatically.
+
+## Production behavior
+
+The LLM module is optional; tool-only gateways do not construct AxonLLM.
+
+When `llm_gateway` is enabled:
+
+- `OSTIARI_ENV=production` makes AxonLLM mandatory automatically;
+- `OSTIARI_REQUIRE_AXON=1` applies the same fail-closed rule in other
+  environments;
+- startup fails when the bundled package or configuration cannot initialize;
+- a mid-flight Axon routing failure is returned as an error, not sent through a
+  direct-provider bypass.
+
+Development can deliberately exercise the diagnostic direct-provider path with
+`OSTIARI_DISABLE_AXON_ROUTER=1`. That mode is not a supported production
+posture.
+
+`GET /health` reports the router contract:
+
+```json
+{
+  "llm_router": {
+    "embedded": true,
+    "governed": true,
+    "cost_tracking": true,
+    "tools": true,
+    "root": "/opt/axonllm"
+  }
+}
+```
+
+Alert on `llm_router.governed` for an LLM-enabled gateway, not only the
+top-level process health.
+
+## Governed API surfaces
+
+All four LLM surfaces use the same embedded router:
+
+| Endpoint | Contract |
+|---|---|
+| `POST /invoke` | Ostiari owns the full model/tool loop; smart and ensemble modes are available. |
+| `POST /v1/messages` | Anthropic-compatible, single-response routing for clients that own their tool loop. |
+| `POST /v1/chat/completions` | OpenAI Chat Completions compatibility. |
+| `POST /v1/responses` | Stateless OpenAI Responses compatibility for text, image URL, and function-tool input. |
+
+The compatibility endpoints keep client-owned tool loops intact. Streaming is
+translated into the endpoint's wire format after the single routed response;
+it is not upstream token passthrough.
+
+The Responses endpoint rejects unsupported stateful/background fields such as
+`previous_response_id`, `conversation`, `prompt`, `store=true`, and
+`background=true`. It never silently ignores them.
+
+## Routing modes
+
+`POST /invoke` can select:
+
+| Mode | Trigger |
+|---|---|
+| Fallback | a concrete known model |
+| Smart | `context.smart_routing=true` or no model |
+| Ensemble | `context.ensemble=true` or a named preset |
+
+Ostiari applies agent policy, A/B experiments, configured rules, and defaults
+before the Axon call where those controls are part of the endpoint contract.
+Axon then selects a routable model/provider mapping and concrete route.
+
+## Model and provider configuration
+
+The initial router reads the bundled Axon files:
+
+- `config/models.yaml`
+- `config/providers.yaml` (or the bundled example)
+- `config/pricing.yaml`
+
+These can be overridden with:
+
+| Variable | Purpose |
+|---|---|
+| `OSTIARI_AXON_ROOT` | Compatible Axon config/source root; normally unnecessary. |
+| `AXON_MODELS_CONFIG` | Model registry file. |
+| `AXON_PROVIDERS_CONFIG` | Provider mapping file. |
+| `AXON_PRICING_CONFIG` | Pricing file. |
+| `AXON_BEDROCK_REGION` | Bedrock region override. |
+
+The control plane can atomically replace the model catalog and concrete
+provider routes without restarting the gateway. Runtime snapshots omit
+credentials and private headers.
+
+## Tool calls
+
+Ostiari forwards OpenAI-shaped tool definitions to AxonLLM. Axon translates
+them to the selected provider and normalizes tool calls back to Ostiari. The
+gateway refuses tool-bearing traffic if a substituted Axon package lacks the
+required tool fields; returning fluent tool-free output would be a silent
+contract violation.
+
+## Current compatibility boundary
+
+AxonLLM 0.3.1 exposes ordinary chat completions through its public API. Smart
+and ensemble strategy configuration still requires one isolated compatibility
+helper in `axon_router.py`. All request routing, catalog updates, route updates,
+availability queries, and shutdown use the public embedded API. The helper is
+covered by the exact-version pin and must be removed when upstream exposes
+those strategy hooks publicly.

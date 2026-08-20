@@ -13,10 +13,11 @@ network calls, no per-request cost.
 
 ## Why it's in-tree
 
-These controls previously came from AxonLLM (`src.gateway.security.*`), which is an
-**optional** editable install. Two things followed from that, and both were bugs:
+These controls previously came from private AxonLLM internals
+(`src.gateway.security.*`). Two things followed from that historical design,
+and both were bugs:
 
-1. In any deployment without AxonLLM — the normal case — the import failed and the
+1. In deployments without that separate checkout, the import failed and the
    detectors were never constructed.
 2. Because an enabled-but-unavailable control **fails closed** by design, turning on
    `pii_redaction` or `injection_detection` blocked *every* request, benign ones
@@ -99,7 +100,8 @@ surprises people:
 |---|---|
 | `POST /invoke` | Messages are redacted in place; the redacted set goes upstream, and the response is restored from the map. The agent never sees a failure. |
 | `POST /v1/messages` (Claude Code) | **403.** The proxy treats `pii_redacted` as equivalent to `blocked`. |
-| `POST /v1/chat/completions` (Codex) | **403**, same reason. |
+| `POST /v1/chat/completions` | **403**, same reason. |
+| `POST /v1/responses` | **403**, same reason. |
 
 The shims refuse rather than rewrite because each client drives its own tool loop
 off the exact text it sent; handing back a response derived from *different* text

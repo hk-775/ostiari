@@ -6,9 +6,10 @@ build-backend = "hatchling.build"
 name = "ostiari-gateway"
 version = "0.1.0"
 description = "Agent Gateway — validates, routes, and proxies agent tool calls"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "ostiari>=0.1.0",
+    "axon-llm[server]==0.3.1",
     "fastapi>=0.100",
     "uvicorn[standard]>=0.20",
     "httpx>=0.25",
@@ -20,15 +21,12 @@ dependencies = [
     "PyJWT[crypto]>=2.10",
 ]
 
-# AxonLLM provides the embedded routing engine (smart task-classification
-# routing, ensemble, multi-provider). It is imported as the ``src.gateway.*``
-# package and installed separately (editable, not on PyPI):
-#     uv pip install -e ../AxonLLM tiktoken
-# When absent, the gateway degrades gracefully: smart routing is disabled and
-# routing falls back to explicit rules + default model (logged at startup).
+# Source and container builds install the exact AxonLLM source bundled under
+# vendor/axonllm. Binary distribution publishes the matching axon-llm wheel
+# beside this gateway wheel.
 [project.optional-dependencies]
 routing = [
-    "tiktoken>=0.7",   # required by AxonLLM smart_routing token estimation
+    "tiktoken>=0.7",
 ]
 # Fleet-wide shared enforcement state (rate limit / budget / wallets) across
 # horizontally-scaled replicas. Without it the gateway runs fine with
@@ -44,3 +42,20 @@ payments = [
 
 [project.scripts]
 ostiari-gateway = "ostiari_gateway.main:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ostiari_gateway"]
+
+# AxonLLM's public wheel intentionally contains code, not deployment-specific
+# routing catalogs. Ostiari's gateway wheel carries the exact reviewed catalog
+# used by the embedded profile so a wheel-only install does not depend on a
+# source checkout or an operator-set OSTIARI_AXON_ROOT.
+[tool.hatch.build.targets.wheel.force-include]
+"../vendor/axonllm/config/models.yaml" = "ostiari_gateway/_embedded/axonllm/config/models.yaml"
+"../vendor/axonllm/config/providers.yaml.example" = "ostiari_gateway/_embedded/axonllm/config/providers.yaml.example"
+"../vendor/axonllm/config/pricing.yaml" = "ostiari_gateway/_embedded/axonllm/config/pricing.yaml"
+"../vendor/axonllm/config/leaderboard.yaml" = "ostiari_gateway/_embedded/axonllm/config/leaderboard.yaml"
+"../vendor/axonllm/config/ensemble.yaml" = "ostiari_gateway/_embedded/axonllm/config/ensemble.yaml"
+"../vendor/axonllm/LICENSE" = "ostiari_gateway/_embedded/axonllm/LICENSE"
+"../vendor/axonllm/THIRD_PARTY_NOTICES.md" = "ostiari_gateway/_embedded/axonllm/THIRD_PARTY_NOTICES.md"
+"../vendor/axonllm/UPSTREAM.md" = "ostiari_gateway/_embedded/axonllm/UPSTREAM.md"

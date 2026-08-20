@@ -54,6 +54,7 @@ dashboard-ui/dist/
 aidlc-docs/
 aidlc-rules/
 CLAUDE.md
+.kiro/
 
 # Research docs (not part of library)
 ai-agent-issues-research.*

@@ -36,8 +36,20 @@ until the corresponding items below are complete.
   allowlist and may never target link-local metadata addresses.
 - Production manifests run migrations first, use non-root/read-only containers,
   separate liveness from readiness, and require digest-pinned application images.
+- AxonLLM `v0.3.1` is bundled under `vendor/axonllm`, installed in source and
+  container builds, initialized through its public embedded router API, and
+  required automatically for production LLM traffic.
+- The gateway exposes governed Anthropic Messages, OpenAI Chat Completions, and
+  a stateless OpenAI Responses subset. Unsupported Responses state/background
+  fields fail closed instead of being ignored.
 - CI exercises tests, lint, typing, migrations, packages, manifests, images,
   dependency audits, tracked-secret scanning, and SBOM generation.
+- CI builds the root, AxonLLM, gateway, and control-plane wheels, installs them
+  into a clean environment outside the checkout, and initializes the embedded
+  router from configuration packaged inside the gateway wheel.
+- The release workflow builds, re-verifies, publishes, and attaches those same
+  four distributions as one release set rather than publishing only the Guard
+  library.
 
 ## Remaining Ostiari gates
 
@@ -46,46 +58,59 @@ until the corresponding items below are complete.
    outage can still lose an unconfirmed event. Persist idempotent events in a
    Redis Stream (or equivalent) and acknowledge only after control-plane commit.
 
-2. **Codex Responses API.** The shipped OpenAI compatibility route is
-   `/v1/chat/completions`. Add and test `/v1/responses` before claiming current
-   Codex client support.
-
-3. **Per-gateway machine identity.** Gateway lifecycle/event APIs currently use
+2. **Per-gateway machine identity.** Gateway lifecycle/event APIs currently use
    one fleet service token. Replace it with workload-specific OIDC credentials
    and bind the verified client identity to the gateway path/body.
 
-4. **Control-plane horizontal scaling.** SQL is authoritative, but several
+3. **Control-plane horizontal scaling.** SQL is authoritative, but several
    routers retain process-local hot caches. Add transactional cache invalidation
    or read-through SQL before running more than one control-plane replica.
 
-5. **Multi-tenant schema.** Several legacy tables still use globally scoped
+4. **Multi-tenant schema.** Several legacy tables still use globally scoped
    primary or unique keys. Convert them to tenant-qualified constraints before
    changing production tenancy mode from `single`.
 
-6. **Immutable upstream inputs.** Pin Docker base images by verified digest and
-   GitHub Actions by verified commit SHA. Do not guess these values; resolve and
-   review them from their official registries before the release cut.
+5. **Registry and image publication authorization.** The workflow now publishes
+   the complete Python release set, but the maintainers must configure and test
+   trusted-publisher ownership for all four package names and publish signed,
+   digest-pinned platform images before claiming a public package/container
+   install path.
 
-7. **Retained production evidence.** Complete and archive dependency/container
+6. **Codex CLI conformance.** The stateless Responses subset is implemented,
+   but current Codex uses the Responses wire API and may send reasoning or
+   stateful fields that Ostiari deliberately rejects. Capture a supported Codex
+   version and pass request, tool, streaming, cancellation, and error-shape
+   conformance before advertising Codex compatibility.
+
+7. **Immutable upstream inputs.** Pin the remaining Docker base images by
+   verified digest and GitHub Actions by verified commit SHA. The gateway and
+   control-plane Python bases are already digest-pinned; frontend and local
+   Redis inputs remain to be resolved from their official registries. Do not
+   guess these values.
+
+8. **Retained production evidence.** Complete and archive dependency/container
    scan results, load and failure tests, PostgreSQL backup restore, rollback,
    alarm delivery, authenticated canary, and capped live-payment evidence for
    the exact release digest.
 
-8. **Legal release approval.** Confirm authorization for repository copyright,
+9. **Legal release approval.** Confirm authorization for repository copyright,
    trademarks, and third-party notices before the public release.
 
 ## AxonLLM dependency record
 
-No AxonLLM source is changed by this hardening branch.
+Ostiari carries an immutable AxonLLM source snapshot:
 
-Before Ostiari enables LLM routing in a production image, AxonLLM must provide:
+- upstream tag: `v0.3.1`;
+- upstream commit: `a7730a516928272c570da53845248f1f61c31f7c`;
+- package: `axon-llm==0.3.1`;
+- license: MIT-0;
+- provenance and refresh procedure:
+  [`vendor/axonllm/UPSTREAM.md`](../vendor/axonllm/UPSTREAM.md).
 
-- a versioned, immutable install artifact compatible with Ostiari's model
-  registry and provider-route APIs;
-- a supported release/version contract for tool pass-through and route pools;
-- an integration environment that public Ostiari CI can exercise.
-
-Ostiari must then pin that artifact in the gateway image, set
-`OSTIARI_REQUIRE_AXON=1`, and pass the real Axon integration suite. Until that
-exists, launch Ostiari with LLM routing disabled rather than accepting the
-direct-provider fallback as governed traffic.
+`make install`, CI, and the production gateway image install the bundled
+`server` extra and exercise a real router initialization. The gateway wheel
+declares the exact companion AxonLLM dependency and contains the reviewed
+routing configuration, licenses, and provenance needed to initialize outside a
+source checkout. Production LLM traffic fails closed when the router cannot
+initialize or fails during a call. Tool-only gateways may leave the LLM module
+disabled.

@@ -10,7 +10,9 @@ import pytest
 
 pytestmark = pytest.mark.anyio
 
-_FERNET_KEY = "-oUl3c_Lb7U-Z1JawknrorCyThuwnRMc_6leonQpjeo="
+_FERNET_KEY = (  # gitleaks:allow - deterministic test-only Fernet key
+    "-oUl3c_Lb7U-Z1JawknrorCyThuwnRMc_6leonQpjeo="
+)
 
 
 def _secure_production_env(monkeypatch):

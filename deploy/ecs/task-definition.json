@@ -32,11 +32,11 @@
         }
       ],
       "healthCheck": {
-        "command": ["CMD-SHELL", "curl -f http://localhost:8421/health || exit 1"],
+        "command": ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8421/health', timeout=4).read()"],
         "interval": 10,
         "timeout": 5,
         "retries": 3,
-        "startPeriod": 10
+        "startPeriod": 30
       },
       "environment": [
         { "name": "OSTIARI_GATEWAY_ID", "value": "gateway-1" },
@@ -51,6 +51,7 @@
         { "name": "OSTIARI_OIDC_AUDIENCE", "value": "REPLACE_GATEWAY_AUDIENCE" },
         { "name": "OSTIARI_GATEWAY_RATE_LIMIT_RPM", "value": "600" },
         { "name": "OSTIARI_REQUIRE_REDIS", "value": "true" },
+        { "name": "OSTIARI_REQUIRE_AXON", "value": "true" },
         { "name": "OSTIARI_FAIL_CLOSED_ON_CP_LOSS", "value": "true" },
         { "name": "OSTIARI_HITL", "value": "on" },
         { "name": "OSTIARI_X402_MODE", "value": "live" }
@@ -94,7 +95,8 @@
         "options": {
           "awslogs-group": "/ecs/ostiari-gateway",
           "awslogs-region": "us-east-1",
-          "awslogs-stream-prefix": "gateway"
+          "awslogs-stream-prefix": "gateway",
+          "mode": "blocking"
         }
       }
     }

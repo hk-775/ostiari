@@ -182,26 +182,17 @@ def _axon_health(module_registry: Any) -> dict[str, Any]:
 
 
 def _check_axon(module_registry: Any) -> None:
-    """Warn — loudly — when the LLM gateway starts without AxonLLM embedded.
+    """Require governed routing in production; warn in development.
 
-    AxonLLM is where routing governance and token cost tracking happen. Every
-    caller keeps a direct-provider fallback for a mid-flight failure, and that
-    fallback is good enough that a gateway with no AxonLLM at all serves traffic
-    and reports healthy — which is how it once ran unnoticed while none of that
-    governance applied. That invisibility is the actual defect, so the check
-    stays; what changed is the consequence.
+    AxonLLM is where routing governance and token cost tracking happen. The
+    development-only direct-provider path is good enough that a gateway with no
+    AxonLLM can otherwise serve traffic and appear healthy — which is how it once
+    ran unnoticed while none of that governance applied. That invisibility is
+    the actual defect, so the check stays; production never enables that bypass.
 
-    This used to raise, refusing to start. AxonLLM is a separate private repo and
-    isn't on PyPI, so a hard requirement makes it a *deployment* dependency of
-    every gateway, CI runner, and contributor checkout — including the ones that
-    only ever touch the tool proxy and never make an LLM call. The failure also
-    landed at the worst possible moment: startup, after config was pushed.
-
-    So: warn instead. The warning names what is off (governance, cost tracking)
-    and how to fix it, ``/health`` reports ``llm_router`` for anything reading
-    machine-side, and an operator who wants the old behaviour sets
-    ``OSTIARI_REQUIRE_AXON=1`` — which is the right switch to set in production,
-    where silently ungoverned LLM traffic is not an acceptable degradation.
+    Tool-only gateways do not activate the LLM module and are unaffected.
+    Development may explicitly exercise the direct-provider fallback, but a
+    production LLM gateway may never claim success without AxonLLM.
     """
     mod = module_registry.get("llm_gateway") if hasattr(module_registry, "get") else None
     axon = getattr(getattr(mod, "_executor", None), "_axon", None)
@@ -211,15 +202,18 @@ def _check_axon(module_registry: Any) -> None:
     try:
         axon.require()
     except RuntimeError as e:
-        if _os.environ.get("OSTIARI_REQUIRE_AXON", "").strip().lower() in (
-            "1", "true", "yes", "on"
-        ):
+        from ostiari_gateway.modules.llm_gateway.axon_router import (
+            governed_routing_required,
+        )
+
+        if governed_routing_required():
             raise
         log.warning(
             "%s Continuing WITHOUT AxonLLM: LLM calls take the direct provider "
             "path with NO routing governance and NO token cost tracking. "
             "GET /health reports llm_router for the machine-readable version. "
-            "Set OSTIARI_REQUIRE_AXON=1 to refuse to start instead.", e,
+            "Set OSTIARI_REQUIRE_AXON=1 to apply the production contract in "
+            "development.", e,
         )
         return
     log.info("AxonLLM embedded — routing governance active (root=%s)", axon.root)
@@ -269,18 +263,19 @@ def _authenticate_agent(request: Request, agent_id: str) -> JSONResponse | None:
     proceed. No-op (returns None) when gateway auth is off — preserving the
     current header-trust behavior for the demo.
     """
+    if _os.environ.get("OSTIARI_GATEWAY_AUTH", "off").strip().lower() != "required":
+        request.state.agent_id = agent_id.strip() or "unknown"
+        request.state.tenant_id = "default"
+        return None
+
     from ostiari_gateway import oidc
 
     validator = oidc.get_validator()
     if validator is None:
-        if oidc.auth_required():
-            return JSONResponse(status_code=503, content={
-                "error": "gateway authentication is misconfigured",
-                "detail": "OIDC issuer or validator unavailable",
-            })
-        request.state.agent_id = agent_id.strip() or "unknown"
-        request.state.tenant_id = "default"
-        return None
+        return JSONResponse(status_code=503, content={
+            "error": "gateway authentication is misconfigured",
+            "detail": "OIDC issuer or validator unavailable",
+        })
 
     header = request.headers.get("Authorization", "")
     if not header.startswith("Bearer "):
@@ -332,6 +327,7 @@ def _requires_agent_auth(method: str, path: str) -> bool:
         ("POST", "/invoke"),
         ("POST", "/v1/messages"),
         ("POST", "/v1/chat/completions"),
+        ("POST", "/v1/responses"),
         ("POST", "/a2a"),
         ("GET", "/tools"),
         ("GET", "/models"),
@@ -922,7 +918,7 @@ def create_app(
         await trace_reporter.close()
         await mcp_manager.shutdown()
         await a2a_manager.shutdown()
-        module_registry.shutdown_all()
+        await module_registry.shutdown_all()
         await manager.shutdown()
 
     app = FastAPI(title="Ostiari Sidecar", lifespan=lifespan)

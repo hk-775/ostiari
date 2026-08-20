@@ -1,10 +1,10 @@
 .PHONY: install test lint dev demo demo-full clean-start build clean help
 
-# LLM credentials for the Sandbox chat (/invoke). Path is resolved from the
-# gateway/ directory (recipes cd there first). Override with an absolute path:
+# LLM credentials for the Sandbox chat (/invoke). Override with an absolute path:
 #   make demo-full LLM_ENV=/abs/path/to/.env
 # If the file is missing the gateway still starts; only the chat needs keys.
-LLM_ENV ?= ../../AxonLLM/.env
+LLM_ENV ?= $(CURDIR)/.env
+AXON_ROOT ?= $(CURDIR)/vendor/axonllm
 # Loads LLM_ENV into the environment for the current recipe line (no-op if absent).
 LOAD_LLM_ENV = set -a; [ -f "$(LLM_ENV)" ] && . "$(LLM_ENV)"; set +a;
 
@@ -12,13 +12,15 @@ help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
 
 install: ## Install all dependencies
-	pip install -e ".[dev]"
-	pip install -e gateway/
-	cd control-plane/frontend && npm install
+	pip install -e ".[all,dev]"
+	pip install -e "$(AXON_ROOT)[server]"
+	pip install -e "gateway[payments,redis]"
+	pip install -e "control-plane/backend[aws,dev,otlp]"
+	cd control-plane/frontend && npm ci
 
 test: ## Run all tests
 	pytest tests/ -v
-	cd gateway && PYTHONPATH=. pytest tests/ -v
+	cd gateway && OSTIARI_AXON_ROOT="$(AXON_ROOT)" PYTHONPATH=. pytest tests/ -v
 	cd control-plane/backend && PYTHONPATH=. pytest tests/ -v
 
 lint: ## Run linters

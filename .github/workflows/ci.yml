@@ -53,6 +53,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -e .
+          pip install -e "$GITHUB_WORKSPACE/vendor/axonllm[server]"
           pip install -e "gateway/[payments,redis]"
           pip install pytest pytest-asyncio anyio pytest-httpserver werkzeug \
                       opentelemetry-api opentelemetry-sdk httpx starlette
@@ -64,18 +65,25 @@ jobs:
           python -c "from ostiari_gateway.a2a import A2AManager; print('A2A OK')"
           python -c "from ostiari_gateway.payments import Quote, X402Settler; s=X402Settler(private_key='0x'+'11'*32); s._build_http_client(Quote(action='ci', amount_usdc=.001, atomic_amount=1000, pay_to='0x1')); print('x402 SDK OK')"
 
-      # AxonLLM is deliberately NOT installed here. It owns routing governance and
-      # token cost tracking, but it is a separate private repo and not on PyPI, so
-      # cloning it would make CI depend on an AXONLLM_TOKEN secret — and the
-      # gateway only warns when it's absent, so the suite runs green without it.
-      #
-      # What this means: the tests below cover Ostiari's own governance (auth,
-      # injection, quota, HITL, tool proxy) and the direct-provider fallback path.
-      # They do NOT cover live AxonLLM routing — TestLiveRouting and the
-      # @requires_axon version guard self-skip here. Run the gateway suite locally
-      # against a real AxonLLM checkout before trusting the routing surface.
+      - name: Verify embedded AxonLLM
+        env:
+          OSTIARI_AXON_ROOT: ${{ github.workspace }}/vendor/axonllm
+        run: |
+          python - <<'PY'
+          from importlib.metadata import version
+          from ostiari_gateway.modules.llm_gateway.axon_router import AxonRouter
+
+          assert version("axon-llm") == "0.3.1"
+          router = AxonRouter()
+          router.require()
+          assert router.supports_tools()
+          print(f"AxonLLM {version('axon-llm')} embedded from {router.root}")
+          PY
+
       - name: Test (gateway suite)
         working-directory: gateway
+        env:
+          OSTIARI_AXON_ROOT: ${{ github.workspace }}/vendor/axonllm
         run: PYTHONPATH=. pytest tests/ -v --tb=short
 
   control-plane:
@@ -92,6 +100,7 @@ jobs:
         working-directory: control-plane/backend
         run: |
           pip install -e "$GITHUB_WORKSPACE"
+          pip install -e "$GITHUB_WORKSPACE/vendor/axonllm[server]"
           pip install -e ".[dev]"
           # The sidecar package: test_quotas_demo_seed asserts the /push payload
           # matches the gateway's QuotaConfig signature, so it imports it directly.
@@ -150,11 +159,13 @@ jobs:
         run: |
           python -m venv .audit-venv
           .audit-venv/bin/pip install --upgrade pip
-          .audit-venv/bin/pip install . "./gateway[payments,redis]" \
+          .audit-venv/bin/pip install . \
+            "./vendor/axonllm[server]" \
+            "./gateway[payments,redis]" \
             "./control-plane/backend[aws,otlp]" pip-audit
           .audit-venv/bin/python tools/python_sbom.py python-sbom.cdx.json
           .audit-venv/bin/pip uninstall --yes \
-            ostiari ostiari-gateway ostiari-control-plane
+            axon-llm ostiari ostiari-gateway ostiari-control-plane
           .audit-venv/bin/pip-audit --strict
 
       - name: Audit frontend production dependencies
@@ -184,8 +195,46 @@ jobs:
         run: |
           pip install build
           python -m build .
+          python -m build vendor/axonllm --outdir dist/axonllm
           python -m build gateway
           python -m build control-plane/backend
+
+      - name: Verify clean multi-wheel installation
+        run: |
+          python -m venv /tmp/ostiari-wheel-verify
+          /tmp/ostiari-wheel-verify/bin/pip install --upgrade pip
+          /tmp/ostiari-wheel-verify/bin/pip install \
+            dist/*.whl \
+            dist/axonllm/*.whl \
+            gateway/dist/*.whl \
+            control-plane/backend/dist/*.whl
+          (
+            cd /tmp
+            PYTHONNOUSERSITE=1 \
+            /tmp/ostiari-wheel-verify/bin/python - <<'PY'
+          from importlib.metadata import version
+          from pathlib import Path
+          import sys
+
+          import axonllm
+          import control_plane
+          import ostiari
+          import ostiari_gateway
+          from ostiari_gateway.modules.llm_gateway.axon_router import AxonRouter
+
+          environment = Path(sys.prefix).resolve()
+          for module in (axonllm, control_plane, ostiari, ostiari_gateway):
+              source = Path(module.__file__).resolve()
+              assert environment in source.parents, (module.__name__, source)
+
+          assert version("axon-llm") == "0.3.1"
+          router = AxonRouter()
+          router.require()
+          assert router.supports_tools()
+          assert environment in Path(router.root).resolve().parents
+          print("clean wheel set and embedded AxonLLM verified")
+          PY
+          )
 
       - name: Exercise full migration chain
         working-directory: control-plane/backend
@@ -219,3 +268,10 @@ jobs:
           docker build -f deploy/docker/Dockerfile.frontend \
             --build-arg VITE_API_URL=https://api.example.com \
             -t ostiari-frontend:ci .
+
+      - name: Verify AxonLLM inside the production gateway image
+        run: |
+          docker run --rm --network none \
+            --entrypoint python \
+            ostiari-gateway:ci \
+            -c "from importlib.metadata import version; from ostiari_gateway.modules.llm_gateway.axon_router import AxonRouter; assert version('axon-llm') == '0.3.1'; r=AxonRouter(); r.require(); assert r.supports_tools(); print('embedded AxonLLM OK')"

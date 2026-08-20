@@ -1,0 +1,109 @@
+{
+  "_comment": "Narration for the dashboard's guided demo. One entry per scene; `view` is the App shell's view key, so a scene and the page it talks about cannot drift apart. Every figure spoken here is read off config or the live API — 13 adapters, 51 configured models, 56 provider mappings, and 46 production-price-ready models from config/models.yaml and config/pricing.yaml; 5 strategies from router.py; the seeded totals from config/demo_seed.yaml — because the audience is a customer who may go click the number. Anything that varies per deployment is phrased as such. Regenerate the audio with scripts/build_narration_audio.sh after editing.",
+  "voice": "Matthew",
+  "engine": "generative",
+  "sample_rate": "24000",
+  "tracks": [
+    {
+      "id": "scene-01-overview",
+      "view": "overview",
+      "act": "ACT 1 — THE PROBLEM",
+      "title": "One Gateway, Every Model",
+      "callout": "Requests, spend, active projects and cache hit rate — all computed from the same usage records the traces page lists.",
+      "ssml": "<speak>Every company adopting language models arrives at the same three problems. <break time=\"400ms\"/>Each provider speaks a different wire format, so switching means rewriting code. Spend is invisible until the invoice arrives. And when someone asks who called which model with what data, nobody can answer. <break time=\"600ms\"/>AxonLLM is one control plane for all three. This is its operations dashboard. <break time=\"400ms\"/>These four numbers — requests, total spend, active projects, cache hit rate — are computed from the same usage records that back every other page you are about to see. There is no separate reporting pipeline to fall out of sync. <break time=\"500ms\"/>Below them, provider health: ten providers configured in this deployment, each polled independently.</speak>",
+      "text": "Every company adopting language models arrives at the same three problems. Each provider speaks a different wire format, so switching means rewriting code. Spend is invisible until the invoice arrives. And when someone asks who called which model with what data, nobody can answer. AxonLLM is one control plane for all three. This is its operations dashboard. These four numbers — requests, total spend, active projects, cache hit rate — are computed from the same usage records that back every other page you are about to see. There is no separate reporting pipeline to fall out of sync. Below them, provider health: ten providers configured in this deployment, each polled independently.",
+      "duration": 39.17
+    },
+    {
+      "id": "scene-02-sandbox",
+      "view": "sandbox",
+      "act": "ACT 1 — THE PROBLEM",
+      "title": "The One-Line Change",
+      "callout": "Chat, Playground and Routing are the same /v1/chat/completions endpoint your SDK would call.",
+      "ssml": "<speak>Adoption has to be cheap or it does not happen. <break time=\"400ms\"/>AxonLLM speaks the OpenAI wire format, so the integration is one line: point your existing client's base URL at the gateway. No new SDK, no rewrite, and the code you already shipped keeps working. <break time=\"600ms\"/>This sandbox calls that same endpoint. Chat is a conversation, Playground compares models side by side on one prompt, and Routing shows you which model the router picked and why. <break time=\"500ms\"/>Nothing here is a mock — it is the same path your application takes.</speak>",
+      "text": "Adoption has to be cheap or it does not happen. AxonLLM speaks the OpenAI wire format, so the integration is one line: point your existing client's base URL at the gateway. No new SDK, no rewrite, and the code you already shipped keeps working. This sandbox calls that same endpoint. Chat is a conversation, Playground compares models side by side on one prompt, and Routing shows you which model the router picked and why. Nothing here is a mock — it is the same path your application takes.",
+      "duration": 30.14
+    },
+    {
+      "id": "scene-03-traces",
+      "view": "traces",
+      "act": "ACT 1 — THE PROBLEM",
+      "title": "Every Request, Recorded",
+      "callout": "One row per request: model, provider, tokens, cost, latency, cache. This seeded demo carries 66 across three users and two projects.",
+      "ssml": "<speak>This is the answer to the audit question. <break time=\"400ms\"/>Every request through the gateway produces one row: which model was asked for, which provider actually served it, prompt and completion tokens, what it cost, how long it took, and how much came from cache. <break time=\"600ms\"/>The provider column matters more than it looks. A request for a Claude model may be served by Bedrock or by Anthropic directly, and only this row tells you which — so a failover shows up here as a fact rather than as a mystery in your bill. <break time=\"500ms\"/>The same records are exported as OpenTelemetry spans, so this is a view onto your tracing backend, not a replacement for it.</speak>",
+      "text": "This is the answer to the audit question. Every request through the gateway produces one row: which model was asked for, which provider actually served it, prompt and completion tokens, what it cost, how long it took, and how much came from cache. The provider column matters more than it looks. A request for a Claude model may be served by Bedrock or by Anthropic directly, and only this row tells you which — so a failover shows up here as a fact rather than as a mystery in your bill. The same records are exported as OpenTelemetry spans, so this is a view onto your tracing backend, not a replacement for it.",
+      "duration": 33.34
+    },
+    {
+      "id": "scene-04-models",
+      "view": "models",
+      "act": "ACT 2 — THE CONTROL PLANE",
+      "title": "Virtual Models and Fallback Order",
+      "callout": "51 configured virtual models over 13 provider adapters; 46 are production-price-ready with shipped pricing.",
+      "ssml": "<speak>Here is what makes one line of client code enough. <break time=\"400ms\"/>Your application asks for a virtual model — a name like claude-opus — and never names a provider. This catalogue maps fifty-one configured names onto thirteen provider adapters through fifty-six provider mappings. Forty-six models are production-price-ready with the shipped pricing. <break time=\"600ms\"/>Expand a row and you see the mapping: claude-opus resolves to Bedrock first and the Anthropic API second, each with a weight and a fallback order. When the first is unavailable, the second serves the request and the trace records which one did. <break time=\"500ms\"/>Five routing strategies decide the order — round robin, weighted, least latency, cost optimized, and a smart strategy that ranks on benchmark score against cost. Changing provider is editing this file, not shipping code.</speak>",
+      "text": "Here is what makes one line of client code enough. Your application asks for a virtual model — a name like claude-opus — and never names a provider. This catalogue maps 51 configured names onto 13 provider adapters through 56 provider mappings. Forty-six models are production-price-ready with the shipped pricing. Expand a row and you see the mapping: claude-opus resolves to Bedrock first and the Anthropic API second, each with a weight and a fallback order. When the first is unavailable, the second serves the request and the trace records which one did. Five routing strategies decide the order — round robin, weighted, least latency, cost optimized, and a smart strategy that ranks on benchmark score against cost. Changing provider is editing this file, not shipping code.",
+      "duration": 39.74
+    },
+    {
+      "id": "scene-05-quotas",
+      "view": "quotas",
+      "act": "ACT 2 — THE CONTROL PLANE",
+      "title": "Budgets That Block Before You Overspend",
+      "callout": "Org, business unit, project, environment — the most restrictive limit wins. Simulate a request to see which one would stop it.",
+      "ssml": "<speak>An invisible bill is a governance failure, not an accounting one. <break time=\"400ms\"/>Limits here are set on a hierarchy: organisation, business unit, project, environment. A request is checked against every level it belongs to and the most restrictive one wins, so a project cannot raise its own ceiling above what the organisation allows. <break time=\"600ms\"/>These limits are enforced before a provider is called, not after. That ordering is the whole point — a budget checked afterwards is a report, and a budget checked first is a control. <break time=\"500ms\"/>Simulate a request and the page tells you which level would allow or block it, and why. You can answer what happens at the limit without waiting to reach it.</speak>",
+      "text": "An invisible bill is a governance failure, not an accounting one. Limits here are set on a hierarchy: organisation, business unit, project, environment. A request is checked against every level it belongs to and the most restrictive one wins, so a project cannot raise its own ceiling above what the organisation allows. These limits are enforced before a provider is called, not after. That ordering is the whole point — a budget checked afterwards is a report, and a budget checked first is a control. Simulate a request and the page tells you which level would allow or block it, and why. You can answer what happens at the limit without waiting to reach it.",
+      "duration": 35.33
+    },
+    {
+      "id": "scene-06-efficiency",
+      "view": "efficiency",
+      "act": "ACT 2 — THE CONTROL PLANE",
+      "title": "Where the Money Actually Goes",
+      "callout": "Per-user scores from measured ratios: completion to prompt, cache utilisation, expensive-model share, duplicate requests.",
+      "ssml": "<speak>Staying inside budget is not the same as spending well. <break time=\"400ms\"/>This page scores each user on measurements rather than opinion: how much output they get per unit of input, how much of their traffic is served from cache, what share of it goes to an expensive model that a cheaper one could have handled, and how many requests are outright duplicates. <break time=\"600ms\"/>Those four ratios compose into a score and a grade, and the wasteful users are listed separately so the finding arrives without anyone running a query. <break time=\"500ms\"/>It is deliberately unflattering. A dashboard that only shows totals lets waste hide inside a number that is going up for good reasons.</speak>",
+      "text": "Staying inside budget is not the same as spending well. This page scores each user on measurements rather than opinion: how much output they get per unit of input, how much of their traffic is served from cache, what share of it goes to an expensive model that a cheaper one could have handled, and how many requests are outright duplicates. Those four ratios compose into a score and a grade, and the wasteful users are listed separately so the finding arrives without anyone running a query. It is deliberately unflattering. A dashboard that only shows totals lets waste hide inside a number that is going up for good reasons.",
+      "duration": 32.74
+    },
+    {
+      "id": "scene-07-security",
+      "view": "security",
+      "act": "ACT 2 — THE CONTROL PLANE",
+      "title": "Guardrails and a Chain You Can Verify",
+      "callout": "Injection attempts and PII redactions, plus an integrity check over the audit chain itself.",
+      "ssml": "<speak>Two things happen to a prompt before any provider sees it. <break time=\"400ms\"/>It is scanned for injection attempts, and personal information is redacted and replaced with placeholders — so an email address in a user's message does not become an email address in a third party's logs. Every one of those events is recorded here. <break time=\"600ms\"/>The second tab is the part auditors ask about. The audit trail is hash chained, and this page verifies the chain and tells you whether it is intact. <break time=\"500ms\"/>An audit log that cannot be checked is a claim. One that can be checked is evidence.</speak>",
+      "text": "Two things happen to a prompt before any provider sees it. It is scanned for injection attempts, and personal information is redacted and replaced with placeholders — so an email address in a user's message does not become an email address in a third party's logs. Every one of those events is recorded here. The second tab is the part auditors ask about. The audit trail is hash chained, and this page verifies the chain and tells you whether it is intact. An audit log that cannot be checked is a claim. One that can be checked is evidence.",
+      "duration": 28.9
+    },
+    {
+      "id": "scene-08-api-keys",
+      "view": "api-keys",
+      "project": "proj-alpha",
+      "act": "ACT 2 — THE CONTROL PLANE",
+      "title": "Keys, and What Actually Bounds Them",
+      "callout": "Issue, rotate, revoke. The plaintext key is shown once and only its hash is stored.",
+      "ssml": "<speak>Machine callers authenticate with project-scoped API keys, issued, rotated and revoked here. <break time=\"400ms\"/>The plaintext is shown once at issue and never again — only a hash is stored, so a leak of the database is not a leak of your keys. <break time=\"600ms\"/>One thing worth being precise about, because the word invites a wrong assumption. A key's scopes govern access to these admin pages. They are not checked on the chat endpoint. What actually bounds what a key can reach is its project — the models that project is allowed and the budget it is given. <break time=\"500ms\"/>So the project is the security boundary. The readiness page you will see in a moment says exactly that, on the deployment, rather than leaving it in documentation nobody opens.</speak>",
+      "text": "Machine callers authenticate with project-scoped API keys, issued, rotated and revoked here. The plaintext is shown once at issue and never again — only a hash is stored, so a leak of the database is not a leak of your keys. One thing worth being precise about, because the word invites a wrong assumption. A key's scopes govern access to these admin pages. They are not checked on the chat endpoint. What actually bounds what a key can reach is its project — the models that project is allowed and the budget it is given. So the project is the security boundary. The readiness page you will see in a moment says exactly that, on the deployment, rather than leaving it in documentation nobody opens.",
+      "duration": 38.38
+    },
+    {
+      "id": "scene-09-readiness",
+      "view": "production-checklist",
+      "act": "ACT 3 — GOING TO PRODUCTION",
+      "title": "What This Deployment Would Do in Production",
+      "callout": "In demo mode this page refuses to report — which is the behaviour being demonstrated. Run without demo data to see the real checks.",
+      "ssml": "<speak>Most gateways will run happily in a configuration you would not want in production, and say nothing. <break time=\"400ms\"/>This page is the opposite. On a real deployment it reports the states this gateway is actually in: whether authentication is enforced or merely logged, whether usage survives a restart, whether every routed model has a price, whether pinned model identifiers still exist at their providers, and what the issued API keys can reach. <break time=\"600ms\"/>Right now it is refusing to tell you any of that, and that is the demonstration. This deployment is running on demo data, so every check would fail correctly and mean nothing — and a checklist that cries wolf on a demo is one you learn to ignore on a real deployment. So it declines instead, and says why. <break time=\"500ms\"/>The same instinct runs through the checks themselves: one that could not run reports Unknown, never Pass, because unverified and clean are not the same thing.</speak>",
+      "text": "Most gateways will run happily in a configuration you would not want in production, and say nothing. This page is the opposite. On a real deployment it reports the states this gateway is actually in: whether authentication is enforced or merely logged, whether usage survives a restart, whether every routed model has a price, whether pinned model identifiers still exist at their providers, and what the issued API keys can reach. Right now it is refusing to tell you any of that, and that is the demonstration. This deployment is running on demo data, so every check would fail correctly and mean nothing — and a checklist that cries wolf on a demo is one you learn to ignore on a real deployment. So it declines instead, and says why. The same instinct runs through the checks themselves: one that could not run reports Unknown, never Pass, because unverified and clean are not the same thing.",
+      "duration": 48.65
+    },
+    {
+      "id": "scene-10-architecture",
+      "view": "architecture",
+      "act": "ACT 3 — GOING TO PRODUCTION",
+      "title": "Fifteen Steps, One Request",
+      "callout": "The whole path, in order: validate, scan, redact, quota, classify, route, call, record.",
+      "ssml": "<speak>Here is everything you have just seen, as one request. <break time=\"400ms\"/>It is validated, scanned for injection, and redacted. Quotas are checked against the hierarchy. A classifier reads the intent, the router ranks the candidate models, and a provider is called — with a fallback ready if it fails. Then the usage record is written, which is what every page in this tour was reading. <break time=\"600ms\"/>Notice the ordering once more: guardrails and budgets sit before the provider call, not after it. <break time=\"500ms\"/>One API, every model, full control — and an audit trail for all of it. That is AxonLLM. It is open source under MIT-0, and the whole thing runs locally with a single compose command.</speak>",
+      "text": "Here is everything you have just seen, as one request. It is validated, scanned for injection, and redacted. Quotas are checked against the hierarchy. A classifier reads the intent, the router ranks the candidate models, and a provider is called — with a fallback ready if it fails. Then the usage record is written, which is what every page in this tour was reading. Notice the ordering once more: guardrails and budgets sit before the provider call, not after it. One API, every model, full control — and an audit trail for all of it. That is AxonLLM. It is open source under MIT-0, and the whole thing runs locally with a single compose command.",
+      "duration": 39.0
+    }
+  ]
+}

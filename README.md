@@ -28,7 +28,7 @@ all of it from one dashboard.
 ```bash
 git clone https://github.com/hk-775/ostiari.git
 cd ostiari
-make install       # Python deps + gateway + frontend
+make install       # Core, AxonLLM, gateway, control plane, and frontend
 make demo-full     # control plane + 4 gateways + demo tools, all seeded
 ```
 
@@ -102,6 +102,27 @@ fail-closed. See the [control-plane guide](docs/control-plane-guide.md) §7.4.
 - **Configure** — register gateways, agents, tools, and MCP servers.
 - **Test** — a sandbox to fire calls and watch decisions, A/B model experiments,
   and an architecture view.
+
+## Governed LLM APIs
+
+When `modules.llm_gateway` is enabled, the gateway exposes:
+
+- `POST /invoke` for Ostiari-owned agentic tool loops;
+- `POST /v1/messages` for Anthropic Messages clients;
+- `POST /v1/chat/completions` for OpenAI Chat Completions clients;
+- `POST /v1/responses` for a tested stateless subset of OpenAI Responses.
+
+All four surfaces share agent authorization, content controls, quota and budget
+enforcement, the embedded AxonLLM router, cost reporting, and traces. Ostiari
+bundles the reviewed AxonLLM `v0.3.1` source and production LLM traffic fails
+closed if that router cannot initialize or route.
+
+The Responses surface intentionally rejects stateful conversations, background
+execution, hosted prompts, reasoning configuration, and structured-output fields
+whose semantics are not implemented. Current Codex custom providers use the
+Responses wire API, so Ostiari does not claim complete Codex CLI compatibility
+until the supported Codex version passes an exact request/streaming conformance
+gate. See [`docs/codex-shim.md`](docs/codex-shim.md).
 
 ## Use the Guard library directly (no gateway)
 
@@ -223,9 +244,14 @@ pip install -e .
 pip install -e ".[all]"           # + all adapters, dashboard, TUI
 ```
 
-Ostiari is **not on PyPI yet**, so install from source. The extras are real
-either way: `claude`, `openai`, `bedrock`, `strands`, `policy`, `fuzzy`, `tui`,
-`dashboard`, `all`, and `dev`.
+Ostiari is **not on PyPI yet**, so install from source. `make install` installs
+the Guard library, the exact bundled AxonLLM routing engine, the gateway, and
+frontend dependencies. The root `ostiari` wheel alone is the Guard library; it
+does not install the whole platform. A public platform release must publish the
+matching root, AxonLLM, gateway, and control-plane wheels together.
+
+The root-package extras are `claude`, `openai`, `bedrock`, `strands`, `policy`,
+`fuzzy`, `tui`, `dashboard`, `all`, and `dev`.
 
 ## Make targets
 
@@ -270,7 +296,7 @@ either way: `claude`, `openai`, `bedrock`, `strands`, `policy`, `fuzzy`, `tui`,
 ```bash
 git clone https://github.com/hk-775/ostiari.git
 cd ostiari
-pip install -e ".[dev]"
+make install
 
 pytest tests/                                   # root (Guard) suite
 cd control-plane/backend && PYTHONPATH=. pytest tests/    # control plane
@@ -288,6 +314,7 @@ gateway/              # the sidecar proxy — gate chain, MCP, A2A, payments
 control-plane/
   backend/            # FastAPI control plane — routers, models, services
   frontend/           # React dashboard (Vite + Tailwind + TanStack Query)
+vendor/axonllm/       # pinned MIT-0 AxonLLM v0.3.1 routing source + config
 docs/                 # architecture + the control plane guide
 ```
 

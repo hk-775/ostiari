@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:axonllm:runtime-lifecycle-receipt:v1",
+  "title": "AxonLLM runtime lifecycle receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "receipt_id",
+    "schema",
+    "schema_version",
+    "plan_id",
+    "status_sha256",
+    "operation",
+    "final_state",
+    "account_id",
+    "partition",
+    "region",
+    "observed_at",
+    "source_revision",
+    "deployment_plan_id",
+    "deployment_descriptor_id",
+    "execution_order",
+    "inputs",
+    "affected_stacks",
+    "retained_stacks",
+    "verification"
+  ],
+  "properties": {
+    "receipt_id": {"$ref": "#/$defs/sha256"},
+    "schema": {
+      "const": "urn:axonllm:runtime-lifecycle-receipt:v1"
+    },
+    "schema_version": {"const": 1},
+    "plan_id": {"$ref": "#/$defs/sha256"},
+    "status_sha256": {"$ref": "#/$defs/sha256"},
+    "operation": {
+      "enum": ["park", "resume"]
+    },
+    "final_state": {
+      "enum": ["active", "parked"]
+    },
+    "account_id": {
+      "type": "string",
+      "pattern": "^[0-9]{12}$"
+    },
+    "partition": {
+      "enum": ["aws", "aws-cn", "aws-us-gov"]
+    },
+    "region": {
+      "type": "string",
+      "pattern": "^[a-z]{2,8}(?:-[a-z0-9]+)+-[0-9]+$"
+    },
+    "observed_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$"
+    },
+    "source_revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "deployment_plan_id": {"$ref": "#/$defs/sha256"},
+    "deployment_descriptor_id": {"$ref": "#/$defs/sha256"},
+    "execution_order": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": {
+        "enum": ["agentcore-runtime", "managed-network"]
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agentcore_image",
+        "last_known_good_configuration_sha256",
+        "release_evidence_ids"
+      ],
+      "properties": {
+        "agentcore_image": {
+          "type": "string",
+          "pattern": "^[^\\s@]+@sha256:[0-9a-f]{64}$"
+        },
+        "last_known_good_configuration_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "release_evidence_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}$"
+          }
+        }
+      }
+    },
+    "affected_stacks": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2,
+      "items": {"$ref": "#/$defs/affected_stack"}
+    },
+    "retained_stacks": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {"$ref": "#/$defs/retained_stack"}
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lifecycle_plan_bound",
+        "desired_template_active",
+        "runtime_state_verified",
+        "network_state_verified",
+        "retained_stacks_unchanged",
+        "control_plane_available",
+        "administration_probe_passed"
+      ],
+      "properties": {
+        "lifecycle_plan_bound": {"const": true},
+        "desired_template_active": {"const": true},
+        "runtime_state_verified": {"const": true},
+        "network_state_verified": {"const": true},
+        "retained_stacks_unchanged": {"const": true},
+        "control_plane_available": {"const": true},
+        "administration_probe_passed": {"const": true}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "affected_stack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "component",
+        "stack_name",
+        "stack_status",
+        "template_sha256"
+      ],
+      "properties": {
+        "component": {
+          "enum": ["agentcore-runtime", "managed-network"]
+        },
+        "stack_name": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9-]{0,127}$"
+        },
+        "stack_status": {
+          "enum": ["CREATE_COMPLETE", "UPDATE_COMPLETE"]
+        },
+        "template_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "retained_stack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "stack_name",
+        "stack_status",
+        "stack_state_sha256"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "application-state",
+            "control-plane",
+            "identity",
+            "workers"
+          ]
+        },
+        "stack_name": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9-]{0,127}$"
+        },
+        "stack_status": {
+          "enum": ["CREATE_COMPLETE", "UPDATE_COMPLETE"]
+        },
+        "stack_state_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

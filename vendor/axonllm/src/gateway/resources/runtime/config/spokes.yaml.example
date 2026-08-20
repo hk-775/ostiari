@@ -1,0 +1,41 @@
+# Multi-region hub-and-spoke topology (optional).
+#
+# Copy to config/spokes.yaml (or point AXON_SPOKES_CONFIG at it) to enable real
+# multi-region routing + failover. WITHOUT this file the gateway runs
+# single-region (the configured AWS region) — multi-region is purely additive.
+#
+# When >1 spoke is defined, the SpokeHealthMonitor runs in the background and
+# RegionRouter picks a spoke per request (data residency → health → model
+# availability → weighted/failover). The chosen spoke's endpoint/region is used
+# for the actual provider call.
+
+hub_region: us-east-1
+data_residency_strict: false        # true => a request with a residency zone
+                                    #         MUST land on a matching spoke
+health_check_interval_seconds: 30
+failover_threshold_consecutive: 3   # consecutive failed checks → mark unhealthy
+failover_cooldown_seconds: 60
+
+spokes:
+  - region: us-east-1
+    role: primary                   # primary | active | failover
+    weight: 70                      # weighted active-active share
+    endpoint: https://bedrock-runtime.us-east-1.amazonaws.com
+    health_check_url: https://gw.use1.example.com/health
+    models: [claude-sonnet, claude-haiku]   # empty = all models
+    data_residency_zones: [us]              # empty = no residency constraint
+
+  - region: eu-west-1
+    role: active
+    weight: 30
+    endpoint: https://bedrock-runtime.eu-west-1.amazonaws.com
+    health_check_url: https://gw.euw1.example.com/health
+    data_residency_zones: [eu]
+
+  # Active-passive alternative: give the failover spoke weight 0 and
+  # role: failover — it only receives traffic when the primary is unhealthy.
+  # - region: us-west-2
+  #   role: failover
+  #   weight: 0
+  #   failover_priority: 1
+  #   endpoint: https://bedrock-runtime.us-west-2.amazonaws.com

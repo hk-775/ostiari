@@ -1,11 +1,9 @@
-"""OpenAI Chat Completions shim — the Codex CLI (and any OpenAI-SDK client) seam.
+"""Governed OpenAI Chat Completions compatibility surface.
 
-Codex CLI is configured with a custom OpenAI-compatible provider in
-``~/.codex/config.toml`` pointing at ``<gateway>/v1``; it then calls
-``POST /v1/chat/completions``. This shim governs and routes those calls exactly
-like the Claude Code ``/v1/messages`` shim, but in the OpenAI wire format the
-client already speaks — so no cross-format translation is needed on the way out
-(AxonLLM is OpenAI-shaped end to end).
+This shim routes OpenAI-shaped Chat Completions clients through the same
+governance path as the Anthropic Messages and stateless Responses surfaces.
+Current Codex custom providers use the Responses wire API, so this endpoint is
+not described as a Codex compatibility contract.
 
 Per call: agent auth (+ per-agent model/provider/budget) -> injection/PII
 (fail-closed) -> Ostiari quota -> AxonLLM routing (single-response) -> return
@@ -51,12 +49,16 @@ def _provider_of(model: str) -> str:
 
 
 class ChatProxy:
-    """Governed OpenAI /v1/chat/completions shim (Codex CLI target)."""
+    """Governed OpenAI ``/v1/chat/completions`` shim."""
 
     def __init__(self, config: Any, axon: Any = None, security: Any = None,
                  quota_enforcer: Any = None, trace_reporter: Any = None,
                  agent_auth: Any = None, cost_reporter: Any = None,
-                 broker_policy: Any = None) -> None:
+                 broker_policy: Any = None, *,
+                 endpoint: str = "/v1/chat/completions",
+                 default_framework: str = "codex",
+                 trace_action: str = "llm.chat",
+                 cost_action: str = "chat") -> None:
         self._config = config
         self._axon = axon
         self._security = security
@@ -65,6 +67,10 @@ class ChatProxy:
         self._agent_auth = agent_auth
         self._cost_reporter = cost_reporter
         self._broker_policy = broker_policy
+        self._endpoint = endpoint
+        self._default_framework = default_framework
+        self._trace_action = trace_action
+        self._cost_action = cost_action
 
     async def handle(self, request: Request) -> Any:
         try:
@@ -77,7 +83,7 @@ class ChatProxy:
         from ostiari_gateway.oidc import request_agent_id
 
         agent_id = request_agent_id(request)
-        framework = request.headers.get("X-Framework", "codex")
+        framework = request.headers.get("X-Framework", self._default_framework)
         session_id = (request.headers.get("X-Session-Id")
                       or request.headers.get("x-codex-session-id", ""))
         requested_model = body.get("model", "")
@@ -87,7 +93,7 @@ class ChatProxy:
         # ── Gate 1: agent authorization (endpoint + model/provider/quota) ──
         agent_reservation_id: int | None = None
         if self._agent_auth:
-            allowed, reason = self._agent_auth.check(agent_id, "/v1/chat/completions")
+            allowed, reason = self._agent_auth.check(agent_id, self._endpoint)
             if not allowed:
                 await self._report(agent_id, framework, session_id, requested_model,
                                     tier="block", reason=reason, limit_type="agent_authorization")
@@ -164,9 +170,8 @@ class ChatProxy:
 
         # AxonLLM carries tool specs now, so this is a version guard rather than a
         # standing limitation: an AxonLLM predating tool pass-through would drop
-        # them and answer fluently as if no tools existed. Unlike the /v1/messages
-        # shim, this path has no direct-provider fallback to hand the call to — so
-        # refuse rather than return that answer. Codex surfaces a 501 to the user.
+        # them and answer fluently as if no tools existed. This path has no
+        # direct-provider fallback, so refuse rather than return that answer.
         if body.get("tools") and not self._axon.supports_tools():
             await self._report(agent_id, framework, session_id, requested_model,
                                tier="block", reason="tool calling unsupported by router",
@@ -198,7 +203,9 @@ class ChatProxy:
                 # deprecated for this model"), so the whole call failed rather than
                 # running with the default the caller never asked for.
                 temperature=translate.opt_float(body.get("temperature")),
+                top_p=translate.opt_float(body.get("top_p")),
                 tools=body.get("tools"),
+                tool_choice=body.get("tool_choice"),
                 smart=not axon_model,
                 ensemble=False,
                 agent_id=agent_id,
@@ -218,7 +225,7 @@ class ChatProxy:
             )
             return _err(503, str(e), "service_unavailable")
         except Exception as e:  # noqa: BLE001
-            log.warning("Codex shim route failed: %s", e)
+            log.warning("Chat Completions route failed: %s", e)
             await self._report(agent_id, framework, session_id, requested_model,
                                 tier="block", reason=f"router error: {e}", limit_type="router",
                                 reservation_id=reservation_id,
@@ -246,9 +253,7 @@ class ChatProxy:
         if not model:
             return False
         try:
-            reg = getattr(getattr(self._axon, "_agent", None), "router", None)
-            reg = getattr(reg, "model_registry", None)
-            return bool(reg and model in reg.models)
+            return bool(self._axon.knows_model(model))
         except Exception:  # noqa: BLE001
             return False
 
@@ -292,7 +297,7 @@ class ChatProxy:
                     output_tokens=out_tok,
                     total_tokens=in_tok + out_tok,
                     agent_id=agent_id,
-                    action="chat",
+                    action=self._cost_action,
                     provider=provider,
                     cost_usd=cost,
                     record_quota=False,
@@ -303,7 +308,7 @@ class ChatProxy:
         if self._trace is not None:
             try:
                 await self._trace.report(
-                    action="llm.chat", tier=tier, score=0, duration_ms=0.0,
+                    action=self._trace_action, tier=tier, score=0, duration_ms=0.0,
                     agent_id=agent_id, framework=framework, endpoint=f"llm://{model}",
                     session_id=session_id, model=model, blocked_reason=reason, limit_type=limit_type,
                     params={"input_tokens": in_tok, "output_tokens": out_tok,

@@ -1,0 +1,58 @@
+task_types:
+  coding:
+    models:
+      - name: claude-opus
+        score: 95
+      - name: gpt-4o
+        score: 90
+      - name: deepseek-r1
+        score: 88
+      - name: claude-sonnet
+        score: 85
+  reasoning:
+    models:
+      - name: claude-opus
+        score: 97
+      - name: o4-mini
+        score: 94
+      - name: deepseek-r1
+        score: 90
+  creative_writing:
+    models:
+      - name: claude-sonnet
+        score: 92
+      - name: gpt-4o
+        score: 88
+      - name: claude-opus
+        score: 87
+  summarization:
+    models:
+      - name: claude-sonnet
+        score: 90
+      - name: gpt-4o-mini
+        score: 85
+      - name: nova-pro
+        score: 80
+  math:
+    models:
+      - name: o4-mini
+        score: 96
+      - name: deepseek-r1
+        score: 92
+      - name: claude-opus
+        score: 90
+  general:
+    models:
+      - name: claude-sonnet
+        score: 90
+      - name: gpt-4o
+        score: 88
+      - name: nova-pro
+        score: 82
+      - name: claude-haiku
+        score: 78
+
+smart_routing:
+  confidence_threshold: 0.3
+  cost_quality_tradeoff: 0.3
+  default_model: claude-sonnet

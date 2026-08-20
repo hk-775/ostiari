@@ -1,15 +1,10 @@
-"""LLM providers — wraps AxonLLM's router and provider adapters.
+"""Development-only direct provider adapters.
 
-Instead of reimplementing multi-provider routing, we import AxonLLM's
-battle-tested gateway engine and run it in-process. This gives us:
-- 6 provider adapters (Bedrock, Anthropic, OpenAI, Azure, Vertex, Cohere)
-- 5 routing strategies (round-robin, weighted, least-latency, cost-optimized, smart)
-- Ensemble routing (scatter-gather-synthesize)
-- Provider health tracking with circuit breaking
-- Cost tracking and budget enforcement
+Production LLM traffic is routed through the bundled AxonLLM ``AsyncRouter``.
+These adapters remain only for explicit local diagnostics with governed routing
+disabled; they do not construct a second Axon router or import Axon internals.
 """
 
-import asyncio
 import json
 import logging
 from typing import Any
@@ -60,93 +55,13 @@ class LLMResponse:
 
 
 class LLMProvider:
-    """Wraps AxonLLM's routing engine for in-process LLM calls.
-
-    Uses AxonLLM's Router, provider adapters, health tracking,
-    and cost tracking — all running in the same process as the sidecar.
-    """
+    """Call providers directly for the explicit development fallback path."""
 
     def __init__(self, credentials: LLMCredentials) -> None:
         self._credentials = credentials
-        self._router: Any = None
-        self._cost_tracker: Any = None
-        self._health_tracker: Any = None
-        self._initialized = False
 
     def update_credentials(self, credentials: LLMCredentials) -> None:
         self._credentials = credentials
-        self._initialized = False
-        self._router = None
-
-    def _ensure_initialized(self) -> None:
-        """Lazy-initialize AxonLLM components on first call."""
-        if self._initialized:
-            return
-
-        try:
-            from src.gateway.config import DEFAULT_CONFIG
-            from src.gateway.cost_tracker import CostTracker
-            from src.gateway.health_tracker import ProviderHealthTracker
-            from src.gateway.router import Router
-
-            self._health_tracker = ProviderHealthTracker()
-            self._cost_tracker = CostTracker(
-                pricing_config=DEFAULT_CONFIG.get("pricing", {})
-            )
-
-            # Build provider configurations from credentials
-            provider_configs = self._build_provider_configs()
-
-            self._router = Router(
-                provider_fn=self._make_provider_fn(provider_configs),
-                health_tracker=self._health_tracker,
-                cost_tracker=self._cost_tracker,
-            )
-            self._initialized = True
-            log.info("AxonLLM engine initialized with %d providers", len(provider_configs))
-
-        except ImportError as e:
-            log.warning("AxonLLM not available, falling back to direct provider calls: %s", e)
-            self._initialized = True
-
-    def _build_provider_configs(self) -> dict[str, dict[str, Any]]:
-        """Build provider configs from credentials."""
-        configs: dict[str, dict[str, Any]] = {}
-        if self._credentials.anthropic:
-            configs["anthropic"] = {"api_key": self._credentials.anthropic}
-        if self._credentials.openai:
-            configs["openai"] = {"api_key": self._credentials.openai}
-        if self._credentials.azure_api_key:
-            configs["azure"] = {
-                "endpoint": self._credentials.azure_endpoint,
-                "api_key": self._credentials.azure_api_key,
-                "api_version": self._credentials.azure_api_version,
-            }
-        if self._credentials.bedrock_region:
-            configs["bedrock"] = {"region": self._credentials.bedrock_region}
-        if self._credentials.cohere_api_key:
-            configs["cohere"] = {"api_key": self._credentials.cohere_api_key}
-        if self._credentials.vertex_project:
-            configs["vertex"] = {
-                "project": self._credentials.vertex_project,
-                "location": self._credentials.vertex_location,
-            }
-        return configs
-
-    def _make_provider_fn(self, configs: dict[str, dict[str, Any]]) -> Any:
-        """Create a provider function for the Router."""
-        try:
-            from src.gateway.multi_provider_factory import MultiProviderFactory
-
-            factory = MultiProviderFactory(configs)
-            return factory.get_provider_fn()
-        except (ImportError, Exception) as e:
-            log.debug("MultiProviderFactory not available: %s", e)
-            return self._fallback_provider_fn
-
-    async def _fallback_provider_fn(self, model: str, request: Any) -> Any:
-        """Fallback if AxonLLM factory isn't available."""
-        raise RuntimeError(f"No provider configured for model: {model}")
 
     def call(
         self,
@@ -156,7 +71,7 @@ class LLMProvider:
         max_tokens: int = 4096,
         temperature: float | None = None,
     ) -> LLMResponse:
-        """Call an LLM using AxonLLM's routing engine, with direct-call fallback.
+        """Call an LLM directly for an explicitly ungoverned development run.
 
         ``temperature=None`` means *omit the parameter*, not "use 0.7". Every
         provider path below leaves the key off its request entirely when it is
@@ -166,54 +81,7 @@ class LLMProvider:
         never asked for it. Providers that still accept it apply their own
         default, which is the behavior a caller who said nothing wants.
         """
-        self._ensure_initialized()
-
-        if self._router is not None:
-            return self._call_via_axon(model, messages, tools, max_tokens, temperature)
         return self._call_direct(model, messages, tools, max_tokens, temperature)
-
-    def _call_via_axon(
-        self,
-        model: str,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None,
-        max_tokens: int,
-        temperature: float | None,
-    ) -> LLMResponse:
-        """Route through AxonLLM's engine."""
-        try:
-            from src.gateway.models import ChatCompletionRequest
-
-            request = ChatCompletionRequest(
-                model=model,
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                tools=self._convert_tools_to_openai_format(tools) if tools else None,
-            )
-
-            # AxonLLM's router is async. _call_via_axon is sync and may be called
-            # from within a running event loop (the /invoke path), where we can't
-            # await. Run the coroutine to completion in a worker thread and BLOCK
-            # on its result — previously this used loop.run_in_executor and never
-            # awaited the returned Future, so `response` was the Future itself and
-            # the result was silently dropped (empty response). See B4.
-            try:
-                asyncio.get_running_loop()
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    response = pool.submit(
-                        lambda: asyncio.run(self._router.route(request))
-                    ).result()
-            except RuntimeError:
-                # No running loop — safe to run directly.
-                response = asyncio.run(self._router.route(request))
-
-            return self._convert_axon_response(response, model)
-
-        except Exception as e:
-            log.warning("AxonLLM routing failed, falling back to direct call: %s", e)
-            return self._call_direct(model, messages, tools, max_tokens, temperature)
 
     def _call_direct(
         self,
@@ -223,7 +91,7 @@ class LLMProvider:
         max_tokens: int,
         temperature: float | None,
     ) -> LLMResponse:
-        """Direct provider calls as fallback when AxonLLM router isn't available."""
+        """Direct provider calls for the explicit development diagnostic path."""
         provider = self._detect_provider(model)
 
         if provider == "anthropic":
@@ -255,45 +123,6 @@ class LLMProvider:
         if "command" in model or "cohere" in model:
             return "cohere"
         return "anthropic"
-
-    def _convert_axon_response(self, response: Any, model: str) -> LLMResponse:
-        """Convert AxonLLM ChatCompletionResponse to our LLMResponse."""
-        content = ""
-        tool_calls = []
-
-        if hasattr(response, "choices") and response.choices:
-            choice = response.choices[0]
-            msg = choice.get("message", {}) if isinstance(choice, dict) else getattr(choice, "message", {})
-            if isinstance(msg, dict):
-                content = msg.get("content", "") or ""
-                for tc in msg.get("tool_calls", []):
-                    if isinstance(tc, dict):
-                        func = tc.get("function", {})
-                        args = func.get("arguments", "{}")
-                        if isinstance(args, str):
-                            args = json.loads(args)
-                        tool_calls.append(ToolCall(
-                            id=tc.get("id", ""),
-                            name=func.get("name", ""),
-                            arguments=args,
-                        ))
-
-        tokens = 0
-        if hasattr(response, "usage") and response.usage:
-            usage = response.usage
-            if isinstance(usage, dict):
-                tokens = usage.get("total_tokens", 0)
-
-        return LLMResponse(
-            content=content or None,
-            tool_calls=tool_calls,
-            tokens_used=tokens,
-            model=model,
-            provider=(
-                getattr(response, "provider", "")
-                or self._detect_provider(model)
-            ),
-        )
 
     def _convert_tools_to_openai_format(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [

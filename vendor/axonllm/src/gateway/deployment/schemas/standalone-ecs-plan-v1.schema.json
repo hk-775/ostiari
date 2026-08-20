@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:axonllm:standalone-ecs-plan:v1",
+  "title": "AxonLLM standalone ECS plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "plan_id",
+    "schema",
+    "schema_version",
+    "operation",
+    "mutating",
+    "approval_required",
+    "account_id",
+    "partition",
+    "region",
+    "source_revision",
+    "release_evidence_ids",
+    "image_reference",
+    "platform",
+    "ownership",
+    "preflight_requirements",
+    "task_definition",
+    "service"
+  ],
+  "properties": {
+    "plan_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "schema": {"const": "urn:axonllm:standalone-ecs-plan:v1"},
+    "schema_version": {"const": 1},
+    "operation": {"const": "standalone-ecs-plan"},
+    "mutating": {"const": false},
+    "approval_required": {"const": true},
+    "account_id": {"type": "string", "pattern": "^[0-9]{12}$"},
+    "partition": {"enum": ["aws", "aws-cn", "aws-us-gov"]},
+    "region": {"type": "string", "minLength": 1},
+    "source_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "release_evidence_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "image_reference": {"type": "string", "minLength": 1},
+    "platform": {"enum": ["linux/amd64", "linux/arm64"]},
+    "ownership": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["customer", "axonllm", "created_network_resources"],
+      "properties": {
+        "customer": {"type": "array", "items": {"type": "string"}},
+        "axonllm": {"type": "array", "items": {"type": "string"}},
+        "created_network_resources": {"const": []}
+      }
+    },
+    "preflight_requirements": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "task_definition": {"type": "object"},
+    "service": {"type": "object"}
+  }
+}

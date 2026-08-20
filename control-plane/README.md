@@ -129,7 +129,7 @@ python main.py
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev
 # UI available at http://localhost:9000
 ```
