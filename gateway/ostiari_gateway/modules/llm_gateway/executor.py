@@ -90,6 +90,7 @@ class AgenticExecutor:
         self, config: LLMConfig, manager: ConfigManager, mcp_manager: Any = None,
         trace_reporter: Any = None, quota_enforcer: Any = None, agent_auth: Any = None,
         broker_policy: Any = None,
+        shared_store: Any = None,
     ) -> None:
         self._config = config
         self._manager = manager
@@ -111,6 +112,7 @@ class AgenticExecutor:
             sidecar_id=manager.config.sidecar_id,
             quota_enforcer=quota_enforcer,
             broker_policy=broker_policy,
+            shared_store=shared_store,
         )
 
     def update_config(self, config: LLMConfig) -> None:
@@ -123,6 +125,10 @@ class AgenticExecutor:
         """Flush accounting and release embedded Axon provider resources."""
         await self._cost_reporter.close()
         await self._axon.close()
+
+    async def start(self) -> None:
+        """Start background recovery of durable usage events."""
+        await self._cost_reporter.start_delivery()
 
     async def invoke(self, request: InvokeRequest) -> InvokeResponse:
         """Run the full agentic loop."""

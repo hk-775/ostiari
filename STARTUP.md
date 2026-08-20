@@ -580,7 +580,7 @@ docker build -f deploy/docker/Dockerfile.frontend \
 | `OSTIARI_GATEWAY_RATE_LIMIT_RPM` | Required positive production request limit, enforced fleet-wide through Redis |
 | `OSTIARI_HITL=on` | Enables the human-approval gate for the *intervene* tier (202 + `X-Approval-Id` resubmit). Off in a fail-closed production deployment means the middle tier becomes a refusal |
 | `OSTIARI_REQUIRE_AXON=1` | Apply the production fail-closed Axon contract outside production. Source/container installs already bundle AxonLLM; production makes it mandatory automatically when LLM routing is active. |
-| `OSTIARI_REQUIRE_REDIS=true` + `OSTIARI_REDIS_URL` | Required in production; Redis loss fails shared enforcement closed and makes `/ready` return 503 |
+| `OSTIARI_REQUIRE_REDIS=true` + `OSTIARI_REDIS_URL` | Required in production; Redis loss fails shared enforcement and durable event delivery closed and makes `/ready` return 503 |
 | `OSTIARI_X402_MODE` | Production accepts `off` or `live`; `simulated` is refused |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | LLM credentials (mount from a secret) |
 
@@ -806,6 +806,8 @@ The enforced boundary and unresolved release gates are tracked in
       Production requires the bundled Axon router automatically;
       `OSTIARI_REQUIRE_AXON=1` applies that contract in staging.
 - [ ] Authenticated Redis configured with `OSTIARI_REQUIRE_REDIS=true`; verify
+      trace, cost, payment, and budget-alert outbox recovery after a gateway
+      restart; verify
       `/ready` fails when Redis is unavailable.
 - [ ] `OSTIARI_X402_MODE=off` unless live settlement credentials and acceptance
       tests are complete; production refuses simulated mode.
