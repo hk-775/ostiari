@@ -5,7 +5,7 @@ import logging
 import os as _os
 import re as _re
 import uuid as _uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 import httpx as _httpx
@@ -31,6 +31,8 @@ from ostiari_gateway.telemetry import (
 
 log = logging.getLogger("ostiari.sidecar")
 _ORG_ID_PATTERN = _re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_CP_REGISTRATION_RETRY_INITIAL_SECONDS = 1.0
+_CP_REGISTRATION_RETRY_MAX_SECONDS = 30.0
 
 _NON_SECRET_CRED_FIELDS = {
     "azure_endpoint", "azure_api_version", "bedrock_region",
@@ -627,9 +629,15 @@ def create_app(
     if initial_config and hasattr(initial_config, "quota") and initial_config.quota:
         quota_enforcer.configure(initial_config.quota)
 
-    # Apply agent auth from initial config
-    if initial_config and hasattr(initial_config, "agent_auth") and initial_config.agent_auth:
-        agent_auth.configure(initial_config.agent_auth)
+    # Apply agent auth from initial config. Keep the baseline so a transient
+    # fail-closed posture can be removed after control-plane registration recovers.
+    initial_agent_auth = (
+        dict(initial_config.agent_auth)
+        if initial_config and hasattr(initial_config, "agent_auth")
+        else {}
+    )
+    if initial_agent_auth:
+        agent_auth.configure(initial_agent_auth)
 
     # Apply cross-agent (A2A delegation) policy from initial config
     if initial_config and getattr(initial_config, "cross_agent", None):
@@ -758,6 +766,16 @@ def create_app(
         lifecycle.set_config_callback(_apply_bundle)
         bundle_applier = _apply_bundle
 
+    control_plane_status: dict[str, Any] = {
+        "configured": lifecycle is not None,
+        "required": lifecycle is not None and _fail_closed_on_cp_loss(),
+        "registered": False,
+        "attempts": 0,
+        "last_error": "",
+        "next_retry_seconds": None,
+    }
+    fail_closed_applied = False
+
     async def _connect_mcp_servers(mcp_cfgs: list) -> None:
         """Connect a list of MCP server configs (dicts or models), tolerating errors."""
         from ostiari_gateway.mcp.models import MCPServerConfig
@@ -793,8 +811,88 @@ def create_app(
             except Exception as e:  # noqa: BLE001 — one bad agent shouldn't block the rest
                 log.warning("Failed to connect A2A agent from config: %s", e)
 
+    def _registration_error_label(exc: Exception) -> str:
+        if isinstance(exc, _httpx.HTTPStatusError):
+            return f"http_{exc.response.status_code}"
+        return type(exc).__name__
+
+    async def _register_with_control_plane() -> bool:
+        nonlocal fail_closed_applied
+        if lifecycle is None:
+            return True
+
+        control_plane_status["attempts"] += 1
+        try:
+            data = await lifecycle.register()
+            bundle = (data or {}).get("config", {})
+
+            # Registration may recover after fail-closed agent auth was applied.
+            # A missing/empty control-plane agent-auth document preserves the
+            # gateway's original local posture rather than leaving deny-all stuck.
+            if fail_closed_applied and not bundle.get("agent_auth"):
+                agent_auth.configure(initial_agent_auth)
+
+            if bundle.get("mcp_servers"):
+                await _connect_mcp_servers(bundle["mcp_servers"])
+            if bundle.get("a2a_agents"):
+                await _connect_a2a_agents(bundle["a2a_agents"])
+            await trace_reporter.start_spend_persistence()
+            await lifecycle.start_heartbeat(interval=30)
+        except _asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 — registration retries all failures
+            control_plane_status["registered"] = False
+            control_plane_status["last_error"] = _registration_error_label(e)
+            if control_plane_status["required"]:
+                if not fail_closed_applied:
+                    agent_auth.configure(
+                        {
+                            "enabled": True,
+                            "default_grants": [],
+                            "default_models": [],
+                            "default_providers": [],
+                        }
+                    )
+                    fail_closed_applied = True
+                log.error(
+                    "Control plane registration failed: %s — FAILING CLOSED "
+                    "(agent auth deny-by-default until registration recovers)",
+                    e,
+                )
+            else:
+                log.warning(
+                    "Control plane registration failed: %s — running standalone "
+                    "(fail-open) while registration retries",
+                    e,
+                )
+            return False
+
+        control_plane_status["registered"] = True
+        control_plane_status["last_error"] = ""
+        control_plane_status["next_retry_seconds"] = None
+        fail_closed_applied = False
+        log.info(
+            "Control plane registration established after %d attempt(s)",
+            control_plane_status["attempts"],
+        )
+        return True
+
+    async def _retry_control_plane_registration() -> None:
+        delay = _CP_REGISTRATION_RETRY_INITIAL_SECONDS
+        while True:
+            control_plane_status["next_retry_seconds"] = delay
+            log.warning(
+                "Retrying control plane registration in %.1f seconds",
+                delay,
+            )
+            await _asyncio.sleep(delay)
+            if await _register_with_control_plane():
+                return
+            delay = min(delay * 2, _CP_REGISTRATION_RETRY_MAX_SECONDS)
+
     @asynccontextmanager
     async def lifespan(app: Any) -> Any:
+        registration_task: _asyncio.Task | None = None
         if initial_config and initial_config.budget_reset:
             budget_reset_scheduler.configure(initial_config.budget_reset)
 
@@ -802,38 +900,22 @@ def create_app(
         if initial_config and hasattr(initial_config, "mcp_servers"):
             await _connect_mcp_servers(initial_config.mcp_servers)
 
-        # Register with control plane and start heartbeat. The registration
-        # bundle carries the MCP servers the control plane has on record, so we
-        # (re)connect them here — this is what makes MCP survive a bare gateway
-        # restart without re-running a manual register script.
-        if lifecycle:
-            try:
-                data = await lifecycle.register()
-                bundle = (data or {}).get("config", {})
-                if bundle.get("mcp_servers"):
-                    await _connect_mcp_servers(bundle["mcp_servers"])
-                if bundle.get("a2a_agents"):
-                    await _connect_a2a_agents(bundle["a2a_agents"])
-                await trace_reporter.start_spend_persistence()
-                await lifecycle.start_heartbeat(interval=30)
-            except Exception as e:
-                # If the control plane is unreachable, the gateway never received
-                # its pushed gates (quota, agent-auth, cross-agent) — which all
-                # default to allow-all. In production that silently disables
-                # governance, so fail CLOSED: enable least-privilege agent auth
-                # so unconfigured agents are denied rather than waved through.
-                if _fail_closed_on_cp_loss():
-                    agent_auth.configure({"enabled": True, "default_grants": [],
-                                          "default_models": [], "default_providers": []})
-                    log.error(
-                        "Control plane registration failed: %s — FAILING CLOSED "
-                        "(agent auth deny-by-default until CP reachable)", e)
-                else:
-                    log.warning(f"Control plane registration failed: {e} — running standalone (fail-open)")
+        # Preserve the synchronous success path so startup config is applied before
+        # serving traffic. A failed first attempt no longer strands the process:
+        # registration continues in the background and readiness stays false in
+        # fail-closed deployments until the control plane accepts it.
+        if lifecycle and not await _register_with_control_plane():
+            registration_task = _asyncio.create_task(
+                _retry_control_plane_registration()
+            )
 
         yield
 
         # Shutdown lifecycle
+        if registration_task and not registration_task.done():
+            registration_task.cancel()
+            with suppress(_asyncio.CancelledError):
+                await registration_task
         if lifecycle:
             await lifecycle.stop()
         await budget_reset_scheduler.close()
@@ -1826,6 +1908,7 @@ def create_app(
             "agent_auth": agent_auth.get_status(),
             "broker": broker_policy.get_status(),
             "llm_router": _axon_health(module_registry),
+            "control_plane": dict(control_plane_status),
             "redis": (
                 shared_store.status(check=False)
                 if shared_store is not None
@@ -1853,9 +1936,29 @@ def create_app(
         if redis_status["required"] and not redis_status["healthy"]:
             return JSONResponse(
                 status_code=503,
-                content={"status": "not_ready", "redis": redis_status},
+                content={
+                    "status": "not_ready",
+                    "control_plane": dict(control_plane_status),
+                    "redis": redis_status,
+                },
             )
-        return {"status": "ready", "redis": redis_status}
+        if (
+            control_plane_status["required"]
+            and not control_plane_status["registered"]
+        ):
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "not_ready",
+                    "control_plane": dict(control_plane_status),
+                    "redis": redis_status,
+                },
+            )
+        return {
+            "status": "ready",
+            "control_plane": dict(control_plane_status),
+            "redis": redis_status,
+        }
 
     @app.get("/modules")
     async def list_modules() -> Any:
@@ -1875,6 +1978,7 @@ def create_app(
     app.state.quota_enforcer = quota_enforcer
     app.state.budget_reset_scheduler = budget_reset_scheduler
     app.state.module_registry = module_registry
+    app.state.control_plane_status = control_plane_status
     # The control-plane bundle applier, when one is wired (it only exists with a
     # control_plane_url). Exposed so the bundle path is directly testable rather
     # than only reachable by standing up a control plane.

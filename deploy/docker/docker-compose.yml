@@ -61,7 +61,7 @@ services:
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8421/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8421/health', timeout=4).read()"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -103,7 +103,7 @@ services:
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8400/api/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8400/api/health', timeout=4).read()"]
       interval: 10s
       timeout: 5s
       retries: 3

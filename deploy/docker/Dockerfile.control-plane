@@ -1,44 +1,44 @@
 # Ostiari control-plane backend image.
 #
 #   docker build -f deploy/docker/Dockerfile.control-plane -t ostiari-control-plane:latest .
-FROM python:3.12-slim
+FROM python:3.12-alpine@sha256:4b5b91c1040aeb90137a7ed5235e3caf7a1a45da015066c5305fb64e70262ba2 AS builder
 
-WORKDIR /app
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 
-RUN apt-get update && apt-get install -y --no-install-recommends curl \
-    && rm -rf /var/lib/apt/lists/*
+RUN python -m venv "${VIRTUAL_ENV}"
 
-# The control plane imports the core `ostiari` package (e.g.
-# ostiari.http_limits) but does not declare it as a dependency, so install it
-# from source first.
+WORKDIR /build
+
+# The control plane imports the local core package but does not declare it as a
+# published dependency, so install it from source first.
 COPY pyproject.toml README.md ./core/
 COPY src/ ./core/src/
 RUN pip install --no-cache-dir ./core
 
-COPY control-plane/backend/pyproject.toml ./
-COPY control-plane/backend/control_plane/ control_plane/
+COPY control-plane/backend/pyproject.toml ./control-plane/
+COPY control-plane/backend/control_plane/ ./control-plane/control_plane/
+# Include AWS discovery and SQLite support. Production uses asyncpg/PostgreSQL.
+RUN pip install --no-cache-dir "./control-plane[aws]" "aiosqlite>=0.19"
+
+FROM python:3.12-alpine@sha256:4b5b91c1040aeb90137a7ed5235e3caf7a1a45da015066c5305fb64e70262ba2
+
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
+ENV OSTIARI_DATA_DIR=/data
+ENV DATABASE_URL="sqlite+aiosqlite:////data/control_plane.db"
+
+WORKDIR /app
+
+COPY --from=builder /opt/venv /opt/venv
 COPY control-plane/backend/main.py ./
 COPY control-plane/backend/alembic.ini ./
 COPY control-plane/backend/alembic/ alembic/
-# Install the AWS discovery extra plus aiosqlite so both the production
-# collectors and default SQLite backend work in the shipped image. Production
-# Postgres pulls asyncpg, which is already a core dependency.
-RUN pip install --no-cache-dir ".[aws]" "aiosqlite>=0.19"
 
-# The image defaults to a writable SQLite volume for local use. Production
-# manifests override DATABASE_URL with PostgreSQL; runtime governance state is
-# SQL-backed and the root filesystem remains read-only.
-ENV OSTIARI_DATA_DIR=/data \
-    DATABASE_URL="sqlite+aiosqlite:////data/control_plane.db"
-
-# Run as a non-root user. pip installed above as root, so both the installed
-# package and /app stay root-owned and unwritable to this user — deliberately, so
-# the app cannot rewrite its own code.
-#
-# /data is used only by local/Compose SQLite deployments. SQLite writes WAL/SHM
-# siblings, so the directory itself must be writable.
-RUN useradd --system --create-home --uid 10001 --shell /usr/sbin/nologin ostiari \
-    && mkdir -p /data && chown 10001:10001 /data
+RUN addgroup -S -g 10001 ostiari \
+    && adduser -S -D -H -u 10001 -G ostiari ostiari \
+    && mkdir -p /data \
+    && chown 10001:10001 /data
 
 USER 10001:10001
 
