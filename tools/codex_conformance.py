@@ -428,14 +428,17 @@ def _assert_request_contract(requests: list[dict[str, Any]]) -> None:
         raise AssertionError(f"unexpected model: {first.get('model')}")
     if first.get("stream") is not True or first.get("store") is not False:
         raise AssertionError("Codex did not request a stateless streamed response")
-    for field in (
-        "previous_response_id",
-        "reasoning",
-        "service_tier",
-        "text",
-    ):
+    for field in ("previous_response_id", "service_tier", "text"):
         if first.get(field) not in (None, {}):
             raise AssertionError(f"unsupported field sent by Codex: {field}")
+    reasoning = first.get("reasoning")
+    if reasoning not in (None, {}) and (
+        not isinstance(reasoning, dict)
+        or not reasoning
+        or not set(reasoning) <= {"effort", "summary"}
+        or any(value not in (None, "none") for value in reasoning.values())
+    ):
+        raise AssertionError("Codex requested non-empty reasoning")
     if first.get("include") not in (None, []):
         raise AssertionError("Codex requested unsupported include fields")
     if not isinstance(first.get("tools"), list) or not first["tools"]:

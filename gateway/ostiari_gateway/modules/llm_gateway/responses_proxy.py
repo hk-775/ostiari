@@ -263,6 +263,16 @@ def _tool_choice(choice: Any) -> str | dict[str, Any] | None:
     return {"type": "function", "function": {"name": name}}
 
 
+def _noop_reasoning(value: Any) -> bool:
+    if value in (None, {}):
+        return True
+    if not isinstance(value, dict) or not value:
+        return False
+    if not set(value) <= {"effort", "summary"}:
+        return False
+    return all(setting in (None, "none") for setting in value.values())
+
+
 def _translate(body: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     for field in ("previous_response_id", "conversation", "prompt"):
         if body.get(field) is not None:
@@ -275,9 +285,9 @@ def _translate(body: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         )
     if body.get("background") is True:
         raise ResponsesRequestError("Field 'background' is not supported.")
-    if body.get("reasoning") not in (None, {}):
+    if not _noop_reasoning(body.get("reasoning")):
         raise ResponsesRequestError(
-            "Responses reasoning configuration is not supported yet."
+            "Responses reasoning is unsupported except for effort/summary='none'."
         )
     if body.get("text") not in (None, {}):
         raise ResponsesRequestError(

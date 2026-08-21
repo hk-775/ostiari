@@ -320,6 +320,39 @@ class TestTranslation:
         assert response.status_code == 400
         assert field in response.json()["error"]["message"]
 
+    @pytest.mark.parametrize(
+        "reasoning",
+        [
+            None,
+            {},
+            {"effort": "none"},
+            {"summary": "none"},
+            {"effort": "none", "summary": "none"},
+        ],
+    )
+    def test_noop_reasoning_configuration_is_accepted(self, reasoning):
+        async def _route(self_inner, **kwargs):
+            return _route_result()
+
+        client = _app()
+        with patch(
+            "ostiari_gateway.modules.llm_gateway.axon_router.AxonRouter.available",
+            True,
+        ), patch(
+            "ostiari_gateway.modules.llm_gateway.axon_router.AxonRouter.route",
+            new=_route,
+        ):
+            response = client.post(
+                "/v1/responses",
+                headers={"X-Agent-Id": "codex"},
+                json={
+                    "model": "gpt-4o",
+                    "input": "ping",
+                    "reasoning": reasoning,
+                },
+            )
+        assert response.status_code == 200
+
 
 class TestGovernance:
     def test_agent_auth_uses_responses_grant(self):

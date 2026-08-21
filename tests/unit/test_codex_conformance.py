@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -14,10 +15,15 @@ HARNESS = ROOT / "tools/codex_conformance.py"
 
 
 def _harness() -> ModuleType:
+    gateway_root = str(ROOT / "gateway")
+    sys.path.insert(0, gateway_root)
     spec = importlib.util.spec_from_file_location("codex_conformance", HARNESS)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(gateway_root)
     return module
 
 
