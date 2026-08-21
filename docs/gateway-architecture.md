@@ -656,7 +656,13 @@ The image prefers env vars over flags, which is what the compose file and the Ku
 
 The image runs as uid `10001` with a root-owned `site-packages`, so a compromised gateway can't rewrite its own code. It writes exactly one path at runtime — the rendered policy tempfile under `/tmp` — so if you set `read_only: true` you must also mount a `/tmp` tmpfs, or the container starts healthy and then 500s on the first config push. `deploy/docker/docker-compose.yml` does both.
 
-The full local stack (`cd deploy/docker && docker compose up --build`) brings up the gateway on 8421, the control-plane backend on 8400, the frontend on 9000, and Redis on 6379. It runs in **dev posture** by default: `OSTIARI_ENV` is unset, so controls fail *open*, and `OSTIARI_HITL` is `off`. Both are deliberate — the demo flows — and both are wrong for production. See §7.4 and §9 of [control-plane-guide.md](control-plane-guide.md).
+The full local stack (`cd deploy/docker && docker compose up --build`) brings up
+the gateway on 8421, the control-plane backend on 8400, the frontend on 9000,
+and a Redis-compatible Valkey service on 6379. It runs in **dev posture** by
+default: `OSTIARI_ENV` is unset, so controls fail *open*, and `OSTIARI_HITL` is
+`off`. Both are deliberate — the demo flows — and both are wrong for
+production. See §7.4 and §9 of
+[control-plane-guide.md](control-plane-guide.md).
 
 ---
 

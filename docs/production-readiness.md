@@ -71,6 +71,9 @@ The current deployment contract supports:
 - The release workflow builds, re-verifies, publishes, and attaches those same
   four distributions as one release set rather than publishing only the Guard
   library.
+- Every external GitHub Action is pinned to a verified commit SHA. Container
+  build inputs are digest-pinned, and the local development state service uses
+  a digest-pinned Valkey image rather than a mutable Redis tag.
 
 ## Remaining Ostiari gates
 
@@ -86,18 +89,12 @@ The current deployment contract supports:
    version and pass request, tool, streaming, cancellation, and error-shape
    conformance before advertising Codex compatibility.
 
-3. **Immutable upstream inputs.** Pin the remaining Docker base images by
-   verified digest and GitHub Actions by verified commit SHA. The gateway and
-   control-plane Python bases are already digest-pinned; frontend and local
-   Redis inputs remain to be resolved from their official registries. Do not
-   guess these values.
-
-4. **Retained production evidence.** Complete and archive dependency/container
+3. **Retained production evidence.** Complete and archive dependency/container
    scan results, load and failure tests, PostgreSQL backup restore, rollback,
    alarm delivery, authenticated canary, and capped live-payment evidence for
    the exact release digest.
 
-5. **Legal release approval.** Confirm authorization for repository copyright,
+4. **Legal release approval.** Confirm authorization for repository copyright,
    trademarks, and third-party notices before the public release.
 
 ## AxonLLM dependency record

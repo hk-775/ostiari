@@ -145,11 +145,12 @@ services:
     restart: unless-stopped
 
   redis:
-    image: redis:7-alpine
+    # Valkey preserves the open-source BSD-3-Clause Redis protocol/API surface.
+    image: valkey/valkey:9.0.5-alpine@sha256:0cb61366757e2bcd26500b4e8bb63cbd7117610e3e4f05aacb3c812511da7632
     ports:
       - "6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "valkey-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 3

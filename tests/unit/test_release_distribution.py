@@ -1,18 +1,19 @@
 """Release-set contracts for the public Python distributions."""
 
 import json
+import re
 from pathlib import Path
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
+SHA256_RE = re.compile(r"sha256:[0-9a-f]{64}$")
+COMMIT_RE = re.compile(r"[0-9a-f]{40}$")
 
 
 def test_publish_workflow_builds_and_verifies_complete_platform_set() -> None:
     workflow = (ROOT / ".github/workflows/publish.yml").read_text()
 
-    assert "actions/checkout@v6" in workflow
-    assert "actions/setup-python@v6" in workflow
     assert "python -m build --outdir \"$GITHUB_WORKSPACE/release-dist\" ." in workflow
     assert (
         "python -m build --outdir \"$GITHUB_WORKSPACE/release-dist\" "
@@ -28,6 +29,59 @@ def test_publish_workflow_builds_and_verifies_complete_platform_set() -> None:
     assert "/tmp/ostiari-release-verify/bin/pip install release-dist/*.whl" in workflow
     assert "packages-dir: release-dist/" in workflow
     assert "release-dist/* python-sbom.cdx.json --clobber" in workflow
+
+
+def test_external_github_actions_are_pinned_to_commit_shas() -> None:
+    workflow_paths = sorted((ROOT / ".github/workflows").glob("*.y*ml"))
+    assert workflow_paths
+
+    for path in workflow_paths:
+        for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+            stripped = line.strip()
+            if "uses:" not in stripped:
+                continue
+            action = stripped.split("uses:", 1)[1].split("#", 1)[0].strip()
+            if action.startswith("./"):
+                continue
+            assert "@" in action, f"{path}:{line_number}: missing action ref"
+            ref = action.rsplit("@", 1)[1]
+            assert COMMIT_RE.fullmatch(ref), (
+                f"{path}:{line_number}: external action is not commit-pinned"
+            )
+            assert "#" in line, f"{path}:{line_number}: missing readable version comment"
+
+
+def test_container_build_and_local_state_images_are_digest_pinned() -> None:
+    dockerfiles = sorted((ROOT / "deploy/docker").glob("Dockerfile*"))
+    assert dockerfiles
+    for path in dockerfiles:
+        for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+            if not line.startswith("FROM "):
+                continue
+            image = line.split()[1]
+            assert "@sha256:" in image, f"{path}:{line_number}: mutable base image"
+            assert SHA256_RE.search(image), f"{path}:{line_number}: malformed digest"
+
+    compose = yaml.safe_load((ROOT / "deploy/docker/docker-compose.yml").read_text())
+    external_images = [
+        service["image"]
+        for service in compose["services"].values()
+        if "image" in service and not service["image"].startswith("ostiari-")
+    ]
+    assert external_images
+    for image in external_images:
+        assert "@sha256:" in image, f"mutable external Compose image: {image}"
+        assert SHA256_RE.search(image), f"malformed Compose image digest: {image}"
+
+    assert external_images == [
+        "valkey/valkey:9.0.5-alpine@sha256:"
+        "0cb61366757e2bcd26500b4e8bb63cbd7117610e3e4f05aacb3c812511da7632"
+    ]
+
+    ci = (ROOT / ".github/workflows/ci.yml").read_text()
+    frontend = (ROOT / "deploy/docker/Dockerfile.frontend").read_text()
+    assert 'node-version: "24.16.0"' in ci
+    assert "FROM node:24.16.0-alpine@sha256:" in frontend
 
 
 def test_make_install_covers_the_complete_source_platform() -> None:

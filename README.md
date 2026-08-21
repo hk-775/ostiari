@@ -25,6 +25,9 @@ all of it from one dashboard.
 
 ## See it in 90 seconds
 
+The complete source platform requires Python 3.11+ and Node.js 24.16.0. The
+standalone Guard library continues to support Python 3.10+.
+
 ```bash
 git clone https://github.com/hk-775/ostiari.git
 cd ostiari
