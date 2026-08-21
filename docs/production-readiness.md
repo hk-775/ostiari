@@ -79,6 +79,12 @@ The current deployment contract supports:
   typed streaming, a function-call/output round trip, OpenAI-shaped errors, and
   cancellation. Unsupported stateful and reasoning fields continue to fail
   closed.
+- A protected retention workflow verifies seven production-rehearsal evidence
+  classes against the exact release commit and deployed image digests. It
+  rejects stale, incomplete, mismatched, over-budget, or threshold-violating
+  results and archives the hashed bundle for 90 days. The evidence format and
+  operator procedure are documented in
+  [`production-evidence.md`](production-evidence.md).
 
 ## Remaining Ostiari gates
 
@@ -88,10 +94,11 @@ The current deployment contract supports:
    digest-pinned platform images before claiming a public package/container
    install path.
 
-2. **Retained production evidence.** Complete and archive dependency/container
-   scan results, load and failure tests, PostgreSQL backup restore, rollback,
-   alarm delivery, authenticated canary, and capped live-payment evidence for
-   the exact release digest.
+2. **Run the retained production-evidence gate.** The verifier and protected
+   90-day retention workflow are complete. Before release approval, execute the
+   dedicated rehearsal for the exact release digest and retain passing scan,
+   load/failure, PostgreSQL restore, rollback, alarm-delivery, authenticated
+   canary, and capped live-payment results.
 
 3. **Legal release approval.** Confirm authorization for repository copyright,
    trademarks, and third-party notices before the public release.

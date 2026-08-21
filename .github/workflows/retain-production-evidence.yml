@@ -1,0 +1,85 @@
+name: Retain production evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: Exact 40-character release commit
+        required: true
+      release_tag:
+        description: Immutable release tag
+        required: true
+      gateway_digest:
+        description: Deployed gateway sha256 digest
+        required: true
+      control_plane_digest:
+        description: Deployed control-plane sha256 digest
+        required: true
+      rehearsal_run_id:
+        description: Run containing the protected rehearsal evidence artifact
+        required: true
+      environment_name:
+        description: Evidence environment identifier
+        required: true
+        default: production-rehearsal
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  retain:
+    runs-on: ubuntu-latest
+    environment: production-evidence
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.release_sha }}
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Require immutable release identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}" --jq .sha)" = "$RELEASE_SHA"
+
+      - name: Download protected rehearsal evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
+          REHEARSAL_RUN_ID: ${{ inputs.rehearsal_run_id }}
+        run: |
+          test "$(gh run view "$REHEARSAL_RUN_ID" --json conclusion --jq .conclusion)" = "success"
+          test "$(gh run view "$REHEARSAL_RUN_ID" --json headSha --jq .headSha)" = "$RELEASE_SHA"
+          gh run download "$REHEARSAL_RUN_ID" \
+            --name "ostiari-production-rehearsal-evidence-${RELEASE_SHA}" \
+            --dir evidence-input
+
+      - name: Verify complete release-bound evidence
+        run: |
+          mkdir -p retained-evidence
+          cp evidence-input/*.json retained-evidence/
+          python tools/production_evidence.py \
+            --evidence-dir retained-evidence \
+            --release-sha '${{ inputs.release_sha }}' \
+            --release-tag '${{ inputs.release_tag }}' \
+            --gateway-digest '${{ inputs.gateway_digest }}' \
+            --control-plane-digest '${{ inputs.control_plane_digest }}' \
+            --environment '${{ inputs.environment_name }}' \
+            --max-age-hours 24 \
+            --output retained-evidence/manifest.json
+
+      - name: Retain verified production evidence for 90 days
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ostiari-production-evidence-${{ inputs.release_sha }}
+          path: retained-evidence/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 9
