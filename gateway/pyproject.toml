@@ -23,7 +23,8 @@ dependencies = [
 
 # Source and container builds install the exact AxonLLM source bundled under
 # vendor/axonllm. Binary distribution publishes the matching axon-llm wheel
-# beside this gateway wheel.
+# beside this gateway wheel. The reviewed routing catalog is copied into this
+# package so both wheel and sdist builds are self-contained.
 [project.optional-dependencies]
 routing = [
     "tiktoken>=0.7",
@@ -45,17 +46,3 @@ ostiari-gateway = "ostiari_gateway.main:cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["ostiari_gateway"]
-
-# AxonLLM's public wheel intentionally contains code, not deployment-specific
-# routing catalogs. Ostiari's gateway wheel carries the exact reviewed catalog
-# used by the embedded profile so a wheel-only install does not depend on a
-# source checkout or an operator-set OSTIARI_AXON_ROOT.
-[tool.hatch.build.targets.wheel.force-include]
-"../vendor/axonllm/config/models.yaml" = "ostiari_gateway/_embedded/axonllm/config/models.yaml"
-"../vendor/axonllm/config/providers.yaml.example" = "ostiari_gateway/_embedded/axonllm/config/providers.yaml.example"
-"../vendor/axonllm/config/pricing.yaml" = "ostiari_gateway/_embedded/axonllm/config/pricing.yaml"
-"../vendor/axonllm/config/leaderboard.yaml" = "ostiari_gateway/_embedded/axonllm/config/leaderboard.yaml"
-"../vendor/axonllm/config/ensemble.yaml" = "ostiari_gateway/_embedded/axonllm/config/ensemble.yaml"
-"../vendor/axonllm/LICENSE" = "ostiari_gateway/_embedded/axonllm/LICENSE"
-"../vendor/axonllm/THIRD_PARTY_NOTICES.md" = "ostiari_gateway/_embedded/axonllm/THIRD_PARTY_NOTICES.md"
-"../vendor/axonllm/UPSTREAM.md" = "ostiari_gateway/_embedded/axonllm/UPSTREAM.md"

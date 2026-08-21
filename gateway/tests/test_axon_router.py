@@ -88,29 +88,37 @@ class TestBundledDistribution:
         root = _axon_root()
         assert root is not None
         assert Path(root).resolve() == (
-            Path(__file__).resolve().parents[2] / "vendor" / "axonllm"
+            Path(__file__).resolve().parents[1]
+            / "ostiari_gateway"
+            / "_embedded"
+            / "axonllm"
         ).resolve()
 
     def test_gateway_wheel_declares_and_embeds_exact_axon_contract(self):
         root = Path(__file__).resolve().parents[2]
         metadata = tomllib.loads((root / "gateway" / "pyproject.toml").read_text())
         dependencies = metadata["project"]["dependencies"]
-        force_include = metadata["tool"]["hatch"]["build"]["targets"]["wheel"][
-            "force-include"
-        ]
 
         assert "axon-llm[server]==0.3.1" in dependencies
-        embedded = set(force_include.values())
-        assert {
-            "ostiari_gateway/_embedded/axonllm/config/models.yaml",
-            "ostiari_gateway/_embedded/axonllm/config/providers.yaml.example",
-            "ostiari_gateway/_embedded/axonllm/config/pricing.yaml",
-            "ostiari_gateway/_embedded/axonllm/config/leaderboard.yaml",
-            "ostiari_gateway/_embedded/axonllm/config/ensemble.yaml",
-            "ostiari_gateway/_embedded/axonllm/LICENSE",
-            "ostiari_gateway/_embedded/axonllm/THIRD_PARTY_NOTICES.md",
-            "ostiari_gateway/_embedded/axonllm/UPSTREAM.md",
-        } <= embedded
+        wheel = metadata["tool"]["hatch"]["build"]["targets"]["wheel"]
+        assert "force-include" not in wheel
+
+        vendor = root / "vendor" / "axonllm"
+        embedded = root / "gateway" / "ostiari_gateway" / "_embedded" / "axonllm"
+        relative_paths = (
+            "config/models.yaml",
+            "config/providers.yaml.example",
+            "config/pricing.yaml",
+            "config/leaderboard.yaml",
+            "config/ensemble.yaml",
+            "LICENSE",
+            "THIRD_PARTY_NOTICES.md",
+            "UPSTREAM.md",
+        )
+        for relative_path in relative_paths:
+            assert (embedded / relative_path).read_bytes() == (
+                vendor / relative_path
+            ).read_bytes()
 
 
 class TestResultNormalization:
