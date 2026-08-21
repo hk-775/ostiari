@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router";
 import { Shield, Server, Wrench, FileText, Activity, Plug, History, DollarSign, Radio, FlaskConical, Brain, ShieldCheck, Beaker, Bot, Network, Users, Key, LogOut, EyeOff, FileCheck, Gauge, Wallet, TrendingUp, Coins, Radar, UserCheck, Menu, X } from "lucide-react";
-import { useAuthStore } from "../stores/authStore";
+import { Role, useAuthStore } from "../stores/authStore";
 
 const NAV_SECTIONS: {
   label: string;
@@ -110,6 +110,16 @@ const ROLE_BADGES: Record<string, string> = {
 // Sections that require write access (hidden for viewers)
 const WRITE_SECTIONS = ["Control", "Configure", "Test"];
 
+export function visibleNavigationSections(role?: Role) {
+  return NAV_SECTIONS.filter((section) => {
+    if (section.adminOnly && role !== "admin") return false;
+    if (!["admin", "operator"].includes(role ?? "") && WRITE_SECTIONS.includes(section.label)) {
+      return false;
+    }
+    return true;
+  });
+}
+
 export function Layout() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -122,11 +132,7 @@ export function Layout() {
     navigate("/login");
   };
 
-  const visibleSections = NAV_SECTIONS.filter((section) => {
-    if (section.adminOnly && user?.role !== "admin") return false;
-    if (!["admin", "operator"].includes(user?.role ?? "") && WRITE_SECTIONS.includes(section.label)) return false;
-    return true;
-  });
+  const visibleSections = visibleNavigationSections(user?.role);
 
   return (
     <div className="flex min-h-screen overflow-x-hidden">
