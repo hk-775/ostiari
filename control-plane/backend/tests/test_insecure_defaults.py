@@ -5,6 +5,7 @@ Dev/demo stays permissive; production (OSTIARI_ENV=production) fails closed.
 
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -21,6 +22,8 @@ def _secure_production_env(monkeypatch):
     monkeypatch.setenv("OSTIARI_NO_DEMO", "1")
     monkeypatch.setenv("OSTIARI_TENANCY_MODE", "single")
     monkeypatch.setenv("OSTIARI_ORG_ID", "production-org")
+    monkeypatch.setenv("OSTIARI_CONTROL_PLANE_REPLICAS", "2")
+    monkeypatch.setenv("REDIS_URL", "rediss://redis.internal:6379/0")
     monkeypatch.setenv(
         "DATABASE_URL",
         "postgresql+asyncpg://ostiari:secret@db.internal:5432/ostiari",
@@ -82,6 +85,22 @@ class TestProductionPosture:
         _secure_production_env(monkeypatch)
         monkeypatch.setenv("OSTIARI_TENANCY_MODE", "multi")
         with pytest.raises(RuntimeError, match="OSTIARI_TENANCY_MODE"):
+            validate_production_posture()
+
+    def test_redis_is_required(self, monkeypatch):
+        from control_plane.env import validate_production_posture
+
+        _secure_production_env(monkeypatch)
+        monkeypatch.delenv("REDIS_URL")
+        with pytest.raises(RuntimeError, match="REDIS_URL"):
+            validate_production_posture()
+
+    def test_replica_count_must_be_positive(self, monkeypatch):
+        from control_plane.env import validate_production_posture
+
+        _secure_production_env(monkeypatch)
+        monkeypatch.setenv("OSTIARI_CONTROL_PLANE_REPLICAS", "0")
+        with pytest.raises(RuntimeError, match="OSTIARI_CONTROL_PLANE_REPLICAS"):
             validate_production_posture()
 
     def test_production_org_is_required(self, monkeypatch):
@@ -153,7 +172,11 @@ class TestJwtSecret:
         code = "import control_plane.auth.service"
         r = subprocess.run(
             [sys.executable, "-c", code],
-            env={"OSTIARI_ENV": "production", "PATH": "/usr/bin:/bin"},
+            env={
+                "OSTIARI_ENV": "production",
+                "PATH": "/usr/bin:/bin",
+                "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
+            },
             capture_output=True, text=True, cwd=".",
         )
         assert r.returncode != 0

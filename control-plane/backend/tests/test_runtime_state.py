@@ -7,7 +7,12 @@ import asyncio
 import pytest
 from control_plane.database import async_session
 from control_plane.models.database import RuntimeStateRecord
-from control_plane.persistence import import_legacy_state, load_runtime_caches
+from control_plane.persistence import (
+    import_legacy_state,
+    load_runtime_caches,
+    sync_runtime_caches,
+)
+from control_plane.services.runtime_state import delete_runtime_state, put_runtime_state
 from sqlalchemy import delete, select
 
 pytestmark = pytest.mark.anyio
@@ -184,3 +189,62 @@ async def test_legacy_state_import_marker_prevents_reimport():
     assert [(row.namespace, row.item_key) for row in rows] == [
         ("_migration", "legacy_state_import")
     ]
+
+
+async def test_replica_sync_applies_updates_and_deletions():
+    from control_plane import persistence
+    from control_plane.persistence import load_runtime_caches
+    from control_plane.routers.agents import _agents
+
+    persistence._loaded_runtime_revisions.clear()
+    async with async_session() as replica:
+        await load_runtime_caches(replica)
+
+    async with async_session() as writer:
+        await put_runtime_state(
+            writer,
+            "default",
+            "agents",
+            "replica-agent",
+            {
+                "name": "replica-agent",
+                "framework": "openai",
+                "gateway_id": "gw-a",
+            },
+        )
+        await writer.commit()
+
+    async with async_session() as replica:
+        assert await sync_runtime_caches(replica) == 1
+    assert _agents["default"]["replica-agent"].gateway_id == "gw-a"
+
+    async with async_session() as writer:
+        await put_runtime_state(
+            writer,
+            "default",
+            "agents",
+            "replica-agent",
+            {
+                "name": "replica-agent",
+                "framework": "bedrock",
+                "gateway_id": "gw-b",
+            },
+        )
+        await writer.commit()
+
+    async with async_session() as replica:
+        assert await sync_runtime_caches(replica) == 1
+    assert _agents["default"]["replica-agent"].framework == "bedrock"
+
+    async with async_session() as writer:
+        await delete_runtime_state(
+            writer,
+            "default",
+            "agents",
+            "replica-agent",
+        )
+        await writer.commit()
+
+    async with async_session() as replica:
+        assert await sync_runtime_caches(replica) == 1
+    assert "replica-agent" not in _agents["default"]

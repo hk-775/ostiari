@@ -8,14 +8,14 @@ hardening work. It is intentionally narrower than the feature roadmap.
 The current deployment contract supports:
 
 - one explicitly configured tenant (`OSTIARI_TENANCY_MODE=single`);
-- one control-plane replica backed by PostgreSQL;
+- multiple control-plane replicas backed by PostgreSQL and Redis;
 - multiple gateway replicas backed by Redis;
 - OIDC-authenticated agent traffic with an exact issuer, audience, and tenant;
 - immutable application image references;
 - x402 disabled or configured for live settlement.
 
-Do not enable control-plane horizontal scaling or advertise multi-tenant SaaS
-until the corresponding items below are complete.
+Do not advertise multi-tenant SaaS until the corresponding item below is
+complete.
 
 ## Completed in Ostiari
 
@@ -43,6 +43,12 @@ until the corresponding items below are complete.
   fleet-wide service/ingest keys in production. Official Kubernetes, Helm, and
   ECS manifests use per-gateway OAuth client credentials; projected token files
   are also supported.
+- Control-plane runtime configuration uses transactionally incremented,
+  tenant/namespace revisions in PostgreSQL. Replicas refresh only changed
+  namespaces, live traces fan out through Redis with SQL catch-up, session roots
+  are assigned atomically, and singleton health sweeps use a Redis lease.
+  Production rate limiting and `/api/ready` fail closed when Redis or replica
+  synchronization is unhealthy.
 - Gateway callback destinations are restricted to an explicit hostname/CIDR
   allowlist and may never target link-local metadata addresses.
 - Production manifests run migrations first, use non-root/read-only containers,
@@ -64,38 +70,34 @@ until the corresponding items below are complete.
 
 ## Remaining Ostiari gates
 
-1. **Control-plane horizontal scaling.** SQL is authoritative, but several
-   routers retain process-local hot caches. Add transactional cache invalidation
-   or read-through SQL before running more than one control-plane replica.
-
-2. **Multi-tenant schema.** Several legacy tables still use globally scoped
+1. **Multi-tenant schema.** Several legacy tables still use globally scoped
    primary or unique keys. Convert them to tenant-qualified constraints before
    changing production tenancy mode from `single`.
 
-3. **Registry and image publication authorization.** The workflow now publishes
+2. **Registry and image publication authorization.** The workflow now publishes
    the complete Python release set, but the maintainers must configure and test
    trusted-publisher ownership for all four package names and publish signed,
    digest-pinned platform images before claiming a public package/container
    install path.
 
-4. **Codex CLI conformance.** The stateless Responses subset is implemented,
+3. **Codex CLI conformance.** The stateless Responses subset is implemented,
    but current Codex uses the Responses wire API and may send reasoning or
    stateful fields that Ostiari deliberately rejects. Capture a supported Codex
    version and pass request, tool, streaming, cancellation, and error-shape
    conformance before advertising Codex compatibility.
 
-5. **Immutable upstream inputs.** Pin the remaining Docker base images by
+4. **Immutable upstream inputs.** Pin the remaining Docker base images by
    verified digest and GitHub Actions by verified commit SHA. The gateway and
    control-plane Python bases are already digest-pinned; frontend and local
    Redis inputs remain to be resolved from their official registries. Do not
    guess these values.
 
-6. **Retained production evidence.** Complete and archive dependency/container
+5. **Retained production evidence.** Complete and archive dependency/container
    scan results, load and failure tests, PostgreSQL backup restore, rollback,
    alarm delivery, authenticated canary, and capped live-payment evidence for
    the exact release digest.
 
-7. **Legal release approval.** Confirm authorization for repository copyright,
+6. **Legal release approval.** Confirm authorization for repository copyright,
    trademarks, and third-party notices before the public release.
 
 ## AxonLLM dependency record

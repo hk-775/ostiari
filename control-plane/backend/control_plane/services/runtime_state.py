@@ -10,7 +10,38 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from control_plane.models.database import RuntimeStateRecord, RuntimeStateSequence
+from control_plane.models.database import (
+    RuntimeStateRecord,
+    RuntimeStateRevision,
+    RuntimeStateSequence,
+)
+
+
+async def _bump_runtime_revision(
+    db: AsyncSession,
+    org: str,
+    namespace: str,
+) -> None:
+    """Advance the namespace revision in the same transaction as its mutation."""
+    dialect = db.get_bind().dialect.name
+    insert_fn = postgresql_insert if dialect == "postgresql" else sqlite_insert
+    statement = insert_fn(RuntimeStateRevision).values(
+        org_id=org,
+        namespace=namespace,
+        revision=1,
+        updated_at=datetime.now(timezone.utc),
+    )
+    statement = statement.on_conflict_do_update(
+        index_elements=[
+            RuntimeStateRevision.org_id,
+            RuntimeStateRevision.namespace,
+        ],
+        set_={
+            "revision": RuntimeStateRevision.revision + 1,
+            "updated_at": statement.excluded.updated_at,
+        },
+    )
+    await db.execute(statement)
 
 
 async def allocate_runtime_id(
@@ -116,6 +147,7 @@ async def put_runtime_state(
         },
     )
     await db.execute(statement)
+    await _bump_runtime_revision(db, org, namespace)
 
 
 async def put_runtime_state_once(
@@ -158,6 +190,8 @@ async def put_runtime_state_once(
             )
         )
     ).scalar_one()
+    if inserted is not None:
+        await _bump_runtime_revision(db, org, namespace)
     return inserted is not None, dict(stored or {})
 
 
@@ -167,13 +201,15 @@ async def delete_runtime_state(
     namespace: str,
     item_key: str,
 ) -> None:
-    await db.execute(
+    result = await db.execute(
         delete(RuntimeStateRecord).where(
             RuntimeStateRecord.org_id == org,
             RuntimeStateRecord.namespace == namespace,
             RuntimeStateRecord.item_key == item_key,
         )
     )
+    if result.rowcount:
+        await _bump_runtime_revision(db, org, namespace)
 
 
 async def clear_runtime_namespace(
@@ -181,12 +217,14 @@ async def clear_runtime_namespace(
     org: str,
     namespace: str,
 ) -> None:
-    await db.execute(
+    result = await db.execute(
         delete(RuntimeStateRecord).where(
             RuntimeStateRecord.org_id == org,
             RuntimeStateRecord.namespace == namespace,
         )
     )
+    if result.rowcount:
+        await _bump_runtime_revision(db, org, namespace)
 
 
 async def load_runtime_namespace(
@@ -219,3 +257,21 @@ async def load_all_runtime_state(
             )
         ).scalars()
     )
+
+
+async def load_runtime_revisions(
+    db: AsyncSession,
+) -> dict[tuple[str, str], int]:
+    rows = (
+        await db.execute(
+            select(
+                RuntimeStateRevision.org_id,
+                RuntimeStateRevision.namespace,
+                RuntimeStateRevision.revision,
+            )
+        )
+    ).all()
+    return {
+        (str(org), str(namespace)): int(revision)
+        for org, namespace, revision in rows
+    }

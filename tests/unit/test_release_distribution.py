@@ -62,6 +62,28 @@ def test_production_templates_use_per_gateway_workload_identity() -> None:
     control_plane = kubernetes[2].read_text()
     assert "OSTIARI_WORKLOAD_OIDC_ISSUER" in control_plane
     assert "OSTIARI_WORKLOAD_OIDC_AUDIENCE" in control_plane
+    documents = list(yaml.safe_load_all(control_plane))
+    deployment = next(
+        document
+        for document in documents
+        if document.get("kind") == "Deployment"
+    )
+    assert deployment["spec"]["replicas"] == 2
+    containers = deployment["spec"]["template"]["spec"]["containers"]
+    backend = next(
+        container for container in containers if container["name"] == "backend"
+    )
+    backend_env = {item["name"]: item for item in backend["env"]}
+    assert backend_env["OSTIARI_CONTROL_PLANE_REPLICAS"]["value"] == "2"
+    assert (
+        backend_env["REDIS_URL"]["valueFrom"]["secretKeyRef"]["key"]
+        == "redis-url"
+    )
+    assert any(
+        document.get("kind") == "PodDisruptionBudget"
+        and document["spec"]["minAvailable"] == 1
+        for document in documents
+    )
 
     task_definition = json.loads(
         (ROOT / "deploy/ecs/task-definition.json").read_text()
