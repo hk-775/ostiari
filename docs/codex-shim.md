@@ -54,10 +54,13 @@ The gateway URL in the example ends in `/v1`; Codex appends `/responses`.
 
 Stateful continuation remains unsupported. Ostiari rejects
 `previous_response_id`, stored conversations, background work, hosted prompts,
-reasoning configuration, structured output, and unsupported include or
-service-tier fields. Failing closed here is intentional. Silently ignoring one
-of those fields would make a request appear governed while changing its model
-behavior.
+model reasoning configuration, structured output, and unsupported include or
+service-tier fields. The exact Codex `0.148.0` transport pair
+`reasoning.context="all_turns"` plus
+`include=["reasoning.encrypted_content"]` is accepted so Codex can carry its
+stateless encrypted context metadata. Ostiari does not inspect, persist,
+generate, or return reasoning content. Failing closed on every other shape is
+intentional.
 
 ## Chat Completions clients
 
@@ -94,10 +97,11 @@ It explicitly rejects:
 
 - `previous_response_id`, `conversation`, and prompt references;
 - `store=true` and background execution;
-- reasoning and structured-output configuration;
+- model reasoning and structured-output configuration;
 - file-backed images;
 - non-function tools;
-- unsupported include, service-tier, and truncation modes.
+- include fields other than the exact Codex encrypted-reasoning transport
+  field, plus unsupported service-tier and truncation modes.
 
 ## Governance path
 

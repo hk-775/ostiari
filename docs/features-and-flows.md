@@ -199,7 +199,10 @@ Chat Completions. It supports:
 Ostiari does not store OpenAI conversation state. It rejects
 `previous_response_id`, `conversation`, `prompt`, `store=true`, background
 execution, and unsupported reasoning/structured-output options rather than
-silently changing their semantics.
+silently changing their semantics. The pinned Codex profile may send
+`reasoning.context="all_turns"` with
+`include=["reasoning.encrypted_content"]`; Ostiari accepts that pair as opaque
+stateless transport metadata without enabling model reasoning.
 
 Codex CLI `0.148.0` is supported through the pinned profile under
 `config/codex`. The profile disables reasoning, verbosity, hosted-search,

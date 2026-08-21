@@ -263,14 +263,19 @@ def _tool_choice(choice: Any) -> str | dict[str, Any] | None:
     return {"type": "function", "function": {"name": name}}
 
 
-def _noop_reasoning(value: Any) -> bool:
+_ENCRYPTED_REASONING_INCLUDE = ["reasoning.encrypted_content"]
+
+
+def _supported_reasoning_metadata(value: Any) -> bool:
     if value in (None, {}):
         return True
     if not isinstance(value, dict) or not value:
         return False
-    if not set(value) <= {"effort", "summary"}:
+    if not set(value) <= {"context", "effort", "summary"}:
         return False
-    return all(setting in (None, "none") for setting in value.values())
+    if value.get("context") not in (None, "all_turns"):
+        return False
+    return all(value.get(field) in (None, "none") for field in ("effort", "summary"))
 
 
 def _translate(body: dict[str, Any]) -> tuple[dict[str, Any], bool]:
@@ -285,15 +290,31 @@ def _translate(body: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         )
     if body.get("background") is True:
         raise ResponsesRequestError("Field 'background' is not supported.")
-    if not _noop_reasoning(body.get("reasoning")):
+    reasoning = body.get("reasoning")
+    include = body.get("include")
+    if include not in (None, [], _ENCRYPTED_REASONING_INCLUDE):
+        raise ResponsesRequestError("Field 'include' is not supported.")
+    if not _supported_reasoning_metadata(reasoning):
         raise ResponsesRequestError(
-            "Responses reasoning is unsupported except for effort/summary='none'."
+            "Responses reasoning is unsupported except for transport-only "
+            "context='all_turns' and effort/summary='none'."
+        )
+    reasoning_context = reasoning.get("context") if isinstance(reasoning, dict) else None
+    if reasoning_context == "all_turns" and include != _ENCRYPTED_REASONING_INCLUDE:
+        raise ResponsesRequestError(
+            "Responses reasoning.context='all_turns' requires "
+            "include=['reasoning.encrypted_content']."
+        )
+    if include == _ENCRYPTED_REASONING_INCLUDE and reasoning_context != "all_turns":
+        raise ResponsesRequestError(
+            "Field 'include' requests encrypted reasoning content without "
+            "reasoning.context='all_turns'."
         )
     if body.get("text") not in (None, {}):
         raise ResponsesRequestError(
             "Responses structured text configuration is not supported yet."
         )
-    for field in ("include", "max_tool_calls", "service_tier"):
+    for field in ("max_tool_calls", "service_tier"):
         if body.get(field) is not None:
             raise ResponsesRequestError(f"Field '{field}' is not supported.")
     if body.get("parallel_tool_calls") is False:

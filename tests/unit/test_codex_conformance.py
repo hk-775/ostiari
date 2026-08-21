@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 CATALOG = ROOT / "config/codex/model-catalog.json"
 EXAMPLE_CONFIG = ROOT / "config/codex/config.toml.example"
@@ -64,6 +66,73 @@ def test_codex_harness_generates_a_safe_shell_call() -> None:
     )
     assert name == "shell_command"
     assert arguments == {"command": "printf OSTIARI_TOOL_OK"}
+
+
+def test_codex_failure_diagnostics_exclude_prompts_tools_and_tokens() -> None:
+    harness = _harness()
+    diagnostics = json.loads(
+        harness._request_diagnostics(
+            [
+                {
+                    "model": "ostiari-codex",
+                    "reasoning": {"effort": "none"},
+                    "include": [],
+                    "store": False,
+                    "stream": True,
+                    "input": "sensitive prompt",
+                    "tools": [{"type": "function", "name": "secret_tool"}],
+                    "metadata": {"token": "secret"},
+                }
+            ]
+        )
+    )
+    assert diagnostics == [
+        {
+            "include": [],
+            "model": "ostiari-codex",
+            "reasoning": {"effort": "none"},
+            "store": False,
+            "stream": True,
+        }
+    ]
+
+
+def test_codex_contract_accepts_encrypted_reasoning_transport_metadata() -> None:
+    harness = _harness()
+    request = {
+        "model": "ostiari-codex",
+        "reasoning": {"context": "all_turns"},
+        "include": ["reasoning.encrypted_content"],
+        "store": False,
+        "stream": True,
+        "tools": [{"type": "function", "name": "shell_command"}],
+        "input": harness.SUCCESS_PROMPT,
+    }
+    followup = {
+        **request,
+        "input": [
+            harness.SUCCESS_PROMPT,
+            {"type": "function_call_output", "call_id": "call_1", "output": "ok"},
+        ],
+    }
+
+    harness._assert_request_contract([request, followup])
+
+
+def test_codex_contract_rejects_other_reasoning_transport_metadata() -> None:
+    harness = _harness()
+    request = {
+        "model": "ostiari-codex",
+        "reasoning": {"context": "current_turn"},
+        "include": ["reasoning.encrypted_content"],
+        "store": False,
+        "stream": True,
+        "tools": [{"type": "function", "name": "shell_command"}],
+        "input": harness.SUCCESS_PROMPT,
+    }
+
+    with pytest.raises(AssertionError, match="reasoning metadata"):
+        harness._assert_request_contract([request, request])
 
 
 def test_codex_example_uses_the_reviewed_responses_profile() -> None:
