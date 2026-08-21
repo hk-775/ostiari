@@ -79,6 +79,7 @@ def test_upgrade_head_creates_org_schema():
                 "trace_records",
                 "sso_login_states",
                 "runtime_state_records",
+                "runtime_state_revisions",
                 "runtime_state_sequences",
                 "audit_chain_heads",
             } <= tables

@@ -37,6 +37,14 @@ def configured_org_id() -> str:
     return os.environ.get("OSTIARI_ORG_ID", "").strip() or "default"
 
 
+def control_plane_replicas() -> int:
+    raw = os.environ.get("OSTIARI_CONTROL_PLANE_REPLICAS", "1").strip()
+    try:
+        return int(raw)
+    except ValueError:
+        return 0
+
+
 def tenant_is_allowed(org_id: str) -> bool:
     return tenancy_mode() != "single" or org_id == configured_org_id()
 
@@ -55,6 +63,14 @@ def validate_production_posture() -> None:
     if tenancy_mode() != "single":
         errors.append(
             "OSTIARI_TENANCY_MODE must be 'single' until composite tenant keys ship"
+        )
+    replicas = control_plane_replicas()
+    if replicas < 1:
+        errors.append("OSTIARI_CONTROL_PLANE_REPLICAS must be a positive integer")
+    if not os.environ.get("REDIS_URL", "").strip():
+        errors.append(
+            "REDIS_URL is required for production rate limits, trace fan-out, "
+            "and replica coordination"
         )
     org_id = os.environ.get("OSTIARI_ORG_ID", "").strip()
     if not org_id:

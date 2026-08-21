@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
+import os
 from collections import defaultdict
 from typing import Any
 
@@ -15,6 +18,8 @@ from control_plane.models.database import DEFAULT_ORG, RuntimeStateRecord
 from control_plane.services.runtime_state import (
     ensure_runtime_sequence,
     load_all_runtime_state,
+    load_runtime_namespace,
+    load_runtime_revisions,
     put_runtime_state,
 )
 
@@ -24,6 +29,9 @@ log = logging.getLogger("control_plane.persistence")
 STATE_FILE = data_dir() / "state.json"
 _MIGRATION_NAMESPACE = "_migration"
 _LEGACY_IMPORT_KEY = "legacy_state_import"
+_loaded_runtime_revisions: dict[tuple[str, str], int] = {}
+_runtime_sync_task: asyncio.Task[None] | None = None
+_runtime_sync_error = ""
 
 
 def save_state(state: dict[str, Any]) -> None:
@@ -153,13 +161,13 @@ async def _import_org_config(
         await put_runtime_state(db, str(org), namespace, "config", value)
 
 
-async def load_runtime_caches(db: AsyncSession) -> None:
-    """Validate and rebuild hot caches from durable runtime records."""
-    rows = await load_all_runtime_state(db)
-    grouped: dict[tuple[str, str], list[RuntimeStateRecord]] = defaultdict(list)
-    for row in rows:
-        grouped[(row.org_id, row.namespace)].append(row)
-
+async def _replace_runtime_namespace(
+    db: AsyncSession,
+    org: str,
+    namespace: str,
+    records: list[RuntimeStateRecord],
+) -> None:
+    """Atomically replace one process-local namespace from authoritative SQL."""
     from control_plane.routers.agent_routing import RoutingPolicy, _policies
     from control_plane.routers.agents import AgentConfig, _agents
     from control_plane.routers.experiments import ExperimentResponse, _experiments
@@ -171,73 +179,203 @@ async def load_runtime_caches(db: AsyncSession) -> None:
     from control_plane.routers.token_broker import _config as broker_config
     from control_plane.routers.trust import _enforced
 
-    for (org, namespace), records in grouped.items():
-        try:
-            if namespace == "agents":
-                _agents[org].clear()
-                for row in records:
-                    agent = AgentConfig(**row.value)
-                    _agents[org][agent.name] = agent
-            elif namespace == "experiments":
-                _experiments[org].clear()
-                for row in records:
-                    experiment = ExperimentResponse(**row.value)
-                    _experiments[org][experiment.name] = experiment
-            elif namespace == "models":
-                _models[org].clear()
-                for row in records:
-                    model = ModelConfig(**row.value)
-                    _models[org][model.name] = model
-            elif namespace == "agent_routing":
-                for key in [key for key in _policies if key[0] == org]:
-                    del _policies[key]
-                for row in records:
-                    policy = RoutingPolicy(**row.value)
-                    _policies[(org, policy.gateway_id, policy.agent_id)] = policy
-            elif namespace == "providers":
-                _providers[org].clear()
-                for row in records:
-                    provider = _ProviderRecord(**row.value)
-                    _providers[org][provider.name] = provider
-            elif namespace == "quotas":
-                _quotas[org].clear()
-                for row in records:
-                    quota = QuotaResponse(**row.value)
-                    _quotas[org][quota.id] = quota
-                next_value = max(_quotas[org], default=0) + 1
-                _next_id[org] = next_value
-                await ensure_runtime_sequence(db, org, "quotas", next_value)
-            elif namespace == "budget_alerts":
-                _alerts[org].clear()
+    try:
+        if namespace == "agents":
+            agent_replacement = {
+                agent.name: agent
+                for row in records
+                if (agent := AgentConfig(**row.value))
+            }
+            _agents[org].clear()
+            _agents[org].update(agent_replacement)
+        elif namespace == "experiments":
+            experiment_replacement = {
+                experiment.name: experiment
+                for row in records
+                if (experiment := ExperimentResponse(**row.value))
+            }
+            _experiments[org].clear()
+            _experiments[org].update(experiment_replacement)
+        elif namespace == "models":
+            model_replacement = {
+                model.name: model
+                for row in records
+                if (model := ModelConfig(**row.value))
+            }
+            _models[org].clear()
+            _models[org].update(model_replacement)
+        elif namespace == "agent_routing":
+            routing_replacement: dict[tuple[str, str, str], RoutingPolicy] = {}
+            for row in records:
+                policy = RoutingPolicy(**row.value)
+                routing_replacement[(org, policy.gateway_id, policy.agent_id)] = policy
+            for key in [key for key in _policies if key[0] == org]:
+                del _policies[key]
+            _policies.update(routing_replacement)
+        elif namespace == "providers":
+            provider_replacement = {
+                provider.name: provider
+                for row in records
+                if (provider := _ProviderRecord(**row.value))
+            }
+            _providers[org].clear()
+            _providers[org].update(provider_replacement)
+        elif namespace == "quotas":
+            quota_replacement: dict[int, QuotaResponse] = {}
+            for row in records:
+                quota = QuotaResponse(**row.value)
+                quota_replacement[quota.id] = quota
+            _quotas[org].clear()
+            _quotas[org].update(quota_replacement)
+            next_value = max(_quotas[org], default=0) + 1
+            _next_id[org] = next_value
+            await ensure_runtime_sequence(db, org, "quotas", next_value)
+        elif namespace == "budget_alerts":
+            alert_replacement = [
+                BudgetAlert(**row.value)
                 for row in sorted(
                     records,
                     key=lambda item: (
                         float((item.value or {}).get("timestamp") or 0.0),
                         item.item_key,
                     ),
-                ):
-                    _alerts[org].append(BudgetAlert(**row.value))
-            elif namespace == "roi_cost_model":
-                _cost_model[org].update(records[-1].value)
-            elif namespace == "token_broker_config":
-                broker_config[org].update(records[-1].value)
-            elif namespace == "payment_pricing":
-                _pricing[org].clear()
-                for row in records:
-                    pricing = PricingConfig(**row.value)
-                    _pricing[org][row.item_key] = pricing.model_dump()
-            elif namespace == "trust_enforced":
-                _enforced[org].clear()
-                for row in records:
-                    _enforced[org][row.item_key] = bool(
-                        row.value.get("enforced", False)
-                    )
-            elif namespace == "gateway_config_queue":
-                # Drained directly from SQL by registration/heartbeat.
-                continue
-        except Exception as exc:
-            raise RuntimeError(
-                "Invalid durable runtime state "
-                f"{org}/{namespace}/{records[0].item_key}: {exc}"
-            ) from exc
+                )
+            ]
+            _alerts[org].clear()
+            _alerts[org].extend(alert_replacement)
+        elif namespace == "roi_cost_model":
+            _cost_model[org].clear()
+            _cost_model[org].update(
+                records[-1].value
+                if records
+                else {"entries": None, "fallback": 1000.0}
+            )
+        elif namespace == "token_broker_config":
+            from control_plane import token_broker
+
+            broker_config[org].clear()
+            broker_config[org].update(
+                records[-1].value
+                if records
+                else {
+                    "bulk_discount": token_broker.DEFAULT_BULK_DISCOUNT,
+                    "markup": token_broker.DEFAULT_MARKUP,
+                }
+            )
+        elif namespace == "payment_pricing":
+            pricing_replacement: dict[str, dict[str, Any]] = {}
+            for row in records:
+                pricing = PricingConfig(**row.value)
+                pricing_replacement[row.item_key] = pricing.model_dump()
+            _pricing[org].clear()
+            _pricing[org].update(pricing_replacement)
+        elif namespace == "trust_enforced":
+            trust_replacement = {
+                row.item_key: bool(row.value.get("enforced", False))
+                for row in records
+            }
+            _enforced[org].clear()
+            _enforced[org].update(trust_replacement)
+        elif namespace == "gateway_config_queue":
+            # Drained directly from SQL by registration/heartbeat.
+            return
+    except Exception as exc:
+        item_key = records[0].item_key if records else "<empty>"
+        raise RuntimeError(
+            f"Invalid durable runtime state {org}/{namespace}/{item_key}: {exc}"
+        ) from exc
+
+
+async def refresh_runtime_namespace(
+    db: AsyncSession,
+    org: str,
+    namespace: str,
+) -> None:
+    values = await load_runtime_namespace(db, org, namespace)
+    records = [
+        RuntimeStateRecord(
+            org_id=org,
+            namespace=namespace,
+            item_key=item_key,
+            value=value,
+        )
+        for item_key, value in values.items()
+    ]
+    await _replace_runtime_namespace(db, org, namespace, records)
+
+
+async def sync_runtime_caches(db: AsyncSession) -> int:
+    """Apply every committed namespace revision this replica has not seen."""
+    revisions = await load_runtime_revisions(db)
+    changed = [
+        (org, namespace, revision)
+        for (org, namespace), revision in revisions.items()
+        if _loaded_runtime_revisions.get((org, namespace)) != revision
+    ]
+    for org, namespace, revision in changed:
+        await refresh_runtime_namespace(db, org, namespace)
+        _loaded_runtime_revisions[(org, namespace)] = revision
     await db.commit()
+    return len(changed)
+
+
+async def load_runtime_caches(db: AsyncSession) -> None:
+    """Validate and rebuild hot caches from durable runtime records."""
+    rows = await load_all_runtime_state(db)
+    grouped: dict[tuple[str, str], list[RuntimeStateRecord]] = defaultdict(list)
+    for row in rows:
+        grouped[(row.org_id, row.namespace)].append(row)
+    revisions = await load_runtime_revisions(db)
+    for org, namespace in set(grouped) | set(revisions):
+        await _replace_runtime_namespace(
+            db,
+            org,
+            namespace,
+            grouped.get((org, namespace), []),
+        )
+    _loaded_runtime_revisions.clear()
+    _loaded_runtime_revisions.update(revisions)
+    await db.commit()
+
+
+async def _runtime_cache_sync_loop() -> None:
+    global _runtime_sync_error
+    interval = max(
+        0.25,
+        float(os.environ.get("OSTIARI_RUNTIME_SYNC_INTERVAL_SECONDS", "1")),
+    )
+    while True:
+        try:
+            from control_plane.database import async_session
+            from control_plane.routers.traces import load_recent_trace_cache
+
+            async with async_session() as db:
+                await sync_runtime_caches(db)
+                await load_recent_trace_cache(db)
+            _runtime_sync_error = ""
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - readiness exposes sync failure
+            _runtime_sync_error = str(exc)
+            log.exception("Runtime cache synchronization failed")
+        await asyncio.sleep(interval)
+
+
+def start_runtime_cache_sync() -> None:
+    global _runtime_sync_task
+    if _runtime_sync_task is None or _runtime_sync_task.done():
+        _runtime_sync_task = asyncio.create_task(_runtime_cache_sync_loop())
+
+
+async def stop_runtime_cache_sync() -> None:
+    global _runtime_sync_task
+    if _runtime_sync_task is None:
+        return
+    _runtime_sync_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await _runtime_sync_task
+    _runtime_sync_task = None
+
+
+def runtime_cache_sync_error() -> str:
+    return _runtime_sync_error

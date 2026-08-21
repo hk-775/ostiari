@@ -1,6 +1,7 @@
 """Gateway management API."""
 
 import asyncio
+import contextlib
 import logging
 import time
 import uuid
@@ -19,10 +20,16 @@ from control_plane.auth.workload import (
     require_gateway_claim,
 )
 from control_plane.database import async_session, get_db
-from control_plane.env import configured_org_id, is_production, tenancy_mode
+from control_plane.env import (
+    configured_org_id,
+    control_plane_replicas,
+    is_production,
+    tenancy_mode,
+)
 from control_plane.models.database import Gateway, Tool
 from control_plane.models.schemas import GatewayCreate, GatewayResponse, GatewayUpdate
 from control_plane.models.scoping import get_scoped, scoped, stamp
+from control_plane.redis_client import get_redis
 from control_plane.services.audit_service import actor_of, audit
 from control_plane.services.gateway_callbacks import (
     GatewayCallbackError,
@@ -41,8 +48,40 @@ router = APIRouter(prefix="/api/gateways", tags=["gateways"])
 push_service = PushService()
 
 # Health check background task handle
-_health_check_task: asyncio.Task | None = None
+_health_check_task: asyncio.Task[None] | None = None
 HEARTBEAT_TIMEOUT_SECONDS = 90
+_HEALTH_SWEEP_LEASE_KEY = "ostiari:control-plane:gateway-health-sweep"
+_HEALTH_SWEEP_LEASE_SECONDS = 120
+
+
+async def _acquire_health_sweep_lease() -> tuple[Any | None, str | None]:
+    """Acquire the single-replica health-sweep lease."""
+    redis = await get_redis()
+    if redis is None:
+        return None, None
+    token = uuid.uuid4().hex
+    acquired = await redis.set(
+        _HEALTH_SWEEP_LEASE_KEY,
+        token,
+        nx=True,
+        ex=_HEALTH_SWEEP_LEASE_SECONDS,
+    )
+    return redis, token if acquired else None
+
+
+async def _release_health_sweep_lease(redis: Any, token: str) -> None:
+    """Release the lease only when this replica still owns it."""
+    await redis.eval(
+        """
+        if redis.call('get', KEYS[1]) == ARGV[1] then
+          return redis.call('del', KEYS[1])
+        end
+        return 0
+        """,
+        1,
+        _HEALTH_SWEEP_LEASE_KEY,
+        token,
+    )
 
 
 async def _queue_config(
@@ -89,7 +128,14 @@ async def _health_check_loop() -> None:
     """Background loop: mark gateways unhealthy if heartbeat > 90s ago."""
     while True:
         await asyncio.sleep(15)
+        redis = None
+        lease_token = None
         try:
+            redis, lease_token = await _acquire_health_sweep_lease()
+            if redis is not None and lease_token is None:
+                continue
+            if redis is None and control_plane_replicas() > 1:
+                continue
             async with async_session() as db:
                 result = await db.execute(select(Gateway))
                 gateways = result.scalars().all()
@@ -108,6 +154,12 @@ async def _health_check_loop() -> None:
                 await db.commit()
         except Exception as e:
             log.warning(f"Health check loop error: {e}")
+        finally:
+            if redis is not None and lease_token is not None:
+                try:
+                    await _release_health_sweep_lease(redis, lease_token)
+                except Exception as exc:
+                    log.warning("Health sweep lease release failed: %s", exc)
 
 
 def start_health_check() -> None:
@@ -117,12 +169,15 @@ def start_health_check() -> None:
         _health_check_task = asyncio.create_task(_health_check_loop())
 
 
-def stop_health_check() -> None:
+async def stop_health_check() -> None:
     """Cancel the background health-check task."""
     global _health_check_task
-    if _health_check_task and not _health_check_task.done():
-        _health_check_task.cancel()
-        _health_check_task = None
+    if _health_check_task is None:
+        return
+    _health_check_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await _health_check_task
+    _health_check_task = None
 
 
 def _to_response(gateway: Gateway, tools_count: int = 0) -> GatewayResponse:

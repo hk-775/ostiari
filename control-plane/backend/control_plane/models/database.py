@@ -462,6 +462,23 @@ class RuntimeStateSequence(Base):
     next_value: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
 
+class RuntimeStateRevision(Base):
+    """Monotonic cache-invalidation revision for one tenant namespace."""
+
+    __tablename__ = "runtime_state_revisions"
+
+    org_id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=DEFAULT_ORG, nullable=False
+    )
+    namespace: Mapped[str] = mapped_column(String(64), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
 class ProviderRouteRecord(Base):
     """Durable concrete LLM provider credential/endpoint route."""
 

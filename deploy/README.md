@@ -38,7 +38,9 @@ Helm, or ECS.
 
 The checked-in manifests are production templates, not ready-to-apply defaults.
 Replace every `REPLACE_*` value, publish digest-pinned images, and create the
-referenced `ostiari-secrets` keys before applying them:
+referenced `ostiari-secrets` keys before applying them. The control plane runs
+two replicas and requires `database-url` plus a TLS/authenticated `redis-url`;
+Redis coordinates live fan-out, rate limits, singleton work, and readiness:
 
 ```bash
 kubectl apply -f deploy/kubernetes/gateway-sidecar.yaml
@@ -285,10 +287,11 @@ definition environment arrays, or image layers.
 - **Settlement mode is explicit.** Development may use `simulated`. Production
   accepts `off` or `live`; `off` uses a disabled backend that cannot debit the
   demo ledger if payment policy is accidentally enabled.
-- **Control-plane replica limit remains one for this release.** Runtime state,
-  approvals, traces, SSO state, and offline updates are durable in PostgreSQL,
-  but configuration hot caches do not yet use cross-replica invalidation. The
-  production template therefore uses one rolling-replaced replica. Do not scale
-  it horizontally until LISTEN/NOTIFY or equivalent cache invalidation ships.
+- **Control-plane replicas are coordinated.** PostgreSQL is authoritative for
+  runtime configuration, approvals, traces, SSO state, and offline updates.
+  Each runtime-state transaction advances a tenant/namespace revision; replicas
+  poll only changed namespaces. Redis provides live trace fan-out, atomic
+  session roots, singleton health-sweep leases, and fleet-wide rate limits.
+  Production startup and `/api/ready` fail closed when Redis is unavailable.
 - **Authenticating `/config`.** With `OSTIARI_CONFIG_ADMIN_KEY` set, callers
   present it as `X-Config-Admin-Key: <key>` or `Authorization: Bearer <key>`.
