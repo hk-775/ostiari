@@ -79,11 +79,12 @@ The current deployment contract supports:
   typed streaming, a function-call/output round trip, OpenAI-shaped errors, and
   cancellation. Unsupported stateful fields and model-reasoning requests
   continue to fail closed. Codex's no-op `effort/summary = none` shape and its
-  exact stateless encrypted-context transport pair
-  (`context=all_turns`, `include=reasoning.encrypted_content`) are accepted
-  without generating or persisting reasoning content. Codex's
-  `parallel_tool_calls=false` contract is enforced by rejecting any upstream
-  response containing multiple function calls.
+  standard encrypted-context include (with an empty reasoning object or
+  `context=all_turns`) is accepted without generating or persisting reasoning
+  content. The profile emits only direct function tools and disables freeform
+  patching, multi-agent namespaces, and hosted search. When Codex requests
+  `parallel_tool_calls=false`, any upstream response containing multiple
+  function calls is rejected.
 - A protected retention workflow verifies seven production-rehearsal evidence
   classes against the exact release commit and deployed image digests. It
   rejects stale, incomplete, mismatched, over-budget, or threshold-violating

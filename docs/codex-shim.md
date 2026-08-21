@@ -55,16 +55,19 @@ The gateway URL in the example ends in `/v1`; Codex appends `/responses`.
 Stateful continuation remains unsupported. Ostiari rejects
 `previous_response_id`, stored conversations, background work, hosted prompts,
 model reasoning configuration, structured output, and unsupported include or
-service-tier fields. The exact Codex `0.148.0` transport pair
-`reasoning.context="all_turns"` plus
-`include=["reasoning.encrypted_content"]` is accepted so Codex can carry its
-stateless encrypted context metadata. Ostiari does not inspect, persist,
-generate, or return reasoning content. Failing closed on every other shape is
+service-tier fields. Codex `0.148.0` may request
+`include=["reasoning.encrypted_content"]` with an empty reasoning object or
+with `reasoning.context="all_turns"`. Ostiari accepts those shapes as opaque
+stateless transport metadata. It does not inspect, persist, generate, or return
+reasoning content. Failing closed on every actual reasoning request is
 intentional.
 
-Codex also sends `parallel_tool_calls=false`. Ostiari accepts that single-tool
-contract and rejects the governed upstream response if a provider returns more
-than one function call.
+The shipped profile uses the standard Responses transport and exposes only
+direct function tools. It disables patch/freeform tools, multi-agent
+namespaces, and hosted web search because Ostiari's embedded Axon router cannot
+preserve those private Codex tool semantics. Both values of
+`parallel_tool_calls` are supported; when it is false, Ostiari rejects any
+governed upstream response containing more than one function call.
 
 ## Chat Completions clients
 

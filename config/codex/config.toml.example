@@ -6,6 +6,11 @@ model = "ostiari-codex"
 model_provider = "ostiari"
 model_catalog_json = "/absolute/path/to/ostiari/config/codex/model-catalog.json"
 model_reasoning_summary = "none"
+web_search = "disabled"
+
+[features]
+multi_agent = false
+multi_agent_v2 = false
 
 [model_providers.ostiari]
 name = "Ostiari"

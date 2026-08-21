@@ -42,6 +42,10 @@ def test_codex_catalog_disables_unsupported_responses_capabilities() -> None:
     assert model["service_tiers"] == []
     assert model["supports_search_tool"] is False
     assert model["node_repl_disabled"] is True
+    assert model["use_responses_lite"] is False
+    assert "apply_patch_tool_type" not in model
+    assert model["tool_mode"] == "direct"
+    assert "multi_agent_version" not in model
 
 
 def test_codex_harness_generates_a_safe_shell_call() -> None:
@@ -80,8 +84,32 @@ def test_codex_failure_diagnostics_exclude_prompts_tools_and_tokens() -> None:
                     "parallel_tool_calls": False,
                     "store": False,
                     "stream": True,
-                    "input": "sensitive prompt",
-                    "tools": [{"type": "function", "name": "secret_tool"}],
+                    "input": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": "sensitive prompt",
+                        },
+                        {
+                            "type": "additional_tools",
+                            "tools": [
+                                {
+                                    "type": "function",
+                                    "name": "secret_tool",
+                                    "description": "secret description",
+                                    "parameters": {"secret": "schema"},
+                                }
+                            ],
+                        },
+                    ],
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "secret_tool",
+                            "description": "secret description",
+                            "parameters": {"secret": "schema"},
+                        }
+                    ],
                     "metadata": {"token": "secret"},
                 }
             ]
@@ -95,8 +123,49 @@ def test_codex_failure_diagnostics_exclude_prompts_tools_and_tokens() -> None:
             "reasoning": {"effort": "none"},
             "store": False,
             "stream": True,
+            "input_shape": [
+                {
+                    "keys": ["content", "role", "type"],
+                    "type": "message",
+                },
+                {
+                    "keys": ["tools", "type"],
+                    "tools_shape": [
+                        {
+                            "keys": [
+                                "description",
+                                "name",
+                                "parameters",
+                                "type",
+                            ],
+                            "type": "function",
+                        }
+                    ],
+                    "type": "additional_tools",
+                },
+            ],
+            "tools_shape": [
+                {
+                    "keys": [
+                        "description",
+                        "name",
+                        "parameters",
+                        "type",
+                    ],
+                    "type": "function",
+                }
+            ],
         }
     ]
+    rendered = json.dumps(diagnostics)
+    for sensitive in (
+        "sensitive prompt",
+        "secret_tool",
+        "secret description",
+        '"secret"',
+        '"token"',
+    ):
+        assert sensitive not in rendered
 
 
 def test_codex_contract_accepts_encrypted_reasoning_transport_metadata() -> None:
@@ -120,6 +189,46 @@ def test_codex_contract_accepts_encrypted_reasoning_transport_metadata() -> None
     }
 
     harness._assert_request_contract([request, followup])
+
+
+def test_codex_contract_accepts_standard_responses_transport() -> None:
+    harness = _harness()
+    request = {
+        "model": "ostiari-codex",
+        "reasoning": {},
+        "include": ["reasoning.encrypted_content"],
+        "parallel_tool_calls": True,
+        "store": False,
+        "stream": True,
+        "tools": [{"type": "function", "name": "shell_command"}],
+        "input": harness.SUCCESS_PROMPT,
+    }
+    followup = {
+        **request,
+        "input": [
+            harness.SUCCESS_PROMPT,
+            {"type": "function_call_output", "call_id": "call_1", "output": "ok"},
+        ],
+    }
+
+    harness._assert_request_contract([request, followup])
+
+
+def test_codex_contract_rejects_non_function_tools() -> None:
+    harness = _harness()
+    request = {
+        "model": "ostiari-codex",
+        "reasoning": {},
+        "include": ["reasoning.encrypted_content"],
+        "parallel_tool_calls": True,
+        "store": False,
+        "stream": True,
+        "tools": [{"type": "custom", "name": "apply_patch"}],
+        "input": harness.SUCCESS_PROMPT,
+    }
+
+    with pytest.raises(AssertionError, match="non-function"):
+        harness._assert_request_contract([request, request])
 
 
 def test_codex_contract_rejects_other_reasoning_transport_metadata() -> None:
@@ -147,6 +256,9 @@ def test_codex_example_uses_the_reviewed_responses_profile() -> None:
     assert 'env_key = "OSTIARI_CODEX_TOKEN"' in config
     assert 'requires_openai_auth = false' in config
     assert 'model_catalog_json = "/absolute/path/to/ostiari/' in config
+    assert 'web_search = "disabled"' in config
+    assert "multi_agent = false" in config
+    assert "multi_agent_v2 = false" in config
 
 
 def test_ci_runs_the_exact_codex_version_and_blocks_artifacts_on_failure() -> None:

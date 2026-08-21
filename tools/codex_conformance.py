@@ -372,6 +372,10 @@ def _codex_command(
         "--skip-git-repo-check",
         "--sandbox",
         "read-only",
+        "--disable",
+        "multi_agent",
+        "--disable",
+        "multi_agent_v2",
         "--cd",
         str(workspace),
         "--model",
@@ -400,6 +404,8 @@ def _codex_command(
         "model_providers.ostiari.requires_openai_auth=false",
         "-c",
         'approval_policy="never"',
+        "-c",
+        'web_search="disabled"',
         prompt,
     ]
 
@@ -428,8 +434,8 @@ def _assert_request_contract(requests: list[dict[str, Any]]) -> None:
         raise AssertionError(f"unexpected model: {first.get('model')}")
     if first.get("stream") is not True or first.get("store") is not False:
         raise AssertionError("Codex did not request a stateless streamed response")
-    if first.get("parallel_tool_calls") is not False:
-        raise AssertionError("Codex did not request single-tool execution")
+    if not isinstance(first.get("parallel_tool_calls"), bool):
+        raise AssertionError("Codex did not send a parallel-tool boolean")
     for field in ("previous_response_id", "service_tier", "text"):
         if first.get(field) not in (None, {}):
             raise AssertionError(f"unsupported field sent by Codex: {field}")
@@ -449,10 +455,16 @@ def _assert_request_contract(requests: list[dict[str, Any]]) -> None:
             raise AssertionError(
                 "Codex omitted encrypted reasoning transport metadata"
             )
-    elif include not in (None, []):
+    elif include not in (None, [], ["reasoning.encrypted_content"]):
         raise AssertionError("Codex requested unsupported include fields")
-    if not isinstance(first.get("tools"), list) or not first["tools"]:
+    tools = first.get("tools")
+    if not isinstance(tools, list) or not tools:
         raise AssertionError("Codex request did not include tools")
+    if any(
+        not isinstance(tool, dict) or tool.get("type") != "function"
+        for tool in tools
+    ):
+        raise AssertionError("Codex request included a non-function tool")
     if not any(
         isinstance(item, dict) and item.get("type") == "function_call_output"
         for item in success[-1].get("input", [])
@@ -470,11 +482,65 @@ def _request_diagnostics(requests: list[dict[str, Any]]) -> str:
         "stream",
         "parallel_tool_calls",
     )
-    sanitized = [
-        {field: request.get(field) for field in safe_fields if field in request}
-        for request in requests
-    ]
+    sanitized: list[dict[str, Any]] = []
+    for request in requests:
+        safe_request = {
+            field: request.get(field)
+            for field in safe_fields
+            if field in request
+        }
+        safe_request["input_shape"] = _input_shape(request.get("input"))
+        safe_request["tools_shape"] = _tool_shape(request.get("tools"))
+        sanitized.append(safe_request)
     return json.dumps(sanitized, sort_keys=True, separators=(",", ":"))
+
+
+def _input_shape(value: Any) -> dict[str, Any] | list[dict[str, Any]]:
+    """Describe Responses input structure without exposing content or arguments."""
+
+    if not isinstance(value, list):
+        return {"python_type": type(value).__name__}
+
+    items: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            items.append({"python_type": type(item).__name__})
+            continue
+        shape: dict[str, Any] = {
+            "type": item.get("type"),
+            "keys": sorted(str(key) for key in item),
+        }
+        if "tools" in item:
+            shape["tools_shape"] = _tool_shape(item.get("tools"))
+        items.append(shape)
+    return items
+
+
+def _tool_shape(
+    value: Any,
+    *,
+    depth: int = 0,
+) -> dict[str, Any] | list[dict[str, Any]]:
+    """Describe tool containers without exposing names, schemas, or descriptions."""
+
+    if not isinstance(value, list):
+        return {"python_type": type(value).__name__}
+    tools: list[dict[str, Any]] = []
+    for tool in value:
+        if not isinstance(tool, dict):
+            tools.append({"python_type": type(tool).__name__})
+            continue
+        shape: dict[str, Any] = {
+            "type": tool.get("type"),
+            "keys": sorted(str(key) for key in tool),
+        }
+        if depth < 2 and "tools" in tool:
+            shape["tools_shape"] = _tool_shape(
+                tool.get("tools"),
+                depth=depth + 1,
+            )
+        tools.append(shape)
+    return tools
 
 
 def _run_success(
