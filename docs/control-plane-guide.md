@@ -1007,10 +1007,10 @@ Mechanism and reproduction in
 Every stored record carries an `org_id`, and read endpoints are scoped to the
 caller's org. Two things make this non-obvious, and both have bitten:
 
-**1. Gateways have no user token.** A gateway posting traces, usage, payments, or
-approvals authenticates as itself, not as a person — so there is no caller org to
-scope by. The org is derived from the **reporting gateway's row** (`org_of_gateway`),
-which is the only trustworthy source available on those paths.
+**1. Gateways use workload identity, not a user token.** A gateway posting
+traces, usage, payments, or approvals authenticates with a short-lived workload
+token. Its verified tenant selects the tenant-qualified gateway row
+`(org_id, gateway_id)`; the persisted issuer/subject binding must also match.
 
 **2. The payload is not believed.** An ingest body naming its own `org_id` was
 previously honored, which let any caller that could reach `/api/traces/ingest` file a
@@ -1020,12 +1020,13 @@ body is now overwritten with the gateway-derived value before storage.
 
 | Surface | How the org is decided |
 |---|---|
-| Trace / usage / payment / approval **ingest** | the reporting gateway's `gateways` row |
+| Trace / usage / payment / approval **ingest** | verified workload tenant plus the bound tenant-qualified gateway row |
 | Everything a **human** reads | the caller's token (`get_current_org`) |
 | Approvals addressed **by id** | owner org of that approval; a tokened caller from another org gets 404 |
 
-An unknown or empty gateway falls back to the default org, so its records are still
-kept rather than silently dropped — the demo posture, consistent across ingest paths.
+Only the unauthenticated development posture retains unknown gateways under the
+configured default org. Production requires a registered, bound gateway and
+rejects missing tenant claims in multi-tenant mode.
 
 **3. Who may ingest at all.** Deriving the org from the gateway row only helps if the
 caller *is* that gateway. Production machine APIs therefore use a dedicated workload
@@ -1051,9 +1052,9 @@ gateway ids is rejected.
 **Approvals are the subtle one.** The queue holds an agent's raw tool parameters —
 SQL, recipients, payloads — plus the reviewer's identity. A flat id-keyed store put
 one tenant's most sensitive call detail in every other tenant's review queue, and let
-anyone decide it. It's now keyed per org. The id-addressed routes stay reachable
-without a token because that's the gateway's own resume-check path; a caller that
-*does* present a token is held to its own org.
+anyone decide it. It's now keyed per org. Production gateway resume checks carry a
+verified workload token and are bound to the gateway's persisted tenant. Tokenless
+approval polling exists only in the explicit local-development compatibility posture.
 
 **Discovery, too:** "shadow AI" is computed as seen-minus-known, so an unscoped read
 listed another tenant's agent ids and gateway names as *your* shadow AI.
@@ -1066,9 +1067,8 @@ For a real deployment, in order:
 
 1. Set the production secrets **before first boot**: `OSTIARI_ADMIN_PASSWORD`
    (the control plane refuses to seed an admin without it), `OSTIARI_JWT_SECRET`,
-   `OSTIARI_ENCRYPTION_KEY`, and workload OIDC settings — reading §10a first, because
-   the gateway does not yet send the ingest header, so setting the key silences
-   Live Traces rather than authenticating it.
+   `OSTIARI_ENCRYPTION_KEY`, and workload OIDC settings. Configure a distinct
+   projected token or OAuth client for every gateway.
 2. **Register** gateways, agents, tools, MCP servers (Configure).
 3. Start every gateway in **shadow** mode.
 4. Write **policies** (deny-by-default for destructive; explicit allow for safe;

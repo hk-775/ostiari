@@ -18,7 +18,7 @@ from control_plane.auth.workload import authorize_reported_gateway
 from control_plane.database import get_db
 from control_plane.models.database import DEFAULT_ORG, UsageRecord
 from control_plane.models.schemas import CostSummary, UsageRecordCreate, UsageRecordResponse
-from control_plane.models.scoping import org_of_gateway, scoped
+from control_plane.models.scoping import scoped
 
 router = APIRouter(prefix="/api/costs", tags=["costs"])
 log = logging.getLogger("control_plane.costs")
@@ -51,8 +51,8 @@ async def record_usage(
     db: AsyncSession = Depends(get_db),
 ):
     """Record a usage event from a gateway (called after each LLM invocation)."""
-    await authorize_reported_gateway(request, db, body.gateway_id)
-    org = await org_of_gateway(db, body.gateway_id)
+    gateway = await authorize_reported_gateway(request, db, body.gateway_id)
+    org = gateway.org_id if gateway is not None else DEFAULT_ORG
     record, created = await _upsert_usage(db, body, org)
     if created:
         await _broker_account(db, record, org)
@@ -132,7 +132,11 @@ async def _upsert_usage(
         insert_fn(UsageRecord)
         .values(**values)
         .on_conflict_do_nothing(
-            index_elements=[UsageRecord.gateway_id, UsageRecord.event_id]
+            index_elements=[
+                UsageRecord.org_id,
+                UsageRecord.gateway_id,
+                UsageRecord.event_id,
+            ]
         )
         .returning(UsageRecord.id)
     )
@@ -146,6 +150,7 @@ async def _upsert_usage(
     record = (
         await db.execute(
             select(UsageRecord).where(
+                UsageRecord.org_id == org,
                 UsageRecord.gateway_id == body.gateway_id,
                 UsageRecord.event_id == body.event_id,
             )
@@ -247,8 +252,14 @@ async def record_usage_batch(
     processed: dict[int, tuple[UsageRecord, str]] = {}
     for body in records:
         if body.gateway_id not in org_cache:
-            await authorize_reported_gateway(request, db, body.gateway_id)
-            org_cache[body.gateway_id] = await org_of_gateway(db, body.gateway_id)
+            gateway = await authorize_reported_gateway(
+                request,
+                db,
+                body.gateway_id,
+            )
+            org_cache[body.gateway_id] = (
+                gateway.org_id if gateway is not None else DEFAULT_ORG
+            )
         org = org_cache[body.gateway_id]
         record, was_created = await _upsert_usage(db, body, org)
         if was_created:

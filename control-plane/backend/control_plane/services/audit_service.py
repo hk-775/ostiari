@@ -8,7 +8,7 @@ is detectable via verify_chain(). The genesis row chains from an empty prev_hash
 import hashlib
 import json
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -21,10 +21,18 @@ _GENESIS = ""  # prev_hash of the first entry
 _GLOBAL_HEAD = "global"
 
 
-def _canonical(actor: str, action: str, resource_type: str, resource_id: str,
-               details: dict[str, Any], timestamp: str) -> str:
+def _canonical(
+    org: str,
+    actor: str,
+    action: str,
+    resource_type: str,
+    resource_id: str,
+    details: dict[str, Any],
+    timestamp: str,
+) -> str:
     """Stable serialization of an entry's content for hashing."""
     return json.dumps({
+        "org_id": org,
         "actor": actor, "action": action, "resource_type": resource_type,
         "resource_id": resource_id, "details": details, "timestamp": timestamp,
     }, sort_keys=True, separators=(",", ":"), default=str)
@@ -49,30 +57,53 @@ def _ts_str(ts: datetime) -> str:
 class AuditService:
     """Records tamper-evident audit entries for config-changing operations."""
 
-    async def _last_hash_from_entries(self, db: AsyncSession) -> str:
+    async def _last_hash_from_entries(
+        self,
+        db: AsyncSession,
+        org: str,
+    ) -> str:
         """Most recent entry hash, used to initialize an upgraded database."""
         result = await db.execute(
-            select(AuditLog).order_by(AuditLog.id.desc()).limit(1)
+            select(AuditLog)
+            .where(AuditLog.org_id == org)
+            .order_by(AuditLog.id.desc())
+            .limit(1)
         )
         row = result.scalar_one_or_none()
         return row.entry_hash if row and row.entry_hash else _GENESIS
 
-    async def _lock_head(self, db: AsyncSession) -> AuditChainHead:
+    async def _lock_head(
+        self,
+        db: AsyncSession,
+        org: str,
+    ) -> AuditChainHead:
         """Lock the chain head so concurrent appenders cannot fork the chain."""
-        initial_hash = await self._last_hash_from_entries(db)
+        initial_hash = await self._last_hash_from_entries(db, org)
         dialect = db.get_bind().dialect.name
         insert_fn = postgresql_insert if dialect == "postgresql" else sqlite_insert
         await db.execute(
             insert_fn(AuditChainHead)
-            .values(name=_GLOBAL_HEAD, entry_hash=initial_hash)
-            .on_conflict_do_nothing(index_elements=[AuditChainHead.name])
+            .values(
+                org_id=org,
+                name=_GLOBAL_HEAD,
+                entry_hash=initial_hash,
+            )
+            .on_conflict_do_nothing(
+                index_elements=[
+                    AuditChainHead.org_id,
+                    AuditChainHead.name,
+                ]
+            )
         )
         result = await db.execute(
             select(AuditChainHead)
-            .where(AuditChainHead.name == _GLOBAL_HEAD)
+            .where(
+                AuditChainHead.org_id == org,
+                AuditChainHead.name == _GLOBAL_HEAD,
+            )
             .with_for_update()
         )
-        return result.scalar_one()
+        return cast("AuditChainHead", result.scalar_one())
 
     async def log(
         self,
@@ -85,17 +116,21 @@ class AuditService:
         org: str = "default",
     ) -> AuditLog:
         details = details or {}
-        head = await self._lock_head(db)
+        head = await self._lock_head(db, org)
         prev = head.entry_hash or _GENESIS
         # Set the timestamp explicitly (don't rely on the DB default) so the exact
         # value we hash is the value that's stored — SQLite datetime round-tripping
         # can otherwise lose microseconds and falsely break the chain on re-read.
         ts = datetime.now(timezone.utc)
-        # org_id is NOT part of the hashed content — the audit chain stays a single
-        # global chain (verify_chain checks integrity across all orgs); org only
-        # scopes which rows a tenant can READ.
-        content = _canonical(actor, action, resource_type, resource_id, details,
-                             _ts_str(ts))
+        content = _canonical(
+            org,
+            actor,
+            action,
+            resource_type,
+            resource_id,
+            details,
+            _ts_str(ts),
+        )
         entry = AuditLog(
             actor=actor,
             action=action,
@@ -113,9 +148,17 @@ class AuditService:
         await db.flush()
         return entry
 
-    async def verify_chain(self, db: AsyncSession) -> dict[str, Any]:
+    async def verify_chain(
+        self,
+        db: AsyncSession,
+        org: str = "default",
+    ) -> dict[str, Any]:
         """Recompute the hash chain and report the first break, if any."""
-        result = await db.execute(select(AuditLog).order_by(AuditLog.id.asc()))
+        result = await db.execute(
+            select(AuditLog)
+            .where(AuditLog.org_id == org)
+            .order_by(AuditLog.id.asc())
+        )
         rows = result.scalars().all()
         prev = _GENESIS
         checked = 0
@@ -124,9 +167,15 @@ class AuditService:
                 # Legacy pre-chain row: can't verify; reset expectation.
                 prev = _GENESIS
                 continue
-            content = _canonical(row.actor, row.action, row.resource_type,
-                                row.resource_id, row.details or {},
-                                _ts_str(row.timestamp))
+            content = _canonical(
+                org,
+                row.actor,
+                row.action,
+                row.resource_type,
+                row.resource_id,
+                row.details or {},
+                _ts_str(row.timestamp),
+            )
             expected = _hash(row.prev_hash or _GENESIS, content)
             if prev != _GENESIS and row.prev_hash != prev:
                 return {"valid": False, "broken_at_id": row.id,
@@ -138,7 +187,10 @@ class AuditService:
                         "checked": checked}
             prev = row.entry_hash
             checked += 1
-        head = await db.get(AuditChainHead, _GLOBAL_HEAD)
+        head = await db.get(
+            AuditChainHead,
+            {"org_id": org, "name": _GLOBAL_HEAD},
+        )
         if head is not None and (head.entry_hash or _GENESIS) != prev:
             return {
                 "valid": False,

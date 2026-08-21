@@ -35,7 +35,10 @@ async def test_registration_binds_subject_and_allows_heartbeat(
     from control_plane.models.database import Gateway
 
     async with async_session() as db:
-        gateway = await db.get(Gateway, "gateway-a")
+        gateway = await db.get(
+            Gateway,
+            {"org_id": "default", "id": "gateway-a"},
+        )
         assert gateway is not None
         assert gateway.workload_issuer == ISSUER
         assert gateway.workload_subject == "workload-a"
@@ -172,9 +175,35 @@ async def test_single_tenant_oauth_token_may_omit_tenant_claim(
     from control_plane.models.database import Gateway
 
     async with async_session() as db:
-        gateway = await db.get(Gateway, "gateway-a")
+        gateway = await db.get(
+            Gateway,
+            {"org_id": "production-org", "id": "gateway-a"},
+        )
         assert gateway is not None
         assert gateway.org_id == "production-org"
+
+
+async def test_multi_tenant_oauth_token_requires_tenant_claim(
+    client,
+    workload_signer,
+    monkeypatch,
+):
+    monkeypatch.setenv("OSTIARI_ENV", "production")
+    monkeypatch.setenv("OSTIARI_TENANCY_MODE", "multi")
+
+    response = await client.post(
+        "/api/gateways/gateway-a/register",
+        json={},
+        headers=workload_signer(
+            "gateway-a",
+            subject="oauth-client-subject",
+            tenant_id=None,
+            include_gateway_id=False,
+        ),
+    )
+
+    assert response.status_code == 401
+    assert "workload authentication required" in response.json()["detail"].lower()
 
 
 async def test_body_gateway_id_must_match_token(client, workload_signer):

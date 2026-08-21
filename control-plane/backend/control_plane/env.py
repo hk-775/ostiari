@@ -30,7 +30,7 @@ def tenancy_mode() -> str:
     configured = os.environ.get("OSTIARI_TENANCY_MODE", "").strip().lower()
     if configured:
         return configured
-    return "single" if is_production() else "multi"
+    return "single"
 
 
 def configured_org_id() -> str:
@@ -46,7 +46,12 @@ def control_plane_replicas() -> int:
 
 
 def tenant_is_allowed(org_id: str) -> bool:
-    return tenancy_mode() != "single" or org_id == configured_org_id()
+    if not _ORG_ID_PATTERN.fullmatch(org_id):
+        return False
+    mode = tenancy_mode()
+    if mode == "single":
+        return org_id == configured_org_id()
+    return mode == "multi"
 
 
 def validate_production_posture() -> None:
@@ -60,10 +65,8 @@ def validate_production_posture() -> None:
         errors.append("OSTIARI_REQUIRE_AUTH must be enabled")
     if not env_flag("OSTIARI_NO_DEMO"):
         errors.append("OSTIARI_NO_DEMO must be enabled")
-    if tenancy_mode() != "single":
-        errors.append(
-            "OSTIARI_TENANCY_MODE must be 'single' until composite tenant keys ship"
-        )
+    if tenancy_mode() not in {"single", "multi"}:
+        errors.append("OSTIARI_TENANCY_MODE must be 'single' or 'multi'")
     replicas = control_plane_replicas()
     if replicas < 1:
         errors.append("OSTIARI_CONTROL_PLANE_REPLICAS must be a positive integer")
@@ -171,11 +174,11 @@ def validate_production_posture() -> None:
         if not raw:
             continue
         try:
-            value = int(raw)
+            limit_value = int(raw)
         except ValueError:
             errors.append(f"{name} must be an integer")
             continue
-        if value < 1 or value > 10_000:
+        if limit_value < 1 or limit_value > 10_000:
             errors.append(f"{name} must be between 1 and 10000")
 
     if errors:

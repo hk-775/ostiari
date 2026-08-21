@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Select
 
@@ -30,29 +31,33 @@ def stamp(obj: Any, org: str) -> Any:
     return obj
 
 
-async def org_of_gateway(db: AsyncSession, gateway_id: str) -> str:
-    """The org that owns a gateway — the authoritative org for what it reports.
-
-    Gateways post usage, payments, and approvals with no user token, so there is
-    no caller org to scope by. Deriving it from the `gateways` row is the only
-    trustworthy source: letting the payload name its own org would let one tenant
-    write into another's ledger or approval queue. An unknown or empty gateway
-    falls back to the default org so its records are still kept (the demo
-    posture) rather than vanishing.
-    """
-    from control_plane.models.database import DEFAULT_ORG, Gateway
-
-    if not gateway_id:
-        return DEFAULT_ORG
-    gw = await db.get(Gateway, gateway_id)
-    return (getattr(gw, "org_id", None) or DEFAULT_ORG) if gw else DEFAULT_ORG
-
-
 async def get_scoped(db: AsyncSession, model: Any, pk: Any, org: str) -> Any | None:
     """`db.get` + org check. Returns None when the row is missing OR belongs to
     another org — so a cross-org access is indistinguishable from "not found"
     (a 404), which is the correct isolation behavior."""
-    obj = await db.get(model, pk)
+    primary_keys = [column.key for column in inspect(model).primary_key]
+    if "org_id" in primary_keys and len(primary_keys) == 2:
+        identity = {
+            "org_id": org,
+            next(key for key in primary_keys if key != "org_id"): pk,
+        }
+        obj = await db.get(model, identity)
+    else:
+        obj = await db.get(model, pk)
     if obj is None or getattr(obj, "org_id", None) != org:
         return None
     return obj
+
+
+async def get_gateway(
+    db: AsyncSession,
+    gateway_id: str,
+    org: str,
+) -> Any | None:
+    """Fetch a gateway by its tenant-qualified natural identity."""
+    from control_plane.models.database import Gateway
+
+    return await db.get(
+        Gateway,
+        {"org_id": org, "id": gateway_id},
+    )

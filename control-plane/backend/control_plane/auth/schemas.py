@@ -8,6 +8,7 @@ from control_plane.auth.roles import Role
 class LoginRequest(BaseModel):
     email: str
     password: str
+    org_id: str | None = None
 
 
 class UserResponse(BaseModel):
@@ -45,4 +46,4 @@ class AuthUser(BaseModel):
     role: Role
     subject: str = ""            # raw IdP 'sub' / client_id (esp. for OIDC principals)
     kind: str = "user"           # user | service | agent
-    tenant_id: str = "default"   # single-tenant today; multi-tenant-ready seam
+    tenant_id: str = "default"   # verified tenant claim or configured single tenant

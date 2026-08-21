@@ -180,7 +180,10 @@ class TestAgentQuotaPush:
         from control_plane.models.database import Gateway
 
         async with async_session() as db:
-            gateway = await db.get(Gateway, "gw-agent")
+            gateway = await db.get(
+                Gateway,
+                {"org_id": "default", "id": "gw-agent"},
+            )
             assert gateway.config["agent_auth"] == payload
         bundle = (await client.get("/api/gateways/gw-agent/config-bundle")).json()
         assert bundle["agent_auth"] == payload
@@ -209,7 +212,10 @@ class TestAgentQuotaPush:
             },
         }
         async with async_session() as db:
-            gateway = await db.get(Gateway, "gw-agent")
+            gateway = await db.get(
+                Gateway,
+                {"org_id": "default", "id": "gw-agent"},
+            )
             gateway.config = {"agent_auth": base}
             await db.commit()
 
@@ -248,7 +254,10 @@ class TestAgentQuotaPush:
         assert sent["json"]["agents"]["tool-only"] == {"allowed_tools": ["lookup"]}
 
         async with async_session() as db:
-            gateway = await db.get(Gateway, "gw-agent")
+            gateway = await db.get(
+                Gateway,
+                {"org_id": "default", "id": "gw-agent"},
+            )
             assert gateway.config["agent_auth_base"] == base
 
     async def test_bulk_push_disables_policy_after_last_quota_is_deleted(

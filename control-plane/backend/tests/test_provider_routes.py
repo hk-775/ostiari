@@ -187,6 +187,7 @@ async def test_route_endpoint_rejects_embedded_private_material(
     assert response.status_code == 422
 
 
+@pytest.mark.usefixtures("multi_tenant_mode")
 async def test_route_ids_and_secrets_are_tenant_isolated(client):
     org_a = _admin("org-a")
     org_b = _admin("org-b")

@@ -240,6 +240,7 @@ class TestQuotaUpdate:
         assert [e["action"] for e in rows] == ["create", "update"]
         assert rows[-1]["details"]["budget_limit_usd"] == 500.0
 
+    @pytest.mark.usefixtures("multi_tenant_mode")
     async def test_another_org_cannot_edit(self, client):
         """The store is per-org, so a quota id from one tenant must not resolve in
         another — same 404 as a nonexistent id."""

@@ -327,11 +327,9 @@ async def ingest_budget_alert(request: Request, body: BudgetAlert):
     immutably by event ID and restored into the bounded hot cache after restarts.
     """
     from control_plane.database import async_session
-    from control_plane.models.scoping import org_of_gateway
-
     async with async_session() as db:
-        await authorize_reported_gateway(request, db, body.gateway_id)
-        alert_org = await org_of_gateway(db, body.gateway_id)
+        gateway = await authorize_reported_gateway(request, db, body.gateway_id)
+        alert_org = gateway.org_id if gateway is not None else "default"
         if not body.event_id:
             body.event_id = uuid.uuid4().hex
         if not body.timestamp:

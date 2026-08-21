@@ -124,8 +124,14 @@ class TestRoleMapping:
 
 
 class TestTenantMapping:
-    def test_default_when_absent(self):
+    def test_single_tenant_default_when_absent(self, monkeypatch):
+        monkeypatch.setenv("OSTIARI_TENANCY_MODE", "single")
+        monkeypatch.setenv("OSTIARI_ORG_ID", "default")
         assert oidc.tenant_from_claims({}) == "default"
+
+    def test_multi_tenant_requires_explicit_claim(self, monkeypatch):
+        monkeypatch.setenv("OSTIARI_TENANCY_MODE", "multi")
+        assert oidc.tenant_from_claims({}) == ""
 
     def test_reads_tenant_claim(self):
         assert oidc.tenant_from_claims({"tenant_id": "acme"}) == "acme"
@@ -133,7 +139,9 @@ class TestTenantMapping:
 
 
 class TestPrincipalMapping:
-    def test_user_principal(self):
+    def test_user_principal(self, monkeypatch):
+        monkeypatch.setenv("OSTIARI_TENANCY_MODE", "single")
+        monkeypatch.setenv("OSTIARI_ORG_ID", "default")
         p = oidc.principal_from_claims({"sub": "u1", "email": "a@b.com",
                                         "cognito:groups": ["operator"]})
         assert p.kind == "user" and p.role == "operator"
@@ -182,7 +190,14 @@ class TestGetCurrentUserOIDC:
         v = _make_validator(keypair)
         monkeypatch.setattr(oidc, "get_validator", lambda *a, **k: v)
 
-        token = _token(keypair, extra={"email": "op@corp.com", "cognito:groups": ["admin"]})
+        token = _token(
+            keypair,
+            extra={
+                "email": "op@corp.com",
+                "cognito:groups": ["admin"],
+                "tenant_id": "default",
+            },
+        )
         r = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
         assert r.status_code == 200, r.text
         # 'me' echoes the principal — admin group mapped through.

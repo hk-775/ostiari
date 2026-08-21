@@ -8,7 +8,7 @@ from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
 from control_plane.models.database import Gateway, McpServer
 from control_plane.models.schemas import McpServerCreate, McpServerResponse
-from control_plane.models.scoping import get_scoped, scoped, stamp
+from control_plane.models.scoping import get_gateway, get_scoped, scoped, stamp
 from control_plane.services.audit_service import actor_of, audit
 from control_plane.services.push_service import gateway_config_headers
 
@@ -99,7 +99,7 @@ async def discover_tools(mcp_id: int, request: Request, db: AsyncSession = Depen
     if not mcp:
         raise HTTPException(status_code=404, detail="MCP server not found")
 
-    gateway = await db.get(Gateway, mcp.gateway_id)
+    gateway = await get_gateway(db, mcp.gateway_id, mcp.org_id)
     if not gateway:
         raise HTTPException(status_code=404, detail="Gateway not found")
 
@@ -134,7 +134,7 @@ async def get_discovered_tools(mcp_id: int, db: AsyncSession = Depends(get_db), 
     if not mcp:
         raise HTTPException(status_code=404, detail="MCP server not found")
 
-    gateway = await db.get(Gateway, mcp.gateway_id)
+    gateway = await get_gateway(db, mcp.gateway_id, mcp.org_id)
     if not gateway:
         raise HTTPException(status_code=404, detail="Gateway not found")
 

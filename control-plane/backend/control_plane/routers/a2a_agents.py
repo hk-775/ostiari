@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from control_plane.auth.dependencies import get_current_org
 from control_plane.database import get_db
 from control_plane.models.database import A2AAgentRecord, Gateway
-from control_plane.models.scoping import get_scoped, scoped, stamp
+from control_plane.models.scoping import get_gateway, get_scoped, scoped, stamp
 from control_plane.services.push_service import gateway_config_headers
 
 router = APIRouter(prefix="/api/a2a-agents", tags=["a2a-agents"])
@@ -99,7 +99,7 @@ async def delete_a2a_agent(agent_id: int, db: AsyncSession = Depends(get_db), or
     if rec is None:
         raise HTTPException(status_code=404, detail="A2A agent not found")
     # Best-effort disconnect on the live gateway.
-    gateway = await db.get(Gateway, rec.gateway_id)
+    gateway = await get_gateway(db, rec.gateway_id, rec.org_id)
     if gateway is not None:
         import contextlib
         async with httpx.AsyncClient(
@@ -117,8 +117,8 @@ async def delete_a2a_agent(agent_id: int, db: AsyncSession = Depends(get_db), or
 async def build_a2a_config(db: AsyncSession, gateway_id: str, org: str | None = None) -> list[dict]:
     """A2A agent connection configs for a gateway, for the registration bundle.
 
-    Called from the unauthenticated gateway lifecycle (no user token), so `org`
-    is optional; when provided it additionally scopes the query by tenant.
+    Production registration supplies the workload tenant as ``org``. The
+    optional form is retained only for internal single-tenant callers.
     """
     query = select(A2AAgentRecord).where(A2AAgentRecord.gateway_id == gateway_id)
     if org is not None:

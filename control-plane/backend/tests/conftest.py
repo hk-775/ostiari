@@ -48,6 +48,12 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
+@pytest.fixture
+def multi_tenant_mode(monkeypatch):
+    """Opt a test into the explicit shared control-plane tenancy posture."""
+    monkeypatch.setenv("OSTIARI_TENANCY_MODE", "multi")
+
+
 def _reset_in_memory_state() -> None:
     """Clear module-level state used by in-memory routers between tests."""
     from control_plane import persistence

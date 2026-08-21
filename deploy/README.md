@@ -111,7 +111,7 @@ sam deploy --guided
 | `OSTIARI_PORT` | `8421` | Gateway listen port |
 | `OSTIARI_ADVERTISE_HOST` | _(bind host)_ | Host the control plane pushes config back to. Set this to the gateway's network-reachable name (compose service, k8s Service DNS, ECS service). Without it, config pushes may not reach the gateway. |
 | `OSTIARI_ENV` | _(unset = dev)_ | `production` (or `prod`) activates a fatal startup posture check. The gateway refuses missing machine credentials, OIDC issuer/audience, Redis, fail-closed control-plane handling, or simulated settlement. |
-| `OSTIARI_TENANCY_MODE` / `OSTIARI_ORG_ID` | `multi` / `default` in dev | Production requires `single` and an explicit organization matching the control plane. Agent tokens must carry the same `tenant_id`, `custom:tenant_id`, `org_id`, or `custom:org` claim. |
+| `OSTIARI_TENANCY_MODE` / `OSTIARI_ORG_ID` | `multi` / `default` in dev | Each production gateway is assigned to one explicit organization with `single`; agent tokens must carry that organization. The shared control plane may run in `multi`. |
 | `OSTIARI_FAIL_CLOSED_ON_CP_LOSS` | _(implied by `OSTIARI_ENV`)_ | Explicit override for the deny-by-default-on-registration-failure behavior. Set `true`/`false` to decide independently of `OSTIARI_ENV`. |
 | `OSTIARI_SSRF_ALLOW` | _(none)_ | Comma-separated hosts/CIDRs exempt from the production private-IP block, for tools that legitimately live on internal addresses. Link-local and metadata addresses (169.254.169.254) are blocked in **every** environment and cannot be allowlisted. |
 | `OSTIARI_HITL` | `off` | `on` enables human-in-the-loop for the *intervene* tier: a mid-band call returns **202** with an approval id instead of executing, and the caller re-submits with `X-Approval-Id` once a human approves. **Set this in production** — see below. |
@@ -145,7 +145,7 @@ sam deploy --guided
 | `DATABASE_URL` | SQLite in `OSTIARI_DATA_DIR` | `sqlite+aiosqlite:///…` (dev) or `postgresql+asyncpg://user:pass@host:5432/ostiari` (prod) |
 | `OSTIARI_DATA_DIR` | `control-plane/data` | Development-only SQLite directory and location checked for a legacy `state.json` import. Production uses PostgreSQL and requires no backend data volume. |
 | `OSTIARI_NO_DEMO` | _(unset)_ | Set to `1` to start with an empty control plane (no seeded demo data) |
-| `OSTIARI_TENANCY_MODE` / `OSTIARI_ORG_ID` | `multi` in dev | Production currently requires `single` and an explicit organization ID until every legacy global key has a composite tenant key. |
+| `OSTIARI_TENANCY_MODE` / `OSTIARI_ORG_ID` | `single` / `default` | `single` fixes all requests to `OSTIARI_ORG_ID`; `multi` requires explicit tenant claims on user and workload tokens. The production Kubernetes template sets `multi` explicitly. |
 | `OSTIARI_GATEWAY_CALLBACK_ALLOW` | _(none)_ | Required in production. Comma-separated gateway callback hostnames or CIDRs; registration and operator CRUD reject destinations outside it, and metadata/link-local addresses are always blocked. |
 | `OSTIARI_CORS_ORIGINS` | _(all, no creds)_ | Comma-separated allowed origins (enables credentialed CORS) |
 | `OSTIARI_REQUIRE_AUTH` | _(unset)_ | Set to require API authentication |

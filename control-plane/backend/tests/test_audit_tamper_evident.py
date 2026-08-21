@@ -68,6 +68,40 @@ class TestHashChain:
         finally:
             await gen.aclose()
 
+    async def test_tampering_one_tenant_does_not_break_another(
+        self,
+        app_and_db,
+    ):
+        from control_plane.services.audit_service import audit
+
+        gen, db = await _session()
+        try:
+            org_a = await audit.log(
+                db,
+                "admin-a",
+                "update",
+                "policy",
+                "shared",
+                {"tenant": "a"},
+                org="org-a",
+            )
+            await audit.log(
+                db,
+                "admin-b",
+                "update",
+                "policy",
+                "shared",
+                {"tenant": "b"},
+                org="org-b",
+            )
+            org_a.details = {"tenant": "tampered"}
+            await db.flush()
+
+            assert (await audit.verify_chain(db, "org-a"))["valid"] is False
+            assert (await audit.verify_chain(db, "org-b"))["valid"] is True
+        finally:
+            await gen.aclose()
+
 
 class TestReaderAuth:
     async def test_reader_open_in_demo(self, client, monkeypatch):

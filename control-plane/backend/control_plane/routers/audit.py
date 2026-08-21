@@ -61,7 +61,11 @@ async def list_audit_logs(
 
 
 @router.get("/verify")
-async def verify_audit_chain(request: Request, db: AsyncSession = Depends(get_db)):
+async def verify_audit_chain(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+):
     """Verify the audit hash-chain. Returns {valid, checked, [broken_at_id, reason]}."""
     await _require_audit_reader(request)
-    return await audit.verify_chain(db)
+    return await audit.verify_chain(db, org)

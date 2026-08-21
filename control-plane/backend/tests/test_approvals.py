@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("multi_tenant_mode")]
 
 
 @pytest.fixture(autouse=True)
@@ -286,26 +286,51 @@ class TestApprovalOrgIsolation:
 
     A, B = _hdr("org-a"), _hdr("org-b")
 
-    async def _gateway(self, client, headers, gid):
-        await client.post("/api/gateways", headers=headers,
-                          json={"id": gid, "name": gid, "endpoint": "http://x:8421", "description": ""})
+    async def _gateway(self, client, workload_signer, gid, org):
+        headers = workload_signer(gid, tenant_id=org)
+        response = await client.post(
+            f"/api/gateways/{gid}/register",
+            headers=headers,
+            json={"org_id": org},
+        )
+        assert response.status_code == 200, response.text
+        return headers
 
-    async def _pending_for(self, client, gid):
-        # Tokenless create — how the gateway actually reports an intervene call.
-        r = await client.post("/api/approvals", json={
-            "agent_id": "ops-agent", "gateway_id": gid, "action": "db_delete",
-            "params": {"sql": f"DELETE FROM {gid}_users"}, "score": 60, "reason": "intervene",
-        })
+    async def _pending_for(self, client, gid, headers=None):
+        r = await client.post(
+            "/api/approvals",
+            headers=headers or {},
+            json={
+                "agent_id": "ops-agent",
+                "gateway_id": gid,
+                "action": "db_delete",
+                "params": {"sql": f"DELETE FROM {gid}_users"},
+                "score": 60,
+                "reason": "intervene",
+            },
+        )
         assert r.status_code == 200
         return r.json()["id"]
 
-    async def _both(self, client):
-        await self._gateway(client, self.A, "apr-gw-a")
-        await self._gateway(client, self.B, "apr-gw-b")
-        return await self._pending_for(client, "apr-gw-a"), await self._pending_for(client, "apr-gw-b")
+    async def _both(self, client, workload_signer):
+        headers_a = await self._gateway(
+            client,
+            workload_signer,
+            "apr-gw-a",
+            "org-a",
+        )
+        headers_b = await self._gateway(
+            client,
+            workload_signer,
+            "apr-gw-b",
+            "org-b",
+        )
+        a_id = await self._pending_for(client, "apr-gw-a", headers_a)
+        b_id = await self._pending_for(client, "apr-gw-b", headers_b)
+        return a_id, b_id, headers_a, headers_b
 
-    async def test_queue_is_scoped_to_the_owning_org(self, client):
-        a_id, b_id = await self._both(client)
+    async def test_queue_is_scoped_to_the_owning_org(self, client, workload_signer):
+        a_id, b_id, _, _ = await self._both(client, workload_signer)
         a_q = (await client.get("/api/approvals", headers=self.A)).json()
         b_q = (await client.get("/api/approvals", headers=self.B)).json()
         assert [x["id"] for x in a_q] == [a_id]
@@ -313,8 +338,8 @@ class TestApprovalOrgIsolation:
         # The params are the sensitive part — B's queue must not carry A's SQL.
         assert all("apr-gw-a" not in str(x["params"]) for x in b_q)
 
-    async def test_audit_history_is_scoped(self, client):
-        a_id, b_id = await self._both(client)
+    async def test_audit_history_is_scoped(self, client, workload_signer):
+        a_id, b_id, _, _ = await self._both(client, workload_signer)
         await client.post(f"/api/approvals/{a_id}/decision", headers=self.A,
                           json={"decision": "approve", "decided_by": "a-operator"})
         b_all = (await client.get("/api/approvals/all", headers=self.B)).json()
@@ -322,29 +347,33 @@ class TestApprovalOrgIsolation:
         # The reviewer's identity doesn't leak either.
         assert all(x["decided_by"] != "a-operator" for x in b_all)
 
-    async def test_cross_org_read_is_404(self, client):
-        a_id, _ = await self._both(client)
+    async def test_cross_org_read_is_404(self, client, workload_signer):
+        a_id, _, _, _ = await self._both(client, workload_signer)
         assert (await client.get(f"/api/approvals/{a_id}", headers=self.B)).status_code == 404
         assert (await client.get(f"/api/approvals/{a_id}", headers=self.A)).status_code == 200
 
-    async def test_cross_org_cannot_approve(self, client):
+    async def test_cross_org_cannot_approve(self, client, workload_signer):
         """The governance bypass: approving another org's blocked call would let
         the gateway execute it on the strength of a foreign tenant's decision."""
-        a_id, _ = await self._both(client)
+        a_id, _, _, _ = await self._both(client, workload_signer)
         r = await client.post(f"/api/approvals/{a_id}/decision", headers=self.B,
                               json={"decision": "approve", "decided_by": "attacker"})
         assert r.status_code == 404
         # Still pending for the real owner — the foreign decision changed nothing.
         assert (await client.get(f"/api/approvals/{a_id}", headers=self.A)).json()["status"] == "pending"
 
-    async def test_gateway_resume_check_works_without_a_token(self, client):
-        """The gateway polls by id with no user token; scoping must not break it."""
+    async def test_gateway_resume_check_uses_bound_workload_identity(
+        self,
+        client,
+        workload_signer,
+    ):
+        """The gateway resume check remains scoped to its bound workload."""
         from control_plane.routers.approvals import approval_status
 
-        a_id, _ = await self._both(client)
+        a_id, _, headers_a, _ = await self._both(client, workload_signer)
         await client.post(f"/api/approvals/{a_id}/decision", headers=self.A,
                           json={"decision": "approve"})
-        r = await client.get(f"/api/approvals/{a_id}")     # no Authorization header
+        r = await client.get(f"/api/approvals/{a_id}", headers=headers_a)
         assert r.status_code == 200 and r.json()["status"] == "approved"
         assert approval_status(a_id) == "approved"          # in-process helper too
 
