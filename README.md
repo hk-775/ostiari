@@ -122,10 +122,11 @@ closed if that router cannot initialize or route.
 
 The Responses surface intentionally rejects stateful conversations, background
 execution, hosted prompts, reasoning configuration, and structured-output fields
-whose semantics are not implemented. Current Codex custom providers use the
-Responses wire API, so Ostiari does not claim complete Codex CLI compatibility
-until the supported Codex version passes an exact request/streaming conformance
-gate. See [`docs/codex-shim.md`](docs/codex-shim.md).
+whose semantics are not implemented. Codex CLI `0.148.0` is supported through
+the pinned, capability-limited profile in `config/codex` and an executable
+request/tool/stream/error/cancellation conformance gate. Other Codex versions
+must pass that gate before they are supported. See
+[`docs/codex-shim.md`](docs/codex-shim.md).
 
 ## Use the Guard library directly (no gateway)
 
