@@ -180,7 +180,7 @@ stored record, not the gateway's live state — so verify with the gateway's
 | **Model access** | Control who uses what | Per-agent model/provider restrictions |
 | **Budgets** | Track and enforce | Per-agent spend tracking, alerts, auto-reset |
 | **Providers** | Configure execution routes | Store encrypted credentials, assign endpoints/regions, set adaptive weights and shared capacity, test connectivity, and hot-push the complete catalog |
-| **Traces** | Collect and display | Gateways fire-and-forget traces to CP |
+| **Traces** | Collect and display | Gateways durably enqueue traces and retry delivery to the control plane |
 | **Costs** | Aggregate and alert | Per-model, per-agent cost attribution |
 | **Health** | Monitor | Heartbeat-based health tracking |
 

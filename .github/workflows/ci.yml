@@ -38,7 +38,11 @@ jobs:
         run: mypy src/ostiari
 
       - name: Test (root suite)
-        run: pytest tests/ -v --tb=short
+        run: >-
+          pytest tests/ -v --tb=short
+          --cov=ostiari
+          --cov-report=term-missing
+          --cov-fail-under=70
 
   gateway:
     name: Gateway
@@ -157,6 +161,10 @@ jobs:
       - name: Type check
         working-directory: control-plane/frontend
         run: npx tsc --noEmit --skipLibCheck
+
+      - name: Test frontend behavior
+        working-directory: control-plane/frontend
+        run: npm test
 
       - name: Build
         working-directory: control-plane/frontend
