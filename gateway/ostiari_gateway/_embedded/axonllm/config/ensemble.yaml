@@ -1,0 +1,35 @@
+# Ensemble routing presets.
+#
+# Each preset defines a panel of models whose responses are gathered in
+# parallel, a judge model that synthesizes the survivors into a final answer,
+# and governance settings (quorum, fallback_policy, cost_ceiling,
+# ranking_criteria). All panel and judge models are Bedrock-backed models
+# defined in config/models.yaml.
+#
+# Loader defaults (applied at parse time):
+#   - quorum defaults to 1 when absent (Req 4.8)
+#   - fallback_policy defaults to "error" when absent (Req 4.7)
+ensemble:
+  default_preset: budget
+  presets:
+    budget:
+      panel:
+        - llama-4-scout
+        - qwen3-235b
+        - deepseek-r1
+      judge: claude-sonnet
+      quorum: 2
+      fallback_policy: best-single
+      cost_ceiling: 0.50
+      ranking_criteria: length
+    quality:
+      panel:
+        - llama-3.3-70b
+        - mistral-large
+        - deepseek-r1
+        - gpt-oss-120b
+      judge: claude-opus
+      quorum: 1
+      fallback_policy: error
+      cost_ceiling: null
+      ranking_criteria: length
