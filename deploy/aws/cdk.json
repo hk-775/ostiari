@@ -1,0 +1,8 @@
+{
+  "app": ".venv/bin/python app.py",
+  "versionReporting": false,
+  "context": {
+    "@aws-cdk/aws-ecs:arnFormatIncludesClusterName": true,
+    "@aws-cdk/aws-rds:databaseProxyUniqueResourceName": true
+  }
+}

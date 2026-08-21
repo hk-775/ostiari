@@ -53,6 +53,7 @@ def test_external_github_actions_are_pinned_to_commit_shas() -> None:
 
 def test_container_build_and_local_state_images_are_digest_pinned() -> None:
     dockerfiles = sorted((ROOT / "deploy/docker").glob("Dockerfile*"))
+    dockerfiles.append(ROOT / "deploy/agentcore/Dockerfile")
     assert dockerfiles
     for path in dockerfiles:
         for line_number, line in enumerate(path.read_text().splitlines(), start=1):

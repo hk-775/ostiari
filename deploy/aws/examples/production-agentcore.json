@@ -1,0 +1,39 @@
+{
+  "org_id": "production",
+  "allowed_cidrs": ["REPLACE_OPERATOR_OR_PROXY_CIDR"],
+  "desired_count": 2,
+  "images": {
+    "control_plane": "REPLACE_ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/ostiari/control-plane@sha256:REPLACE_DIGEST",
+    "gateway": "REPLACE_ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/ostiari/gateway@sha256:REPLACE_DIGEST",
+    "frontend": "REPLACE_ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/ostiari/frontend@sha256:REPLACE_DIGEST",
+    "agentcore": "REPLACE_ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/ostiari/agentcore@sha256:REPLACE_DIGEST"
+  },
+  "domains": {
+    "dashboard": "ostiari.example.com",
+    "gateway": "gateway.ostiari.example.com",
+    "certificate_arn": "arn:aws:acm:us-east-1:REPLACE_ACCOUNT:certificate/REPLACE_ID",
+    "hosted_zone_id": "REPLACE_ZONE_ID",
+    "hosted_zone_name": "example.com"
+  },
+  "auth": {
+    "workload_issuer": "https://REPLACE_WORKLOAD_ISSUER",
+    "workload_audience": "ostiari-control-plane",
+    "workload_token_url": "https://REPLACE_WORKLOAD_ISSUER/oauth2/token",
+    "gateway_client_id": "REPLACE_GATEWAY_CLIENT_ID",
+    "agent_issuer": "https://REPLACE_AGENT_ISSUER",
+    "agent_audience": "ostiari-gateway",
+    "agentcore_token_url": "https://REPLACE_AGENT_ISSUER/oauth2/token",
+    "agentcore_client_id": "REPLACE_AGENTCORE_CLIENT_ID",
+    "agentcore_audience": "ostiari-gateway",
+    "gateway_rate_limit_rpm": "600"
+  },
+  "secrets": {
+    "jwt": "arn:aws:secretsmanager:us-east-1:REPLACE_ACCOUNT:secret:ostiari/jwt-REPLACE",
+    "admin_password": "arn:aws:secretsmanager:us-east-1:REPLACE_ACCOUNT:secret:ostiari/admin-REPLACE",
+    "encryption_key": "arn:aws:secretsmanager:us-east-1:REPLACE_ACCOUNT:secret:ostiari/encryption-REPLACE",
+    "config_admin_key": "arn:aws:secretsmanager:us-east-1:REPLACE_ACCOUNT:secret:ostiari/config-admin-REPLACE",
+    "gateway_agent_token": "arn:aws:secretsmanager:us-east-1:REPLACE_ACCOUNT:secret:ostiari/gateway-agent-REPLACE",
+    "workload_client_secret": "arn:aws:secretsmanager:us-east-1:REPLACE_ACCOUNT:secret:ostiari/workload-client-REPLACE",
+    "agentcore_client_secret": "arn:aws:secretsmanager:us-east-1:REPLACE_ACCOUNT:secret:ostiari/agentcore-client-REPLACE"
+  }
+}
