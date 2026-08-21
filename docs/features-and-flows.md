@@ -451,7 +451,7 @@ that process and should be restored by registration and config push.
 | Clean local | Empty control plane and one gateway | Connecting real agents |
 | Sidecar | Gateway beside one agent | Strong per-agent isolation |
 | Shared gateway | Multiple agents use one gateway with `X-Agent-Id` | Centralized operations |
-| Docker Compose | Control plane, frontend, gateway, database/Redis options | Small deployment |
+| Docker Compose | Control plane, frontend, gateway, and local Valkey state service | Small deployment |
 | Kubernetes/Helm | Sidecar or shared gateway patterns | Production orchestration |
 | ECS | Containerized control plane and gateway services | AWS deployment |
 | Lambda | Limited stateless gateway handler | Narrow serverless use cases |

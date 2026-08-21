@@ -4,7 +4,7 @@
 
 ### Docker Compose (Local Development)
 
-Full local stack with gateway, control-plane backend + frontend, and Redis:
+Full local stack with gateway, control-plane backend + frontend, and Valkey:
 
 ```bash
 cd deploy/docker
@@ -40,7 +40,8 @@ The checked-in manifests are production templates, not ready-to-apply defaults.
 Replace every `REPLACE_*` value, publish digest-pinned images, and create the
 referenced `ostiari-secrets` keys before applying them. The control plane runs
 two replicas and requires `database-url` plus a TLS/authenticated `redis-url`;
-Redis coordinates live fan-out, rate limits, singleton work, and readiness:
+The bundled Valkey service provides the Redis protocol used for live fan-out,
+rate limits, singleton work, durable outboxes, and readiness:
 
 ```bash
 kubectl apply -f deploy/kubernetes/gateway-sidecar.yaml

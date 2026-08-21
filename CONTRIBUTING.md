@@ -4,6 +4,9 @@ Thank you for your interest in contributing to Ostiari.
 
 ## Development Setup
 
+Use Python 3.11+ and Node.js 24.16.0 for the complete platform. The root Guard
+library retains Python 3.10 compatibility.
+
 ```bash
 git clone https://github.com/hk-775/ostiari.git
 cd ostiari
