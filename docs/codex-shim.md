@@ -12,21 +12,52 @@ AxonLLM routing, cost, and trace pipeline.
 
 ## Codex CLI compatibility
 
-Current Codex custom providers use the Responses wire API. Ostiari therefore
-does **not** claim complete Codex CLI compatibility yet: the implemented
-`/v1/responses` surface deliberately rejects fields whose semantics Ostiari
-does not implement, including stored conversations, background execution,
-reasoning configuration, prompt references, and structured-output settings.
+Ostiari supports **Codex CLI 0.148.0** through the reviewed profile in
+[`config/codex`](../config/codex). The profile uses the Responses wire API and
+deliberately advertises no reasoning, verbosity, hosted-search, service-tier,
+or stateful-conversation capability. This prevents Codex from sending fields
+whose semantics Ostiari cannot preserve.
 
-Do not point a production Codex CLI at Ostiari until the release gate includes:
+Protected CI runs the exact CLI version against Ostiari's real Responses
+translator and typed SSE emitter. The gate verifies:
 
-1. a captured request contract from the supported Codex version;
-2. end-to-end function-call and function-output round trips;
-3. streaming event-order verification;
-4. explicit support or documented rejection for every field Codex sends.
+1. stateless streamed request shape;
+2. a function-call and `function_call_output` round trip;
+3. final typed text events;
+4. OpenAI-shaped error propagation; and
+5. prompt cancellation while a stream is active.
 
-Failing closed here is intentional. Silently ignoring an unsupported field
-would make a request appear governed while changing its model behavior.
+This is a versioned compatibility contract, not a claim that arbitrary Codex
+versions or configurations work. A Codex upgrade requires updating the pinned
+catalog and passing the same protected conformance gate.
+
+The profile follows the official
+[Codex configuration reference](https://developers.openai.com/codex/config-reference)
+and [model configuration](https://developers.openai.com/codex/models)
+contracts.
+
+### Configure Codex 0.148.0
+
+1. Copy [`config/codex/config.toml.example`](../config/codex/config.toml.example)
+   into a dedicated Codex home or profile.
+2. Replace the example gateway URL and the absolute
+   `model_catalog_json` path.
+3. Set `OSTIARI_CODEX_TOKEN` to an Ostiari agent bearer token.
+4. Verify the client version:
+
+   ```bash
+   codex --version
+   # codex-cli 0.148.0
+   ```
+
+The gateway URL in the example ends in `/v1`; Codex appends `/responses`.
+
+Stateful continuation remains unsupported. Ostiari rejects
+`previous_response_id`, stored conversations, background work, hosted prompts,
+reasoning configuration, structured output, and unsupported include or
+service-tier fields. Failing closed here is intentional. Silently ignoring one
+of those fields would make a request appear governed while changing its model
+behavior.
 
 ## Chat Completions clients
 

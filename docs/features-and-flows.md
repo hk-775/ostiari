@@ -201,9 +201,12 @@ Ostiari does not store OpenAI conversation state. It rejects
 execution, and unsupported reasoning/structured-output options rather than
 silently changing their semantics.
 
-Current Codex custom providers use the Responses wire API. Ostiari does not
-claim complete Codex CLI support until an exact supported Codex version passes
-request, tool-loop, streaming, cancellation, and error-shape conformance.
+Codex CLI `0.148.0` is supported through the pinned profile under
+`config/codex`. The profile disables reasoning, verbosity, hosted-search,
+service-tier, and stateful-conversation capabilities. Protected CI verifies
+request shape, a function tool round trip, typed streaming, cancellation, and
+error propagation. Other Codex versions require a new conformance run before
+they are supported.
 
 ### 5.3 `/invoke` Agentic Loop
 

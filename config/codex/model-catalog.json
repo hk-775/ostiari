@@ -1,0 +1,59 @@
+{
+  "models": [
+    {
+      "slug": "ostiari-codex",
+      "display_name": "Ostiari Codex",
+      "description": "Codex profile for Ostiari's governed stateless Responses API.",
+      "default_reasoning_level": null,
+      "supported_reasoning_levels": [],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 1,
+      "additional_speed_tiers": [],
+      "service_tiers": [],
+      "availability_nux": null,
+      "upgrade": null,
+      "model_messages": {
+        "instructions_template": "You are Codex. Complete the user's coding task using the available tools.",
+        "instructions_variables": null,
+        "approvals": null,
+        "collaboration_modes": null,
+        "auto_review": null,
+        "permissions": null,
+        "multi_agent": null
+      },
+      "include_skills_usage_instructions": false,
+      "include_plugin_usage_instructions": false,
+      "include_apps_usage_instructions": false,
+      "supports_reasoning_summary_parameter": false,
+      "default_reasoning_summary": "none",
+      "support_verbosity": false,
+      "default_verbosity": null,
+      "apply_patch_tool_type": "freeform",
+      "web_search_tool_type": "text_and_image",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 10000
+      },
+      "supports_image_detail_original": true,
+      "context_window": 272000,
+      "max_context_window": 272000,
+      "comp_hash": "ostiari-codex-0.148.0",
+      "effective_context_window_percent": 95,
+      "experimental_supported_tools": [],
+      "supports_search_tool": false,
+      "use_responses_lite": true,
+      "node_repl_auto_review_required": false,
+      "node_repl_disabled": true,
+      "tool_mode": "code_mode_only",
+      "multi_agent_version": "v2",
+      "base_instructions": "You are Codex. Complete the user's coding task using the available tools.",
+      "default_service_tier": null,
+      "input_modalities": [
+        "text",
+        "image"
+      ]
+    }
+  ]
+}
