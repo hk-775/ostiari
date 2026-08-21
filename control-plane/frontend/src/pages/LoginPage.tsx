@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router";
 import { useAuthStore } from "../stores/authStore";
 import { LogIn, Shield } from "lucide-react";
 import { API_BASE } from "../lib/api";

@@ -5,14 +5,17 @@ and restores on gateway startup.
 """
 
 import asyncio
+import contextlib
 import logging
-import os
 import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 import httpx
+
+from ostiari_gateway.event_outbox import EventOutbox, scoped_stream
+from ostiari_gateway.workload_identity import machine_headers
 
 log = logging.getLogger("ostiari.sidecar.traces")
 
@@ -31,29 +34,59 @@ class TraceReporter:
         self._url = control_plane_url.rstrip("/") if control_plane_url else ""
         self._sidecar_id = sidecar_id
         self._client: httpx.AsyncClient | None = None
-        self._spend_task: asyncio.Task | None = None
+        self._spend_task: asyncio.Task[None] | None = None
+        self._delivery_task: asyncio.Task[None] | None = None
         self._agent_auth: Any = None
         self._pending_reset_at: str | None = None
+        self._trace_buffer: list[dict[str, Any]] = []
         self._payment_buffer: list[dict[str, Any]] = []
-        self._payment_flush_lock = asyncio.Lock()
+        self._alert_buffer: list[dict[str, Any]] = []
+        self._flush_locks = {
+            "traces": asyncio.Lock(),
+            "payments": asyncio.Lock(),
+            "budget_alerts": asyncio.Lock(),
+        }
+        self._trace_outbox = EventOutbox(
+            scoped_stream("traces", sidecar_id),
+            id_field="trace_id",
+            memory=self._trace_buffer,
+        )
+        self._payment_outbox = EventOutbox(
+            scoped_stream("payments", sidecar_id),
+            id_field="event_id",
+            memory=self._payment_buffer,
+        )
+        self._alert_outbox = EventOutbox(
+            scoped_stream("budget_alerts", sidecar_id),
+            id_field="event_id",
+            memory=self._alert_buffer,
+        )
 
     @staticmethod
-    def _service_headers() -> dict[str, str]:
-        token = os.environ.get("OSTIARI_SERVICE_TOKEN", "").strip()
-        return {"X-Ostiari-Service-Key": token} if token else {}
+    async def _service_headers() -> dict[str, str]:
+        return await machine_headers()
 
     @staticmethod
-    def _ingest_headers() -> dict[str, str]:
-        key = os.environ.get("OSTIARI_INGEST_KEY", "").strip()
-        return {"X-Ingest-Key": key} if key else {}
+    async def _ingest_headers() -> dict[str, str]:
+        return await machine_headers(legacy="ingest")
 
     def configure(self, control_plane_url: str, sidecar_id: str) -> None:
+        self._trace_outbox.rebind(scoped_stream("traces", sidecar_id))
+        self._payment_outbox.rebind(scoped_stream("payments", sidecar_id))
+        self._alert_outbox.rebind(scoped_stream("budget_alerts", sidecar_id))
         self._url = control_plane_url.rstrip("/")
         self._sidecar_id = sidecar_id
 
     def set_agent_auth(self, agent_auth: Any) -> None:
         """Wire the AgentAuthPolicy for spend persistence."""
         self._agent_auth = agent_auth
+
+    def attach_shared_store(self, store: Any) -> None:
+        if store is None:
+            return
+        self._trace_outbox.attach_store(store)
+        self._payment_outbox.attach_store(store)
+        self._alert_outbox.attach_store(store)
 
     @property
     def enabled(self) -> bool:
@@ -73,7 +106,7 @@ class TraceReporter:
         session_id: str = "",
         plan: str = "",
         step: str = "",
-        params: dict | None = None,
+        params: dict[str, Any] | None = None,
         model: str = "",
         shadow: bool = False,
         would_block: bool = False,
@@ -87,9 +120,6 @@ class TraceReporter:
         """
         if not self.enabled:
             return
-
-        if self._client is None:
-            self._client = httpx.AsyncClient(timeout=3.0)
 
         event = {
             # Stable, unique identifier for this trace — the durable handle that
@@ -122,12 +152,18 @@ class TraceReporter:
             "timestamp": time.time(),
         }
 
-        try:
-            await self._client.post(
-                f"{self._url}/api/traces/ingest", json=event, headers=self._ingest_headers()
-            )
-        except Exception as e:
-            log.debug("Failed to report trace: %s", e)
+        self._trace_outbox.enqueue(event)
+        await self.flush_traces()
+
+    async def flush_traces(self) -> None:
+        """Deliver trace events in order and retain unconfirmed events."""
+        await self._flush_single_event_queue(
+            self._trace_outbox,
+            lock=self._flush_locks["traces"],
+            path="/api/traces/ingest",
+            headers=await self._ingest_headers(),
+            label="trace",
+        )
 
     async def report_payment(
         self,
@@ -150,7 +186,7 @@ class TraceReporter:
         """
         if not self.enabled:
             return
-        self._payment_buffer.append({
+        self._payment_outbox.enqueue({
             "event_id": event_id or uuid.uuid4().hex,
             "agent_id": agent_id,
             "gateway_id": self._sidecar_id,
@@ -167,28 +203,13 @@ class TraceReporter:
 
     async def flush_payments(self) -> None:
         """Deliver queued ledger events in order, retaining failed events."""
-        if not self.enabled or not self._payment_buffer:
-            return
-        async with self._payment_flush_lock:
-            if self._client is None:
-                self._client = httpx.AsyncClient(timeout=3.0)
-            while self._payment_buffer:
-                event = self._payment_buffer[0]
-                try:
-                    response = await self._client.post(
-                        f"{self._url}/api/payments/ingest",
-                        json=event,
-                        headers=self._service_headers(),
-                    )
-                    response.raise_for_status()
-                except Exception as e:
-                    log.warning(
-                        "Failed to report payment %s; retained for retry: %s",
-                        event["event_id"],
-                        e,
-                    )
-                    return
-                del self._payment_buffer[0]
+        await self._flush_single_event_queue(
+            self._payment_outbox,
+            lock=self._flush_locks["payments"],
+            path="/api/payments/ingest",
+            headers=await self._service_headers(),
+            label="payment",
+        )
 
     async def report_budget_alert(
         self,
@@ -205,19 +226,71 @@ class TraceReporter:
         """
         if not self.enabled:
             return
-        if self._client is None:
-            self._client = httpx.AsyncClient(timeout=3.0)
-        try:
-            await self._client.post(f"{self._url}/api/quotas/alerts", json={
-                "gateway_id": self._sidecar_id,
-                "agent_id": agent_id,
-                "threshold": threshold,
-                "spend_usd": round(spend_usd, 4),
-                "budget_usd": budget_usd,
-                "timestamp": time.time(),
-            }, headers=self._service_headers())
-        except Exception as e:
-            log.debug("Failed to report budget alert: %s", e)
+        self._alert_outbox.enqueue({
+            "event_id": uuid.uuid4().hex,
+            "gateway_id": self._sidecar_id,
+            "agent_id": agent_id,
+            "threshold": threshold,
+            "spend_usd": round(spend_usd, 4),
+            "budget_usd": budget_usd,
+            "timestamp": time.time(),
+        })
+        await self.flush_budget_alerts()
+
+    async def flush_budget_alerts(self) -> None:
+        await self._flush_single_event_queue(
+            self._alert_outbox,
+            lock=self._flush_locks["budget_alerts"],
+            path="/api/quotas/alerts",
+            headers=await self._service_headers(),
+            label="budget alert",
+        )
+
+    async def _flush_single_event_queue(
+        self,
+        outbox: EventOutbox,
+        *,
+        lock: asyncio.Lock,
+        path: str,
+        headers: dict[str, str],
+        label: str,
+    ) -> None:
+        if not self.enabled:
+            return
+        async with lock:
+            if self._client is None:
+                self._client = httpx.AsyncClient(timeout=3.0)
+            while True:
+                pending = outbox.pending(count=1)
+                if not pending:
+                    return
+                event = pending[0]
+                try:
+                    response = await self._client.post(
+                        f"{self._url}{path}",
+                        json=event.payload,
+                        headers=headers,
+                    )
+                    if not 200 <= response.status_code < 300:
+                        raise RuntimeError(
+                            f"control plane returned HTTP {response.status_code}"
+                        )
+                except Exception as e:
+                    log.warning(
+                        "Failed to report %s %s; retained for retry: %s",
+                        label,
+                        event.event_id,
+                        e,
+                    )
+                    return
+                if not outbox.acknowledge([event]):
+                    log.warning(
+                        "Control plane confirmed %s %s, but durable "
+                        "acknowledgement failed; idempotent retry will follow",
+                        label,
+                        event.event_id,
+                    )
+                    return
 
     async def push_spend_snapshot(
         self,
@@ -248,7 +321,7 @@ class TraceReporter:
                     "reset": pending_reset_at is not None,
                     "reset_at": pending_reset_at,
                 },
-                headers=self._service_headers(),
+                headers=await self._service_headers(),
             )
             response.raise_for_status()
             if self._pending_reset_at == pending_reset_at:
@@ -267,7 +340,7 @@ class TraceReporter:
         try:
             resp = await self._client.get(
                 f"{self._url}/api/gateways/{self._sidecar_id}/spend",
-                headers=self._service_headers(),
+                headers=await self._service_headers(),
             )
             if resp.status_code == 200:
                 data = resp.json()
@@ -280,24 +353,52 @@ class TraceReporter:
 
     async def start_spend_persistence(self, interval_seconds: float = 30.0) -> None:
         """Start a background task that pushes spend snapshots periodically."""
+        if self._spend_task and not self._spend_task.done():
+            return
         await self.restore_spend_from_control_plane()
 
-        async def _loop():
+        async def _loop() -> None:
             while True:
                 await asyncio.sleep(interval_seconds)
                 await self.push_spend_snapshot()
-                await self.flush_payments()
 
         self._spend_task = asyncio.create_task(_loop())
         log.info("Spend persistence started (every %.0fs)", interval_seconds)
 
+    async def start_delivery(self, interval_seconds: float = 2.0) -> None:
+        """Drain durable events after restarts without waiting for new traffic."""
+        if self._delivery_task and not self._delivery_task.done():
+            return
+
+        async def _loop() -> None:
+            while True:
+                await self.flush_traces()
+                await self.flush_payments()
+                await self.flush_budget_alerts()
+                await asyncio.sleep(interval_seconds)
+
+        self._delivery_task = asyncio.create_task(_loop())
+
     async def close(self) -> None:
-        if self._spend_task:
-            self._spend_task.cancel()
-            self._spend_task = None
+        for task_name in ("_spend_task", "_delivery_task"):
+            task = getattr(self, task_name)
+            if task and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            setattr(self, task_name, None)
         if self._agent_auth:
             await self.push_spend_snapshot()
+        await self.flush_traces()
         await self.flush_payments()
+        await self.flush_budget_alerts()
         if self._client:
             await self._client.aclose()
             self._client = None
+
+    def delivery_status(self) -> dict[str, dict[str, Any]]:
+        return {
+            "traces": self._trace_outbox.status(),
+            "payments": self._payment_outbox.status(),
+            "budget_alerts": self._alert_outbox.status(),
+        }

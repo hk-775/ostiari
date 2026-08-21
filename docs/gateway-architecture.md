@@ -1,5 +1,12 @@
 # Ostiari Agent Gateway — Architecture Guide
 
+> **Current-contract note:** [`features-and-flows.md`](features-and-flows.md),
+> [`axon-router.md`](axon-router.md), and
+> [`embedded-routing.md`](embedded-routing.md) are the canonical runtime
+> contracts. Historical implementation notes in this deep-dive must not be used
+> to reintroduce optional/private Axon imports or production direct-provider
+> fallback.
+
 ## Naming: "Agent Gateway" (formerly "Sidecar")
 
 This component is an **Agent Gateway**, not a "sidecar." The reason: a sidecar implies per-pod K8s deployment, but this component supports three deployment modes.
@@ -393,7 +400,8 @@ Registered only when `llm_gateway: true` (`modules/llm_gateway/module.py`):
 |----------|--------|---------|
 | `/invoke` | POST | Full agentic loop (PATH 2) |
 | `/v1/messages` | POST | Claude Code shim ([claude-code-shim.md](claude-code-shim.md)) |
-| `/v1/chat/completions` | POST | Codex shim ([codex-shim.md](codex-shim.md)) |
+| `/v1/chat/completions` | POST | OpenAI Chat Completions compatibility ([codex-shim.md](codex-shim.md)) |
+| `/v1/responses` | POST | Stateless OpenAI Responses subset ([codex-shim.md](codex-shim.md)) |
 | `/models` | GET | Available models + routing rules |
 | `/cache/stats` | GET | Intent cache hit/miss stats |
 | `/cache/clear` | POST | Flush cached plans |
@@ -648,7 +656,13 @@ The image prefers env vars over flags, which is what the compose file and the Ku
 
 The image runs as uid `10001` with a root-owned `site-packages`, so a compromised gateway can't rewrite its own code. It writes exactly one path at runtime — the rendered policy tempfile under `/tmp` — so if you set `read_only: true` you must also mount a `/tmp` tmpfs, or the container starts healthy and then 500s on the first config push. `deploy/docker/docker-compose.yml` does both.
 
-The full local stack (`cd deploy/docker && docker compose up --build`) brings up the gateway on 8421, the control-plane backend on 8400, the frontend on 9000, and Redis on 6379. It runs in **dev posture** by default: `OSTIARI_ENV` is unset, so controls fail *open*, and `OSTIARI_HITL` is `off`. Both are deliberate — the demo flows — and both are wrong for production. See §7.4 and §9 of [control-plane-guide.md](control-plane-guide.md).
+The full local stack (`cd deploy/docker && docker compose up --build`) brings up
+the gateway on 8421, the control-plane backend on 8400, the frontend on 9000,
+and a Redis-compatible Valkey service on 6379. It runs in **dev posture** by
+default: `OSTIARI_ENV` is unset, so controls fail *open*, and `OSTIARI_HITL` is
+`off`. Both are deliberate — the demo flows — and both are wrong for
+production. See §7.4 and §9 of
+[control-plane-guide.md](control-plane-guide.md).
 
 ---
 
@@ -1518,7 +1532,11 @@ flowchart TD
 - Regional compliance? Route to Bedrock — though "in specific regions" means the *credential* you point at, since routing conditions can't see a region.
 - Model A/B testing? Route 10% of traffic to a new model. Measure quality. No developer involvement.
 
-Note that this whole ladder is `ModelRouter.select_model`, which runs on `/invoke` and `/v1/messages` only. The Codex shim (`/v1/chat/completions`) hands the client's model straight to AxonLLM, so round-robin, A/B, explicit rules, and `default_model` all do nothing there. See [embedded-routing.md](embedded-routing.md).
+This whole ladder is `ModelRouter.select_model`, which runs on `/invoke` and
+`/v1/messages`. Chat Completions and Responses honor a known requested model and
+otherwise ask AxonLLM to smart-route, so per-agent rotation and A/B selection do
+not override an explicit OpenAI model. See
+[embedded-routing.md](embedded-routing.md).
 
 ### Credential Management
 
@@ -1636,7 +1654,11 @@ Everything in the Enterprise column except SLA/support **exists today and is not
 - A/B testing proves ROI of model choices to leadership
 - SLA and support are table stakes for enterprise procurement
 
-Worth noting for anyone reasoning about this as packaging rather than as product intent: the Community/Pro split is the only one with a mechanism behind it, because `llm_gateway: false` really does leave `/invoke` and both shims unregistered. The Pro/Enterprise split has none — every capability in the Enterprise column ships in the same image and turns on with a config key.
+Worth noting for anyone reasoning about this as packaging rather than product
+intent: the Community/Pro split is the only one with a mechanism behind it,
+because `llm_gateway: false` leaves all four LLM endpoints unregistered. The
+Pro/Enterprise split has none — every capability in the Enterprise column ships
+in the same image and turns on with a config key.
 
 ### The Key Insight: Same Docker Image, Different Config
 
@@ -1655,7 +1677,8 @@ ostiari-gateway --config enterprise.yaml
 ```
 
 One image. One codebase. Revenue would come from which modules are activated —
-`llm_gateway: false` genuinely leaves `/invoke` and both shims unregistered. The
+`llm_gateway: false` genuinely leaves `/invoke`, Messages, Chat Completions, and
+Responses unregistered. The
 missing pieces are a `license_key` that ties a config to an entitlement and an
 `audit` module to activate; neither exists yet, so nothing stops a config from
 setting `llm_gateway: true` itself.
@@ -1697,8 +1720,8 @@ graph TB
         end
 
         subgraph "AxonLLM (LLM routing)"
-            R[Router<br/>5 strategies]
-            TC[TaskClassifier<br/>Intent detection]
+            R[Public AsyncRouter<br/>5 strategies]
+            TC[Smart strategy<br/>Task selection]
             PR[Provider Adapters<br/>13 providers]
             HT[HealthTracker<br/>Circuit breaking]
             CT[CostTracker<br/>Budget enforcement]
@@ -1707,7 +1730,7 @@ graph TB
         subgraph "Gateway Server (FastAPI)"
             TE[Tool Endpoints<br/>POST /tool/action]
             IE[Invoke Endpoint<br/>POST /invoke]
-            SH[Shims<br/>/v1/messages · /v1/chat/completions]
+            SH[Compatibility APIs<br/>Messages · Chat · Responses]
             CE[Config Endpoints<br/>POST /config]
         end
     end
@@ -1733,7 +1756,11 @@ graph TB
     style CT fill:#4a2d6b,color:white
 ```
 
-**PII redaction and injection detection are Ostiari's, not AxonLLM's** (green, not purple). They used to come from `src.gateway.security.*` and moved in-tree to `ostiari.detect` — which matters because `ostiari` is a hard dependency while AxonLLM is an optional editable install. Under the old arrangement, enabling either control on a gateway without AxonLLM made the import fail, and a fail-closed unavailable control blocks *everything*. See [detection-engine.md](detection-engine.md).
+**PII redaction and injection detection are Ostiari's, not AxonLLM's**
+(green, not purple). They historically came from private
+`src.gateway.security.*` imports and moved in-tree to `ostiari.detect`. The
+router is now bundled too, but content controls remain an Ostiari-owned
+fail-closed boundary. See [detection-engine.md](detection-engine.md).
 
 ### "Import, not hop" — what this means
 
@@ -1758,45 +1785,33 @@ graph LR
     end
 ```
 
-Importing a Python package is like linking a library in C — the code becomes part of your process. There is **one** network call: gateway → LLM API. AxonLLM's router and classifier execute as function calls, not HTTP requests.
+Importing a Python package is like linking a library in C — the code becomes
+part of your process. There is **one** network call: gateway → LLM API.
+AxonLLM's router executes as an in-process public API, not an HTTP service.
 
 ### What AxonLLM provides to the gateway
 
-The "fallback" column is what a *mid-flight* AxonLLM failure degrades to for one
-call — it is **not** a supported way to run the gateway. The whole right-hand
-column is a silent downgrade of what Ostiari claims to enforce, so with
-`llm_gateway` enabled a gateway that starts without AxonLLM warns about it, and
-`OSTIARI_REQUIRE_AXON=1` makes it refuse instead. See
-[axon-router.md](axon-router.md).
+Ostiari bundles the exact AxonLLM `v0.3.1` source and invokes its public
+`AsyncRouter` API. Ostiari owns identity, authorization, quota, policy, content
+controls, telemetry, and lifecycle; AxonLLM owns the routing data plane.
 
-| AxonLLM Component | What it does in the gateway | Degraded (mid-flight failure) |
-|-------------------|---------------------------|---------------------------|
-| **TaskClassifier** | Keyword-scores the prompt into one of `coding`, `reasoning`, `creative_writing`, `summarization`, `math`, `general`, which a routing rule can map to a model | Simple rule matching only |
-| **Router** (5 strategies) | Round-robin, weighted, least-latency, cost-optimized, smart | Direct call to default model |
-| **Provider Adapters** (13) | `openai`, `anthropic`, `azure_openai`, `vertex_ai`, `cohere`, `google_ai`, `bedrock`, `bedrock-mantle`, `xai`, `groq`, `together`, `fireworks`, `ai21` — unified interface | 6 direct calls: Anthropic, OpenAI, Azure, Bedrock, Cohere, Vertex |
-| **Tool translation** | Carries `tools`/`tool_choice` and translates them into each provider's dialect, so tool-using traffic stays on the governed path | Direct provider call (or 501 on `/v1/chat/completions`) |
-| **ProviderHealthTracker** | Tracks which providers are healthy, circuit-breaks unhealthy ones | Basic retry |
-| **CostTracker** | Records token usage, enforces budgets, alerts on thresholds | No cost tracking |
-| **EnsembleStrategy** | Sends prompt to multiple models, uses a judge to synthesize the best answer | Not available |
-| **Multi-region routing** | Hub-and-spoke with automatic failover across AWS regions | Single region only |
+| AxonLLM component | Responsibility inside Ostiari |
+|-------------------|-------------------------------|
+| **Router strategies** | Weighted, health-aware, cost-aware, smart, and ensemble model/provider selection |
+| **Provider adapters** | Unified OpenAI-shaped execution across the supported provider catalog |
+| **Tool translation** | Carries `tools` and `tool_choice` into each provider dialect |
+| **Provider health** | Tracks failures and prevents unhealthy routes from receiving traffic |
+| **Cost tracker** | Supplies routed token-cost data consumed by Ostiari reporting and budgets |
+| **Route pools** | Selects concrete credentials, endpoints, regions, capacity groups, and connection pools |
 
 > **PII redaction and injection detection are no longer in this table.** They used
-> to come from AxonLLM's `PIIRedactor` / `PromptInjectionDetector`, which meant the
-> two controls only worked when the optional AxonLLM install was present — and
-> because both fail closed, enabling either one without it blocked *every* request.
-> They now live in `ostiari.detect`, a hard dependency of the gateway, so they work
-> in every deployment. See [detection-engine.md](detection-engine.md).
+> to come from private Axon internals. They now live in `ostiari.detect`, a hard
+> dependency of the gateway. See [detection-engine.md](detection-engine.md).
 
-**How the fallback picks a provider.** `_call_direct` dispatches on
-`_detect_provider(model)`, which is prefix- and substring-matching on the model
-string: `bedrock/`, `azure/`, `vertex/` prefixes win first, then `claude`/
-`anthropic`, then `gpt`/`o1`/`o3`/`openai`, then `command`/`cohere`. Anything
-unrecognized **falls through to Anthropic** rather than erroring, so a mid-flight
-failure on an unusual model id sends the call to the wrong provider and fails
-there instead. Each direct call also imports its own SDK lazily (`anthropic`,
-`openai`, `cohere`, `google-generativeai`, `boto3`), so a provider whose SDK isn't
-installed raises `ImportError` on the fallback path even though AxonLLM would have
-reached it over HTTP.
+Production LLM traffic does not degrade to a direct provider call. If AxonLLM
+cannot initialize, carry tool definitions, or complete a route, the gateway
+fails startup or that request closed. The direct adapters remain only for an
+explicit development diagnostic run with `OSTIARI_DISABLE_AXON_ROUTER=1`.
 
 ### The full request flow with AxonLLM
 
@@ -1804,7 +1819,7 @@ reached it over HTTP.
 sequenceDiagram
     participant Agent
     participant GW as Gateway Process
-    participant Router as ModelRouter + TaskClassifier<br/>(AxonLLM, in-process)
+    participant Router as Ostiari model policy + Axon AsyncRouter<br/>(in-process)
     participant SEC as SecurityLayer<br/>(ostiari.detect, in-process)
     participant Guard as Guard<br/>(Ostiari, in-process)
     participant LLM as LLM API<br/>(network call)
@@ -1813,7 +1828,7 @@ sequenceDiagram
     Agent->>GW: POST /invoke {"messages": [...]}
 
     Note over GW,Router: Step 1: Route (in-process)
-    GW->>Router: select_model (policy → A/B → rules → classify → default)
+    GW->>Router: select_model (policy → A/B → rules → Axon smart route → default)
     Router-->>GW: "claude-sonnet-4-6" + fallback chain
     GW->>GW: authorize_llm — budget, model, provider
 
@@ -1879,7 +1894,11 @@ sequenceDiagram
     Gateway-->>Agent: "I sent an email to boss@company.com about SSN 123-45-6789"
 ```
 
-> **This replace-and-restore flow is `/invoke` only.** On the Claude Code and Codex shims, detected PII produces a **403** instead — the shims refuse rather than rewrite, because each client drives its own tool loop off the exact text it sent. So on a shim, `pii_redaction: true` means "reject prompts containing PII," and there is no `flag` mode for PII to observe first. See [detection-engine.md](detection-engine.md#redaction-only-replaces-on-invoke).
+> **This replace-and-restore flow is `/invoke` only.** On Messages, Chat
+> Completions, and Responses, detected PII produces a **403** instead. These
+> clients own their conversation/tool loop, so replacing the prompt would
+> desynchronize client state. There is no PII `flag` mode. See
+> [detection-engine.md](detection-engine.md#redaction-only-replaces-on-invoke).
 
 **What gets redacted:**
 - Email addresses → `[EMAIL_1]`, `[EMAIL_2]`, ...
@@ -1934,42 +1953,26 @@ Full pattern list, scoring, and limits: [detection-engine.md](detection-engine.m
 short version of the limits: **it's regex, not a model** — it catches the mechanical
 shapes of these attacks, not a novel paraphrase.
 
-### Smart Routing: How TaskClassifier Works
+### Model policy and smart routing
 
-AxonLLM's TaskClassifier scores the **last user message** by keyword overlap and returns a task type. It is keyword/heuristic based — not a model call — so it's fast and free but approximate:
+Ostiari and AxonLLM own separate routing decisions:
 
-```mermaid
-flowchart LR
-    MSG["User message:<br/>'Write a Python function<br/>that sorts a list'"] --> TC[TaskClassifier]
-    TC --> |"Keywords: 'function',<br/>'Python', 'code'"| CODE["task_type: coding<br/>confidence: 0.85"]
-    CODE --> ROUTE["Route to: claude-sonnet-4-6<br/>(best for code)"]
-```
+1. Ostiari applies per-agent round robin, A/B experiments, explicit operator
+   conditions, operator-defined keyword categories, and the default model.
+2. AxonLLM resolves that logical model to a healthy concrete provider route.
+3. If the selected name is not a known concrete catalog entry, AxonLLM may use
+   its smart routing strategy to select one.
 
-```mermaid
-flowchart LR
-    MSG2["User message:<br/>'Summarize this<br/>quarterly report'"] --> TC2[TaskClassifier]
-    TC2 --> |"Keywords: 'summarize',<br/>'report'"| SUM["task_type: summarization<br/>confidence: 0.75"]
-    SUM --> ROUTE2["Route to: claude-haiku-4-5<br/>(cheaper, fast, good enough)"]
-```
+The OpenAI-compatible endpoints honor an explicitly requested known model and
+otherwise let AxonLLM smart-route. Per-agent rotation and A/B selection apply to
+`/invoke` and `/v1/messages`, not to an explicit OpenAI model request. See
+[agent-llm-routing.md](agent-llm-routing.md) for the exact order and endpoint
+scope.
 
-**Task types recognized** — exactly these six (`TaskClassifier.VALID_TASK_TYPES`):
-
-| `task_type` | Sample keywords | Typical routing intent |
-|---|---|---|
-| `coding` | `function`, `bug`, `refactor`, `sql`, `python`, ` ``` ` | best code model |
-| `reasoning` | `why`, `explain`, `analyze`, `because`, `proof` | strongest reasoning model |
-| `creative_writing` | `story`, `poem`, `narrative`, `essay`, `blog` | creative model |
-| `summarization` | `summarize`, `tldr`, `condense`, `key points`, `recap` | fast/cheap model |
-| `math` | `calculate`, `equation`, `integral`, `square root`, `probability` | math-strong model |
-| `general` | (no category matched) | the default |
-
-This happens automatically. The agent developer doesn't pick models. The control plane configures which model serves which task type. The TaskClassifier decides.
-
-Three practical caveats:
-
-- **Only a matching rule makes it do anything.** Classification alone never changes the model; there must be a routing rule whose condition is the literal string `task_type == '<type>'`. Without one, every prompt lands on `default_model` no matter how it classifies. See [LLM Routing Rules](#llm-routing-rules).
-- **Keyword overlap is coarse.** `query` and `sql` are `coding` keywords, so "what's the status of my SQL query ticket?" classifies as coding. Treat `task_type` routing as a cost/latency optimization, not a semantic guarantee.
-- **It only reads the last user message.** A long conversation that shifted topic classifies on its final turn alone.
+Operator keyword categories are deterministic string matching on the latest
+user message. They are a cost/latency policy tool, not a semantic classifier.
+AxonLLM's pinned smart/ensemble compatibility layer is isolated inside
+`axon_router.py`; no other Ostiari module imports private Axon internals.
 
 ### Configuration to enable AxonLLM features
 
@@ -1984,7 +1987,7 @@ modules:
 llm:
   default_model: claude-sonnet-4-6
 
-  # Smart routing (uses AxonLLM TaskClassifier)
+  # Deterministic Ostiari keyword categories
   routing_rules:
     - condition: "task_type == 'coding'"
       model: claude-sonnet-4-6
@@ -2043,52 +2046,35 @@ it (Bedrock Mantle's Claude models answer
 request. Set it when you genuinely need a specific sampling temperature and the
 models you route to still accept it.
 
-### AxonLLM's absence is visible, not fatal (and what a mid-flight failure degrades to)
+### AxonLLM is mandatory for production LLM traffic
 
-AxonLLM is optional to install but load-bearing when missing. The reason is the
-table below: every entry in the right-hand column is a silent downgrade of
-something Ostiari claims to enforce, and the degraded path is good enough that
-traffic keeps flowing and `/health` keeps saying "ok". So a gateway that starts
-without it logs a warning naming exactly what stopped applying, rather than
-letting the absence be discovered later from a cost report that never filled in.
+The LLM module is optional because a tool-only gateway does not need a model
+router. Once that module is active, production treats the bundled AxonLLM router
+as load-bearing:
 
-It warns rather than refuses because AxonLLM is a separate repository and isn't
-on PyPI — a hard requirement makes it a deployment dependency of every gateway, CI
-runner, and contributor checkout, including the ones that only ever proxy tools.
-`OSTIARI_REQUIRE_AXON=1` restores the refusal and **is the right setting in
-production**, where silently ungoverned LLM traffic is not an acceptable
-degradation.
+- startup fails if the package or packaged routing catalog cannot initialize;
+- incompatible tool pass-through fails closed;
+- a mid-flight routing error returns an upstream error rather than bypassing
+  routing governance or cost tracking.
 
-`GET /health` reports the router's state under `llm_router`, because "the gateway
-is up" and "LLM calls are governed" are different facts. Note that
-`"status": "ok"` at the top level says nothing about either:
+Development can explicitly set `OSTIARI_DISABLE_AXON_ROUTER=1` to exercise the
+legacy direct-provider diagnostic path. That path is not a production
+degradation mode.
+
+`GET /health` reports router state under `llm_router`:
 
 ```json
-// embedded
-"llm_router": {"embedded": true, "root": "/path/to/AxonLLM",
-               "governed": true, "cost_tracking": true, "tools": true}
-
-// not embedded — still "status": "ok"
-"llm_router": {"embedded": false, "reason": "No module named 'src.gateway'",
-               "governed": false, "cost_tracking": false}
-
-// llm_gateway module off entirely — no governed/cost_tracking keys at all
-"llm_router": {"embedded": false, "reason": "llm_gateway module not active"}
+"llm_router": {
+  "embedded": true,
+  "governed": true,
+  "cost_tracking": true,
+  "tools": true
+}
 ```
 
-Alert on `llm_router.governed`, not on `status`.
-
-The right-hand column is therefore what **one call** falls back to when AxonLLM
-fails mid-flight — not a supported way to run:
-
-| Feature | With AxonLLM | Degraded (mid-flight failure) |
-|---------|-------------|----------------|
-| Model selection | Smart (task classification) | Simple rules only |
-| Providers | 13 adapters (`openai`, `anthropic`, `azure_openai`, `vertex_ai`, `cohere`, `google_ai`, `bedrock`, `bedrock-mantle`, `xai`, `groq`, `together`, `fireworks`, `ai21`) | 6 direct calls (Anthropic, OpenAI, Azure, Bedrock, Cohere, Vertex), each needing its own SDK installed |
-| Tool calls | Specs translated into each provider's dialect | Direct provider call (or 501 on `/v1/chat/completions`) |
-| Health tracking | Per-provider circuit breaking | Basic retry |
-| Cost tracking | Per-project budgets with alerts | Disabled |
-| Ensemble routing | Scatter-gather-synthesize | Disabled |
+Tool-only gateways report that the LLM module is inactive. An active production
+LLM gateway never reports a healthy but ungoverned router because its startup
+check refuses that state.
 
 **PII redaction and injection detection are deliberately absent from this table.**
 They used to come from AxonLLM, which meant both controls only worked when the
@@ -2370,7 +2356,7 @@ sequenceDiagram
 ```
 
 The reporter buffers up to 20 records before auto-flushing, but `/invoke`,
-`/v1/messages`, and `/v1/chat/completions` explicitly flush after successful
+`/v1/messages`, `/v1/chat/completions`, and `/v1/responses` flush after successful
 provider usage, so in practice each completed LLM call normally posts a batch of
 one. `close()` flushes on shutdown.
 
@@ -2517,7 +2503,8 @@ if it doesn't know the cost of a request until after it reports.
 
 So the gateway calculates cost locally using a per-model pricing table. Enforcement
 runs entirely in-process — no round-trip to the control plane — and the same
-`QuotaEnforcer` instance is shared by `/tool/{action}`, `/invoke`, and both shims.
+`QuotaEnforcer` instance is shared by `/tool/{action}`, `/invoke`, Messages,
+Chat Completions, and Responses.
 
 ### Cost Enforcement Flow
 
@@ -2564,7 +2551,7 @@ catches people:
 | Entry point | Budget rejection |
 |---|---|
 | `POST /tool/{action}` | **429** with `{"blocked": true, "reason", "limit_type"}` |
-| `POST /v1/messages`, `POST /v1/chat/completions` | **429** with `Request blocked by quota: …` |
+| `POST /v1/messages`, `POST /v1/chat/completions`, `POST /v1/responses` | **429** with an endpoint-native quota error |
 | `POST /invoke` | **200**, with the reason in the `response` string and `rounds: 0` |
 
 On `/invoke`, check `rounds == 0` and the `Request blocked by quota:` prefix — a
@@ -3118,9 +3105,10 @@ to them — backed by `/api/a2a-agents` on the control plane.
 
 ## Providers
 
-The gateway reaches providers through AxonLLM's adapters (a few also have a
-direct-call path, used only when AxonLLM fails mid-flight). The control plane's
-Providers page knows **nine** provider slots — `_KNOWN_MODELS` in
+The gateway reaches providers through AxonLLM's adapters. A small set of direct
+adapters remains for explicit development diagnostics only; production never
+switches to them after an Axon failure. The control plane's Providers page knows
+**nine** provider slots — `_KNOWN_MODELS` in
 `routers/providers.py` is the authoritative list, and the models below are what it
 seeds for display:
 
@@ -3160,18 +3148,18 @@ All providers use the same unified interface internally. The gateway (via AxonLL
 | **Tool proxy (MCP)** | Connects to MCP servers, auto-discovers tools | Yes — CRUD via /api/mcp-servers |
 | **Policy enforcement** | guard.validate() on every tool call | Yes — CRUD via /api/policies + push |
 | **LLM Gateway** | Full agentic loop (LLM → validate → execute → respond) | Yes — config via /api/gateways + push |
-| **Smart routing** | AxonLLM TaskClassifier picks best model per prompt | Yes — routing_rules in LLM config |
+| **Smart routing** | Ostiari applies operator model policy; AxonLLM selects a healthy concrete route and smart-routes unknown logical models | Yes — routing and provider-route config |
 | **A/B experiments** | Percentage-based traffic split between models | Yes — /api/experiments |
 | **PII redaction** | Replaces sensitive values before the LLM and restores them in the response — **on `/invoke`; the shims 403 instead** | Yes — security config (unvalidated dict) |
 | **Injection detection** | Regex-scored; blocks or flags above `injection_threshold` | Yes — security config (unvalidated dict) |
-| **Cost reporting** | Reports token usage from `/invoke`, `/v1/messages`, and `/v1/chat/completions`; failed batches stay buffered for retry | Automatic when LLM Gateway active |
+| **Cost reporting** | Reports token usage from `/invoke`, `/v1/messages`, `/v1/chat/completions`, and `/v1/responses`; failed batches stay buffered for retry | Automatic when LLM Gateway active |
 | **Local cost calculation** | Computes cost per request using per-model pricing table | Pricing pushed via /config/quota |
 | **Pre-request budget projection** | Estimates cost before the LLM call, blocks if over budget; reservations close the concurrent-overshoot window | Yes — budget config in quota |
 | **Budget alert thresholds** | Gateway: fixed 80/90/100%. Agent: configurable warning threshold plus 100%. Crossings include `agent_id` when applicable | Agent threshold managed by `/api/quotas` |
 | **Quota enforcement** | Gateway and agent rate limits, projected budget caps, model/provider allowlists, and max_tokens | Yes — `/api/quotas` + push; definitions persist in the control plane and agent spend is snapshotted/restored |
 | **Max tokens silent cap** | Caps output tokens without rejecting the request | Yes — max_tokens in quota |
 | **Budget period rollover** | Gateway scheduler resets gateway + agent spend on daily/weekly/monthly UTC boundaries and persists the reset epoch | Yes — Models → Budget Reset Schedule |
-| **Live traces** | Reports every governed call in real time (`/tool/{action}`, `/invoke` tool loop, both shims) | Automatic when `control_plane_url` set |
+| **Live traces** | Reports every governed call in real time (`/tool/{action}`, `/invoke`, Messages, Chat Completions, and Responses) | Automatic when `control_plane_url` set |
 | **Session/plan/step context** | Groups traces by session, annotates with the agent's plan | Agent sends X-Session-Id, X-Plan, X-Step headers |
 | **Params in traces** | Sensitive parameter values are redacted before the control-plane SQL/cache/OTLP boundary | Automatic |
 | **OpenTelemetry** | Spans on `POST /tool/{action}` only; needs `opentelemetry-exporter-otlp` installed separately | Configure via env vars |

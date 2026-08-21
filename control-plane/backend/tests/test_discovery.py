@@ -301,7 +301,10 @@ class TestDiscoveryRouter:
             },
         }
         async with async_session() as db:
-            gateway = await db.get(Gateway, "crm-agent")
+            gateway = await db.get(
+                Gateway,
+                {"org_id": "default", "id": "crm-agent"},
+            )
             gateway.config = {"agent_auth_base": existing}
             await db.commit()
 
@@ -348,6 +351,7 @@ class TestDiscoveryRouter:
         assert "default" not in ids   # an org name must never appear as an agent
 
 
+@pytest.mark.usefixtures("multi_tenant_mode")
 class TestDiscoveryOrgIsolation:
     """One tenant's Discovered view must not name another tenant's agents or
     gateways — the trace buffer is per-org and the collector has to honor that."""

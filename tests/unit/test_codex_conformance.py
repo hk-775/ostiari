@@ -1,0 +1,270 @@
+"""Contracts for the exact supported Codex CLI profile."""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import sys
+from pathlib import Path
+from types import ModuleType
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
+CATALOG = ROOT / "config/codex/model-catalog.json"
+EXAMPLE_CONFIG = ROOT / "config/codex/config.toml.example"
+HARNESS = ROOT / "tools/codex_conformance.py"
+
+
+def _harness() -> ModuleType:
+    gateway_root = str(ROOT / "gateway")
+    sys.path.insert(0, gateway_root)
+    spec = importlib.util.spec_from_file_location("codex_conformance", HARNESS)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(gateway_root)
+    return module
+
+
+def test_codex_catalog_disables_unsupported_responses_capabilities() -> None:
+    models = json.loads(CATALOG.read_text())["models"]
+    assert len(models) == 1
+    model = models[0]
+    assert model["slug"] == "ostiari-codex"
+    assert model["supported_reasoning_levels"] == []
+    assert model["supports_reasoning_summary_parameter"] is False
+    assert model["default_reasoning_summary"] == "none"
+    assert model["support_verbosity"] is False
+    assert model["default_verbosity"] is None
+    assert model["service_tiers"] == []
+    assert model["supports_search_tool"] is False
+    assert model["node_repl_disabled"] is True
+    assert model["use_responses_lite"] is False
+    assert "apply_patch_tool_type" not in model
+    assert model["tool_mode"] == "direct"
+    assert "multi_agent_version" not in model
+
+
+def test_codex_harness_generates_a_safe_shell_call() -> None:
+    harness = _harness()
+    name, arguments = harness._safe_tool_call(
+        [
+            {
+                "type": "function",
+                "function": {
+                    "name": "shell_command",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": {"type": "string"},
+                            "timeout_ms": {"type": "integer"},
+                        },
+                        "required": ["command"],
+                    },
+                },
+            }
+        ]
+    )
+    assert name == "shell_command"
+    assert arguments == {"command": "printf OSTIARI_TOOL_OK"}
+
+
+def test_codex_failure_diagnostics_exclude_prompts_tools_and_tokens() -> None:
+    harness = _harness()
+    diagnostics = json.loads(
+        harness._request_diagnostics(
+            [
+                {
+                    "model": "ostiari-codex",
+                    "reasoning": {"effort": "none"},
+                    "include": [],
+                    "parallel_tool_calls": False,
+                    "store": False,
+                    "stream": True,
+                    "input": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": "sensitive prompt",
+                        },
+                        {
+                            "type": "additional_tools",
+                            "tools": [
+                                {
+                                    "type": "function",
+                                    "name": "secret_tool",
+                                    "description": "secret description",
+                                    "parameters": {"secret": "schema"},
+                                }
+                            ],
+                        },
+                    ],
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "secret_tool",
+                            "description": "secret description",
+                            "parameters": {"secret": "schema"},
+                        }
+                    ],
+                    "metadata": {"token": "secret"},
+                }
+            ]
+        )
+    )
+    assert diagnostics == [
+        {
+            "include": [],
+            "model": "ostiari-codex",
+            "parallel_tool_calls": False,
+            "reasoning": {"effort": "none"},
+            "store": False,
+            "stream": True,
+            "input_shape": [
+                {
+                    "keys": ["content", "role", "type"],
+                    "type": "message",
+                },
+                {
+                    "keys": ["tools", "type"],
+                    "tools_shape": [
+                        {
+                            "keys": [
+                                "description",
+                                "name",
+                                "parameters",
+                                "type",
+                            ],
+                            "type": "function",
+                        }
+                    ],
+                    "type": "additional_tools",
+                },
+            ],
+            "tools_shape": [
+                {
+                    "keys": [
+                        "description",
+                        "name",
+                        "parameters",
+                        "type",
+                    ],
+                    "type": "function",
+                }
+            ],
+        }
+    ]
+    rendered = json.dumps(diagnostics)
+    for sensitive in (
+        "sensitive prompt",
+        "secret_tool",
+        "secret description",
+        '"secret"',
+        '"token"',
+    ):
+        assert sensitive not in rendered
+
+
+def test_codex_contract_accepts_encrypted_reasoning_transport_metadata() -> None:
+    harness = _harness()
+    request = {
+        "model": "ostiari-codex",
+        "reasoning": {"context": "all_turns"},
+        "include": ["reasoning.encrypted_content"],
+        "parallel_tool_calls": False,
+        "store": False,
+        "stream": True,
+        "tools": [{"type": "function", "name": "shell_command"}],
+        "input": harness.SUCCESS_PROMPT,
+    }
+    followup = {
+        **request,
+        "input": [
+            harness.SUCCESS_PROMPT,
+            {"type": "function_call_output", "call_id": "call_1", "output": "ok"},
+        ],
+    }
+
+    harness._assert_request_contract([request, followup])
+
+
+def test_codex_contract_accepts_standard_responses_transport() -> None:
+    harness = _harness()
+    request = {
+        "model": "ostiari-codex",
+        "reasoning": {},
+        "include": ["reasoning.encrypted_content"],
+        "parallel_tool_calls": True,
+        "store": False,
+        "stream": True,
+        "tools": [{"type": "function", "name": "shell_command"}],
+        "input": harness.SUCCESS_PROMPT,
+    }
+    followup = {
+        **request,
+        "input": [
+            harness.SUCCESS_PROMPT,
+            {"type": "function_call_output", "call_id": "call_1", "output": "ok"},
+        ],
+    }
+
+    harness._assert_request_contract([request, followup])
+
+
+def test_codex_contract_rejects_non_function_tools() -> None:
+    harness = _harness()
+    request = {
+        "model": "ostiari-codex",
+        "reasoning": {},
+        "include": ["reasoning.encrypted_content"],
+        "parallel_tool_calls": True,
+        "store": False,
+        "stream": True,
+        "tools": [{"type": "custom", "name": "apply_patch"}],
+        "input": harness.SUCCESS_PROMPT,
+    }
+
+    with pytest.raises(AssertionError, match="non-function"):
+        harness._assert_request_contract([request, request])
+
+
+def test_codex_contract_rejects_other_reasoning_transport_metadata() -> None:
+    harness = _harness()
+    request = {
+        "model": "ostiari-codex",
+        "reasoning": {"context": "current_turn"},
+        "include": ["reasoning.encrypted_content"],
+        "parallel_tool_calls": False,
+        "store": False,
+        "stream": True,
+        "tools": [{"type": "function", "name": "shell_command"}],
+        "input": harness.SUCCESS_PROMPT,
+    }
+
+    with pytest.raises(AssertionError, match="reasoning metadata"):
+        harness._assert_request_contract([request, request])
+
+
+def test_codex_example_uses_the_reviewed_responses_profile() -> None:
+    config = EXAMPLE_CONFIG.read_text()
+    assert 'model = "ostiari-codex"' in config
+    assert 'model_provider = "ostiari"' in config
+    assert 'wire_api = "responses"' in config
+    assert 'env_key = "OSTIARI_CODEX_TOKEN"' in config
+    assert 'requires_openai_auth = false' in config
+    assert 'model_catalog_json = "/absolute/path/to/ostiari/' in config
+    assert 'web_search = "disabled"' in config
+    assert "multi_agent = false" in config
+    assert "multi_agent_v2 = false" in config
+
+
+def test_ci_runs_the_exact_codex_version_and_blocks_artifacts_on_failure() -> None:
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    assert "Codex 0.148.0 conformance" in workflow
+    assert "npm install --global @openai/codex@0.148.0" in workflow
+    assert 'test "$(codex --version)" = "codex-cli 0.148.0"' in workflow
+    assert "python tools/codex_conformance.py" in workflow
+    assert "codex-conformance" in workflow.split("production-artifacts:", 1)[1]

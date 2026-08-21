@@ -88,13 +88,17 @@ def _check_production_posture() -> None:
         return
 
     open_controls: list[str] = []
-    for name in (
-        "OSTIARI_CONFIG_ADMIN_KEY",
-        "OSTIARI_SERVICE_TOKEN",
-        "OSTIARI_INGEST_KEY",
-    ):
+    for name in ("OSTIARI_CONFIG_ADMIN_KEY",):
         if len(_os.environ.get(name, "").strip()) < 32:
             open_controls.append(f"{name} must be set and at least 32 characters")
+    try:
+        from ostiari_gateway.workload_identity import (
+            validate_production_credential,
+        )
+
+        validate_production_credential()
+    except RuntimeError as exc:
+        open_controls.append(str(exc))
 
     if _os.environ.get("OSTIARI_GATEWAY_AUTH", "off").strip().lower() != "required":
         open_controls.append(
@@ -102,7 +106,8 @@ def _check_production_posture() -> None:
         )
     if _os.environ.get("OSTIARI_TENANCY_MODE", "").strip().lower() != "single":
         open_controls.append(
-            "OSTIARI_TENANCY_MODE must be 'single' until composite tenant keys ship"
+            "OSTIARI_TENANCY_MODE must be 'single' because each gateway "
+            "deployment is bound to one tenant"
         )
     org_id = _os.environ.get("OSTIARI_ORG_ID", "").strip()
     if not org_id:
@@ -182,26 +187,17 @@ def _axon_health(module_registry: Any) -> dict[str, Any]:
 
 
 def _check_axon(module_registry: Any) -> None:
-    """Warn — loudly — when the LLM gateway starts without AxonLLM embedded.
+    """Require governed routing in production; warn in development.
 
-    AxonLLM is where routing governance and token cost tracking happen. Every
-    caller keeps a direct-provider fallback for a mid-flight failure, and that
-    fallback is good enough that a gateway with no AxonLLM at all serves traffic
-    and reports healthy — which is how it once ran unnoticed while none of that
-    governance applied. That invisibility is the actual defect, so the check
-    stays; what changed is the consequence.
+    AxonLLM is where routing governance and token cost tracking happen. The
+    development-only direct-provider path is good enough that a gateway with no
+    AxonLLM can otherwise serve traffic and appear healthy — which is how it once
+    ran unnoticed while none of that governance applied. That invisibility is
+    the actual defect, so the check stays; production never enables that bypass.
 
-    This used to raise, refusing to start. AxonLLM is a separate private repo and
-    isn't on PyPI, so a hard requirement makes it a *deployment* dependency of
-    every gateway, CI runner, and contributor checkout — including the ones that
-    only ever touch the tool proxy and never make an LLM call. The failure also
-    landed at the worst possible moment: startup, after config was pushed.
-
-    So: warn instead. The warning names what is off (governance, cost tracking)
-    and how to fix it, ``/health`` reports ``llm_router`` for anything reading
-    machine-side, and an operator who wants the old behaviour sets
-    ``OSTIARI_REQUIRE_AXON=1`` — which is the right switch to set in production,
-    where silently ungoverned LLM traffic is not an acceptable degradation.
+    Tool-only gateways do not activate the LLM module and are unaffected.
+    Development may explicitly exercise the direct-provider fallback, but a
+    production LLM gateway may never claim success without AxonLLM.
     """
     mod = module_registry.get("llm_gateway") if hasattr(module_registry, "get") else None
     axon = getattr(getattr(mod, "_executor", None), "_axon", None)
@@ -211,15 +207,18 @@ def _check_axon(module_registry: Any) -> None:
     try:
         axon.require()
     except RuntimeError as e:
-        if _os.environ.get("OSTIARI_REQUIRE_AXON", "").strip().lower() in (
-            "1", "true", "yes", "on"
-        ):
+        from ostiari_gateway.modules.llm_gateway.axon_router import (
+            governed_routing_required,
+        )
+
+        if governed_routing_required():
             raise
         log.warning(
             "%s Continuing WITHOUT AxonLLM: LLM calls take the direct provider "
             "path with NO routing governance and NO token cost tracking. "
             "GET /health reports llm_router for the machine-readable version. "
-            "Set OSTIARI_REQUIRE_AXON=1 to refuse to start instead.", e,
+            "Set OSTIARI_REQUIRE_AXON=1 to apply the production contract in "
+            "development.", e,
         )
         return
     log.info("AxonLLM embedded — routing governance active (root=%s)", axon.root)
@@ -269,18 +268,19 @@ def _authenticate_agent(request: Request, agent_id: str) -> JSONResponse | None:
     proceed. No-op (returns None) when gateway auth is off — preserving the
     current header-trust behavior for the demo.
     """
+    if _os.environ.get("OSTIARI_GATEWAY_AUTH", "off").strip().lower() != "required":
+        request.state.agent_id = agent_id.strip() or "unknown"
+        request.state.tenant_id = "default"
+        return None
+
     from ostiari_gateway import oidc
 
     validator = oidc.get_validator()
     if validator is None:
-        if oidc.auth_required():
-            return JSONResponse(status_code=503, content={
-                "error": "gateway authentication is misconfigured",
-                "detail": "OIDC issuer or validator unavailable",
-            })
-        request.state.agent_id = agent_id.strip() or "unknown"
-        request.state.tenant_id = "default"
-        return None
+        return JSONResponse(status_code=503, content={
+            "error": "gateway authentication is misconfigured",
+            "detail": "OIDC issuer or validator unavailable",
+        })
 
     header = request.headers.get("Authorization", "")
     if not header.startswith("Bearer "):
@@ -332,6 +332,7 @@ def _requires_agent_auth(method: str, path: str) -> bool:
         ("POST", "/invoke"),
         ("POST", "/v1/messages"),
         ("POST", "/v1/chat/completions"),
+        ("POST", "/v1/responses"),
         ("POST", "/a2a"),
         ("GET", "/tools"),
         ("GET", "/models"),
@@ -382,8 +383,9 @@ async def _check_approval(control_plane_url: str, approval_id: str) -> str | Non
     if not (control_plane_url and approval_id):
         return None
     try:
-        service_token = _os.environ.get("OSTIARI_SERVICE_TOKEN", "").strip()
-        headers = {"X-Ostiari-Service-Key": service_token} if service_token else {}
+        from ostiari_gateway.workload_identity import machine_headers
+
+        headers = await machine_headers()
         async with _httpx.AsyncClient(timeout=5.0, headers=headers) as c:
             r = await c.get(f"{control_plane_url.rstrip('/')}/api/approvals/{approval_id}")
             if r.status_code == 200:
@@ -398,8 +400,9 @@ async def _create_approval(control_plane_url: str, payload: dict) -> dict | None
     if not control_plane_url:
         return None
     try:
-        service_token = _os.environ.get("OSTIARI_SERVICE_TOKEN", "").strip()
-        headers = {"X-Ostiari-Service-Key": service_token} if service_token else {}
+        from ostiari_gateway.workload_identity import machine_headers
+
+        headers = await machine_headers()
         async with _httpx.AsyncClient(timeout=5.0, headers=headers) as c:
             r = await c.post(f"{control_plane_url.rstrip('/')}/api/approvals", json=payload)
             if r.status_code == 200:
@@ -893,6 +896,8 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: Any) -> Any:
         registration_task: _asyncio.Task | None = None
+        await trace_reporter.start_delivery()
+        await module_registry.start_all()
         if initial_config and initial_config.budget_reset:
             budget_reset_scheduler.configure(initial_config.budget_reset)
 
@@ -922,7 +927,7 @@ def create_app(
         await trace_reporter.close()
         await mcp_manager.shutdown()
         await a2a_manager.shutdown()
-        module_registry.shutdown_all()
+        await module_registry.shutdown_all()
         await manager.shutdown()
 
     app = FastAPI(title="Ostiari Sidecar", lifespan=lifespan)
@@ -934,6 +939,7 @@ def create_app(
         shared_store_required,
     )
     shared_store = get_shared_store()
+    trace_reporter.attach_shared_store(shared_store)
     quota_enforcer.attach_shared_store(shared_store)
     agent_auth.attach_shared_store(
         shared_store,
@@ -992,6 +998,7 @@ def create_app(
                 "quota_enforcer": quota_enforcer,
                 "agent_auth": agent_auth,
                 "broker_policy": broker_policy,
+                "shared_store": shared_store,
             },
         )
         if initial_config.model_registry:
@@ -1923,6 +1930,10 @@ def create_app(
 
     @app.get("/ready")
     async def ready() -> Any:
+        delivery_status = {
+            **trace_reporter.delivery_status(),
+            **module_registry.delivery_status(),
+        }
         redis_status = (
             shared_store.status(check=True)
             if shared_store is not None
@@ -1940,6 +1951,20 @@ def create_app(
                     "status": "not_ready",
                     "control_plane": dict(control_plane_status),
                     "redis": redis_status,
+                    "delivery": delivery_status,
+                },
+            )
+        if any(
+            state["required"] and not state["healthy"]
+            for state in delivery_status.values()
+        ):
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "not_ready",
+                    "control_plane": dict(control_plane_status),
+                    "redis": redis_status,
+                    "delivery": delivery_status,
                 },
             )
         if (
@@ -1952,12 +1977,14 @@ def create_app(
                     "status": "not_ready",
                     "control_plane": dict(control_plane_status),
                     "redis": redis_status,
+                    "delivery": delivery_status,
                 },
             )
         return {
             "status": "ready",
             "control_plane": dict(control_plane_status),
             "redis": redis_status,
+            "delivery": delivery_status,
         }
 
     @app.get("/modules")

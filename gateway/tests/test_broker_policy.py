@@ -80,10 +80,24 @@ class TestAxonProviderFiltering:
                     for mapping in model.providers
                 )
 
+        core = _Router()
+
+        class _EmbeddedRouter:
+            _runtime = SimpleNamespace(router=core)
+
+            def model_available(self, name):
+                return core.is_model_available(name)
+
+            def has_available_models(self):
+                return any(
+                    core.is_model_available(name)
+                    for name in core.model_registry.models
+                )
+
         axon = AxonRouter(broker_policy=policy)
         axon._built = True
         axon._available = True
-        axon._agent = SimpleNamespace(router=_Router())
+        axon._router = _EmbeddedRouter()
         return axon
 
     def test_depleted_provider_is_removed_and_funding_restores_it(self):
@@ -92,12 +106,12 @@ class TestAxonProviderFiltering:
         axon = self._axon(policy)
 
         axon._apply_broker_policy()
-        assert axon._agent.router.available_providers == frozenset({"openai"})
+        assert axon._core_router().available_providers == frozenset({"openai"})
         assert axon.model_available("claude-sonnet") is True
 
         policy.configure([{"provider": "anthropic", "status": "active"}])
         axon._apply_broker_policy()
-        assert axon._agent.router.available_providers is None
+        assert axon._core_router().available_providers is None
 
 
 def _app(monkeypatch, pools, *, fallback=True):

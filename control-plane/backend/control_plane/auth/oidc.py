@@ -132,10 +132,9 @@ def is_oidc_enabled() -> bool:
 def resolve_issuer(tenant_id: str = "default") -> str:
     """Resolve the trusted issuer for a tenant.
 
-    Single-tenant seam: today this returns the one configured issuer regardless
-    of tenant. For multi-tenant SaaS later (pool-per-tenant), this becomes a
-    lookup of tenant_id → that tenant's pool issuer — a one-function change, no
-    call-site refactor. See docs/internal/security-faq-jwt-vs-ostiari.md.
+    The current deployment contract trusts one issuer whose signed tenant claim
+    selects the organization. A future pool-per-tenant deployment can replace
+    this with a tenant-to-issuer lookup without changing call sites.
     """
     return os.environ.get("OSTIARI_OIDC_ISSUER", "")
 
@@ -245,14 +244,15 @@ def principal_from_claims(claims: dict[str, Any]):
 
 
 def tenant_from_claims(claims: dict[str, Any]) -> str:
-    """Extract the tenant/org id from a token, defaulting to 'default'.
+    """Extract the tenant/org id from a token.
 
-    Single-tenant today (every token maps to 'default'); multi-tenant-ready
-    because the seam already reads the claim. See
-    docs/internal/security-faq-jwt-vs-ostiari.md.
+    Single-tenant deployments may omit the claim because the deployment itself
+    fixes the tenant. Multi-tenant deployments must carry an explicit claim;
+    returning an empty value makes the authorization boundary reject tokens
+    that cannot be scoped safely.
     """
     for key in ("tenant_id", "custom:tenant_id", "org_id", "custom:org"):
         val = claims.get(key)
         if isinstance(val, str) and val:
             return val
-    return configured_org_id() if tenancy_mode() == "single" else "default"
+    return configured_org_id() if tenancy_mode() == "single" else ""

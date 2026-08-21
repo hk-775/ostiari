@@ -17,6 +17,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.auth.models import User
+from control_plane.auth.oidc import tenant_from_claims
 from control_plane.auth.roles import require_valid_role
 from control_plane.auth.service import create_access_token
 from control_plane.auth.sso import (
@@ -264,18 +265,24 @@ async def sso_callback(
 
     # Try to extract role from IdP claims
     idp_role = extract_roles_from_claims(claims, provider)
+    org_id = tenant_from_claims(claims)
+    if not tenant_is_allowed(org_id):
+        logger.warning("User from disallowed tenant attempted SSO login: %s", email)
+        return _frontend_redirect(
+            "/login",
+            query={"error": "tenant_not_allowed"},
+        )
 
     # Find or create local user
-    result = await db.execute(select(User).where(User.email == email))
+    result = await db.execute(
+        select(User).where(
+            User.org_id == org_id,
+            User.email == email,
+        )
+    )
     user = result.scalar_one_or_none()
 
     if user:
-        if not tenant_is_allowed(user.org_id):
-            logger.warning("User from disallowed tenant attempted SSO login: %s", email)
-            return _frontend_redirect(
-                "/login",
-                query={"error": "tenant_not_allowed"},
-            )
         if not user.is_active:
             logger.warning("Disabled user attempted SSO login: %s", email)
             return _frontend_redirect(
@@ -293,7 +300,6 @@ async def sso_callback(
     else:
         # New user — create with default or IdP-assigned role
         role = idp_role or DEFAULT_ROLE
-        org_id = configured_org_id()
         if await db.get(Organization, org_id) is None:
             db.add(Organization(id=org_id, name=org_id))
             await db.flush()

@@ -27,9 +27,11 @@ gateways/tenants can share one Redis.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 log = logging.getLogger("ostiari.sidecar.shared_store")
@@ -142,6 +144,93 @@ class SharedStore:
 
     def _k(self, *parts: str) -> str:
         return ":".join((self._prefix, *parts))
+
+    @property
+    def required(self) -> bool:
+        return self._required
+
+    # ── durable event outbox ────────────────────────────────────────────────
+    def outbox_enqueue(
+        self,
+        stream: str,
+        event_id: str,
+        payload: dict[str, Any],
+    ) -> bool:
+        """Append one immutable event to a Redis Stream."""
+        try:
+            encoded = json.dumps(
+                payload,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            self._r.xadd(
+                self._k("outbox", stream),
+                {"event_id": event_id, "payload": encoded},
+            )
+            self._ok()
+            return True
+        except Exception as e:  # noqa: BLE001
+            self._failed(f"outbox_enqueue[{stream}]", e)
+            return False
+
+    def outbox_read(
+        self,
+        stream: str,
+        *,
+        count: int = 100,
+    ) -> list[tuple[str, str, dict[str, Any]]] | None:
+        """Read oldest events without acknowledging them."""
+        try:
+            rows = self._r.xrange(
+                self._k("outbox", stream),
+                min="-",
+                max="+",
+                count=count,
+            )
+            events: list[tuple[str, str, dict[str, Any]]] = []
+            for raw_receipt, raw_fields in rows:
+                receipt = (
+                    raw_receipt.decode()
+                    if isinstance(raw_receipt, bytes)
+                    else str(raw_receipt)
+                )
+                fields = {
+                    key.decode() if isinstance(key, bytes) else str(key):
+                    value.decode() if isinstance(value, bytes) else str(value)
+                    for key, value in raw_fields.items()
+                }
+                event_id = fields.get("event_id", "")
+                payload = json.loads(fields.get("payload", ""))
+                if not event_id or not isinstance(payload, dict):
+                    raise ValueError(f"invalid event at Redis Stream id {receipt}")
+                events.append((receipt, event_id, payload))
+            self._ok()
+            return events
+        except Exception as e:  # noqa: BLE001
+            self._failed(f"outbox_read[{stream}]", e)
+            return None
+
+    def outbox_ack(self, stream: str, receipts: list[str]) -> bool:
+        """Delete confirmed Redis Stream entries."""
+        if not receipts:
+            return True
+        try:
+            self._r.xdel(self._k("outbox", stream), *receipts)
+            self._ok()
+            return True
+        except Exception as e:  # noqa: BLE001
+            self._failed(f"outbox_ack[{stream}]", e)
+            return False
+
+    def outbox_depth(self, stream: str) -> int | None:
+        try:
+            depth = int(self._r.xlen(self._k("outbox", stream)))
+            self._ok()
+            return depth
+        except Exception as e:  # noqa: BLE001
+            self._failed(f"outbox_depth[{stream}]", e)
+            return None
 
     # ── rate limiting ────────────────────────────────────────────────────────
     def rate_allow(self, key: str, limit: int, window_s: float = 60.0) -> bool:

@@ -1,0 +1,250 @@
+<mxfile host="app.diagrams.net" modified="2026-08-13" agent="AxonLLM" version="24.0.0" type="device">
+  <diagram id="infra" name="Production Topology">
+    <mxGraphModel dx="1600" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title1" value="AxonLLM Production Architecture" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=24;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1">
+          <mxGeometry x="480" y="10" width="640" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="sub1" value="AgentCore data plane + shared Fargate control plane + one canonical authority store" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=13;fontColor=#5E6C84" vertex="1" parent="1">
+          <mxGeometry x="400" y="50" width="800" height="24" as="geometry" />
+        </mxCell>
+
+        <mxCell id="users" value="Application clients&#xa;validated AgentCore actions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DEEBFF;strokeColor=#4C9AFF;strokeWidth=2;fontSize=12;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1">
+          <mxGeometry x="30" y="120" width="190" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="browser" value="Administrator browser" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EAE6FF;strokeColor=#6554C0;strokeWidth=2;fontSize=12;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1">
+          <mxGeometry x="30" y="290" width="190" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="idp" value="Enterprise identity provider&#xa;OIDC or SAML login + SCIM provisioning" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EAE6FF;strokeColor=#6554C0;strokeWidth=2;fontSize=11;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1">
+          <mxGeometry x="30" y="430" width="190" height="75" as="geometry" />
+        </mxCell>
+
+        <mxCell id="acedge" value="AgentCore endpoint&#xa;JWT authorizer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DEEBFF;strokeColor=#4C9AFF;fontSize=11;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1">
+          <mxGeometry x="270" y="120" width="155" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="cf" value="CloudFront mode&#xa;WAF + VPC origin&#xa;application PKCE session" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EAE6FF;strokeColor=#6554C0;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1">
+          <mxGeometry x="260" y="245" width="165" height="75" as="geometry" />
+        </mxCell>
+        <mxCell id="alb" value="Custom-domain mode&#xa;public TLS ALB&#xa;Cognito authentication" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EAE6FF;strokeColor=#6554C0;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1">
+          <mxGeometry x="260" y="335" width="165" height="75" as="geometry" />
+        </mxCell>
+        <mxCell id="cognito" value="Amazon Cognito&#xa;OIDC clients&#xa;SAML service provider" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EAE6FF;strokeColor=#6554C0;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1">
+          <mxGeometry x="260" y="440" width="165" height="75" as="geometry" />
+        </mxCell>
+
+        <mxCell id="vpc" value="Private application network" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#5E6C84;strokeWidth=2;dashed=1;fontSize=13;fontStyle=1;verticalAlign=top;align=left;spacingLeft=12;spacingTop=8;fontColor=#5E6C84" vertex="1" parent="1">
+          <mxGeometry x="455" y="90" width="1095" height="760" as="geometry" />
+        </mxCell>
+
+        <mxCell id="agentcore" value="AgentCore data plane" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#FF991F;strokeWidth=2;fontSize=13;fontStyle=1;verticalAlign=top;align=left;spacingLeft=12;spacingTop=8;fontColor=#974F0C" vertex="1" parent="1">
+          <mxGeometry x="485" y="120" width="380" height="210" as="geometry" />
+        </mxCell>
+        <mxCell id="task1" value="AxonLLM AgentCore runtime&#xa;&#xa;OIDC JWT re-verification&#xa;canonical principal + project&#xa;chat | list_models | query&#xa;get/update tenant config&#xa;health | readiness" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0B3;strokeColor=#FF991F;strokeWidth=2;fontSize=11;align=left;verticalAlign=top;spacingLeft=12;spacingTop=10;fontColor=#172B4D" vertex="1" parent="1">
+          <mxGeometry x="515" y="160" width="320" height="145" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ecs" value="Shared web control plane" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#00A3BF;strokeWidth=2;fontSize=13;fontStyle=1;verticalAlign=top;align=left;spacingLeft=12;spacingTop=8;fontColor=#006A7A" vertex="1" parent="1">
+          <mxGeometry x="485" y="365" width="380" height="255" as="geometry" />
+        </mxCell>
+        <mxCell id="task2" value="Private Fargate control-plane task&#xa;&#xa;browser session or ALB OIDC&#xa;canonical tenant RBAC + CSRF&#xa;dashboard and /admin APIs&#xa;SCIM + SAML login handoff&#xa;AXON_CONTROL_PLANE_ONLY=true" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FCFF;strokeColor=#00A3BF;strokeWidth=2;fontSize=11;align=left;verticalAlign=top;spacingLeft=12;spacingTop=10;fontColor=#172B4D" vertex="1" parent="1">
+          <mxGeometry x="515" y="405" width="320" height="165" as="geometry" />
+        </mxCell>
+        <mxCell id="asgnote" value="Separation of duties&#xa;The control-plane task has no chat/query routes and no Athena or STS assume-role authority." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEBE6;strokeColor=#FF5630;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1">
+          <mxGeometry x="515" y="640" width="320" height="75" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ddb" value="DynamoDB single authority table&#xa;&#xa;canonical principals + projects&#xa;API-key hashes + revocation epochs&#xa;SCIM + policy + usage + audit&#xa;budgets + query lifecycle + sessions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EAE6FF;strokeColor=#6554C0;strokeWidth=2;fontSize=11;align=left;verticalAlign=top;spacingLeft=12;spacingTop=10;fontColor=#172B4D" vertex="1" parent="1">
+          <mxGeometry x="925" y="125" width="270" height="160" as="geometry" />
+        </mxCell>
+        <mxCell id="secrets" value="Secrets Manager&#xa;exact provider secret version&#xa;allowlisted fields only" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEBE6;strokeColor=#FF5630;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1">
+          <mxGeometry x="925" y="315" width="270" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="query" value="Governed query plane&#xa;STS assume exact datasource role&#xa;Athena SELECT + workgroup bounds" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3FCEF;strokeColor=#36B37E;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1">
+          <mxGeometry x="925" y="430" width="270" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="outbox" value="Durable security-event delivery&#xa;FIFO SQS outbox + DLQ&#xa;HTTPS | SNS FIFO | CloudWatch Logs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3FCEF;strokeColor=#36B37E;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1">
+          <mxGeometry x="925" y="555" width="270" height="95" as="geometry" />
+        </mxCell>
+        <mxCell id="backup" value="Encrypted backup and evidence&#xa;PITR | S3 Object Lock | KMS signatures" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F4F5F7;strokeColor=#5E6C84;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1">
+          <mxGeometry x="925" y="690" width="270" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="providers" value="Model providers&#xa;&#xa;Bedrock + Bedrock Mantle via IAM&#xa;9-provider AgentCore default&#xa;13 adapters available&#xa;route pools, retries, and fallback" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3FCEF;strokeColor=#00875A;strokeWidth=2;fontSize=11;align=left;verticalAlign=top;spacingLeft=12;spacingTop=10;fontColor=#172B4D" vertex="1" parent="1">
+          <mxGeometry x="1250" y="190" width="260" height="145" as="geometry" />
+        </mxCell>
+        <mxCell id="cw" value="CloudWatch operations&#xa;logs | metrics | alarms | readiness" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DEEBFF;strokeColor=#4C9AFF;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1">
+          <mxGeometry x="1250" y="385" width="260" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="ecr" value="Private ECR images&#xa;immutable ARM64 AgentCore digest&#xa;immutable AMD64 control-plane digest" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F4F5F7;strokeColor=#5E6C84;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1">
+          <mxGeometry x="1250" y="515" width="260" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="iam" value="Least-privilege IAM + VPC endpoints&#xa;exact resources, egress, and role bindings" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEBE6;strokeColor=#FF5630;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1">
+          <mxGeometry x="1250" y="655" width="260" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="legend" value="Trust rule: credentials provide identity hints; DynamoDB provides tenant roles, scopes, status, and project grants." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DEEBFF;strokeColor=#4C9AFF;fontSize=11;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1">
+          <mxGeometry x="485" y="790" width="1025" height="40" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e1" value="OIDC JWT" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4C9AFF;strokeWidth=2;endArrow=block;endFill=1;fontSize=9" edge="1" source="users" target="acedge" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e1b" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4C9AFF;strokeWidth=2;endArrow=block;endFill=1" edge="1" source="acedge" target="task1" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6554C0;strokeWidth=2;endArrow=block;endFill=1" edge="1" source="browser" target="cf" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e2b" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6554C0;strokeWidth=2;endArrow=block;endFill=1" edge="1" source="browser" target="alb" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6554C0;strokeWidth=2;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.25" edge="1" source="cf" target="task2" parent="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="450" y="283" /><mxPoint x="450" y="446" /></Array></mxGeometry></mxCell>
+        <mxCell id="e3b" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6554C0;strokeWidth=2;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.75" edge="1" source="alb" target="task2" parent="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="465" y="373" /><mxPoint x="465" y="529" /></Array></mxGeometry></mxCell>
+        <mxCell id="eidp" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6554C0;strokeWidth=2;endArrow=block;endFill=1;dashed=1" edge="1" source="idp" target="cognito" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ecog1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6554C0;strokeWidth=2;endArrow=block;endFill=1;dashed=1;exitX=0.35;exitY=0;entryX=0.35;entryY=1" edge="1" source="cognito" target="cf" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ecog2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6554C0;strokeWidth=2;endArrow=block;endFill=1;dashed=1;exitX=0.75;exitY=0;entryX=0.75;entryY=1" edge="1" source="cognito" target="alb" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="escim" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6554C0;strokeWidth=2;endArrow=block;endFill=1;dashed=1;exitX=1;exitY=0.8;entryX=0;entryY=0.9" edge="1" source="idp" target="task2" parent="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="235" y="490" /><mxPoint x="235" y="590" /><mxPoint x="495" y="590" /></Array></mxGeometry></mxCell>
+        <mxCell id="e7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6554C0;strokeWidth=2;endArrow=block;endFill=1;exitX=1;exitY=0.25;entryX=0;entryY=0.3" edge="1" source="task1" target="ddb" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e7b" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6554C0;strokeWidth=2;endArrow=block;endFill=1;exitX=1;exitY=0.15;entryX=0.5;entryY=1" edge="1" source="task2" target="ddb" parent="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="885" y="430" /><mxPoint x="885" y="300" /><mxPoint x="1060" y="300" /></Array></mxGeometry></mxCell>
+        <mxCell id="e8" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#FF5630;strokeWidth=2;endArrow=block;endFill=1;dashed=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5" edge="1" source="task1" target="secrets" parent="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="875" y="233" /><mxPoint x="875" y="355" /></Array></mxGeometry></mxCell>
+        <mxCell id="equery" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#36B37E;strokeWidth=2;endArrow=block;endFill=1;exitX=1;exitY=0.65;entryX=0;entryY=0.5" edge="1" source="task1" target="query" parent="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="890" y="255" /><mxPoint x="890" y="475" /></Array></mxGeometry></mxCell>
+        <mxCell id="eprov" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#00875A;strokeWidth=2;endArrow=block;endFill=1;exitX=1;exitY=0.1;entryX=0;entryY=0.5" edge="1" source="task1" target="providers" parent="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="885" y="175" /><mxPoint x="885" y="105" /><mxPoint x="1220" y="105" /><mxPoint x="1220" y="263" /></Array></mxGeometry></mxCell>
+        <mxCell id="eout" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#36B37E;strokeWidth=2;endArrow=block;endFill=1;dashed=1;exitX=1;exitY=0.85;entryX=0;entryY=0.5" edge="1" source="task1" target="outbox" parent="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="905" y="283" /><mxPoint x="905" y="603" /></Array></mxGeometry></mxCell>
+        <mxCell id="e9" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4C9AFF;strokeWidth=2;endArrow=block;endFill=1;dashed=1;exitX=1;exitY=0.05;entryX=0;entryY=0.35" edge="1" source="task1" target="cw" parent="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="875" y="167" /><mxPoint x="875" y="92" /><mxPoint x="1215" y="92" /><mxPoint x="1215" y="413" /></Array></mxGeometry></mxCell>
+        <mxCell id="e9b" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4C9AFF;strokeWidth=2;endArrow=block;endFill=1;dashed=1;exitX=1;exitY=0.95;entryX=0;entryY=0.7" edge="1" source="task2" target="cw" parent="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="885" y="562" /><mxPoint x="885" y="670" /><mxPoint x="1215" y="670" /><mxPoint x="1215" y="441" /></Array></mxGeometry></mxCell>
+        <mxCell id="ebackup" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#5E6C84;strokeWidth=2;endArrow=block;endFill=1;dashed=1;exitX=1;exitY=0.5;entryX=1;entryY=0.5" edge="1" source="ddb" target="backup" parent="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1215" y="205" /><mxPoint x="1215" y="730" /></Array></mxGeometry></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram id="pipeline" name="Request Pipeline">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title2" value="AxonLLM Governed Chat Pipeline" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=24;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1">
+          <mxGeometry x="470" y="10" width="660" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="sub2" value="Normal response order; streaming differences are called out below" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=13;fontColor=#5E6C84" vertex="1" parent="1">
+          <mxGeometry x="450" y="50" width="700" height="24" as="geometry" />
+        </mxCell>
+
+        <mxCell id="p0" value="Body limits + CSRF&#xa;authenticate + canonical RBAC" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DEEBFF;strokeColor=#4C9AFF;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="20" y="95" width="145" height="60" as="geometry" /></mxCell>
+        <mxCell id="p1" value="Parse + validate&#xa;request and context" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DEEBFF;strokeColor=#4C9AFF;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="180" y="95" width="125" height="60" as="geometry" /></mxCell>
+        <mxCell id="p3" value="Hierarchy quota&#xa;+ max-token cap" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3FCEF;strokeColor=#36B37E;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="320" y="95" width="125" height="60" as="geometry" /></mxCell>
+        <mxCell id="p4" value="Prompt injection&#xa;detect + event" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEBE6;strokeColor=#FF5630;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="460" y="95" width="125" height="60" as="geometry" /></mxCell>
+        <mxCell id="p5" value="Input PII&#xa;redaction" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEBE6;strokeColor=#FF5630;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="600" y="95" width="110" height="60" as="geometry" /></mxCell>
+        <mxCell id="p6" value="Fleet rate&#xa;admission" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3FCEF;strokeColor=#36B37E;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="725" y="95" width="110" height="60" as="geometry" /></mxCell>
+        <mxCell id="p7" value="Project + user&#xa;model access" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3FCEF;strokeColor=#36B37E;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="850" y="95" width="120" height="60" as="geometry" /></mxCell>
+        <mxCell id="p8" value="Project + user&#xa;budget checks" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3FCEF;strokeColor=#36B37E;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="985" y="95" width="120" height="60" as="geometry" /></mxCell>
+        <mxCell id="p9" value="Input&#xa;guardrails" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEBE6;strokeColor=#FF5630;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="1120" y="95" width="110" height="60" as="geometry" /></mxCell>
+        <mxCell id="p10" value="Exact then semantic&#xa;cache lookup" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EAE6FF;strokeColor=#6554C0;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="1245" y="95" width="135" height="60" as="geometry" /></mxCell>
+
+        <mxCell id="p11" value="Cache miss&#xa;region/residency route&#xa;+ budget reservation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0B3;strokeColor=#FF991F;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="40" y="260" width="150" height="75" as="geometry" /></mxCell>
+        <mxCell id="step10" value="Route and execute" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#FF991F;strokeWidth=2;fontSize=12;fontStyle=1;verticalAlign=top;align=left;spacingLeft=10;spacingTop=6;fontColor=#974F0C" vertex="1" parent="1"><mxGeometry x="220" y="205" width="500" height="250" as="geometry" /></mxCell>
+        <mxCell id="path_direct" value="Direct&#xa;strategy selects a mapping&#xa;retry + provider fallback" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0B3;strokeColor=#FF991F;fontSize=10;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="245" y="250" width="140" height="150" as="geometry" /></mxCell>
+        <mxCell id="path_smart" value="Smart&#xa;classify prompt&#xa;score allowed models&#xa;quality/cost decision" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0B3;strokeColor=#FF991F;fontSize=10;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="400" y="250" width="140" height="150" as="geometry" /></mxCell>
+        <mxCell id="path_ens" value="Ensemble&#xa;parallel panel&#xa;quorum + fallback&#xa;judge synthesis" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0B3;strokeColor=#FF991F;fontSize=10;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="555" y="250" width="140" height="150" as="geometry" /></mxCell>
+        <mxCell id="llm" value="Provider call&#xa;adapter translation&#xa;route-pool health" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3FCEF;strokeColor=#00875A;strokeWidth=2;fontSize=11;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="755" y="275" width="145" height="95" as="geometry" /></mxCell>
+        <mxCell id="p15" value="Finalize usage, cost,&#xa;budget, trace, and spend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3FCEF;strokeColor=#36B37E;strokeWidth=2;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="935" y="275" width="150" height="95" as="geometry" /></mxCell>
+        <mxCell id="p12" value="Output&#xa;guardrails" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEBE6;strokeColor=#FF5630;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="1120" y="275" width="110" height="75" as="geometry" /></mxCell>
+        <mxCell id="p13" value="Output PII&#xa;restore caller values&#xa;redact new PII" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEBE6;strokeColor=#FF5630;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="1260" y="265" width="125" height="95" as="geometry" /></mxCell>
+        <mxCell id="p14" value="Durable audit&#xa;+ PII/security events" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EAE6FF;strokeColor=#6554C0;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="1415" y="275" width="140" height="75" as="geometry" /></mxCell>
+        <mxCell id="p17" value="Session + eligible&#xa;post-policy cache write" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EAE6FF;strokeColor=#6554C0;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="1110" y="410" width="160" height="65" as="geometry" /></mxCell>
+        <mxCell id="p18" value="JSON or SSE response" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DEEBFF;strokeColor=#4C9AFF;fontSize=10;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="1300" y="410" width="150" height="65" as="geometry" /></mxCell>
+        <mxCell id="resp" value="Caller" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DEEBFF;strokeColor=#4C9AFF;fontSize=11;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="1480" y="410" width="75" height="65" as="geometry" /></mxCell>
+
+        <mxCell id="box1" value="Routing&#xa;Round robin | weighted | least latency | cost optimized | smart | ensemble. Retryable failures use bounded backoff and the remaining fallback chain." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0B3;strokeColor=#FF991F;fontSize=10;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="30" y="550" width="285" height="125" as="geometry" /></mxCell>
+        <mxCell id="box2" value="Hierarchy and admission&#xa;Budget/rate/token limits use the tightest value. Allowed models/providers intersect. Durable reservation protects concurrent fleet spend." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3FCEF;strokeColor=#36B37E;fontSize=10;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="335" y="550" width="285" height="125" as="geometry" /></mxCell>
+        <mxCell id="box3" value="Safety&#xa;Input NER failure degrades to regex-only. Configured output detector failure withholds the response. A blocked output can still incur provider cost." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEBE6;strokeColor=#FF5630;fontSize=10;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="640" y="550" width="285" height="125" as="geometry" /></mxCell>
+        <mxCell id="box4" value="Cache&#xa;Tenant/project scoped and process-local. Hits re-run current output policy and audit. Streaming, tools, redacted PII, smart, and ensemble requests do not write chat cache entries." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EAE6FF;strokeColor=#6554C0;fontSize=10;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="945" y="550" width="285" height="125" as="geometry" /></mxCell>
+        <mxCell id="box5" value="Streaming&#xa;Policy-free supported routes relay chunks. Output inspection buffers a bounded complete response. Fallback ends after the first provider byte; accounting finalizes on success, failure, cancel, or abandonment." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DEEBFF;strokeColor=#4C9AFF;fontSize=10;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="1250" y="550" width="305" height="125" as="geometry" /></mxCell>
+
+        <mxCell id="q0" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4C9AFF;strokeWidth=2;endArrow=block;endFill=1" edge="1" source="p0" target="p1" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="q1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4C9AFF;strokeWidth=2;endArrow=block;endFill=1" edge="1" source="p1" target="p3" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="q2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#36B37E;strokeWidth=2;endArrow=block;endFill=1" edge="1" source="p3" target="p4" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="q3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#FF5630;strokeWidth=2;endArrow=block;endFill=1" edge="1" source="p4" target="p5" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="q4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#FF5630;strokeWidth=2;endArrow=block;endFill=1" edge="1" source="p5" target="p6" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="q5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#36B37E;strokeWidth=2;endArrow=block;endFill=1" edge="1" source="p6" target="p7" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="q6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#36B37E;strokeWidth=2;endArrow=block;endFill=1" edge="1" source="p7" target="p8" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="q7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#36B37E;strokeWidth=2;endArrow=block;endFill=1" edge="1" source="p8" target="p9" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="q8" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#FF5630;strokeWidth=2;endArrow=block;endFill=1" edge="1" source="p9" target="p10" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="q9" value="miss" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#FF991F;strokeWidth=2;endArrow=block;endFill=1;fontSize=9" edge="1" source="p10" target="p11" parent="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1400" y="190" /><mxPoint x="115" y="190" /></Array></mxGeometry></mxCell>
+        <mxCell id="q10" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#FF991F;strokeWidth=2;endArrow=block;endFill=1" edge="1" source="p11" target="step10" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="q12" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#FF991F;strokeWidth=2;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5" edge="1" source="path_ens" target="llm" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="q13" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#FF991F;strokeWidth=2;endArrow=block;endFill=1;exitX=0.5;exitY=0;entryX=0;entryY=0.3" edge="1" source="path_smart" target="llm" parent="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="470" y="230" /><mxPoint x="735" y="230" /><mxPoint x="735" y="304" /></Array></mxGeometry></mxCell>
+        <mxCell id="q14" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#FF991F;strokeWidth=2;endArrow=block;endFill=1;exitX=0.5;exitY=1;entryX=0;entryY=0.8" edge="1" source="path_direct" target="llm" parent="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="315" y="430" /><mxPoint x="735" y="430" /><mxPoint x="735" y="351" /></Array></mxGeometry></mxCell>
+        <mxCell id="q15" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#00875A;strokeWidth=2;endArrow=block;endFill=1" edge="1" source="llm" target="p15" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="q16" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#36B37E;strokeWidth=2;endArrow=block;endFill=1" edge="1" source="p15" target="p12" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="q17" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#FF5630;strokeWidth=2;endArrow=block;endFill=1" edge="1" source="p12" target="p13" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="q18" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#FF5630;strokeWidth=2;endArrow=block;endFill=1" edge="1" source="p13" target="p14" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="cachehit" value="hit: recheck output policy" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6554C0;strokeWidth=2;endArrow=block;endFill=1;dashed=1;fontSize=9" edge="1" source="p10" target="p12" parent="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1400" y="225" /><mxPoint x="1175" y="225" /></Array></mxGeometry></mxCell>
+        <mxCell id="q19" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6554C0;strokeWidth=2;endArrow=block;endFill=1" edge="1" source="p14" target="p17" parent="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1485" y="390" /><mxPoint x="1190" y="390" /></Array></mxGeometry></mxCell>
+        <mxCell id="q20" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4C9AFF;strokeWidth=2;endArrow=block;endFill=1" edge="1" source="p17" target="p18" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="q21" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4C9AFF;strokeWidth=2;endArrow=block;endFill=1" edge="1" source="p18" target="resp" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram id="components" name="Component Architecture">
+    <mxGraphModel dx="1600" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title3" value="AxonLLM Component Architecture" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=24;fontStyle=1;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="470" y="10" width="660" height="40" as="geometry" /></mxCell>
+        <mxCell id="sub3" value="Shared services are assembled in src/gateway/bootstrap.py and reused by HTTP and AgentCore entry points" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=13;fontColor=#5E6C84" vertex="1" parent="1"><mxGeometry x="350" y="50" width="900" height="24" as="geometry" /></mxCell>
+
+        <mxCell id="entry" value="Entrypoints" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#4C9AFF;strokeWidth=2;fontSize=12;fontStyle=1;verticalAlign=top;align=left;spacingLeft=10;spacingTop=7;fontColor=#0747A6" vertex="1" parent="1"><mxGeometry x="30" y="100" width="230" height="210" as="geometry" /></mxCell>
+        <mxCell id="e_serve" value="Starlette&#xa;native + OpenAI APIs&#xa;admin + browser UI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DEEBFF;strokeColor=#4C9AFF;fontSize=10;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="50" y="140" width="190" height="55" as="geometry" /></mxCell>
+        <mxCell id="e_agentcore" value="AgentCoreAdapter&#xa;validated actions + schemas&#xa;OIDC-only invocation identity" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DEEBFF;strokeColor=#4C9AFF;fontSize=10;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="50" y="210" width="190" height="55" as="geometry" /></mxCell>
+        <mxCell id="e_cli" value="CLI and operations scripts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DEEBFF;strokeColor=#4C9AFF;fontSize=10;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="50" y="280" width="190" height="35" as="geometry" /></mxCell>
+
+        <mxCell id="cfg" value="Configuration" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#5E6C84;strokeWidth=2;fontSize=12;fontStyle=1;verticalAlign=top;align=left;spacingLeft=10;spacingTop=7;fontColor=#42526E" vertex="1" parent="1"><mxGeometry x="30" y="350" width="230" height="260" as="geometry" /></mxCell>
+        <mxCell id="cfgfiles" value="AppConfig + environment&#xa;&#xa;models.yaml: logical mappings&#xa;pricing.yaml: billing rates&#xa;leaderboard.yaml: quality data&#xa;ensemble.yaml: panel presets&#xa;spokes.yaml: region topology&#xa;&#xa;Provider credentials:&#xa;local env/YAML or exact&#xa;Secrets Manager version" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F4F5F7;strokeColor=#5E6C84;fontSize=10;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="50" y="390" width="190" height="195" as="geometry" /></mxCell>
+
+        <mxCell id="mw" value="HTTP trust boundary" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#FF5630;strokeWidth=2;fontSize=12;fontStyle=1;verticalAlign=top;align=left;spacingLeft=10;spacingTop=7;fontColor=#BF2600" vertex="1" parent="1"><mxGeometry x="300" y="100" width="255" height="245" as="geometry" /></mxCell>
+        <mxCell id="mw1" value="ControlPlaneHTTPMiddleware&#xa;body bounds | CSRF | headers&#xa;&#xa;AuthMiddleware&#xa;browser | ALB | OIDC | Axon key" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEBE6;strokeColor=#FF5630;fontSize=10;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="320" y="140" width="215" height="85" as="geometry" /></mxCell>
+        <mxCell id="mw2" value="CanonicalPrincipalResolver&#xa;TenantAuthorizationMiddleware&#xa;AdminRBACMiddleware" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEBE6;strokeColor=#FF5630;fontSize=10;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="320" y="240" width="215" height="65" as="geometry" /></mxCell>
+        <mxCell id="mw3" value="SecurityMiddleware route marker" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEBE6;strokeColor=#FF5630;fontSize=10;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="320" y="315" width="215" height="35" as="geometry" /></mxCell>
+
+        <mxCell id="idsvc" value="Identity and access" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#6554C0;strokeWidth=2;fontSize=12;fontStyle=1;verticalAlign=top;align=left;spacingLeft=10;spacingTop=7;fontColor=#403294" vertex="1" parent="1"><mxGeometry x="300" y="385" width="255" height="225" as="geometry" /></mxCell>
+        <mxCell id="idlist" value="OIDCService: JWT + ALB verification&#xa;BrowserSessionService: PKCE + sessions&#xa;APIKeyService: hash + rotate/revoke&#xa;ScimStore: user/group convergence&#xa;SamlService: Cognito handoff only&#xa;Dynamo principal/project repositories&#xa;Baseline RBAC + optional Cedar narrowing" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EAE6FF;strokeColor=#6554C0;fontSize=10;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="320" y="425" width="215" height="160" as="geometry" /></mxCell>
+
+        <mxCell id="core" value="GatewayAgent" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0B3;strokeColor=#FF991F;strokeWidth=2;fontSize=14;fontStyle=1;verticalAlign=top;align=center;spacingTop=10;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="600" y="100" width="370" height="135" as="geometry" /></mxCell>
+        <mxCell id="corenote" value="Chat orchestration&#xa;validation | governance | safety&#xa;cache | routing | accounting | output policy&#xa;normal + policy-aware streaming" style="text;html=1;align=center;verticalAlign=middle;fontSize=10;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="620" y="145" width="330" height="70" as="geometry" /></mxCell>
+
+        <mxCell id="routing" value="Routing and execution" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#FF991F;strokeWidth=2;fontSize=12;fontStyle=1;verticalAlign=top;align=left;spacingLeft=10;spacingTop=7;fontColor=#974F0C" vertex="1" parent="1"><mxGeometry x="600" y="270" width="370" height="320" as="geometry" /></mxCell>
+        <mxCell id="r_router" value="Router&#xa;strategy selection | retry | fallback" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0B3;strokeColor=#FF991F;fontSize=10;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="620" y="310" width="330" height="50" as="geometry" /></mxCell>
+        <mxCell id="r_smart" value="SmartRoutingStrategy&#xa;task classification + quality/cost scoring" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0B3;strokeColor=#FF991F;fontSize=10;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="620" y="375" width="330" height="50" as="geometry" /></mxCell>
+        <mxCell id="r_ens" value="EnsembleStrategy&#xa;parallel panel + quorum + judge synthesis" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0B3;strokeColor=#FF991F;fontSize=10;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="620" y="440" width="330" height="50" as="geometry" /></mxCell>
+        <mxCell id="r_region" value="RegionRouter + route pools&#xa;residency | health | capacity | recovery" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0B3;strokeColor=#FF991F;fontSize=10;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="620" y="505" width="330" height="50" as="geometry" /></mxCell>
+        <mxCell id="r_reg" value="ModelRegistry | RequestValidator | ProviderHealthTracker" style="text;html=1;align=center;verticalAlign=middle;fontSize=8;fontColor=#5E6C84" vertex="1" parent="1"><mxGeometry x="620" y="560" width="330" height="18" as="geometry" /></mxCell>
+
+        <mxCell id="gov" value="Governance and cost" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#36B37E;strokeWidth=2;fontSize=12;fontStyle=1;verticalAlign=top;align=left;spacingLeft=10;spacingTop=7;fontColor=#006644" vertex="1" parent="1"><mxGeometry x="1010" y="100" width="270" height="245" as="geometry" /></mxCell>
+        <mxCell id="govlist" value="PolicyHierarchyResolver&#xa;QuotaEnforcer + fleet admission&#xa;RateLimiter&#xa;budget reservation/finalization&#xa;CostTracker + pricing&#xa;project/user model restrictions&#xa;exact + semantic cache&#xa;efficiency analytics" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3FCEF;strokeColor=#36B37E;fontSize=10;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="1030" y="140" width="230" height="175" as="geometry" /></mxCell>
+
+        <mxCell id="sec" value="Safety and evidence" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#FF5630;strokeWidth=2;fontSize=12;fontStyle=1;verticalAlign=top;align=left;spacingLeft=10;spacingTop=7;fontColor=#BF2600" vertex="1" parent="1"><mxGeometry x="1010" y="385" width="270" height="225" as="geometry" /></mxCell>
+        <mxCell id="seclist" value="PromptInjectionDetector&#xa;PIIRedactor + optional Comprehend&#xa;GuardrailEngine: input + output checks&#xa;AuditTrail: metadata hash chain&#xa;EventDispatcher: FIFO outbox + DLQ&#xa;TraceForwarder or OTLP export" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEBE6;strokeColor=#FF5630;fontSize=10;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="1030" y="425" width="230" height="155" as="geometry" /></mxCell>
+
+        <mxCell id="prov" value="Provider layer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#00875A;strokeWidth=2;fontSize=12;fontStyle=1;verticalAlign=top;align=left;spacingLeft=10;spacingTop=7;fontColor=#006644" vertex="1" parent="1"><mxGeometry x="1320" y="100" width="250" height="280" as="geometry" /></mxCell>
+        <mxCell id="provlist" value="MultiProviderFactory&#xa;ProviderRoutePool&#xa;AdapterRegistry: 13 adapters&#xa;&#xa;AWS IAM: Bedrock + Mantle&#xa;HTTPS API keys: enabled HTTP providers&#xa;&#xa;OpenAI-shaped request/response&#xa;and tool-call translation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3FCEF;strokeColor=#00875A;fontSize=10;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="1340" y="140" width="210" height="205" as="geometry" /></mxCell>
+
+        <mxCell id="obs" value="Operations" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#4C9AFF;strokeWidth=2;fontSize=12;fontStyle=1;verticalAlign=top;align=left;spacingLeft=10;spacingTop=7;fontColor=#0747A6" vertex="1" parent="1"><mxGeometry x="1320" y="420" width="250" height="190" as="geometry" /></mxCell>
+        <mxCell id="obslist" value="Readiness dependency checks&#xa;CloudWatch logs/metrics/alarms&#xa;usage and cost dashboard&#xa;audit verification and export&#xa;backups and signed deployment evidence" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DEEBFF;strokeColor=#4C9AFF;fontSize=10;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="1340" y="460" width="210" height="120" as="geometry" /></mxCell>
+
+        <mxCell id="querysvc" value="Governed QueryService&#xa;HTTP /v1/query and AgentCore query share the same AST policy, datasource binding, Athena executor, admission, lifecycle, reconciliation, and durable audit." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3FCEF;strokeColor=#00875A;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="600" y="630" width="370" height="115" as="geometry" /></mxCell>
+        <mxCell id="pers" value="DynamoPersistence: tenant-qualified single-table authority&#xa;principals | projects | configuration | usage | key hashes | SCIM | policies | budgets | audit | event destinations | query state | browser sessions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EAE6FF;strokeColor=#6554C0;strokeWidth=2;fontSize=11;align=center;verticalAlign=middle;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="1010" y="650" width="560" height="95" as="geometry" /></mxCell>
+
+        <mxCell id="surfaces" value="Surfaces" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#5E6C84;strokeWidth=2;fontSize=12;fontStyle=1;verticalAlign=top;align=left;spacingLeft=10;spacingTop=7;fontColor=#42526E" vertex="1" parent="1"><mxGeometry x="30" y="650" width="525" height="210" as="geometry" /></mxCell>
+        <mxCell id="h1" value="Data plane&#xa;/api/chat + /stream&#xa;/v1/chat/completions&#xa;/api/models + /v1/models&#xa;/v1/query&#xa;AgentCore actions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DEEBFF;strokeColor=#4C9AFF;fontSize=10;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="50" y="690" width="150" height="145" as="geometry" /></mxCell>
+        <mxCell id="h2" value="Tenant control plane&#xa;projects | users | keys&#xa;policies | quotas | usage&#xa;audit | webhooks | datasources&#xa;dashboard + sandbox" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3FCEF;strokeColor=#36B37E;fontSize=10;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="215" y="690" width="155" height="145" as="geometry" /></mxCell>
+        <mxCell id="h5" value="Identity&#xa;browser login + logout&#xa;/saml/login handoff&#xa;ACS/metadata tombstones&#xa;/scim/v2 Users + Groups" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EAE6FF;strokeColor=#6554C0;fontSize=10;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;fontColor=#172B4D" vertex="1" parent="1"><mxGeometry x="385" y="690" width="150" height="145" as="geometry" /></mxCell>
+
+        <mxCell id="c1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4C9AFF;strokeWidth=2;endArrow=block;endFill=1" edge="1" source="entry" target="mw" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="c2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#FF5630;strokeWidth=2;endArrow=block;endFill=1" edge="1" source="mw" target="core" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="c3" value="resolves" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6554C0;strokeWidth=2;endArrow=block;endFill=1;dashed=1;fontSize=9" edge="1" source="mw" target="idsvc" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="c5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#FF991F;strokeWidth=2;endArrow=block;endFill=1" edge="1" source="core" target="routing" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="c6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#36B37E;strokeWidth=2;endArrow=block;endFill=1" edge="1" source="core" target="gov" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="c9" value="telemetry" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4C9AFF;strokeWidth=2;endArrow=block;endFill=1;dashed=1;fontSize=9" edge="1" source="sec" target="obs" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="c12" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6554C0;strokeWidth=2;endArrow=block;endFill=1;dashed=1;exitX=1;exitY=0.65;exitDx=0;exitDy=0;entryX=0;entryY=0.65;entryDx=0;entryDy=0" edge="1" source="querysvc" target="pers" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

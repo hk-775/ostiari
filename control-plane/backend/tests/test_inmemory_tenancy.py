@@ -23,6 +23,7 @@ A = _admin("org-a")
 B = _admin("org-b")
 
 
+@pytest.mark.usefixtures("multi_tenant_mode")
 class TestProvidersSecretIsolation:
     """The important one: an org must never read or overwrite another org's
     provider credentials by reusing a provider name."""
@@ -54,6 +55,7 @@ class TestProvidersSecretIsolation:
         assert (await client.get("/api/providers/openai/key", headers=A)).status_code == 200
 
 
+@pytest.mark.usefixtures("multi_tenant_mode")
 class TestAgentsIsolation:
     async def test_agents_scoped(self, client):
         await client.post("/api/agents", headers=A,
@@ -66,6 +68,7 @@ class TestAgentsIsolation:
         assert b == {"agent-b"}
 
 
+@pytest.mark.usefixtures("multi_tenant_mode")
 class TestQuotasIsolation:
     async def test_quotas_scoped_and_ids_per_org(self, client):
         r_a = await client.post("/api/quotas", headers=A,
@@ -79,6 +82,7 @@ class TestQuotasIsolation:
         assert len(b) == 1 and b[0]["rate_limit_rpm"] == 99
 
 
+@pytest.mark.usefixtures("multi_tenant_mode")
 class TestExperimentsIsolation:
     async def test_experiments_scoped(self, client):
         await client.post("/api/experiments", headers=A,

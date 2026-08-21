@@ -1,6 +1,7 @@
 """Gateway management API."""
 
 import asyncio
+import contextlib
 import logging
 import time
 import uuid
@@ -13,11 +14,29 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.auth.dependencies import get_current_org
+from control_plane.auth.workload import (
+    authorize_gateway,
+    bind_gateway_identity,
+    require_gateway_claim,
+)
 from control_plane.database import async_session, get_db
-from control_plane.env import configured_org_id, is_production, tenancy_mode
+from control_plane.env import (
+    configured_org_id,
+    control_plane_replicas,
+    is_production,
+    tenancy_mode,
+)
 from control_plane.models.database import Gateway, Tool
 from control_plane.models.schemas import GatewayCreate, GatewayResponse, GatewayUpdate
-from control_plane.models.scoping import get_scoped, scoped, stamp
+from control_plane.models.scoping import (
+    get_gateway as get_gateway_row,
+)
+from control_plane.models.scoping import (
+    get_scoped,
+    scoped,
+    stamp,
+)
+from control_plane.redis_client import get_redis
 from control_plane.services.audit_service import actor_of, audit
 from control_plane.services.gateway_callbacks import (
     GatewayCallbackError,
@@ -36,8 +55,40 @@ router = APIRouter(prefix="/api/gateways", tags=["gateways"])
 push_service = PushService()
 
 # Health check background task handle
-_health_check_task: asyncio.Task | None = None
+_health_check_task: asyncio.Task[None] | None = None
 HEARTBEAT_TIMEOUT_SECONDS = 90
+_HEALTH_SWEEP_LEASE_KEY = "ostiari:control-plane:gateway-health-sweep"
+_HEALTH_SWEEP_LEASE_SECONDS = 120
+
+
+async def _acquire_health_sweep_lease() -> tuple[Any | None, str | None]:
+    """Acquire the single-replica health-sweep lease."""
+    redis = await get_redis()
+    if redis is None:
+        return None, None
+    token = uuid.uuid4().hex
+    acquired = await redis.set(
+        _HEALTH_SWEEP_LEASE_KEY,
+        token,
+        nx=True,
+        ex=_HEALTH_SWEEP_LEASE_SECONDS,
+    )
+    return redis, token if acquired else None
+
+
+async def _release_health_sweep_lease(redis: Any, token: str) -> None:
+    """Release the lease only when this replica still owns it."""
+    await redis.eval(
+        """
+        if redis.call('get', KEYS[1]) == ARGV[1] then
+          return redis.call('del', KEYS[1])
+        end
+        return 0
+        """,
+        1,
+        _HEALTH_SWEEP_LEASE_KEY,
+        token,
+    )
 
 
 async def _queue_config(
@@ -84,7 +135,14 @@ async def _health_check_loop() -> None:
     """Background loop: mark gateways unhealthy if heartbeat > 90s ago."""
     while True:
         await asyncio.sleep(15)
+        redis = None
+        lease_token = None
         try:
+            redis, lease_token = await _acquire_health_sweep_lease()
+            if redis is not None and lease_token is None:
+                continue
+            if redis is None and control_plane_replicas() > 1:
+                continue
             async with async_session() as db:
                 result = await db.execute(select(Gateway))
                 gateways = result.scalars().all()
@@ -103,6 +161,12 @@ async def _health_check_loop() -> None:
                 await db.commit()
         except Exception as e:
             log.warning(f"Health check loop error: {e}")
+        finally:
+            if redis is not None and lease_token is not None:
+                try:
+                    await _release_health_sweep_lease(redis, lease_token)
+                except Exception as exc:
+                    log.warning("Health sweep lease release failed: %s", exc)
 
 
 def start_health_check() -> None:
@@ -112,12 +176,15 @@ def start_health_check() -> None:
         _health_check_task = asyncio.create_task(_health_check_loop())
 
 
-def stop_health_check() -> None:
+async def stop_health_check() -> None:
     """Cancel the background health-check task."""
     global _health_check_task
-    if _health_check_task and not _health_check_task.done():
-        _health_check_task.cancel()
-        _health_check_task = None
+    if _health_check_task is None:
+        return
+    _health_check_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await _health_check_task
+    _health_check_task = None
 
 
 def _to_response(gateway: Gateway, tools_count: int = 0) -> GatewayResponse:
@@ -145,7 +212,7 @@ async def list_gateways(db: AsyncSession = Depends(get_db), org: str = Depends(g
 
 @router.post("", response_model=GatewayResponse)
 async def register_gateway(body: GatewayCreate, request: Request, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
-    existing = await db.get(Gateway, body.id)
+    existing = await get_gateway_row(db, body.id, org)
     if existing:
         raise HTTPException(status_code=409, detail=f"Gateway {body.id} already exists")
     try:
@@ -235,7 +302,7 @@ async def set_mode(gateway_id: str, body: dict, request: Request, db: AsyncSessi
 
     # Best-effort live push so the change is immediate; ignore transport errors.
     try:
-        await push_service.push_to_gateway(db, gateway_id)
+        await push_service.push_to_gateway(db, gateway_id, org)
     except Exception as exc:  # noqa: BLE001 — push is best-effort
         log.warning("mode set but live push failed for %s: %s", gateway_id, exc)
 
@@ -247,7 +314,7 @@ async def push_config(gateway_id: str, request: Request, db: AsyncSession = Depe
     """Push current config to a specific gateway."""
     if await get_scoped(db, Gateway, gateway_id, org) is None:
         raise HTTPException(status_code=404, detail="Gateway not found")
-    result = await push_service.push_to_gateway(db, gateway_id)
+    result = await push_service.push_to_gateway(db, gateway_id, org)
     await audit.log(db, actor_of(request), "push", "gateway", gateway_id, {"status": result.status}, org=org)
     await db.commit()
     if result.status == "error":
@@ -305,6 +372,7 @@ async def gateway_register(
     # http://host/config with no port → connection refused).
     callback_url = ""
     reg_org = configured_org_id()
+    identity = require_gateway_claim(request, gateway_id)
     try:
         body = await request.json()
         if isinstance(body, dict):
@@ -314,9 +382,15 @@ async def gateway_register(
                     callback_url = validate_gateway_callback(callback_url)
                 except GatewayCallbackError as exc:
                     raise HTTPException(status_code=422, detail=str(exc)) from exc
-            # A gateway declares its org at registration (no user token on this
-            # path). Absent that, it lands in the default org.
+            # The gateway declares its org at registration. Production binds
+            # that value to the verified workload token; development without
+            # workload OIDC falls back to the configured deployment org.
             requested_org = (body.get("org_id") or reg_org).strip() or reg_org
+            if identity is not None and requested_org != identity.tenant_id:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Registration tenant does not match workload identity",
+                )
             if tenancy_mode() == "single" and requested_org != reg_org:
                 raise HTTPException(
                     status_code=403,
@@ -327,6 +401,8 @@ async def gateway_register(
         raise
     except Exception:
         pass
+    if identity is not None:
+        reg_org = identity.tenant_id
 
     if not callback_url and is_production():
         raise HTTPException(
@@ -339,7 +415,7 @@ async def gateway_register(
         client_host = request.client.host if request.client else ""
         return f"http://{client_host}" if client_host else ""
 
-    gateway = await db.get(Gateway, gateway_id)
+    gateway = await get_gateway_row(db, gateway_id, reg_org)
     created = False
     if not gateway:
         # Auto-provision on first contact. Prefer the advertised callback URL
@@ -357,6 +433,13 @@ async def gateway_register(
         # Keep the endpoint current — a gateway may restart on a new port, or an
         # earlier portless auto-register needs correcting so pushes can reach it.
         gateway.endpoint = callback_url
+
+    require_gateway_claim(
+        request,
+        gateway_id,
+        tenant_id=gateway.org_id or reg_org,
+    )
+    await bind_gateway_identity(db, gateway, identity)
 
     gateway.status = "healthy"
     gateway.last_heartbeat = datetime.now(timezone.utc)
@@ -398,11 +481,13 @@ async def gateway_register(
 
 
 @router.post("/{gateway_id}/heartbeat")
-async def gateway_heartbeat(gateway_id: str, db: AsyncSession = Depends(get_db)):
+async def gateway_heartbeat(
+    gateway_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
     """Gateway heartbeat every 30s. Returns pending config changes if any."""
-    gateway = await db.get(Gateway, gateway_id)
-    if not gateway:
-        raise HTTPException(status_code=404, detail="Gateway not found")
+    gateway = await authorize_gateway(request, db, gateway_id)
 
     was_unhealthy = gateway.status != "healthy"
     gateway.status = "healthy"
@@ -452,7 +537,7 @@ async def get_config_bundle(
 ):
     """Returns full current config for a gateway."""
     if getattr(request.state, "machine_authenticated", False):
-        gateway = await db.get(Gateway, gateway_id)
+        gateway = await authorize_gateway(request, db, gateway_id)
     else:
         gateway = await get_scoped(db, Gateway, gateway_id, org)
     if not gateway:
@@ -531,9 +616,17 @@ async def push_config_lifecycle(
 
 
 @router.get("/{gateway_id}/spend")
-async def get_gateway_spend(gateway_id: str, db: AsyncSession = Depends(get_db)):
+async def get_gateway_spend(
+    gateway_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+):
     """Return the gateway's durable per-agent spend snapshot."""
-    gateway = await db.get(Gateway, gateway_id)
+    if getattr(request.state, "machine_authenticated", False):
+        gateway = await authorize_gateway(request, db, gateway_id)
+    else:
+        gateway = await get_scoped(db, Gateway, gateway_id, org)
     if gateway is None:
         raise HTTPException(status_code=404, detail="Gateway not found")
     return {"spend": (gateway.config or {}).get("agent_spend", {})}
@@ -544,9 +637,7 @@ async def set_gateway_spend(
     gateway_id: str, request: Request, db: AsyncSession = Depends(get_db)
 ):
     """Persist the gateway's per-agent spend snapshot."""
-    gateway = await db.get(Gateway, gateway_id)
-    if gateway is None:
-        raise HTTPException(status_code=404, detail="Gateway not found")
+    gateway = await authorize_gateway(request, db, gateway_id)
     body = await request.json()
     spend = body.get("spend", {}) if isinstance(body, dict) else {}
     if not isinstance(spend, dict):

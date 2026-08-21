@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from control_plane.models.database import Base
@@ -10,12 +10,15 @@ from control_plane.models.database import Base
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        UniqueConstraint("org_id", "email", name="uq_users_org_email"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    org_id: Mapped[str | None] = mapped_column(
-        String(64), ForeignKey("organizations.id"), nullable=True, default="default", index=True
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id"), nullable=False, default="default", index=True
     )
-    email: Mapped[str] = mapped_column(String(256), unique=True, index=True)
+    email: Mapped[str] = mapped_column(String(256), index=True)
     name: Mapped[str] = mapped_column(String(128))
     hashed_password: Mapped[str] = mapped_column(String(256))
     role: Mapped[str] = mapped_column(String(20), default="viewer")  # admin | operator | viewer

@@ -6,12 +6,15 @@ remain buffered and are retried on the next flush.
 """
 
 import asyncio
+import contextlib
 import logging
-import os
 from typing import Any
 from uuid import uuid4
 
 import httpx
+
+from ostiari_gateway.event_outbox import EventOutbox, scoped_stream
+from ostiari_gateway.workload_identity import machine_headers
 
 log = logging.getLogger("ostiari.sidecar.llm.cost")
 
@@ -29,6 +32,7 @@ class CostReporter:
         sidecar_id: str = "",
         quota_enforcer: Any = None,
         broker_policy: Any = None,
+        shared_store: Any = None,
     ) -> None:
         self._url = control_plane_url.rstrip("/") if control_plane_url else ""
         self._sidecar_id = sidecar_id
@@ -38,13 +42,21 @@ class CostReporter:
         self._buffer: list[dict[str, Any]] = []
         self._buffer_max = 20
         self._flush_lock = asyncio.Lock()
+        self._delivery_task: asyncio.Task[None] | None = None
+        self._outbox = EventOutbox(
+            scoped_stream("costs", sidecar_id),
+            id_field="event_id",
+            memory=self._buffer,
+        )
+        if shared_store is not None:
+            self._outbox.attach_store(shared_store)
 
     @staticmethod
-    def _service_headers() -> dict[str, str]:
-        token = os.environ.get("OSTIARI_SERVICE_TOKEN", "").strip()
-        return {"X-Ostiari-Service-Key": token} if token else {}
+    async def _service_headers() -> dict[str, str]:
+        return await machine_headers()
 
     def configure(self, control_plane_url: str, sidecar_id: str) -> None:
+        self._outbox.rebind(scoped_stream("costs", sidecar_id))
         self._url = control_plane_url.rstrip("/")
         self._sidecar_id = sidecar_id
 
@@ -82,7 +94,7 @@ class CostReporter:
         if self._quota_enforcer and record_quota:
             self._quota_enforcer.record_spend(cost_usd)
 
-        self._buffer.append({
+        self._outbox.enqueue({
             # Generated once at buffer time and retained verbatim across retries.
             # The control plane uses (gateway_id, event_id) as the idempotency key
             # for the usage row, pool debit, and customer charge.
@@ -102,19 +114,21 @@ class CostReporter:
             "action": action,
         })
 
-        if len(self._buffer) >= self._buffer_max:
+        depth = self._outbox.depth()
+        if depth is not None and depth >= self._buffer_max:
             await self.flush()
 
     async def flush(self) -> None:
-        """Send buffered records, retaining the batch until a 2xx response."""
-        if not self._buffer or not self.enabled:
+        """Send oldest records, acknowledging only a confirmed 2xx batch."""
+        if not self.enabled:
             return
 
         async with self._flush_lock:
-            if not self._buffer or not self.enabled:
+            pending = self._outbox.pending(count=self._buffer_max)
+            if not pending or not self.enabled:
                 return
 
-            records = self._buffer[:]
+            records = [event.payload for event in pending]
             if self._client is None:
                 self._client = httpx.AsyncClient(timeout=5.0)
 
@@ -122,7 +136,7 @@ class CostReporter:
                 response = await self._client.post(
                     f"{self._url}/api/costs/record/batch",
                     json=records,
-                    headers=self._service_headers(),
+                    headers=await self._service_headers(),
                 )
                 self._apply_broker_snapshot(response)
                 response.raise_for_status()
@@ -134,9 +148,12 @@ class CostReporter:
                 )
                 return
 
-            # Records may have been appended while the request was in flight.
-            # Remove only the confirmed snapshot and leave newer entries queued.
-            del self._buffer[:len(records)]
+            if not self._outbox.acknowledge(pending):
+                log.warning(
+                    "Control plane confirmed %d cost record(s), but durable "
+                    "acknowledgement failed; idempotent retry will follow",
+                    len(records),
+                )
 
     def _apply_broker_snapshot(self, response: httpx.Response) -> None:
         """Adopt pool state even when billing returned a retryable 503."""
@@ -152,7 +169,27 @@ class CostReporter:
             return
 
     async def close(self) -> None:
+        if self._delivery_task and not self._delivery_task.done():
+            self._delivery_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._delivery_task
+            self._delivery_task = None
         await self.flush()
         if self._client:
             await self._client.aclose()
             self._client = None
+
+    async def start_delivery(self, interval_seconds: float = 2.0) -> None:
+        """Drain durable records after restarts even without new LLM traffic."""
+        if self._delivery_task and not self._delivery_task.done():
+            return
+
+        async def _loop() -> None:
+            while True:
+                await self.flush()
+                await asyncio.sleep(interval_seconds)
+
+        self._delivery_task = asyncio.create_task(_loop())
+
+    def delivery_status(self) -> dict[str, Any]:
+        return {"costs": self._outbox.status()}

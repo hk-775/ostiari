@@ -1,6 +1,9 @@
 """Live trace viewer — receives traces from gateways and broadcasts via WebSocket."""
 
-import hmac
+import asyncio
+import contextlib
+import hashlib
+import json
 import logging
 import os
 import time
@@ -25,54 +28,19 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.auth.dependencies import get_current_org, principal_from_token
+from control_plane.auth.workload import authorize_reported_gateway
 from control_plane.database import get_db
-from control_plane.env import is_production
-from control_plane.models.database import TraceRecord
+from control_plane.env import control_plane_replicas, is_production
+from control_plane.models.database import DEFAULT_ORG, TraceRecord
+from control_plane.redis_client import get_redis
 
 log = logging.getLogger("control_plane.traces")
 
 router = APIRouter(tags=["traces"])
 
-# Shared secret that gateways/sidecars must present to push traces. Mirrors the
-# OSTIARI_JWT_SECRET pattern in auth/service.py. Machine callers aren't users, so
-# trace ingest uses a shared key (X-Ingest-Key header) rather than a user JWT.
-#
-# Fail-open when unset: the demo and local dev run without it, matching the
-# control plane's dev-friendly defaults. Set OSTIARI_INGEST_KEY in any shared or
-# production deployment to require authenticated ingest.
-_INGEST_KEY_ENV = "OSTIARI_INGEST_KEY"
-
-
-def _require_ingest_auth(request: Request) -> None:
-    """Enforce the ingest shared secret when OSTIARI_INGEST_KEY is configured.
-
-    No-op (with a one-time warning elsewhere) when the key is unset, so existing
-    demo/dev setups keep working. When set, a request must present a matching
-    ``X-Ingest-Key`` header or it is rejected with 401.
-    """
-    expected = os.environ.get(_INGEST_KEY_ENV, "").strip()
-    if not expected:
-        # Dev/demo: open. In production, refuse anonymous ingest (forged traces
-        # poison compliance + billing) — require OSTIARI_INGEST_KEY to be set.
-        from control_plane.env import is_production
-        if is_production():
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Trace ingest requires OSTIARI_INGEST_KEY in production",
-            )
-        return
-    presented = request.headers.get("X-Ingest-Key", "")
-    # Constant-time compare to avoid leaking the key via timing.
-    if not presented or not hmac.compare_digest(presented, expected):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing X-Ingest-Key",
-        )
-
 # All trace state is keyed by org (tenant) so one org's traces are never
 # stored in, listed from, or broadcast to another org's buffer/sockets.
 # Single-org dev/demo uses only the "default" org, so behavior is unchanged.
-DEFAULT_ORG = "default"
 _TRACE_CACHE_SIZE = 200
 
 # org -> buffer of recent traces (for new WebSocket clients to catch up)
@@ -90,25 +58,14 @@ _ws_clients: dict[str, set[WebSocket]] = defaultdict(set)
 _session_parents: dict[str, OrderedDict[str, str]] = defaultdict(OrderedDict)
 _SESSION_PARENTS_MAX = 2000
 _SAFE_PARAM_FIELDS = frozenset({"input_tokens", "output_tokens", "total_tokens"})
-
-
-async def _event_org(db: AsyncSession, event: dict[str, Any]) -> str:
-    """The org a trace event belongs to, derived from the reporting gateway.
-
-    Gateways post traces with no user token, so there is no caller org to scope
-    by — and the event body must NOT be believed either: trusting `org_id` let
-    any ingest caller file a trace into an arbitrary tenant's buffer, which is
-    read back by /recent, the WebSocket fan-out, compliance, ROI, trust scoring,
-    and discovery. Reading the `gateways` row is the only trustworthy source,
-    matching costs/payments/approvals ingest.
-
-    The gateway identifies itself as `sidecar_id` (its registered gateway id);
-    `gateway_id` is accepted as an alias for events shaped by other producers.
-    """
-    from control_plane.models.scoping import org_of_gateway
-
-    gw_id = event.get("sidecar_id") or event.get("gateway_id") or ""
-    return await org_of_gateway(db, gw_id)
+_TRACE_CHANNEL = "ostiari:control-plane:traces"
+_INSTANCE_ID = uuid.uuid4().hex
+_trace_bus_task: asyncio.Task[None] | None = None
+_trace_bus_errors: dict[str, str] = {
+    "parent": "",
+    "publish": "",
+    "subscribe": "",
+}
 
 
 def _capture_raw_params() -> bool:
@@ -221,6 +178,148 @@ def _assign_parent(event: dict[str, Any], org: str = DEFAULT_ORG) -> None:
         parents.move_to_end(sid)
     event["parent_trace_id"] = parent
     event["is_span_root"] = (parent == tid)
+
+
+async def _assign_parent_distributed(
+    event: dict[str, Any],
+    org: str = DEFAULT_ORG,
+) -> None:
+    """Assign one stable session root across every control-plane replica."""
+    tid = str(event.get("trace_id") or "")
+    sid = str(event.get("session_id") or "")
+    if not sid:
+        _assign_parent(event, org)
+        return
+
+    redis = await get_redis()
+    if redis is None:
+        if is_production() or control_plane_replicas() > 1:
+            _trace_bus_errors["parent"] = "Redis unavailable"
+            raise HTTPException(
+                status_code=503,
+                detail="Trace coordination is unavailable",
+            )
+        _assign_parent(event, org)
+        return
+
+    digest = hashlib.sha256(f"{org}\0{sid}".encode()).hexdigest()
+    key = f"ostiari:trace-session-parent:{digest}"
+    try:
+        created = await redis.set(key, tid, nx=True, ex=86_400)
+        parent = tid if created else await redis.get(key)
+        parent = str(parent or tid)
+        event["parent_trace_id"] = parent
+        event["is_span_root"] = parent == tid
+        _trace_bus_errors["parent"] = ""
+    except Exception as exc:  # noqa: BLE001 - SQL persistence remains available
+        _trace_bus_errors["parent"] = str(exc)
+        if is_production() or control_plane_replicas() > 1:
+            raise HTTPException(
+                status_code=503,
+                detail="Trace coordination is unavailable",
+            ) from exc
+        _assign_parent(event, org)
+
+
+async def _broadcast_local(org: str, event: dict[str, Any]) -> int:
+    """Update this replica's cache and connected viewers."""
+    buf = _recent_traces[org]
+    tid = event.get("trace_id")
+    replaced = False
+    for index, existing in enumerate(buf):
+        if existing.get("trace_id") == tid:
+            buf[index] = event
+            replaced = True
+            break
+    if not replaced:
+        buf.append(event)
+
+    clients = _ws_clients[org]
+    disconnected = set()
+    for websocket in clients:
+        try:
+            await websocket.send_json(event)
+        except Exception:  # noqa: BLE001 - one viewer must not block fan-out
+            disconnected.add(websocket)
+    clients.difference_update(disconnected)
+    return len(clients)
+
+
+async def _publish_trace(org: str, event: dict[str, Any]) -> int:
+    """Broadcast locally and publish to sibling replicas when Redis is present."""
+    clients = await _broadcast_local(org, event)
+    redis = await get_redis()
+    if redis is None:
+        return clients
+    try:
+        await redis.publish(
+            _TRACE_CHANNEL,
+            json.dumps(
+                {"source": _INSTANCE_ID, "org": org, "event": event},
+                separators=(",", ":"),
+            ),
+        )
+        _trace_bus_errors["publish"] = ""
+    except Exception as exc:  # noqa: BLE001 - event is already durable in SQL
+        _trace_bus_errors["publish"] = str(exc)
+        log.exception("Trace fan-out publication failed")
+    return clients
+
+
+async def _handle_trace_message(raw: str) -> None:
+    payload = json.loads(raw)
+    if payload.get("source") == _INSTANCE_ID:
+        return
+    org = str(payload.get("org") or DEFAULT_ORG)
+    event = payload.get("event")
+    if isinstance(event, dict):
+        await _broadcast_local(org, event)
+
+
+async def _trace_bus_loop() -> None:
+    while True:
+        try:
+            redis = await get_redis()
+            if redis is None:
+                await asyncio.sleep(1)
+                continue
+            async with redis.pubsub() as pubsub:
+                await pubsub.subscribe(_TRACE_CHANNEL)
+                _trace_bus_errors["subscribe"] = ""
+                async for message in pubsub.listen():
+                    if message.get("type") != "message":
+                        continue
+                    await _handle_trace_message(message["data"])
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - reconnect until Redis recovers
+            _trace_bus_errors["subscribe"] = str(exc)
+            log.exception("Trace fan-out subscriber failed")
+            await asyncio.sleep(1)
+
+
+def start_trace_bus() -> None:
+    global _trace_bus_task
+    if _trace_bus_task is None or _trace_bus_task.done():
+        _trace_bus_task = asyncio.create_task(_trace_bus_loop())
+
+
+async def stop_trace_bus() -> None:
+    global _trace_bus_task
+    if _trace_bus_task is None:
+        return
+    _trace_bus_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await _trace_bus_task
+    _trace_bus_task = None
+
+
+def trace_bus_error() -> str:
+    return "; ".join(
+        f"{operation}: {error}"
+        for operation, error in _trace_bus_errors.items()
+        if error
+    )
 
 
 def _trace(
@@ -436,14 +535,16 @@ async def ingest_trace(request: Request, db: AsyncSession = Depends(get_db)) -> 
     trace_id get one synthesized so downstream consumers always have a stable
     handle.
     """
-    _require_ingest_auth(request)
     event = await request.json()
     if not event.get("trace_id"):
         event["trace_id"] = uuid.uuid4().hex
 
+    gateway_id = event.get("sidecar_id") or event.get("gateway_id") or ""
+    gateway = await authorize_reported_gateway(request, db, gateway_id)
+
     # The org this event belongs to, derived from the reporting gateway — never
     # from the payload. All storage + fan-out below is confined to this org.
-    org = await _event_org(db, event)
+    org = gateway.org_id if gateway is not None else DEFAULT_ORG
     # An ingest caller cannot choose its own tenant: drop any org_id it sent so
     # the forged value can't survive into the stored event and mislead readers.
     event["org_id"] = org
@@ -455,22 +556,15 @@ async def ingest_trace(request: Request, db: AsyncSession = Depends(get_db)) -> 
         event["gateway_id"] = event["sidecar_id"]
 
     event = _sanitize_event(event)
-    buf = _recent_traces[org]
 
     # Assign the session parent span (parent_trace_id) so a prompt's sub-calls nest.
-    _assign_parent(event, org)
+    await _assign_parent_distributed(event, org)
 
-    # Dedup: if we've already seen this trace_id, replace it in place (retry /
-    # update) rather than appending a second copy.
     tid = event["trace_id"]
-    duplicate = False
-    for i, existing in enumerate(buf):
-        if existing.get("trace_id") == tid:
-            buf[i] = event
-            duplicate = True
-            break
-    if not duplicate:
-        buf.append(event)
+    duplicate = any(
+        existing.get("trace_id") == tid
+        for existing in _recent_traces[org]
+    )
 
     await _persist_trace(db, org, event)
     await db.commit()
@@ -484,17 +578,13 @@ async def ingest_trace(request: Request, db: AsyncSession = Depends(get_db)) -> 
         except Exception:  # noqa: BLE001 — export must never break ingest
             pass
 
-    # Broadcast ONLY to clients connected for this org (no cross-tenant leak).
-    clients = _ws_clients[org]
-    disconnected = set()
-    for ws in clients:
-        try:
-            await ws.send_json(event)
-        except Exception:
-            disconnected.add(ws)
-
-    clients.difference_update(disconnected)
-    return {"status": "ok", "trace_id": tid, "duplicate": duplicate, "clients": len(clients)}
+    clients = await _publish_trace(org, event)
+    return {
+        "status": "ok",
+        "trace_id": tid,
+        "duplicate": duplicate,
+        "clients": clients,
+    }
 
 
 @router.get("/api/traces/recent")
@@ -525,7 +615,7 @@ async def get_spans(limit: int = 200, org: str = Depends(get_current_org)) -> An
     tier_rank = {"allow": 0, "intervene": 1, "error": 2, "block": 3}
 
     for t in traces:
-        parent = t.get("parent_trace_id") or t.get("trace_id")
+        parent = str(t.get("parent_trace_id") or t.get("trace_id") or "")
         if parent not in spans:
             spans[parent] = {
                 "span_id": parent, "session_id": t.get("session_id", ""),

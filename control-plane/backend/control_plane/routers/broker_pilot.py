@@ -172,10 +172,10 @@ async def draw_down(db: AsyncSession, *, model: str, tokens: int, our_cost_usd: 
     atomically.
 
     `org` must be the org that owns the reporting gateway, never a value from the
-    request body — gateways post usage with no user token, so the payload naming
-    its own org would let one tenant burn down another's purchased inventory. It
-    defaults to the single-org tenant so the pilot's own callers and tests stay
-    unchanged.
+    request body. Production derives it from the verified workload identity and
+    persisted gateway binding, so a payload cannot burn down another tenant's
+    purchased inventory. It defaults to the single-org tenant for internal
+    callers and development compatibility.
     """
     if tokens <= 0:
         return None

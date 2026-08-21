@@ -1,0 +1,397 @@
+.axon-flow {
+    --flow-accent: #7c3aed;
+    --flow-accent-soft: #f5f3ff;
+    background: #ffffff;
+    border: 1px solid #e7e5e4;
+    border-radius: 8px;
+    box-shadow: 0 10px 30px rgba(28, 25, 23, 0.07);
+    color: #1c1917;
+    overflow: hidden;
+}
+
+.axon-flow * {
+    box-sizing: border-box;
+}
+
+.axon-flow button {
+    font: inherit;
+}
+
+.axon-flow__toolbar {
+    align-items: center;
+    border-bottom: 1px solid #e7e5e4;
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+    padding: 12px 14px;
+}
+
+.axon-flow__scenarios {
+    display: flex;
+    gap: 6px;
+    min-width: 0;
+    overflow-x: auto;
+    padding: 2px;
+    scrollbar-width: thin;
+}
+
+.axon-flow__scenario,
+.axon-flow__control {
+    align-items: center;
+    background: #ffffff;
+    border: 1px solid #d6d3d1;
+    border-radius: 6px;
+    color: #57534e;
+    cursor: pointer;
+    display: inline-flex;
+    font-size: 12px;
+    font-weight: 600;
+    gap: 7px;
+    justify-content: center;
+    min-height: 34px;
+    padding: 7px 10px;
+    white-space: nowrap;
+}
+
+.axon-flow__scenario:hover,
+.axon-flow__control:hover {
+    border-color: var(--flow-accent);
+    color: var(--flow-accent);
+}
+
+.axon-flow__scenario[aria-selected="true"] {
+    background: var(--flow-accent-soft);
+    border-color: var(--flow-accent);
+    color: var(--flow-accent);
+}
+
+.axon-flow__controls {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 6px;
+}
+
+.axon-flow__control {
+    height: 34px;
+    padding: 0;
+    width: 34px;
+}
+
+.axon-flow__control--play {
+    background: var(--flow-accent);
+    border-color: var(--flow-accent);
+    color: #ffffff;
+}
+
+.axon-flow__control--play:hover {
+    background: #6d28d9;
+    color: #ffffff;
+}
+
+.axon-flow__control--voice[aria-pressed="true"] {
+    background: var(--flow-accent-soft);
+    border-color: color-mix(in srgb, var(--flow-accent) 45%, #ffffff);
+    color: var(--flow-accent);
+}
+
+.axon-flow__control svg {
+    height: 15px;
+    width: 15px;
+}
+
+.axon-flow audio {
+    display: none;
+}
+
+.axon-flow__summary {
+    align-items: center;
+    background: #fafaf9;
+    border-bottom: 1px solid #e7e5e4;
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+    padding: 10px 16px;
+}
+
+.axon-flow__summary-copy {
+    min-width: 0;
+}
+
+.axon-flow__summary-title {
+    color: #1c1917;
+    font-size: 14px;
+    font-weight: 700;
+}
+
+.axon-flow__summary-desc {
+    color: #78716c;
+    font-size: 12px;
+    line-height: 1.45;
+    margin-top: 2px;
+}
+
+.axon-flow__status {
+    background: var(--flow-accent-soft);
+    border: 1px solid color-mix(in srgb, var(--flow-accent) 35%, #ffffff);
+    border-radius: 999px;
+    color: var(--flow-accent);
+    flex: 0 0 auto;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 4px 8px;
+}
+
+.axon-flow__canvas-scroll {
+    background:
+        linear-gradient(#f5f5f4 1px, transparent 1px) 0 0 / 24px 24px,
+        linear-gradient(90deg, #f5f5f4 1px, transparent 1px) 0 0 / 24px 24px,
+        #ffffff;
+    overflow-x: auto;
+}
+
+.axon-flow__canvas {
+    display: block;
+    height: auto;
+    min-width: 920px;
+    width: 100%;
+}
+
+.axon-flow__zone {
+    fill: rgba(250, 250, 249, 0.9);
+    stroke: #d6d3d1;
+    stroke-dasharray: 5 4;
+}
+
+.axon-flow__zone-label {
+    fill: #78716c;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0;
+}
+
+.axon-flow__edge {
+    fill: none;
+    opacity: 0.18;
+    stroke: #a8a29e;
+    stroke-linecap: round;
+    stroke-width: 2;
+    transition: opacity 240ms ease, stroke 240ms ease, stroke-width 240ms ease;
+}
+
+.axon-flow__edge.is-past {
+    opacity: 0.5;
+    stroke: var(--flow-accent);
+}
+
+.axon-flow__edge.is-current {
+    animation: axon-flow-dash 850ms linear infinite;
+    opacity: 1;
+    stroke: var(--flow-accent);
+    stroke-dasharray: 8 6;
+    stroke-width: 3.5;
+}
+
+@keyframes axon-flow-dash {
+    to { stroke-dashoffset: -28; }
+}
+
+.axon-flow__node {
+    opacity: 0.42;
+    transition: filter 240ms ease, opacity 240ms ease, transform 240ms ease;
+}
+
+.axon-flow__node .axon-flow__node-box {
+    fill: #ffffff;
+    stroke: #d6d3d1;
+    stroke-width: 1.25;
+}
+
+.axon-flow__node .axon-flow__node-title {
+    fill: #292524;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.axon-flow__node .axon-flow__node-sub {
+    fill: #78716c;
+    font-size: 9px;
+}
+
+.axon-flow__node[data-kind="client"] .axon-flow__node-box {
+    fill: #f0f9ff;
+    stroke: #0ea5e9;
+}
+
+.axon-flow__node[data-kind="govern"] .axon-flow__node-box {
+    fill: #fff1f2;
+    stroke: #f43f5e;
+}
+
+.axon-flow__node[data-kind="route"] .axon-flow__node-box {
+    fill: #fffbeb;
+    stroke: #f59e0b;
+}
+
+.axon-flow__node[data-kind="target"] .axon-flow__node-box {
+    fill: #ecfdf5;
+    stroke: #10b981;
+}
+
+.axon-flow__node[data-kind="observe"] .axon-flow__node-box {
+    fill: #f5f3ff;
+    stroke: #8b5cf6;
+}
+
+.axon-flow__node.is-past,
+.axon-flow__node.is-current {
+    opacity: 1;
+}
+
+.axon-flow__node.is-current {
+    filter: drop-shadow(0 0 5px color-mix(in srgb, var(--flow-accent) 55%, transparent));
+}
+
+.axon-flow__node.is-current .axon-flow__node-box {
+    stroke: var(--flow-accent);
+    stroke-width: 3;
+}
+
+.axon-flow__packet {
+    fill: var(--flow-accent);
+    filter: drop-shadow(0 0 4px var(--flow-accent));
+    pointer-events: none;
+}
+
+.axon-flow__narrative {
+    align-items: start;
+    border-top: 1px solid #e7e5e4;
+    display: grid;
+    gap: 14px;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    min-height: 108px;
+    padding: 15px 16px 16px;
+}
+
+.axon-flow__step-num {
+    align-items: center;
+    background: var(--flow-accent-soft);
+    border: 1px solid color-mix(in srgb, var(--flow-accent) 30%, #ffffff);
+    border-radius: 6px;
+    color: var(--flow-accent);
+    display: flex;
+    font-size: 11px;
+    font-weight: 700;
+    height: 38px;
+    justify-content: center;
+    width: 38px;
+}
+
+.axon-flow__step-copy {
+    min-width: 0;
+}
+
+.axon-flow__step-title {
+    color: #1c1917;
+    font-size: 14px;
+    font-weight: 700;
+    margin: 0 0 3px;
+}
+
+.axon-flow__step-body {
+    color: #57534e;
+    font-size: 12px;
+    line-height: 1.55;
+    margin: 0;
+}
+
+.axon-flow__progress {
+    align-items: center;
+    display: flex;
+    gap: 5px;
+    padding-top: 14px;
+}
+
+.axon-flow__dot {
+    background: #e7e5e4;
+    border: 0;
+    border-radius: 999px;
+    cursor: pointer;
+    height: 7px;
+    padding: 0;
+    transition: background 160ms ease, width 160ms ease;
+    width: 7px;
+}
+
+.axon-flow__dot.is-past {
+    background: color-mix(in srgb, var(--flow-accent) 45%, #ffffff);
+}
+
+.axon-flow__dot.is-current {
+    background: var(--flow-accent);
+    width: 22px;
+}
+
+.axon-flow:fullscreen {
+    background: #fafaf9;
+    border: 0;
+    border-radius: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 18px;
+}
+
+.axon-flow:fullscreen .axon-flow__canvas-scroll {
+    flex: 1;
+}
+
+.axon-flow:fullscreen .axon-flow__canvas {
+    height: 100%;
+    min-height: 420px;
+}
+
+.axon-flow--compact .axon-flow__canvas {
+    max-height: 430px;
+}
+
+@media (max-width: 760px) {
+    .axon-flow__toolbar {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .axon-flow__controls {
+        justify-content: flex-end;
+    }
+
+    .axon-flow__summary {
+        align-items: flex-start;
+    }
+
+    .axon-flow__narrative {
+        grid-template-columns: auto minmax(0, 1fr);
+    }
+
+    .axon-flow__progress {
+        grid-column: 1 / -1;
+        justify-content: center;
+        padding-top: 2px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .axon-flow__edge,
+    .axon-flow__node,
+    .axon-flow__dot {
+        transition: none;
+    }
+
+    .axon-flow__edge.is-current {
+        animation: none;
+        stroke-dasharray: none;
+    }
+
+    .axon-flow__packet {
+        display: none;
+    }
+}

@@ -30,15 +30,28 @@ def tenancy_mode() -> str:
     configured = os.environ.get("OSTIARI_TENANCY_MODE", "").strip().lower()
     if configured:
         return configured
-    return "single" if is_production() else "multi"
+    return "single"
 
 
 def configured_org_id() -> str:
     return os.environ.get("OSTIARI_ORG_ID", "").strip() or "default"
 
 
+def control_plane_replicas() -> int:
+    raw = os.environ.get("OSTIARI_CONTROL_PLANE_REPLICAS", "1").strip()
+    try:
+        return int(raw)
+    except ValueError:
+        return 0
+
+
 def tenant_is_allowed(org_id: str) -> bool:
-    return tenancy_mode() != "single" or org_id == configured_org_id()
+    if not _ORG_ID_PATTERN.fullmatch(org_id):
+        return False
+    mode = tenancy_mode()
+    if mode == "single":
+        return org_id == configured_org_id()
+    return mode == "multi"
 
 
 def validate_production_posture() -> None:
@@ -52,9 +65,15 @@ def validate_production_posture() -> None:
         errors.append("OSTIARI_REQUIRE_AUTH must be enabled")
     if not env_flag("OSTIARI_NO_DEMO"):
         errors.append("OSTIARI_NO_DEMO must be enabled")
-    if tenancy_mode() != "single":
+    if tenancy_mode() not in {"single", "multi"}:
+        errors.append("OSTIARI_TENANCY_MODE must be 'single' or 'multi'")
+    replicas = control_plane_replicas()
+    if replicas < 1:
+        errors.append("OSTIARI_CONTROL_PLANE_REPLICAS must be a positive integer")
+    if not os.environ.get("REDIS_URL", "").strip():
         errors.append(
-            "OSTIARI_TENANCY_MODE must be 'single' until composite tenant keys ship"
+            "REDIS_URL is required for production rate limits, trace fan-out, "
+            "and replica coordination"
         )
     org_id = os.environ.get("OSTIARI_ORG_ID", "").strip()
     if not org_id:
@@ -73,14 +92,28 @@ def validate_production_posture() -> None:
     for name, minimum in (
         ("OSTIARI_JWT_SECRET", 32),
         ("OSTIARI_ADMIN_PASSWORD", 16),
-        ("OSTIARI_INGEST_KEY", 32),
-        ("OSTIARI_SERVICE_TOKEN", 32),
         ("OSTIARI_CONFIG_ADMIN_KEY", 32),
         ("OSTIARI_GATEWAY_AGENT_TOKEN", 32),
     ):
         value = os.environ.get(name, "").strip()
         if len(value) < minimum:
             errors.append(f"{name} must be set and at least {minimum} characters")
+
+    workload_issuer = os.environ.get(
+        "OSTIARI_WORKLOAD_OIDC_ISSUER",
+        "",
+    ).strip()
+    if urlparse(workload_issuer).scheme != "https" or not urlparse(
+        workload_issuer
+    ).netloc:
+        errors.append("OSTIARI_WORKLOAD_OIDC_ISSUER must be an HTTPS issuer")
+    if not os.environ.get("OSTIARI_WORKLOAD_OIDC_AUDIENCE", "").strip():
+        errors.append("OSTIARI_WORKLOAD_OIDC_AUDIENCE must be set")
+    for name in ("OSTIARI_SERVICE_TOKEN", "OSTIARI_INGEST_KEY"):
+        if os.environ.get(name, "").strip():
+            errors.append(
+                f"{name} is a legacy shared credential and may not be set in production"
+            )
 
     if not os.environ.get("OSTIARI_GATEWAY_AGENT_ID", "").strip():
         errors.append("OSTIARI_GATEWAY_AGENT_ID must be set")
@@ -141,11 +174,11 @@ def validate_production_posture() -> None:
         if not raw:
             continue
         try:
-            value = int(raw)
+            limit_value = int(raw)
         except ValueError:
             errors.append(f"{name} must be an integer")
             continue
-        if value < 1 or value > 10_000:
+        if limit_value < 1 or limit_value > 10_000:
             errors.append(f"{name} must be between 1 and 10000")
 
     if errors:

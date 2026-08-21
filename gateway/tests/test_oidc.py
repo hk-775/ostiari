@@ -172,6 +172,7 @@ class TestGatewayAuthRequired:
         [
             ("/v1/messages", {"model": "claude", "messages": [{"role": "user", "content": "hi"}]}),
             ("/v1/chat/completions", {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]}),
+            ("/v1/responses", {"model": "gpt-4o", "input": "hi"}),
             ("/invoke", {"messages": [{"role": "user", "content": "hi"}]}),
         ],
     )

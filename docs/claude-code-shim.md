@@ -1,120 +1,84 @@
-# Claude Code shim — governed `/v1/messages` with cross-provider routing
+# Claude Code shim: governed `/v1/messages`
 
-The gateway exposes an Anthropic-compatible `POST /v1/messages` endpoint. Point
-Claude Code (or any Anthropic-SDK client) at an Ostiari gateway instead of
-`api.anthropic.com`, and every model call flows through Ostiari's governance and
-routing on the way to a provider — without Ostiari touching the client's own
-tool loop.
+Ostiari exposes an Anthropic-compatible `POST /v1/messages` endpoint. A Claude
+Code or Anthropic SDK client can point at the gateway while Ostiari owns
+identity, authorization, content controls, quota, routing, cost, and trace
+reporting.
 
+```text
+Claude Code
+    -> Ostiari /v1/messages
+    -> embedded AxonLLM
+    -> Anthropic, OpenAI, Azure, Bedrock, or another configured provider
 ```
-Claude Code ──▶ Ostiari gateway /v1/messages ──▶ (routed by embedded AxonLLM) ──▶ Anthropic / OpenAI / Azure / Bedrock
-                  │  auth → injection → quota → AxonLLM routing → trace
-                  ▼
-             control plane (traces, spend)
-```
 
-## Why a shim (and not `/invoke`)
+Ostiari does not execute Claude Code's local tools. It returns Anthropic
+`tool_use` blocks so Claude Code remains the owner of its agent loop.
 
-Ostiari's native `/invoke` *owns* the agentic loop — it calls the model **and
-executes the tools itself**. Claude Code runs its own loop: the model returns
-`tool_use` blocks, Claude Code executes them locally (Bash, Edit, …) and calls
-back. So `/invoke` can't sit under Claude Code. The shim is a **governed
-passthrough**: it inspects, routes, and meters the request, then returns the
-model's `tool_use` blocks untouched so Claude Code keeps driving its own tools.
-
-## Point Claude Code at it
-
-The gateway holds the provider credentials — the client sends no real key.
+## Configure the client
 
 ```bash
-export ANTHROPIC_BASE_URL="http://localhost:8421"   # your Ostiari gateway
-export ANTHROPIC_API_KEY="unused-placeholder"        # gateway uses its own key
+export ANTHROPIC_BASE_URL="http://localhost:8421"
+export ANTHROPIC_API_KEY="unused-placeholder"
 claude
 ```
 
-Optional headers Ostiari reads for attribution:
+The gateway holds the real provider credentials. Production deployments must
+also send the bearer token required by the configured OIDC gateway contract.
 
-- `X-Agent-Id` — which agent/principal this traffic belongs to (default `unknown`)
-- `X-Session-Id`, or `x-claude-code-session-id` as a fallback — groups a run's
-  calls in traces under one parent span
-- `X-Framework` — defaults to `claude-code`
+Optional attribution headers:
 
-## What Ostiari does to each call
+- `X-Agent-Id`
+- `X-Session-Id` or `x-claude-code-session-id`
+- `X-Framework` (defaults to `claude-code`)
 
-1. **Agent authorization** — `agent_auth.check(agent_id, "/v1/messages")`.
-2. **Injection / PII detection** — fail-closed, and detection-only: it blocks but
-   never rewrites the forwarded body (rewriting would corrupt tool round-trips).
-   With `pii_redaction` on, PII *presence* blocks the call rather than being
-   redacted in place — block-content rewriting on the shim is a follow-up.
-3. **Routing** — the embedded **AxonLLM** router selects model + provider,
-   enforces model access, tracks cost, and does health-aware fallback. Run in
-   single-response mode (ensemble stays on `/invoke`), since Claude Code needs
-   exactly one Anthropic response per call to drive its tool loop.
-4. **Quota / budget** — pre-call projection; blocks with a `rate_limit_error`
-   when over budget; records spend from response usage.
-5. **Trace** — one `llm.messages` event to the control plane per call, with
-   model, tier, token counts, and whether it was re-routed.
+## Governance path
 
-## Cross-provider routing
+Each request passes through:
 
-Every call — tool-bearing or not — routes through AxonLLM, the single routing
-authority across the gateway (see [axon-router.md](axon-router.md)). It is
-strongly recommended rather than strictly required: without it the gateway still
-boots and this shim still answers via the direct-provider path below, but with no
-routing governance and no token cost tracking. `OSTIARI_REQUIRE_AXON=1` makes it
-mandatory. AxonLLM's OpenAI-shaped result is translated
-back into an **Anthropic Messages object**, re-emitted as valid Anthropic SSE when
-the client asked to stream, so Claude Code sees Anthropic format regardless of
-which provider served the call. Tool specs and `tool_use`/`tool_result` blocks are
-translated per provider inside AxonLLM.
+1. verified agent identity and `/v1/messages` authorization;
+2. per-agent model/provider permissions and token caps;
+3. prompt-injection and PII enforcement;
+4. gateway rate and projected-budget reservation;
+5. Ostiari model policy, when configured;
+6. the bundled AxonLLM router and provider adapters;
+7. usage reconciliation, cost reporting, and trace reporting.
 
-The tradeoff: streaming on this path is buffered-then-chunked rather than
-token-by-token, which is the cost of having one routing authority that also gives
-the shim cost tracking, model access control, and health-aware fallback.
+AxonLLM translates OpenAI-shaped tool definitions and results to the selected
+provider's dialect, then Ostiari translates the result back to Anthropic
+Messages format.
 
-**Degraded path.** If AxonLLM fails *mid-flight*, the shim falls back to Ostiari's
-own `ModelRouter` + a direct provider call for that one call, logged as a warning:
+## Production failure behavior
 
-- **Anthropic target** → raw SSE passthrough. True end-to-end streaming,
-  byte-for-byte fidelity (httpx auto-decompresses; we relay decoded SSE).
-- **Other provider** (OpenAI / Azure / Bedrock) → Ostiari translates the Anthropic
-  request itself (including `tool_use`/`tool_result` round-trip blocks and tool
-  schemas) and translates the response back.
+AxonLLM `v0.3.1` is bundled with Ostiari and is mandatory whenever the LLM
+module is active in production.
 
-Tool names with dots (`fs.delete`) are sanitized to `fs_delete` for OpenAI's
-name regex and restored on the way back.
+- Failure to initialize the router prevents production startup.
+- A mid-flight router failure returns an error.
+- Production never falls back to a direct provider path that bypasses routing
+  governance or cost tracking.
 
-## Configuration
+Development can deliberately exercise the legacy diagnostic direct-provider
+path with `OSTIARI_DISABLE_AXON_ROUTER=1`. That mode is observable in
+`GET /health` and must not be used as a production topology.
 
-The endpoint activates when the LLM Gateway module is on:
+## Streaming and tools
 
-```yaml
-# llm-gateway-config.yaml
-modules:
-  llm_gateway: true
-llm:
-  default_model: claude-sonnet-4-6
-  routing_rules:
-    - condition: "task_type == 'code'"
-      model: claude-sonnet-4-6
-    - condition: "task_type == 'chat'"
-      model: claude-haiku-4-5-20251001
-  credentials:
-    anthropic: ${ANTHROPIC_API_KEY}   # or set ANTHROPIC_API_KEY in the gateway env
-    # openai / azure_* / bedrock_region for cross-provider targets
-```
+Governed production responses are buffered at the upstream boundary and
+re-emitted as valid Anthropic SSE. The events are compatible with Anthropic
+clients, but they are not token-by-token passthrough from the selected
+provider.
 
-Env overrides:
+Function definitions and `tool_use`/`tool_result` blocks remain in the client
+loop. Tool names that require provider-safe normalization are restored before
+the response returns to Claude Code.
 
-- `ANTHROPIC_API_KEY` — used if `credentials.anthropic` is unset.
-- `OSTIARI_ANTHROPIC_BASE_URL` — override the upstream Anthropic base (default
-  `https://api.anthropic.com`).
+## Content controls
 
-## Limitations
+The shim cannot silently rewrite the client's conversation without
+desynchronizing its local tool loop:
 
-- Routing to a non-Anthropic provider requires that provider's SDK and
-  credentials to be present in the gateway.
-- Cross-provider responses are buffered upstream (one provider call) then
-  streamed to the client as Anthropic SSE — correct event semantics, but not
-  token-by-token from the upstream provider. Anthropic-target streaming *is*
-  token-by-token.
+- prompt injection can run in flag or block mode;
+- when PII enforcement is enabled and PII is detected, the shim returns `403`;
+- `/invoke`, where Ostiari owns the loop, can redact and restore content
+  instead.

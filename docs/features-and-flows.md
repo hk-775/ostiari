@@ -38,7 +38,7 @@ the gateway or control plane.
 | Reliability | Loop, drift, hallucination, and contradiction detectors; circuit breakers; checkpoints | `src/ostiari/anomaly/`, `breaker.py`, `checkpoint.py` |
 | Tool governance | Tool registry, authorization, quota, policy, approval, payment, proxy, trace | `gateway/ostiari_gateway/server.py` |
 | LLM governance | Agentic invocation, provider fallback, adaptive credential/endpoint routes, connection pools, routing rules, per-agent rotation, A/B experiments, quotas | `gateway/ostiari_gateway/modules/llm_gateway/`, embedded AxonLLM |
-| LLM-compatible APIs | Anthropic Messages and OpenAI Chat Completions shims | `/v1/messages`, `/v1/chat/completions` |
+| LLM-compatible APIs | Anthropic Messages, OpenAI Chat Completions, and stateless OpenAI Responses | `/v1/messages`, `/v1/chat/completions`, `/v1/responses` |
 | LLM security | PII redaction and prompt-injection detection | `src/ostiari/detect.py`, LLM gateway security layer |
 | MCP | Embedded, remote, and stdio servers; discovery; filtering; governed execution | `gateway/ostiari_gateway/mcp/` |
 | A2A | Agent cards, JSON-RPC tasks, peer registration, delegation policy, trust reports | `gateway/ostiari_gateway/a2a/`, control-plane A2A and trust routers |
@@ -140,14 +140,15 @@ Important outcomes:
 
 ## 5. LLM and Agentic Execution Flows
 
-The LLM module is optional (`modules.llm_gateway`). It exposes three traffic
+The LLM module is optional (`modules.llm_gateway`). It exposes four traffic
 surfaces:
 
 | Endpoint | Use |
 |---|---|
 | `POST /invoke` | Ostiari-native agentic loop with governed tool execution |
 | `POST /v1/messages` | Anthropic-compatible API for Claude Code and SDK clients |
-| `POST /v1/chat/completions` | OpenAI-compatible API for Codex and SDK clients |
+| `POST /v1/chat/completions` | OpenAI Chat Completions compatibility for SDK clients |
+| `POST /v1/responses` | Tested stateless OpenAI Responses subset |
 
 ### 5.1 Model Selection
 
@@ -169,10 +170,11 @@ flowchart TD
 
 Per-agent routing currently supports round-robin selection with request or
 session scope. A/B experiments split in-scope traffic between two models.
-AxonLLM, when installed, supplies embedded smart routing, ensemble behavior, and
-cost-aware execution. Without it, the gateway warns and uses direct-provider
-fallback; `/health` reports that routing governance and Axon cost tracking are
-inactive. Set `OSTIARI_REQUIRE_AXON=1` to fail startup instead.
+The repository bundles AxonLLM `v0.3.1`; source installs, CI, and the production
+gateway image install the same pinned routing engine. When the LLM module is
+active, production refuses startup or mid-flight direct-provider fallback if
+Axon cannot route. Development can deliberately exercise the diagnostic direct
+path with `OSTIARI_DISABLE_AXON_ROUTER=1`.
 
 After a logical provider is selected, AxonLLM chooses one concrete route for the
 attempt. A route binds a credential, endpoint/region, model allowlist, static
@@ -182,7 +184,37 @@ Multiple keys sharing one provider account must share a `capacity_group`.
 Credentials are attached per request while compatible routes share endpoint
 TCP/TLS pools. Provider/model fallback remains the single retry owner.
 
-### 5.2 `/invoke` Agentic Loop
+### 5.2 OpenAI Responses compatibility
+
+`POST /v1/responses` translates supported Responses input onto the same
+authorization, content-security, quota, Axon routing, cost, and tracing path as
+Chat Completions. It supports:
+
+- string or message-list input;
+- text and image-URL content parts;
+- function definitions, forced function choice, function calls, and outputs;
+- `model`, `instructions`, `max_output_tokens`, `temperature`, and `top_p`;
+- non-streaming Responses objects and typed Responses SSE events.
+
+Ostiari does not store OpenAI conversation state. It rejects
+`previous_response_id`, `conversation`, `prompt`, `store=true`, background
+execution, and unsupported reasoning/structured-output options rather than
+silently changing their semantics. The pinned Codex profile may send
+`include=["reasoning.encrypted_content"]` with an empty reasoning object or
+`reasoning.context="all_turns"`; Ostiari accepts those shapes as opaque
+stateless transport metadata without enabling model reasoning. The pinned
+profile uses standard direct function tools and disables freeform patching,
+multi-agent namespaces, and hosted search. When
+`parallel_tool_calls=false`, multiple upstream function calls fail closed.
+
+Codex CLI `0.148.0` is supported through the pinned profile under
+`config/codex`. The profile disables reasoning, verbosity, hosted-search,
+service-tier, and stateful-conversation capabilities. Protected CI verifies
+request shape, a function tool round trip, typed streaming, cancellation, and
+error propagation. Other Codex versions require a new conformance run before
+they are supported.
+
+### 5.3 `/invoke` Agentic Loop
 
 1. Validate the request and agent authorization.
 2. Redact configured PII and evaluate prompt-injection signals.
@@ -402,7 +434,9 @@ enable and configure controls:
 - Use TLS and network policy so agents cannot bypass the gateway.
 - Use PostgreSQL and Redis; both are production requirements for their
   respective control-plane and gateway state.
-- Set `OSTIARI_REQUIRE_AXON=1` when LLM routing is an enabled launch feature.
+- Production makes embedded AxonLLM mandatory automatically when LLM routing is
+  enabled. `OSTIARI_REQUIRE_AXON=1` applies the same fail-closed contract outside
+  production.
 
 Provider credentials returned by gateway config APIs are redacted. Production
 startup refuses when required controls remain open.
@@ -426,7 +460,7 @@ that process and should be restored by registration and config push.
 | Clean local | Empty control plane and one gateway | Connecting real agents |
 | Sidecar | Gateway beside one agent | Strong per-agent isolation |
 | Shared gateway | Multiple agents use one gateway with `X-Agent-Id` | Centralized operations |
-| Docker Compose | Control plane, frontend, gateway, database/Redis options | Small deployment |
+| Docker Compose | Control plane, frontend, gateway, and local Valkey state service | Small deployment |
 | Kubernetes/Helm | Sidecar or shared gateway patterns | Production orchestration |
 | ECS | Containerized control plane and gateway services | AWS deployment |
 | Lambda | Limited stateless gateway handler | Narrow serverless use cases |

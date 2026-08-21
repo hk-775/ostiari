@@ -13,6 +13,7 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
+import pytest
 from alembic import command
 from alembic.config import Config
 
@@ -36,6 +37,48 @@ def _restore_env(prev: str | None) -> None:
         os.environ["DATABASE_URL"] = prev
 
 
+def _primary_key_columns(con: sqlite3.Connection, table: str) -> list[str]:
+    return [
+        row[1]
+        for row in sorted(
+            (row for row in con.execute(f"PRAGMA table_info({table})") if row[5]),
+            key=lambda row: row[5],
+        )
+    ]
+
+
+def _unique_column_sets(
+    con: sqlite3.Connection,
+    table: str,
+) -> set[tuple[str, ...]]:
+    result: set[tuple[str, ...]] = set()
+    for row in con.execute(f"PRAGMA index_list({table})"):
+        if not row[2]:
+            continue
+        columns = tuple(
+            info[2]
+            for info in con.execute(f"PRAGMA index_info({row[1]})")
+        )
+        result.add(columns)
+    return result
+
+
+def _foreign_key_column_sets(
+    con: sqlite3.Connection,
+    table: str,
+) -> set[tuple[tuple[str, ...], tuple[str, ...]]]:
+    grouped: dict[int, list[tuple[int, str, str]]] = {}
+    for row in con.execute(f"PRAGMA foreign_key_list({table})"):
+        grouped.setdefault(row[0], []).append((row[1], row[3], row[4]))
+    return {
+        (
+            tuple(item[1] for item in sorted(items)),
+            tuple(item[2] for item in sorted(items)),
+        )
+        for items in grouped.values()
+    }
+
+
 def test_upgrade_head_creates_org_schema():
     prev = os.environ.get("DATABASE_URL")
     with tempfile.TemporaryDirectory() as d:
@@ -52,6 +95,50 @@ def test_upgrade_head_creates_org_schema():
             for t in ("gateways", "tools", "policies", "wallets", "usage_records", "audit_logs", "users"):
                 cols = {r[1] for r in con.execute(f"PRAGMA table_info({t})")}
                 assert "org_id" in cols, f"{t} missing org_id"
+            gateway_cols = {
+                r[1] for r in con.execute("PRAGMA table_info(gateways)")
+            }
+            assert {"workload_issuer", "workload_subject"} <= gateway_cols
+            assert _primary_key_columns(con, "gateways") == ["org_id", "id"]
+            assert _primary_key_columns(con, "wallets") == [
+                "org_id",
+                "agent_id",
+            ]
+            for table in (
+                "tools",
+                "policies",
+                "mcp_servers",
+                "usage_records",
+                "a2a_agents",
+            ):
+                assert (
+                    ("org_id", "gateway_id"),
+                    ("org_id", "id"),
+                ) in _foreign_key_column_sets(con, table)
+            assert ("org_id", "email") in _unique_column_sets(con, "users")
+            assert ("org_id", "name") in _unique_column_sets(con, "policies")
+            assert (
+                "org_id",
+                "gateway_id",
+                "event_id",
+            ) in _unique_column_sets(con, "usage_records")
+            assert (
+                "org_id",
+                "gateway_id",
+                "event_id",
+            ) in _unique_column_sets(con, "payment_records")
+            gateway_indexes = {
+                row[1]
+                for row in con.execute("PRAGMA index_list(gateways)")
+            }
+            assert "sqlite_autoindex_gateways_2" in gateway_indexes or any(
+                {
+                    column[2]
+                    for column in con.execute(f"PRAGMA index_info({index_name})")
+                }
+                == {"workload_issuer", "workload_subject"}
+                for index_name in gateway_indexes
+            )
             usage_cols = {
                 r[1] for r in con.execute("PRAGMA table_info(usage_records)")
             }
@@ -63,11 +150,17 @@ def test_upgrade_head_creates_org_schema():
                 "trace_records",
                 "sso_login_states",
                 "runtime_state_records",
+                "runtime_state_revisions",
                 "runtime_state_sequences",
                 "audit_chain_heads",
             } <= tables
+            assert _primary_key_columns(con, "audit_chain_heads") == [
+                "org_id",
+                "name",
+            ]
             assert con.execute(
-                "SELECT count(*) FROM audit_chain_heads WHERE name='global'"
+                "SELECT count(*) FROM audit_chain_heads "
+                "WHERE org_id='default' AND name='global'"
             ).fetchone()[0] == 1
             sandbox_cols = {
                 r[1] for r in con.execute("PRAGMA table_info(sandbox_runs)")
@@ -126,6 +219,256 @@ def test_upgrade_head_creates_org_schema():
                 "updated_at",
             } <= trace_cols
             con.close()
+        finally:
+            _restore_env(prev)
+
+
+def test_tenant_key_migration_preserves_and_rekeys_existing_rows():
+    prev = os.environ.get("DATABASE_URL")
+    with tempfile.TemporaryDirectory() as d:
+        db = os.path.join(d, "m.db")
+        cfg = _alembic_cfg(db)
+        try:
+            command.upgrade(cfg, "c7d9e1f3a5b7")
+            con = sqlite3.connect(db)
+            now = "2026-08-21 12:00:00"
+            con.execute(
+                "INSERT INTO organizations (id, name, created_at) "
+                "VALUES ('org-a', 'Org A', ?), ('org-b', 'Org B', ?)",
+                (now, now),
+            )
+            con.execute(
+                "INSERT INTO gateways "
+                "(id, org_id, name, description, endpoint, status, config, "
+                "created_at, updated_at) VALUES "
+                "('shared', 'org-a', 'Gateway', '', 'http://gateway:8421', "
+                "'registered', '{}', ?, ?)",
+                (now, now),
+            )
+            con.execute(
+                "INSERT INTO tools "
+                "(org_id, name, endpoint, method, description, timeout_seconds, "
+                "gateway_id, created_at) VALUES "
+                "(NULL, 'tool', 'http://tool', 'POST', '', 30, 'shared', ?)",
+                (now,),
+            )
+            con.execute(
+                "INSERT INTO policies "
+                "(org_id, name, description, content, is_active, gateway_id, "
+                "created_at, updated_at) VALUES "
+                "(NULL, 'shared-policy', '', '{}', 1, 'shared', ?, ?)",
+                (now, now),
+            )
+            con.execute(
+                "INSERT INTO usage_records "
+                "(org_id, gateway_id, agent_id, model, input_tokens, "
+                "output_tokens, total_tokens, cost_usd, action, timestamp, "
+                "event_id) VALUES "
+                "(NULL, 'shared', 'agent', 'model', 1, 1, 2, 0.1, 'chat', ?, "
+                "'usage-event')",
+                (now,),
+            )
+            con.execute(
+                "INSERT INTO wallets "
+                "(agent_id, org_id, address, balance_usdc, spent_today_usdc, "
+                "status, created_at) VALUES "
+                "('shared-agent', 'org-a', '', 5, 0, 'active', ?)",
+                (now,),
+            )
+            con.execute(
+                "INSERT INTO payment_records "
+                "(agent_id, gateway_id, action, amount_usdc, settled, tx_hash, "
+                "mode, source, timestamp, org_id, event_id, wallet_debited) "
+                "VALUES ('shared-agent', 'shared', 'tool', 0.1, 1, '', "
+                "'simulated', 'policy', ?, 'org-a', 'payment-event', 0)",
+                (now,),
+            )
+            con.execute(
+                "INSERT INTO users "
+                "(org_id, email, name, hashed_password, role, is_active, "
+                "created_at) VALUES "
+                "('org-a', 'shared@example.com', 'User', 'hash', 'admin', 1, ?)",
+                (now,),
+            )
+            for org in ("org-a", "org-b"):
+                con.execute(
+                    "INSERT INTO audit_logs "
+                    "(org_id, actor, action, resource_type, resource_id, "
+                    "details, timestamp) VALUES "
+                    "(?, 'admin', 'create', 'gateway', ?, '{}', ?)",
+                    (org, f"{org}-gateway", now),
+                )
+            con.commit()
+            con.close()
+
+            command.upgrade(cfg, "head")
+            con = sqlite3.connect(db)
+            assert con.execute(
+                "SELECT org_id FROM tools WHERE gateway_id='shared'"
+            ).fetchone() == ("org-a",)
+            assert con.execute(
+                "SELECT org_id FROM policies WHERE gateway_id='shared'"
+            ).fetchone() == ("org-a",)
+            assert con.execute(
+                "SELECT org_id FROM usage_records WHERE gateway_id='shared'"
+            ).fetchone() == ("org-a",)
+            assert con.execute(
+                "SELECT org_id, entry_hash FROM audit_chain_heads "
+                "WHERE name='global' ORDER BY org_id"
+            ).fetchall() == [
+                ("default", ""),
+                ("org-a", con.execute(
+                    "SELECT entry_hash FROM audit_logs "
+                    "WHERE org_id='org-a'"
+                ).fetchone()[0]),
+                ("org-b", con.execute(
+                    "SELECT entry_hash FROM audit_logs "
+                    "WHERE org_id='org-b'"
+                ).fetchone()[0]),
+            ]
+
+            con.execute(
+                "INSERT INTO gateways "
+                "(org_id, id, name, description, endpoint, status, config, "
+                "created_at, updated_at) VALUES "
+                "('org-b', 'shared', 'Gateway B', '', 'http://b:8421', "
+                "'registered', '{}', ?, ?)",
+                (now, now),
+            )
+            con.execute(
+                "INSERT INTO policies "
+                "(org_id, name, description, content, is_active, created_at, "
+                "updated_at) VALUES "
+                "('org-b', 'shared-policy', '', '{}', 1, ?, ?)",
+                (now, now),
+            )
+            con.execute(
+                "INSERT INTO wallets "
+                "(org_id, agent_id, address, balance_usdc, spent_today_usdc, "
+                "status, created_at) VALUES "
+                "('org-b', 'shared-agent', '', 3, 0, 'active', ?)",
+                (now,),
+            )
+            con.execute(
+                "INSERT INTO users "
+                "(org_id, email, name, hashed_password, role, is_active, "
+                "created_at) VALUES "
+                "('org-b', 'shared@example.com', 'User B', 'hash', 'admin', 1, ?)",
+                (now,),
+            )
+            con.commit()
+            assert con.execute(
+                "SELECT count(*) FROM gateways WHERE id='shared'"
+            ).fetchone()[0] == 2
+            assert con.execute(
+                "SELECT count(*) FROM policies WHERE name='shared-policy'"
+            ).fetchone()[0] == 2
+            assert con.execute(
+                "SELECT count(*) FROM wallets WHERE agent_id='shared-agent'"
+            ).fetchone()[0] == 2
+            assert con.execute(
+                "SELECT count(*) FROM users WHERE email='shared@example.com'"
+            ).fetchone()[0] == 2
+            con.close()
+        finally:
+            _restore_env(prev)
+
+
+def test_tenant_key_downgrade_refuses_identifier_collisions():
+    prev = os.environ.get("DATABASE_URL")
+    with tempfile.TemporaryDirectory() as d:
+        db = os.path.join(d, "m.db")
+        cfg = _alembic_cfg(db)
+        try:
+            command.upgrade(cfg, "head")
+            con = sqlite3.connect(db)
+            now = "2026-08-21 12:00:00"
+            con.execute(
+                "INSERT INTO organizations (id, name, created_at) "
+                "VALUES ('org-a', 'Org A', ?), ('org-b', 'Org B', ?)",
+                (now, now),
+            )
+            for org in ("org-a", "org-b"):
+                con.execute(
+                    "INSERT INTO gateways "
+                    "(org_id, id, name, description, endpoint, status, config, "
+                    "created_at, updated_at) VALUES "
+                    "(?, 'shared', 'Gateway', '', 'http://gateway:8421', "
+                    "'registered', '{}', ?, ?)",
+                    (org, now, now),
+                )
+            con.commit()
+            con.close()
+
+            with pytest.raises(
+                RuntimeError,
+                match="Cannot downgrade tenant-qualified gateways.id",
+            ):
+                command.downgrade(cfg, "c7d9e1f3a5b7")
+        finally:
+            _restore_env(prev)
+
+
+@pytest.mark.parametrize("table", ["usage_records", "payment_records"])
+def test_tenant_key_downgrade_refuses_idempotency_collisions(table):
+    prev = os.environ.get("DATABASE_URL")
+    with tempfile.TemporaryDirectory() as d:
+        db = os.path.join(d, "m.db")
+        cfg = _alembic_cfg(db)
+        try:
+            command.upgrade(cfg, "head")
+            con = sqlite3.connect(db)
+            now = "2026-08-21 12:00:00"
+            con.execute(
+                "INSERT INTO organizations (id, name, created_at) "
+                "VALUES ('org-a', 'Org A', ?), ('org-b', 'Org B', ?)",
+                (now, now),
+            )
+            for org, gateway_id in (
+                ("org-a", "shared-external-id" if table == "usage_records" else "gateway-a"),
+                ("org-b", "shared-external-id" if table == "usage_records" else "gateway-b"),
+            ):
+                con.execute(
+                    "INSERT INTO gateways "
+                    "(org_id, id, name, description, endpoint, status, config, "
+                    "created_at, updated_at) VALUES "
+                    "(?, ?, 'Gateway', '', 'http://gateway:8421', "
+                    "'registered', '{}', ?, ?)",
+                    (org, gateway_id, now, now),
+                )
+            if table == "usage_records":
+                for org in ("org-a", "org-b"):
+                    con.execute(
+                        "INSERT INTO usage_records "
+                        "(org_id, gateway_id, event_id, agent_id, model, "
+                        "input_tokens, output_tokens, total_tokens, cost_usd, "
+                        "action, timestamp) VALUES "
+                        "(?, 'shared-external-id', 'event-1', 'agent', 'model', "
+                        "0, 0, 0, 0, '', ?)",
+                        (org, now),
+                    )
+            else:
+                for org in ("org-a", "org-b"):
+                    con.execute(
+                        "INSERT INTO payment_records "
+                        "(org_id, gateway_id, event_id, agent_id, action, "
+                        "amount_usdc, settled, tx_hash, mode, source, timestamp) "
+                        "VALUES "
+                        "(?, 'shared-external-id', 'event-1', 'agent', '', 1, "
+                        "1, '', 'simulated', 'policy', ?)",
+                        (org, now),
+                    )
+            con.commit()
+            con.close()
+
+            with pytest.raises(
+                RuntimeError,
+                match=(
+                    rf"Cannot downgrade tenant-qualified {table} "
+                    "idempotency key"
+                ),
+            ):
+                command.downgrade(cfg, "c7d9e1f3a5b7")
         finally:
             _restore_env(prev)
 

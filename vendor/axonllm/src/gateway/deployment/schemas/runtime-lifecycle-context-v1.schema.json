@@ -1,0 +1,193 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:axonllm:runtime-lifecycle-context:v1",
+  "title": "AxonLLM runtime lifecycle context v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "operation",
+    "account_id",
+    "partition",
+    "region",
+    "source_revision",
+    "deployment_plan_id",
+    "deployment_descriptor_id",
+    "current_state",
+    "desired_state",
+    "network_mode",
+    "runtime",
+    "managed_network",
+    "retained_stacks",
+    "release_evidence_ids",
+    "last_known_good_configuration_sha256",
+    "rollback_window_hours"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "operation": {"enum": ["park", "resume"]},
+    "account_id": {"type": "string", "pattern": "^[0-9]{12}$"},
+    "partition": {"enum": ["aws", "aws-cn", "aws-us-gov"]},
+    "region": {
+      "type": "string",
+      "pattern": "^[a-z]{2,8}(?:-[a-z0-9]+)+-[0-9]+$"
+    },
+    "source_revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "deployment_plan_id": {"$ref": "#/$defs/sha256"},
+    "deployment_descriptor_id": {"$ref": "#/$defs/sha256"},
+    "current_state": {"enum": ["active", "parked"]},
+    "desired_state": {"enum": ["active", "parked"]},
+    "network_mode": {"enum": ["existing", "managed", "public"]},
+    "runtime": {"$ref": "#/$defs/runtime_stack"},
+    "managed_network": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/lifecycle_stack"}
+      ]
+    },
+    "retained_stacks": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {"$ref": "#/$defs/retained_stack"}
+    },
+    "release_evidence_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}$"
+      }
+    },
+    "last_known_good_configuration_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "rollback_window_hours": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 168
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "stack_name": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9-]{0,127}$"
+    },
+    "change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logical_id",
+        "resource_type",
+        "action",
+        "replacement"
+      ],
+      "properties": {
+        "logical_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9]{0,254}$"
+        },
+        "resource_type": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9]+(?:::[A-Za-z0-9]+){1,2}$"
+        },
+        "action": {"enum": ["Add", "Remove"]},
+        "replacement": {"const": "NotApplicable"}
+      }
+    },
+    "lifecycle_stack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stack_name",
+        "active_template_sha256",
+        "parked_template_sha256",
+        "current_stack_state_sha256",
+        "change_set_arn",
+        "change_set_status",
+        "execution_status",
+        "changes"
+      ],
+      "properties": {
+        "stack_name": {"$ref": "#/$defs/stack_name"},
+        "active_template_sha256": {"$ref": "#/$defs/sha256"},
+        "parked_template_sha256": {"$ref": "#/$defs/sha256"},
+        "current_stack_state_sha256": {"$ref": "#/$defs/sha256"},
+        "change_set_arn": {
+          "type": "string",
+          "pattern": "^arn:(?:aws|aws-cn|aws-us-gov):cloudformation:[a-z0-9-]+:[0-9]{12}:changeSet/[A-Za-z0-9._-]+/[0-9a-fA-F-]{36}$"
+        },
+        "change_set_status": {"const": "CREATE_COMPLETE"},
+        "execution_status": {"const": "AVAILABLE"},
+        "changes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/change"}
+        }
+      }
+    },
+    "runtime_stack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stack_name",
+        "active_template_sha256",
+        "parked_template_sha256",
+        "current_stack_state_sha256",
+        "change_set_arn",
+        "change_set_status",
+        "execution_status",
+        "changes",
+        "external_state_mode",
+        "image_reference"
+      ],
+      "properties": {
+        "stack_name": {"$ref": "#/$defs/stack_name"},
+        "active_template_sha256": {"$ref": "#/$defs/sha256"},
+        "parked_template_sha256": {"$ref": "#/$defs/sha256"},
+        "current_stack_state_sha256": {"$ref": "#/$defs/sha256"},
+        "change_set_arn": {
+          "type": "string",
+          "pattern": "^arn:(?:aws|aws-cn|aws-us-gov):cloudformation:[a-z0-9-]+:[0-9]{12}:changeSet/[A-Za-z0-9._-]+/[0-9a-fA-F-]{36}$"
+        },
+        "change_set_status": {"const": "CREATE_COMPLETE"},
+        "execution_status": {"const": "AVAILABLE"},
+        "changes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/change"}
+        },
+        "external_state_mode": {"const": true},
+        "image_reference": {
+          "type": "string",
+          "pattern": "^[^\\s@]+@sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "retained_stack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "stack_name", "stack_state_sha256"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "application-state",
+            "control-plane",
+            "identity",
+            "workers"
+          ]
+        },
+        "stack_name": {"$ref": "#/$defs/stack_name"},
+        "stack_state_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

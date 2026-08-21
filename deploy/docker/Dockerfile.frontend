@@ -6,7 +6,7 @@
 # NOTE: VITE_API_URL is baked into the bundle at build time and is called from
 # the user's BROWSER, so it must be reachable from the browser (e.g. the
 # published host port of the backend), not from inside the container network.
-FROM node:20-alpine AS build
+FROM node:24.16.0-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd AS build
 WORKDIR /app
 COPY control-plane/frontend/package.json control-plane/frontend/package-lock.json* ./
 RUN npm ci
@@ -15,7 +15,7 @@ ARG VITE_API_URL=http://localhost:8400
 ENV VITE_API_URL=$VITE_API_URL
 RUN npm run build
 
-FROM nginx:alpine
+FROM nginx:1.31.1-alpine@sha256:8b1e78743a03dbb2c95171cc58639fef29abc8816598e27fb910ed2e621e589a
 COPY --from=build /app/dist /usr/share/nginx/html
 # SPA routing: serve index.html for unknown paths so client-side routes work.
 #
@@ -35,7 +35,7 @@ RUN printf 'server {\n\
 
 # Run as the image's own non-root nginx user (uid 101) rather than root.
 #
-# Upstream nginx:alpine starts its master as root and only drops workers to
+# Upstream nginx Alpine images start their master as root and only drop workers to
 # `nginx`, so the master keeps root for the lifetime of the container. Several
 # things have to change for the master itself to run unprivileged:
 #

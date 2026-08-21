@@ -1,0 +1,391 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:axonllm:deployment-config:v1",
+  "title": "AxonLLM AgentCore deployment configuration v1",
+  "description": "Non-secret topology and lifecycle configuration for an AxonLLM AgentCore deployment.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "target",
+    "deployment_profile",
+    "region",
+    "network",
+    "control_plane",
+    "identity",
+    "runtime"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "target": {
+      "const": "agentcore"
+    },
+    "deployment_profile": {
+      "enum": [
+        "development",
+        "production"
+      ]
+    },
+    "region": {
+      "type": "string",
+      "pattern": "^[a-z]{2,8}(?:-[a-z0-9]+)+-[0-9]+$"
+    },
+    "network": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/existing_network"
+        },
+        {
+          "$ref": "#/$defs/managed_network"
+        },
+        {
+          "$ref": "#/$defs/public_network"
+        }
+      ]
+    },
+    "control_plane": {
+      "$ref": "#/$defs/control_plane"
+    },
+    "identity": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/managed_cognito"
+        },
+        {
+          "$ref": "#/$defs/existing_oidc"
+        }
+      ]
+    },
+    "runtime": {
+      "$ref": "#/$defs/runtime"
+    }
+  },
+  "$defs": {
+    "existing_network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "vpc_id",
+        "private_subnet_ids",
+        "security_group_ids",
+        "egress"
+      ],
+      "properties": {
+        "mode": {
+          "const": "existing"
+        },
+        "vpc_id": {
+          "$ref": "#/$defs/vpc_id"
+        },
+        "private_subnet_ids": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/subnet_id"
+          }
+        },
+        "security_group_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/security_group_id"
+          }
+        },
+        "egress": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/endpoints_only"
+            },
+            {
+              "$ref": "#/$defs/existing_egress"
+            }
+          ]
+        }
+      }
+    },
+    "managed_network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "vpc_cidr",
+        "availability_zone_ids",
+        "egress"
+      ],
+      "properties": {
+        "mode": {
+          "const": "managed"
+        },
+        "vpc_cidr": {
+          "type": "string"
+        },
+        "availability_zone_ids": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9]+-az[0-9]+$"
+          }
+        },
+        "egress": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/endpoints_only"
+            },
+            {
+              "$ref": "#/$defs/managed_nat"
+            }
+          ]
+        }
+      }
+    },
+    "public_network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "mode": {
+          "const": "public"
+        }
+      }
+    },
+    "endpoints_only": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "mode": {
+          "const": "endpoints-only"
+        },
+        "services": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9.-]+$"
+          }
+        }
+      }
+    },
+    "existing_egress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "mode": {
+          "const": "existing-egress"
+        },
+        "approved_https_prefix_list_id": {
+          "$ref": "#/$defs/prefix_list_id"
+        }
+      }
+    },
+    "managed_nat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "nat_gateway_count",
+        "cost_acknowledgement",
+        "approved_https_prefix_list_id"
+      ],
+      "properties": {
+        "mode": {
+          "const": "managed-nat"
+        },
+        "nat_gateway_count": {
+          "enum": [
+            1,
+            2
+          ]
+        },
+        "cost_acknowledgement": {
+          "const": true
+        },
+        "approved_https_prefix_list_id": {
+          "$ref": "#/$defs/prefix_list_id"
+        }
+      }
+    },
+    "control_plane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "access",
+        "hostname"
+      ],
+      "properties": {
+        "enabled": {
+          "const": true
+        },
+        "access": {
+          "enum": [
+            "public-authenticated",
+            "private-enterprise"
+          ]
+        },
+        "hostname": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/generated_hostname"
+            },
+            {
+              "$ref": "#/$defs/custom_hostname"
+            }
+          ]
+        }
+      }
+    },
+    "generated_hostname": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "mode": {
+          "const": "generated"
+        }
+      }
+    },
+    "custom_hostname": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "domain_name",
+        "certificate_arn"
+      ],
+      "properties": {
+        "mode": {
+          "const": "custom"
+        },
+        "domain_name": {
+          "type": "string",
+          "pattern": "^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+        },
+        "certificate_arn": {
+          "type": "string",
+          "pattern": "^arn:(?:aws|aws-cn|aws-us-gov):acm:[a-z0-9-]+:[0-9]{12}:certificate/[0-9a-f-]+$"
+        },
+        "hosted_zone_id": {
+          "type": "string",
+          "pattern": "^Z[A-Z0-9]+$"
+        }
+      }
+    },
+    "managed_cognito": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "mode": {
+          "const": "managed-cognito"
+        }
+      }
+    },
+    "existing_oidc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "issuer",
+        "audiences",
+        "browser_client_id"
+      ],
+      "properties": {
+        "mode": {
+          "const": "existing-oidc"
+        },
+        "issuer": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "audiences": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "browser_client_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "providers"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "active",
+            "parked"
+          ]
+        },
+        "providers": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "ai21",
+              "anthropic",
+              "azure_openai",
+              "bedrock",
+              "bedrock-mantle",
+              "cohere",
+              "fireworks",
+              "google_ai",
+              "groq",
+              "openai",
+              "together",
+              "vertex_ai",
+              "xai"
+            ]
+          }
+        }
+      }
+    },
+    "vpc_id": {
+      "type": "string",
+      "pattern": "^vpc-(?:[0-9a-f]{8}|[0-9a-f]{17})$"
+    },
+    "subnet_id": {
+      "type": "string",
+      "pattern": "^subnet-(?:[0-9a-f]{8}|[0-9a-f]{17})$"
+    },
+    "security_group_id": {
+      "type": "string",
+      "pattern": "^sg-(?:[0-9a-f]{8}|[0-9a-f]{17})$"
+    },
+    "prefix_list_id": {
+      "type": "string",
+      "pattern": "^pl-(?:[0-9a-f]{8}|[0-9a-f]{17})$"
+    }
+  }
+}

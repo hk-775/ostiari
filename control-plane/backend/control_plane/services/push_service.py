@@ -8,8 +8,10 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from control_plane.env import configured_org_id
 from control_plane.models.database import Gateway, McpServer, Policy, Tool
 from control_plane.models.schemas import PushResponse, PushResult
+from control_plane.models.scoping import get_gateway
 
 log = logging.getLogger("control_plane.push")
 
@@ -26,9 +28,18 @@ class PushService:
     def __init__(self, timeout: float = 10.0) -> None:
         self._timeout = timeout
 
-    async def push_to_gateway(self, db: AsyncSession, gateway_id: str) -> PushResult:
+    async def push_to_gateway(
+        self,
+        db: AsyncSession,
+        gateway_id: str,
+        org: str | None = None,
+    ) -> PushResult:
         """Build and push full config to a single gateway."""
-        gateway = await db.get(Gateway, gateway_id)
+        gateway = await get_gateway(
+            db,
+            gateway_id,
+            org or configured_org_id(),
+        )
         if gateway is None:
             return PushResult(gateway_id=gateway_id, status="error", message="Gateway not found")
 
@@ -67,7 +78,7 @@ class PushService:
 
         results = []
         for gateway in gateways:
-            r = await self.push_to_gateway(db, gateway.id)
+            r = await self.push_to_gateway(db, gateway.id, gateway.org_id)
             results.append(r)
 
         succeeded = sum(1 for r in results if r.status == "success")

@@ -4,7 +4,7 @@
 
 ### Docker Compose (Local Development)
 
-Full local stack with gateway, control-plane backend + frontend, and Redis:
+Full local stack with gateway, control-plane backend + frontend, and Valkey:
 
 ```bash
 cd deploy/docker
@@ -38,7 +38,10 @@ Helm, or ECS.
 
 The checked-in manifests are production templates, not ready-to-apply defaults.
 Replace every `REPLACE_*` value, publish digest-pinned images, and create the
-referenced `ostiari-secrets` keys before applying them:
+referenced `ostiari-secrets` keys before applying them. The control plane runs
+two replicas and requires `database-url` plus a TLS/authenticated `redis-url`;
+The bundled Valkey service provides the Redis protocol used for live fan-out,
+rate limits, singleton work, durable outboxes, and readiness:
 
 ```bash
 kubectl apply -f deploy/kubernetes/gateway-sidecar.yaml
@@ -109,19 +112,23 @@ sam deploy --guided
 | `OSTIARI_PORT` | `8421` | Gateway listen port |
 | `OSTIARI_ADVERTISE_HOST` | _(bind host)_ | Host the control plane pushes config back to. Set this to the gateway's network-reachable name (compose service, k8s Service DNS, ECS service). Without it, config pushes may not reach the gateway. |
 | `OSTIARI_ENV` | _(unset = dev)_ | `production` (or `prod`) activates a fatal startup posture check. The gateway refuses missing machine credentials, OIDC issuer/audience, Redis, fail-closed control-plane handling, or simulated settlement. |
-| `OSTIARI_TENANCY_MODE` / `OSTIARI_ORG_ID` | `multi` / `default` in dev | Production requires `single` and an explicit organization matching the control plane. Agent tokens must carry the same `tenant_id`, `custom:tenant_id`, `org_id`, or `custom:org` claim. |
+| `OSTIARI_TENANCY_MODE` / `OSTIARI_ORG_ID` | `multi` / `default` in dev | Each production gateway is assigned to one explicit organization with `single`; agent tokens must carry that organization. The shared control plane may run in `multi`. |
 | `OSTIARI_FAIL_CLOSED_ON_CP_LOSS` | _(implied by `OSTIARI_ENV`)_ | Explicit override for the deny-by-default-on-registration-failure behavior. Set `true`/`false` to decide independently of `OSTIARI_ENV`. |
 | `OSTIARI_SSRF_ALLOW` | _(none)_ | Comma-separated hosts/CIDRs exempt from the production private-IP block, for tools that legitimately live on internal addresses. Link-local and metadata addresses (169.254.169.254) are blocked in **every** environment and cannot be allowlisted. |
 | `OSTIARI_HITL` | `off` | `on` enables human-in-the-loop for the *intervene* tier: a mid-band call returns **202** with an approval id instead of executing, and the caller re-submits with `X-Approval-Id` once a human approves. **Set this in production** — see below. |
-| `OSTIARI_REQUIRE_AXON` | _(unset)_ | Refuse to start when AxonLLM can't embed. Unset, the gateway warns and serves LLM traffic with **no routing governance and no token cost tracking** (`GET /health` → `llm_router` reports it). Not shipped on in the manifests here — AxonLLM is a separate repository, so a gateway that only proxies tools shouldn't need it installed. Set it if you route LLM calls. |
+| `OSTIARI_REQUIRE_AXON` | _(unset)_ | Apply the production fail-closed embedded-router contract outside production. The gateway image already contains pinned AxonLLM `v0.3.1`; `OSTIARI_ENV=production` makes it mandatory whenever the LLM module is active. Tool-only gateways may leave the module disabled. |
 | `OSTIARI_CONFIG_ADMIN_KEY` | _(none)_ | Required in production and must be at least 32 characters. Protects gateway configuration reads and writes. |
-| `OSTIARI_SERVICE_TOKEN` | _(none)_ | Shared machine credential sent to the control plane for registration, heartbeat, HITL, payment/quota events, and spend persistence. Set the same value on the gateway and control plane. |
-| `OSTIARI_INGEST_KEY` | _(none)_ | Shared trace/payment ingest credential. Required in production and sent by the gateway as `X-Ingest-Key`. |
+| `OSTIARI_WORKLOAD_TOKEN_FILE` | _(none)_ | Path to a short-lived projected workload token. The file is reread for every control-plane request so rotation does not require a restart. Configure this **or** OAuth client credentials. |
+| `OSTIARI_WORKLOAD_TOKEN_URL` / `OSTIARI_WORKLOAD_CLIENT_ID` | _(none)_ | Per-gateway OAuth 2.0 client-credentials endpoint and client id. Required for OAuth mode; the gateway refreshes access tokens before expiry. Production requires an HTTPS token URL. |
+| `OSTIARI_WORKLOAD_CLIENT_SECRET` / `_FILE` | _(none)_ | Per-gateway OAuth client secret, injected directly or read from a mounted file. Configure exactly one. Do not reuse one client across gateway ids. |
+| `OSTIARI_WORKLOAD_SCOPE` / `OSTIARI_WORKLOAD_TOKEN_AUDIENCE` | _(none)_ | Optional token-request scope and audience. The audience must match the control plane's `OSTIARI_WORKLOAD_OIDC_AUDIENCE`. |
+| `OSTIARI_WORKLOAD_CLIENT_AUTH_METHOD` | `client_secret_basic` | OAuth token endpoint authentication: `client_secret_basic` or `client_secret_post`. |
+| `OSTIARI_SERVICE_TOKEN` / `OSTIARI_INGEST_KEY` | _(none)_ | Legacy local-development compatibility only. Production startup rejects both fleet-wide shared credentials. |
 | `OSTIARI_GATEWAY_AUTH` | `off` | Must be `required` in production. Authentication covers tool, validation, LLM shim, native invoke, model metadata, MCP, and A2A ingress. |
 | `OSTIARI_OIDC_ISSUER` / `OSTIARI_OIDC_AUDIENCE` | _(none)_ | HTTPS token issuer and exact audience required for gateway agent authentication in production. Verified token claims determine the effective agent identity. |
 | `OSTIARI_GATEWAY_RATE_LIMIT_RPM` | `0` | Must be a positive integer in production. Redis makes the per-caller window fleet-wide. |
-| `OSTIARI_REQUIRE_REDIS` | _(false)_ | Must be true in production. Redis startup/runtime failure denies shared enforcement and makes `/ready` return 503. |
-| `REDIS_ENDPOINT` | _(none)_ | Redis host for fleet-wide rate-limit / budget / wallet state |
+| `OSTIARI_REQUIRE_REDIS` | _(false)_ | Must be true in production. Redis startup/runtime failure denies shared enforcement and durable event delivery, and makes `/ready` return 503. |
+| `REDIS_ENDPOINT` | _(none)_ | Redis host for fleet-wide rate-limit / budget / wallet state and gateway-scoped trace, cost, payment, and budget-alert outboxes |
 | `REDIS_PORT` | `6379` | Redis port |
 | `OSTIARI_REDIS_URL` | _(none)_ | Full URL alternative to the two above (`redis://[:pass@]host:port/db`); checked first |
 | `OSTIARI_REDIS_PREFIX` | `ostiari` | Key namespace, so several gateways or tenants can share one Redis |
@@ -139,15 +146,17 @@ sam deploy --guided
 | `DATABASE_URL` | SQLite in `OSTIARI_DATA_DIR` | `sqlite+aiosqlite:///…` (dev) or `postgresql+asyncpg://user:pass@host:5432/ostiari` (prod) |
 | `OSTIARI_DATA_DIR` | `control-plane/data` | Development-only SQLite directory and location checked for a legacy `state.json` import. Production uses PostgreSQL and requires no backend data volume. |
 | `OSTIARI_NO_DEMO` | _(unset)_ | Set to `1` to start with an empty control plane (no seeded demo data) |
-| `OSTIARI_TENANCY_MODE` / `OSTIARI_ORG_ID` | `multi` in dev | Production currently requires `single` and an explicit organization ID until every legacy global key has a composite tenant key. |
+| `OSTIARI_TENANCY_MODE` / `OSTIARI_ORG_ID` | `single` / `default` | `single` fixes all requests to `OSTIARI_ORG_ID`; `multi` requires explicit tenant claims on user and workload tokens. The production Kubernetes template sets `multi` explicitly. |
 | `OSTIARI_GATEWAY_CALLBACK_ALLOW` | _(none)_ | Required in production. Comma-separated gateway callback hostnames or CIDRs; registration and operator CRUD reject destinations outside it, and metadata/link-local addresses are always blocked. |
 | `OSTIARI_CORS_ORIGINS` | _(all, no creds)_ | Comma-separated allowed origins (enables credentialed CORS) |
 | `OSTIARI_REQUIRE_AUTH` | _(unset)_ | Set to require API authentication |
 | `OSTIARI_ENV` | _(unset = dev)_ | `production` activates a fatal posture check requiring authentication, no demo seed, PostgreSQL, strong machine secrets, durable encryption, and explicit HTTPS origins. |
 | `OSTIARI_ADMIN_PASSWORD` | _(dev seed)_ | **Required in production.** Without it the control plane refuses to seed an admin at all. |
 | `OSTIARI_JWT_SECRET` | _(dev default)_ | **Required in production**, ≥32 chars. Startup fails otherwise. |
-| `OSTIARI_INGEST_KEY` | _(none)_ | Gates `POST /api/traces/ingest` with an `X-Ingest-Key` header; unset in production, every trace ingest is 401. **Read the caveats before setting it** — see below. |
-| `OSTIARI_SERVICE_TOKEN` | _(none)_ | Shared machine credential for the restricted gateway lifecycle/ingest routes. Required when `OSTIARI_REQUIRE_AUTH=true`; set the same value on every trusted gateway. |
+| `OSTIARI_WORKLOAD_OIDC_ISSUER` / `OSTIARI_WORKLOAD_OIDC_AUDIENCE` | _(none)_ | Dedicated workload-token issuer and exact audience. Both are required in production; the issuer must use HTTPS. |
+| `OSTIARI_WORKLOAD_OIDC_JWKS_URL` | issuer discovery | Optional explicit JWKS endpoint for issuers whose discovery document does not expose the correct key URL. |
+| `OSTIARI_WORKLOAD_GATEWAY_ID_CLAIM` | `gateway_id` | Optional claim name that binds a token directly to a gateway id. Standard OAuth client-credentials tokens may omit it; the verified issuer/subject pair is still bound immutably to one gateway on first registration. |
+| `OSTIARI_SERVICE_TOKEN` / `OSTIARI_INGEST_KEY` | _(none)_ | Legacy local-development compatibility only. The production posture check rejects both values. |
 | `OSTIARI_CONFIG_ADMIN_KEY` | _(none)_ | Credential the control plane sends on gateway `/config/*` calls. Set the same value on the control plane and gateways. |
 | `OSTIARI_GATEWAY_AGENT_TOKEN` / `OSTIARI_GATEWAY_AGENT_ID` | _(none)_ | Dedicated agent credential used for control-plane initiated execution. Required in production; browser JWTs are never forwarded to gateways. |
 | `OSTIARI_SANDBOX_GATEWAY_TOKEN` | _(caller bearer)_ | Optional dedicated bearer credential for Sandbox Code tool calls to protected gateways. Store it as a secret. |
@@ -159,18 +168,18 @@ sam deploy --guided
 | `OSTIARI_AUTH_MODE=oidc` + `OSTIARI_OIDC_*` | _(local tokens)_ | Direct IdP bearer-token validation for API clients. This is separate from dashboard SSO. |
 | `OSTIARI_PROXY_MAX_RESPONSE_BYTES` / `OSTIARI_PROXY_TIMEOUT_SECONDS` | `1048576` / `30` | Byte cap and absolute deadline for dashboard-to-gateway proxy responses. |
 
-The gateway sends `OSTIARI_INGEST_KEY` as `X-Ingest-Key`. Other gateway machine
-traffic uses `OSTIARI_SERVICE_TOKEN`; the service token is accepted only on the
-explicit lifecycle and ingest route allowlist, not on general control-plane APIs.
+Every production lifecycle and event request uses a short-lived workload Bearer
+token. On first registration the control plane binds the token's verified
+issuer/subject pair to that gateway row. Every subsequent heartbeat, config,
+approval, trace, cost, payment, quota-alert, and spend request must match that
+binding and the gateway id carried in the path or body. If the token includes
+the configured gateway-id claim, that claim must also match. JWKS/provider
+outages fail closed with a retryable 503.
 
 For dashboard SSO, leave `OSTIARI_AUTH_MODE` unset (`local`). The backend
 exchanges the authorization code, provisions or updates the local user, and
 issues an Ostiari JWT that the frontend validates before storing. Set
 `OSTIARI_AUTH_MODE=oidc` only when callers present IdP access tokens directly.
-
-In production, an empty trace view beats a poisoned one, so setting it is still
-defensible — but expect a blank dashboard, and don't read it as "ingest is
-authenticated."
 
 ## Secrets Management
 
@@ -183,8 +192,7 @@ kubectl create secret generic ostiari-secrets \
   --from-literal=admin-password='...' \
   --from-literal=encryption-key='...' \
   --from-literal=config-admin-key='...' \
-  --from-literal=service-token='...' \
-  --from-literal=ingest-key='...' \
+  --from-literal=workload-client-secret='one-client-secret-per-gateway' \
   --from-literal=gateway-agent-token='...' \
   --from-literal=redis-url='rediss://...' \
   --from-literal=oidc-client-id='...' \
@@ -280,10 +288,11 @@ definition environment arrays, or image layers.
 - **Settlement mode is explicit.** Development may use `simulated`. Production
   accepts `off` or `live`; `off` uses a disabled backend that cannot debit the
   demo ledger if payment policy is accidentally enabled.
-- **Control-plane replica limit remains one for this release.** Runtime state,
-  approvals, traces, SSO state, and offline updates are durable in PostgreSQL,
-  but configuration hot caches do not yet use cross-replica invalidation. The
-  production template therefore uses one rolling-replaced replica. Do not scale
-  it horizontally until LISTEN/NOTIFY or equivalent cache invalidation ships.
+- **Control-plane replicas are coordinated.** PostgreSQL is authoritative for
+  runtime configuration, approvals, traces, SSO state, and offline updates.
+  Each runtime-state transaction advances a tenant/namespace revision; replicas
+  poll only changed namespaces. Redis provides live trace fan-out, atomic
+  session roots, singleton health-sweep leases, and fleet-wide rate limits.
+  Production startup and `/api/ready` fail closed when Redis is unavailable.
 - **Authenticating `/config`.** With `OSTIARI_CONFIG_ADMIN_KEY` set, callers
   present it as `X-Config-Admin-Key: <key>` or `Authorization: Bearer <key>`.

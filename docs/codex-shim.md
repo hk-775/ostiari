@@ -1,67 +1,126 @@
-# Codex CLI shim — governed `/v1/chat/completions`
+# OpenAI compatibility and Codex CLI status
 
-The gateway exposes an OpenAI-compatible **`POST /v1/chat/completions`** endpoint,
-so OpenAI Codex CLI (and any OpenAI-SDK client) can route through Ostiari for
-governance and multi-provider routing — the OpenAI-format sibling of the Claude
-Code `/v1/messages` shim.
+Ostiari exposes two governed OpenAI-compatible endpoints:
 
-## Point Codex at it
+| Endpoint | Contract |
+|---|---|
+| `POST /v1/chat/completions` | OpenAI Chat Completions compatibility for SDKs and applications that still use that API. |
+| `POST /v1/responses` | Stateless Responses compatibility for text, image-URL, and function-tool input. |
 
-Codex CLI uses a custom provider in `~/.codex/config.toml`:
+Both endpoints use the same authorization, content-security, quota, embedded
+AxonLLM routing, cost, and trace pipeline.
 
-```toml
-model_provider = "ostiari"
-model = "gpt-4o"                       # or any model your gateway routes to
+## Codex CLI compatibility
 
-[model_providers.ostiari]
-name = "Ostiari"
-base_url = "http://localhost:8421/v1"  # your Ostiari gateway + /v1
-env_key = "OSTIARI_KEY"                # any value; the gateway holds real creds
-wire_api = "chat"
+Ostiari supports **Codex CLI 0.148.0** through the reviewed profile in
+[`config/codex`](../config/codex). The profile uses the Responses wire API and
+deliberately advertises no reasoning, verbosity, hosted-search, service-tier,
+or stateful-conversation capability. This prevents Codex from sending fields
+whose semantics Ostiari cannot preserve.
+
+Protected CI runs the exact CLI version against Ostiari's real Responses
+translator and typed SSE emitter. The gate verifies:
+
+1. stateless streamed request shape;
+2. a function-call and `function_call_output` round trip;
+3. final typed text events;
+4. OpenAI-shaped error propagation; and
+5. prompt cancellation while a stream is active.
+
+This is a versioned compatibility contract, not a claim that arbitrary Codex
+versions or configurations work. A Codex upgrade requires updating the pinned
+catalog and passing the same protected conformance gate.
+
+The profile follows the official
+[Codex configuration reference](https://developers.openai.com/codex/config-reference)
+and [model configuration](https://developers.openai.com/codex/models)
+contracts.
+
+### Configure Codex 0.148.0
+
+1. Copy [`config/codex/config.toml.example`](../config/codex/config.toml.example)
+   into a dedicated Codex home or profile.
+2. Replace the example gateway URL and the absolute
+   `model_catalog_json` path.
+3. Set `OSTIARI_CODEX_TOKEN` to an Ostiari agent bearer token.
+4. Verify the client version:
+
+   ```bash
+   codex --version
+   # codex-cli 0.148.0
+   ```
+
+The gateway URL in the example ends in `/v1`; Codex appends `/responses`.
+
+Stateful continuation remains unsupported. Ostiari rejects
+`previous_response_id`, stored conversations, background work, hosted prompts,
+model reasoning configuration, structured output, and unsupported include or
+service-tier fields. Codex `0.148.0` may request
+`include=["reasoning.encrypted_content"]` with an empty reasoning object or
+with `reasoning.context="all_turns"`. Ostiari accepts those shapes as opaque
+stateless transport metadata. It does not inspect, persist, generate, or return
+reasoning content. Failing closed on every actual reasoning request is
+intentional.
+
+The shipped profile uses the standard Responses transport and exposes only
+direct function tools. It disables patch/freeform tools, multi-agent
+namespaces, and hosted web search because Ostiari's embedded Axon router cannot
+preserve those private Codex tool semantics. Both values of
+`parallel_tool_calls` are supported; when it is false, Ostiari rejects any
+governed upstream response containing more than one function call.
+
+## Chat Completions clients
+
+Clients that support Chat Completions can use:
+
+```text
+POST http://gateway:8421/v1/chat/completions
 ```
 
-Codex then calls `POST http://localhost:8421/v1/chat/completions`. The gateway
-holds the real provider credentials; the client sends no real key.
+The gateway holds provider credentials. Callers identify themselves with the
+deployment's verified bearer token; optional attribution headers are:
 
-Optional headers Ostiari reads for attribution:
-- `X-Agent-Id` — which agent/principal this traffic belongs to
-- `X-Session-Id`, or `x-codex-session-id` as a fallback — groups a session's calls in traces
-- `X-Framework` — defaults to `codex`
+- `X-Agent-Id`
+- `X-Session-Id`
+- `X-Framework`
 
-## What Ostiari does per call
+The response is an OpenAI `ChatCompletion`. When `stream: true`, Ostiari emits
+valid `chat.completion.chunk` events ending in `data: [DONE]`. Provider output
+is currently buffered before those events are emitted.
 
-Same gate chain as the messages shim, in the OpenAI wire format (no cross-format
-translation needed — AxonLLM is OpenAI-shaped throughout):
+## Stateless Responses clients
 
-1. **Agent authorization and quota** — endpoint grant plus per-agent model/provider, rolling RPM, projected budget reservation, and max-token cap (`check_llm`). Authorization failures return **403**; rate/budget failures return **429**.
-2. **Injection / PII** — detection-only and fail-closed: it blocks on a detection, and also blocks when PII is *present* rather than redacting it, since the redaction would desynchronize Codex's own conversation state. Failure → **403**.
-3. **Quota** — Ostiari's own budget ceiling, plus the rate limit and model allowlist from the pushed quota. The cost estimate is booked as an in-flight reservation so concurrent calls can't all pass on a stale spend total. Failure → **429**.
-4. **Routing** — AxonLLM selects model + provider (smart routing when the client's model isn't in the registry), health-aware fallback, cost tracking. Single-response mode — ensemble stays on `/invoke`.
-5. **Trace** — one `llm.chat` event to the control plane (model, tier, tokens, routed flag).
+The implemented Responses subset supports:
 
-Returns a standard OpenAI **ChatCompletion** (or an OpenAI **SSE stream** —
-`chat.completion.chunk` deltas ending in `data: [DONE]`) when `stream: true`.
+- string input or a list of message/function items;
+- `instructions`;
+- text and image-URL content;
+- function definitions, forced function choice, calls, and outputs;
+- `model`, `max_output_tokens`, `temperature`, and `top_p`;
+- non-streaming Responses objects;
+- typed Responses SSE events with monotonic sequence numbers.
 
-## Notes / limitations
+It explicitly rejects:
 
-- **Per-agent routing policies do not apply here.** `ModelRouter.select_model` —
-  which is what reads the routing policies set on the control plane's Agents page,
-  along with A/B experiments and explicit routing rules — is called only from the
-  `/v1/messages` shim and the `/invoke` executor. On this endpoint the model comes
-  from the client's request and then from AxonLLM's own smart routing. See
-  [agent-llm-routing.md](agent-llm-routing.md).
-- Streaming is buffered-then-chunked (correct OpenAI SSE events, not token-by-token from upstream) — same tradeoff as the shim's cross-provider path.
-- Tool calls route **through** AxonLLM, which translates the specs into the target
-  provider's dialect and translates the call back into OpenAI `tool_calls`; Codex
-  runs the tools in its own loop. Since the wire format here is already OpenAI's,
-  a call that lands on an OpenAI-style provider is a pass-through — one that lands
-  on Bedrock, Anthropic, Gemini, or Cohere is translated. See
-  [axon-router.md](axon-router.md#tool-calls-route-through-axonllm).
-- Requires the embedded AxonLLM router (`src.gateway`). The gateway itself boots
-  without it (it logs a warning; set `OSTIARI_REQUIRE_AXON=1` to refuse to start
-  instead, which is the right setting in production), but *this endpoint* is
-  unusable without it — it returns 503 when the router is absent or goes down
-  mid-flight. `GET /health` reports `llm_router` for the machine-readable version.
-  Unlike `/invoke` and `/v1/messages` it has **no** direct-provider fallback, so a
-  tool-bearing call against an AxonLLM too old to carry tool specs returns **501**
-  rather than a fluent answer from a model that was never told the tools exist.
+- `previous_response_id`, `conversation`, and prompt references;
+- `store=true` and background execution;
+- model reasoning and structured-output configuration;
+- file-backed images;
+- non-function tools;
+- include fields other than the exact Codex encrypted-reasoning transport
+  field, plus unsupported service-tier and truncation modes.
+
+## Governance path
+
+Every supported call passes through:
+
+1. verified agent identity and endpoint authorization;
+2. model/provider authorization and per-agent caps;
+3. prompt-injection and PII enforcement;
+4. gateway rate and budget reservation;
+5. the bundled AxonLLM router;
+6. usage reconciliation, cost reporting, and trace reporting.
+
+Production LLM traffic never bypasses AxonLLM. Router initialization or
+mid-flight failures return an error rather than falling back to a direct,
+ungoverned provider request.

@@ -1,0 +1,25 @@
+# Copy this file to a dedicated Codex profile and replace both absolute paths.
+# The matching model catalog deliberately disables capabilities that Ostiari's
+# stateless Responses endpoint does not preserve.
+
+model = "ostiari-codex"
+model_provider = "ostiari"
+model_catalog_json = "/absolute/path/to/ostiari/config/codex/model-catalog.json"
+model_reasoning_summary = "none"
+web_search = "disabled"
+
+[features]
+multi_agent = false
+multi_agent_v2 = false
+
+[model_providers.ostiari]
+name = "Ostiari"
+base_url = "https://gateway.example.com/v1"
+env_key = "OSTIARI_CODEX_TOKEN"
+wire_api = "responses"
+request_max_retries = 2
+stream_max_retries = 2
+stream_idle_timeout_ms = 120000
+requires_openai_auth = false
+supports_websockets = false
+supports_standalone_web_search = false

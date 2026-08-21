@@ -1,0 +1,524 @@
+models:
+- name: claude-opus
+  description: Claude Opus 4
+  capabilities: [chat, vision, tools]
+  routing_strategy: least-latency
+  providers:
+  - provider: bedrock
+    model_id: us.anthropic.claude-opus-4-6-v1
+    weight: 0.5
+    fallback_order: 0
+  - provider: anthropic
+    model_id: claude-opus-4-8
+    weight: 0.5
+    fallback_order: 1
+- name: claude-sonnet
+  description: Claude Sonnet 4
+  capabilities: [chat, vision, tools]
+  routing_strategy: cost-optimized
+  providers:
+  - provider: anthropic
+    model_id: claude-sonnet-4-6
+    weight: 0.5
+    fallback_order: 1
+  - provider: bedrock
+    model_id: us.anthropic.claude-sonnet-4-6
+    weight: 0.5
+    fallback_order: 0
+- name: claude-haiku
+  description: Claude Haiku 4.5
+  capabilities: [chat, vision, tools]
+  routing_strategy: round-robin
+  providers:
+  - provider: anthropic
+    model_id: claude-haiku-4-5-20251001
+    weight: 0.5
+    fallback_order: 1
+  - provider: bedrock
+    model_id: us.anthropic.claude-haiku-4-5-20251001-v1:0
+    weight: 0.5
+    fallback_order: 0
+- name: gpt-5.5
+  description: GPT-5.5
+  capabilities: [chat, streaming, tools]
+  routing_strategy: round-robin
+  providers:
+  - provider: bedrock-mantle
+    model_id: openai.gpt-5.5
+    weight: 1.0
+    fallback_order: 0
+# Served only by OpenAI's /v1/responses; Chat Completions answers 400 "This is
+# not a chat model". The openai adapter routes the -pro tier there automatically.
+- name: gpt-5.5-pro
+  description: GPT-5.5 Pro (Responses API)
+  capabilities: [chat, streaming, tools, reasoning]
+  routing_strategy: round-robin
+  providers:
+  - provider: openai
+    model_id: gpt-5.5-pro
+    weight: 1.0
+    fallback_order: 0
+- name: gpt-5.4
+  description: GPT-5.4
+  capabilities: [chat, streaming, tools]
+  routing_strategy: round-robin
+  providers:
+  - provider: bedrock-mantle
+    model_id: openai.gpt-5.4
+    weight: 1.0
+    fallback_order: 0
+- name: gpt-oss-120b-mantle
+  description: GPT-OSS 120B (Mantle)
+  capabilities: [chat, streaming, tools]
+  routing_strategy: round-robin
+  providers:
+  - provider: bedrock-mantle
+    model_id: openai.gpt-oss-120b
+    weight: 1.0
+    fallback_order: 0
+- name: deepseek-v3-mantle
+  description: DeepSeek V3.1 (Mantle)
+  capabilities: [chat, streaming]
+  routing_strategy: round-robin
+  providers:
+  - provider: bedrock-mantle
+    model_id: deepseek.v3.1
+    weight: 1.0
+    fallback_order: 0
+- name: qwen3-32b-mantle
+  description: Qwen3 32B (Mantle)
+  capabilities: [chat, streaming]
+  routing_strategy: round-robin
+  providers:
+  - provider: bedrock-mantle
+    model_id: qwen.qwen3-32b
+    weight: 1.0
+    fallback_order: 0
+- name: gpt-5.6-sol
+  description: GPT-5.6 Sol (Mantle)
+  capabilities: [chat, streaming, tools]
+  routing_strategy: round-robin
+  providers:
+  - provider: bedrock-mantle
+    model_id: openai.gpt-5.6-sol
+    weight: 1.0
+    fallback_order: 0
+- name: gpt-5.6-terra
+  description: GPT-5.6 Terra (Mantle)
+  capabilities: [chat, streaming, tools]
+  routing_strategy: round-robin
+  providers:
+  - provider: bedrock-mantle
+    model_id: openai.gpt-5.6-terra
+    weight: 1.0
+    fallback_order: 0
+- name: gpt-5.6-luna
+  description: GPT-5.6 Luna (Mantle)
+  capabilities: [chat, streaming, tools]
+  routing_strategy: round-robin
+  providers:
+  - provider: bedrock-mantle
+    model_id: openai.gpt-5.6-luna
+    weight: 1.0
+    fallback_order: 0
+- name: claude-sonnet-5
+  description: Claude Sonnet 5 (Mantle)
+  capabilities: [chat, vision, streaming, tools]
+  routing_strategy: round-robin
+  providers:
+  - provider: bedrock-mantle
+    model_id: anthropic.claude-sonnet-5
+    weight: 1.0
+    fallback_order: 0
+- name: claude-opus-4-8
+  description: Claude Opus 4.8 (Mantle)
+  capabilities: [chat, vision, streaming, tools]
+  routing_strategy: round-robin
+  providers:
+  - provider: bedrock-mantle
+    model_id: anthropic.claude-opus-4-8
+    weight: 1.0
+    fallback_order: 0
+- name: claude-haiku-4-5-mantle
+  description: Claude Haiku 4.5 (Mantle)
+  capabilities: [chat, vision, streaming]
+  routing_strategy: round-robin
+  providers:
+  - provider: bedrock-mantle
+    model_id: anthropic.claude-haiku-4-5
+    weight: 1.0
+    fallback_order: 0
+- name: gpt-4.1
+  description: GPT-4.1
+  capabilities: [chat, vision, streaming, tools]
+  routing_strategy: round-robin
+  providers:
+  - provider: openai
+    model_id: gpt-4.1
+    weight: 1.0
+    fallback_order: 0
+- name: gpt-4o
+  description: GPT-4o
+  capabilities: [chat, vision, streaming, tools]
+  routing_strategy: least-latency
+  providers:
+  - provider: openai
+    model_id: gpt-4o
+    weight: 1.0
+    fallback_order: 0
+  # Azure model_id is the deployment name. The shipped price assumes this
+  # deployment is Global Standard GPT-4o 2024-08-06; use a tenant override for
+  # any differently named, versioned, regional, or provisioned deployment.
+  - provider: azure_openai
+    model_id: gpt-4o
+    weight: 1.0
+    fallback_order: 1
+- name: gpt-4o-mini
+  description: GPT-4o Mini
+  capabilities: [chat, vision, streaming, tools]
+  routing_strategy: round-robin
+  providers:
+  - provider: openai
+    model_id: gpt-4o-mini
+    weight: 1.0
+    fallback_order: 0
+- name: o4-mini
+  description: o4 Mini (Reasoning)
+  capabilities: [chat, reasoning]
+  routing_strategy: weighted
+  providers:
+  - provider: openai
+    model_id: o4-mini
+    weight: 1.0
+    fallback_order: 0
+- name: o3
+  description: o3 (Reasoning)
+  capabilities: [chat, reasoning]
+  routing_strategy: round-robin
+  providers:
+  - provider: openai
+    model_id: o3
+    weight: 1.0
+    fallback_order: 0
+- name: nova-pro
+  description: Amazon Nova Pro
+  capabilities: [chat, vision]
+  routing_strategy: round-robin
+  providers:
+  - provider: bedrock
+    model_id: us.amazon.nova-pro-v1:0
+    weight: 1.0
+    fallback_order: 0
+- name: nova-lite
+  description: Amazon Nova Lite
+  capabilities: [chat]
+  routing_strategy: round-robin
+  providers:
+  - provider: bedrock
+    model_id: us.amazon.nova-lite-v1:0
+    weight: 1.0
+    fallback_order: 0
+- name: nova-micro
+  description: Amazon Nova Micro
+  capabilities: [chat]
+  routing_strategy: round-robin
+  providers:
+  - provider: bedrock
+    model_id: us.amazon.nova-micro-v1:0
+    weight: 1.0
+    fallback_order: 0
+- name: deepseek-r1
+  description: DeepSeek R1
+  capabilities: [chat, reasoning]
+  routing_strategy: round-robin
+  providers:
+  - provider: bedrock
+    model_id: us.deepseek.r1-v1:0
+    weight: 1.0
+    fallback_order: 0
+- name: llama-3.3-70b
+  description: Meta Llama 3.3 70B Instruct
+  capabilities: [chat]
+  routing_strategy: round-robin
+  providers:
+  - provider: bedrock
+    model_id: us.meta.llama3-3-70b-instruct-v1:0
+    weight: 1.0
+    fallback_order: 0
+- name: llama-4-maverick
+  description: Meta Llama 4 Maverick 17B Instruct
+  capabilities: [chat, vision]
+  routing_strategy: round-robin
+  providers:
+  - provider: bedrock
+    model_id: us.meta.llama4-maverick-17b-instruct-v1:0
+    weight: 1.0
+    fallback_order: 0
+- name: llama-4-scout
+  description: Meta Llama 4 Scout 17B Instruct
+  capabilities: [chat, vision]
+  routing_strategy: round-robin
+  providers:
+  - provider: bedrock
+    model_id: us.meta.llama4-scout-17b-instruct-v1:0
+    weight: 1.0
+    fallback_order: 0
+- name: mistral-large
+  description: Mistral Large (24.02)
+  capabilities: [chat]
+  routing_strategy: round-robin
+  providers:
+  - provider: bedrock
+    model_id: mistral.mistral-large-2402-v1:0
+    weight: 1.0
+    fallback_order: 0
+- name: pixtral-large
+  description: Mistral Pixtral Large 25.02 (multimodal)
+  capabilities: [chat, vision]
+  routing_strategy: round-robin
+  providers:
+  - provider: bedrock
+    model_id: us.mistral.pixtral-large-2502-v1:0
+    weight: 1.0
+    fallback_order: 0
+- name: gpt-oss-120b
+  description: OpenAI GPT-OSS 120B (open weight)
+  capabilities: [chat]
+  routing_strategy: round-robin
+  providers:
+  - provider: bedrock
+    model_id: openai.gpt-oss-120b-1:0
+    weight: 1.0
+    fallback_order: 0
+- name: qwen3-235b
+  description: Qwen3 VL 235B A22B (multimodal, open weight)
+  capabilities: [chat, vision]
+  routing_strategy: round-robin
+  providers:
+  - provider: bedrock
+    model_id: qwen.qwen3-vl-235b-a22b
+    weight: 1.0
+    fallback_order: 0
+- name: gemini-3.5-flash
+  description: Gemini 3.5 Flash
+  capabilities: [chat, vision, streaming, tools]
+  routing_strategy: round-robin
+  providers:
+  - provider: google_ai
+    model_id: gemini-3.5-flash
+    weight: 1.0
+    fallback_order: 0
+- name: gemini-3.1-pro
+  description: Gemini 3.1 Pro
+  capabilities: [chat, vision, streaming]
+  routing_strategy: round-robin
+  providers:
+  - provider: google_ai
+    model_id: gemini-3.1-pro-preview
+    weight: 1.0
+    fallback_order: 0
+- name: gemini-2.5-pro
+  description: Gemini 2.5 Pro (Vertex AI)
+  capabilities: [chat, vision, streaming, tools]
+  routing_strategy: round-robin
+  providers:
+  - provider: vertex_ai
+    model_id: gemini-2.5-pro
+    weight: 1.0
+    fallback_order: 0
+- name: gemini-2.5-flash
+  description: Gemini 2.5 Flash (Vertex AI)
+  capabilities: [chat, vision, streaming, tools]
+  routing_strategy: round-robin
+  providers:
+  - provider: vertex_ai
+    model_id: gemini-2.5-flash
+    weight: 1.0
+    fallback_order: 0
+# --- xAI (Grok) ---
+# grok-3 and grok-3-mini both still answer 200, so nothing looked broken — but
+# xAI resolves both to grok-4.3 and says so in the response's `model` field.
+# They are undocumented aliases: absent from /v1/language-models, absent from
+# the price list, and therefore unpriceable, which meant every Grok request
+# billed $0.00 while being served by a model that costs $1.25/$2.50 per MTok.
+# The two real tiers are named directly instead. There is no "mini" in the
+# 4.x line; 4.3 is the cheaper of the two.
+- name: grok-4.3
+  description: Grok 4.3
+  capabilities: [chat, streaming, tools]
+  routing_strategy: round-robin
+  providers:
+  - provider: xai
+    model_id: grok-4.3
+    weight: 1.0
+    fallback_order: 0
+- name: grok-4.5
+  description: Grok 4.5
+  capabilities: [chat, streaming, tools]
+  routing_strategy: round-robin
+  providers:
+  - provider: xai
+    model_id: grok-4.5
+    weight: 1.0
+    fallback_order: 0
+# --- Groq (fast inference) ---
+- name: groq-llama-3.3-70b
+  description: Llama 3.3 70B (Groq)
+  capabilities: [chat, streaming, tools]
+  routing_strategy: round-robin
+  providers:
+  - provider: groq
+    model_id: llama-3.3-70b-versatile
+    weight: 1.0
+    fallback_order: 0
+- name: groq-llama-3.1-8b
+  description: Llama 3.1 8B Instant (Groq)
+  capabilities: [chat, streaming]
+  routing_strategy: round-robin
+  providers:
+  - provider: groq
+    model_id: llama-3.1-8b-instant
+    weight: 1.0
+    fallback_order: 0
+# --- Together AI ---
+# Together lists ~163 chat models but serves only a handful over the shared
+# serverless endpoint; the rest return 400 "Unable to access non-serverless
+# model … create and start a new dedicated endpoint". That is a per-account
+# provisioning error, not a wrong id, so it cannot be fixed by renaming — the
+# model has to be one Together actually hosts serverlessly. Each id below was
+# confirmed with a live non-streaming completion.
+- name: together-llama-3.3-70b
+  description: Llama 3.3 70B Turbo (Together)
+  capabilities: [chat, streaming, tools]
+  routing_strategy: round-robin
+  providers:
+  - provider: together
+    model_id: meta-llama/Llama-3.3-70B-Instruct-Turbo
+    weight: 1.0
+    fallback_order: 0
+# Was deepseek-ai/DeepSeek-R1, which is not serverless — nor is R1-0528, nor
+# V3.1. V4 Pro is the DeepSeek generation Together serves on demand.
+- name: together-deepseek-v4
+  description: DeepSeek V4 Pro (Together)
+  capabilities: [chat, streaming, tools]
+  routing_strategy: round-robin
+  providers:
+  - provider: together
+    model_id: deepseek-ai/DeepSeek-V4-Pro
+    weight: 1.0
+    fallback_order: 0
+# Was Qwen/Qwen2.5-72B-Instruct-Turbo, also non-serverless. No 72B-class Qwen
+# is: 2-72B, 2.5-72B, Qwen3-Next-80B, Qwen3.5-397B and QwQ-32B all refuse.
+# The Qwen3.x -Plus/-Max tier is serverless but streaming-only (400 'This model
+# only supports streaming'), which this gateway's non-streaming path cannot use,
+# so the largest usable Qwen is 3.5-9B.
+- name: together-qwen-3.5-9b
+  description: Qwen 3.5 9B (Together)
+  capabilities: [chat, streaming]
+  routing_strategy: round-robin
+  providers:
+  - provider: together
+    model_id: Qwen/Qwen3.5-9B
+    weight: 1.0
+    fallback_order: 0
+# Same open-weight model as the bedrock and bedrock-mantle gpt-oss-120b entries,
+# at the same published rate ($0.15/$0.60 per MTok) — a genuine second source for
+# it rather than a duplicate, and the adapter already advertised it.
+- name: together-gpt-oss-120b
+  description: GPT-OSS 120B (Together)
+  capabilities: [chat, streaming]
+  routing_strategy: round-robin
+  providers:
+  - provider: together
+    model_id: openai/gpt-oss-120b
+    weight: 1.0
+    fallback_order: 0
+# --- Fireworks AI ---
+# Both ids confirmed against GET /inference/v1/models (2026-07-30), which lists
+# 19 serverless models — these two among them. They were carried here unverified
+# for a while, because the endpoint needs a key and there was none; the note
+# then said so rather than implying the ids had been checked.
+#
+# Both are priced too. An earlier note claimed Fireworks published no per-model
+# serverless rates, which was wrong and is what kept them billing at $0.00 —
+# each model's page on fireworks.ai/models carries its own rate. See the
+# fireworks section in pricing.yaml.
+- name: fireworks-deepseek-v4
+  description: DeepSeek V4 Pro (Fireworks)
+  capabilities: [chat, streaming]
+  routing_strategy: round-robin
+  providers:
+  - provider: fireworks
+    model_id: accounts/fireworks/models/deepseek-v4-pro
+    weight: 1.0
+    fallback_order: 0
+- name: fireworks-gpt-oss-120b
+  description: GPT-OSS 120B (Fireworks)
+  capabilities: [chat, streaming]
+  routing_strategy: round-robin
+  providers:
+  - provider: fireworks
+    model_id: accounts/fireworks/models/gpt-oss-120b
+    weight: 1.0
+    fallback_order: 0
+# --- Cohere ---
+# Use the live, version-pinned Command R releases. Cohere deprecated the
+# command-r, command-r-plus, and command-light aliases on 2025-09-15.
+- name: cohere-command-r
+  description: Cohere Command R 08-2024
+  capabilities: [chat, streaming, tools]
+  routing_strategy: round-robin
+  providers:
+  - provider: cohere
+    model_id: command-r-08-2024
+    weight: 1.0
+    fallback_order: 0
+- name: cohere-command-r-plus
+  description: Cohere Command R+ 08-2024
+  capabilities: [chat, streaming, tools]
+  routing_strategy: round-robin
+  providers:
+  - provider: cohere
+    model_id: command-r-plus-08-2024
+    weight: 1.0
+    fallback_order: 0
+# --- AI21 Labs ---
+# Bedrock exposes Jamba 1.5 while AI21's direct API exposes Jamba 1.6. Keep
+# separate gateway names so selecting the Bedrock route never silently changes
+# a caller's requested model version.
+- name: jamba-1.5-large-bedrock
+  description: AI21 Jamba 1.5 Large (Bedrock)
+  capabilities: [chat]
+  routing_strategy: round-robin
+  providers:
+  - provider: bedrock
+    model_id: ai21.jamba-1-5-large-v1:0
+    weight: 1.0
+    fallback_order: 0
+- name: jamba-1.5-mini-bedrock
+  description: AI21 Jamba 1.5 Mini (Bedrock)
+  capabilities: [chat]
+  routing_strategy: round-robin
+  providers:
+  - provider: bedrock
+    model_id: ai21.jamba-1-5-mini-v1:0
+    weight: 1.0
+    fallback_order: 0
+- name: jamba-large
+  description: AI21 Jamba 1.6 Large
+  capabilities: [chat, streaming, tools]
+  routing_strategy: round-robin
+  providers:
+  - provider: ai21
+    model_id: jamba-1.6-large
+    weight: 1.0
+    fallback_order: 0
+- name: jamba-mini
+  description: AI21 Jamba 1.6 Mini
+  capabilities: [chat, streaming, tools]
+  routing_strategy: round-robin
+  providers:
+  - provider: ai21
+    model_id: jamba-1.6-mini
+    weight: 1.0
+    fallback_order: 0
