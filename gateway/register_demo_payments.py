@@ -13,14 +13,16 @@ The Makefile runs this automatically as part of `make demo-full`.
 """
 
 import json
+import os
 import sys
 import time
 import urllib.error
 import urllib.request
 
-CONTROL_PLANE = "http://localhost:8400"
-GATEWAY_ID = "crm-agent"
-DEMO_TOOLS = "http://localhost:9300"
+CONTROL_PLANE = os.environ.get("OSTIARI_CONTROL_PLANE_URL", "http://localhost:8400").rstrip("/")
+GATEWAY_ID = os.environ.get("OSTIARI_GATEWAY_ID", "crm-agent")
+GATEWAY_URL = os.environ.get("OSTIARI_GATEWAY_URL", "http://localhost:8421").rstrip("/")
+DEMO_TOOLS = os.environ.get("OSTIARI_DEMO_TOOLS_URL", "http://localhost:9300").rstrip("/")
 
 # Paywalled tools. All point at the one 402-returning demo endpoint; distinct
 # names give the ledger some variety.
@@ -75,7 +77,7 @@ def main() -> int:
         return 1
     if not _wait_for(f"{DEMO_TOOLS}/health", "demo tools server"):
         return 1
-    if not _wait_for("http://localhost:8421/health", "crm-agent gateway"):
+    if not _wait_for(f"{GATEWAY_URL}/health", "crm-agent gateway"):
         return 1
 
     tok = _token()

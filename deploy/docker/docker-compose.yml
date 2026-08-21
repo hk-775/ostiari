@@ -10,9 +10,9 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.gateway
     ports:
-      - "8421:8421"
+      - "${OSTIARI_GATEWAY_PORT:-8421}:8421"
     environment:
-      OSTIARI_GATEWAY_ID: "gateway-1"
+      OSTIARI_GATEWAY_ID: "${OSTIARI_GATEWAY_ID:-crm-agent}"
       OSTIARI_CONTROL_PLANE_URL: "http://control-plane-backend:8400"
       OSTIARI_PORT: "8421"
       # The control plane pushes config back to this URL; must be reachable on
@@ -77,7 +77,7 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.control-plane
     ports:
-      - "8400:8400"
+      - "${OSTIARI_CONTROL_PLANE_PORT:-8400}:8400"
     environment:
       # SQLite on a persisted volume by default. For production point this at
       # Postgres: postgresql+asyncpg://user:pass@host:5432/ostiari
@@ -86,6 +86,7 @@ services:
       # Runtime configuration itself is written through to SQL.
       OSTIARI_DATA_DIR: "/data"
       OSTIARI_ENV: "${OSTIARI_ENV:-}"
+      OSTIARI_NO_DEMO: "${OSTIARI_NO_DEMO:-0}"
       # Local-development compatibility only; production uses workload OIDC.
       OSTIARI_SERVICE_TOKEN: "${OSTIARI_SERVICE_TOKEN:-}"
       OSTIARI_INGEST_KEY: "${OSTIARI_INGEST_KEY:-}"
@@ -122,9 +123,9 @@ services:
       args:
         # Baked into the bundle; called from the browser, so it points at the
         # backend's published host port (localhost:8400), not the service name.
-        VITE_API_URL: "http://localhost:8400"
+        VITE_API_URL: "${OSTIARI_BROWSER_API_URL:-http://localhost:8400}"
     ports:
-      - "9000:9000"
+      - "${OSTIARI_FRONTEND_PORT:-9000}:9000"
     depends_on:
       control-plane-backend:
         condition: service_healthy
@@ -148,7 +149,7 @@ services:
     # Valkey preserves the open-source BSD-3-Clause Redis protocol/API surface.
     image: valkey/valkey:9.0.5-alpine@sha256:0cb61366757e2bcd26500b4e8bb63cbd7117610e3e4f05aacb3c812511da7632
     ports:
-      - "6379:6379"
+      - "${OSTIARI_REDIS_PORT:-6379}:6379"
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
       interval: 5s

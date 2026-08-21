@@ -225,6 +225,10 @@ jobs:
         with:
           python-version: "3.12"
 
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.16.0"
+
       - name: Build Python distributions
         run: |
           pip install build
@@ -297,6 +301,17 @@ jobs:
             --set workloadIdentity.clientId="gateway-production"
           ! rg 'image:\\s+[^#\\n]*:latest' deploy
 
+      - name: Synthesize every AWS deployment profile
+        run: |
+          python -m venv /tmp/ostiari-cdk-validation
+          /tmp/ostiari-cdk-validation/bin/pip install \
+            --require-hashes \
+            --only-binary=:all: \
+            -r deploy/aws/requirements.txt
+          npm ci --prefix deploy/aws
+          PATH="/tmp/ostiari-cdk-validation/bin:$PATH" \
+            /tmp/ostiari-cdk-validation/bin/python deploy/aws/validate.py
+
       - name: Build production images
         run: |
           docker build -f deploy/docker/Dockerfile.gateway -t ostiari-gateway:ci .
@@ -304,6 +319,8 @@ jobs:
           docker build -f deploy/docker/Dockerfile.frontend \
             --build-arg VITE_API_URL=https://api.example.com \
             -t ostiari-frontend:ci .
+          docker build -f deploy/docker/Dockerfile.demo -t ostiari-demo-tools:ci .
+          docker build -f deploy/agentcore/Dockerfile -t ostiari-agentcore:ci .
 
       - name: Verify AxonLLM inside the production gateway image
         run: |

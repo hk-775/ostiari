@@ -56,3 +56,12 @@ the production build. It covers:
 Backend API and database behavior remains covered by the FastAPI control-plane
 suite; the frontend tests focus on browser-specific state and security
 boundaries.
+
+## Deployment coverage
+
+CI parses the local Compose topology, verifies demo seeding is idempotent and
+database-FK safe, builds every runtime image, and synthesizes all six AWS
+profiles. Each synthesized template passes `cfn-lint` and contract assertions
+for ECS service count, demo isolation, AgentCore inclusion, and production WAF
+controls. Live AWS create/update, rollback, restore, alarms, and authenticated
+canaries remain retained-rehearsal evidence rather than simulated unit claims.

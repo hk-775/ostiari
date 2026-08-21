@@ -1,4 +1,15 @@
-export const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8400";
+const configuredApiBase = import.meta.env.VITE_API_URL;
+
+// An explicitly empty value means same-origin routing through an ingress or ALB.
+// Undefined retains the direct-backend default used by local frontend tooling.
+export const API_BASE = (
+  configuredApiBase === undefined ? "http://localhost:8400" : configuredApiBase
+).replace(/\/$/, "");
+
+export function websocketBase(): string {
+  const base = API_BASE || window.location.origin;
+  return base.replace(/^http/, "ws");
+}
 const TOKEN_KEY = "ostiari_token";
 
 export class APIError extends Error {

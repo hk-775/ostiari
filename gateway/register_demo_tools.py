@@ -9,14 +9,15 @@ Run after the control plane and demo_tools_server.py are up:
 The Makefile runs this automatically as part of `make demo-full`.
 """
 
+import os
 import sys
 import time
 import urllib.error
 import urllib.request
 
-CONTROL_PLANE = "http://localhost:8400"
-GATEWAY_ID = "crm-agent"
-DEMO_TOOLS = "http://localhost:9300"
+CONTROL_PLANE = os.environ.get("OSTIARI_CONTROL_PLANE_URL", "http://localhost:8400").rstrip("/")
+GATEWAY_ID = os.environ.get("OSTIARI_GATEWAY_ID", "crm-agent")
+DEMO_TOOLS = os.environ.get("OSTIARI_DEMO_TOOLS_URL", "http://localhost:9300").rstrip("/")
 
 def _schema(*required: str, **optional: str) -> dict:
     """A JSON Schema for a flat string-parameter tool.
