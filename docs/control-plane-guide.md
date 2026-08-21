@@ -142,7 +142,7 @@ what you look at most is on top:**
 ```
 
 - **Observe** — Dashboard, Live Traces, Shadow Report, **Approvals**, Costs,
-  Metering, Audit Log, Compliance, ROI.
+  Token Efficiency, Metering, Audit Log, Compliance, ROI.
 - **Control** — Models, Policies, Quotas, Agent Quotas.
 - **Monetize** — Payments, Token Broker.
 - **Configure** — **Discovery**, Agent Gateways, Agents, Tools, MCP Servers,
@@ -162,12 +162,10 @@ So §4 is Configure, §5 is Control, §6 is Monetize, §7 is Observe, §8 is Tes
 §9 is Admin — read top-to-bottom to stand a deployment up, and use the nav order
 once it's running.
 
-Two things worth knowing about the nav specifically:
+One thing worth knowing about the nav specifically:
 
 - **Protocol (A2A)** lives under *Configure* in the nav, but it's genuinely a
   governance rule, so this guide covers it with the other rules in §5.4.
-- One page is routed but **absent from the nav**: **Token Efficiency**
-  (`/efficiency`), reachable only by typing the URL. See §7.9.
 
 ---
 
@@ -793,19 +791,17 @@ because a defensible ROI figure is one the CIO's own assumptions produced.
 figures before showing anyone. A borrowed default ("$500k per DB delete") invites
 "where'd that come from?"; your own number survives the question.
 
-### 7.9 Token Efficiency (`/efficiency`) — routed, but not in the nav
+### 7.9 Token Efficiency (`/efficiency`)
 
 **What it is:** token usage, cost optimization, and prompt-quality insights. An
 **Overall Score** plus Avg Tokens/Request, Cost/Request, and Models Used, broken
 down into Token Efficiency / Cost Efficiency / Routing Diversity bars. It answers
 "are we spending tokens well?", where Costs (§7.5) answers "what did we spend?"
 
-**Read this before you use it:** the page is routed in the app but is **not listed
-in `NAV_SECTIONS`** — there is no link to it. You reach it by typing
-`/efficiency` in the address bar. So it is real and it works, but nobody will
-discover it on their own, and its numbers aren't part of anyone's routine. Either
-add it to the nav or treat it as a diagnostic you go to deliberately; don't assume
-a teammate has seen it.
+The page is available under **Observe → Efficiency**. Its heuristics are
+calculated from the same tenant-scoped cost summary used by the Costs page, so
+operators can move from raw spend to optimization guidance without leaving the
+normal navigation flow.
 
 ---
 

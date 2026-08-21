@@ -3,7 +3,10 @@ import test from "node:test";
 import { installBrowserEnvironment } from "./browserEnv";
 
 installBrowserEnvironment();
-const { visibleNavigationSections } = await import("../src/components/Layout");
+const { PROTECTED_ROUTE_PATHS } = await import("../src/App");
+const { allNavigationPaths, visibleNavigationSections } = await import(
+  "../src/components/Layout"
+);
 
 function navigationLabels(role: "admin" | "operator" | "viewer"): Set<string> {
   return new Set(
@@ -41,4 +44,15 @@ test("admin navigation exposes every section", () => {
   assert.equal(labels.has("Sandbox"), true);
   assert.equal(labels.has("LLM Providers"), true);
   assert.equal(labels.has("Users"), true);
+});
+
+test("every protected page is discoverable from navigation", () => {
+  assert.deepEqual(
+    new Set(allNavigationPaths()),
+    new Set(PROTECTED_ROUTE_PATHS),
+  );
+});
+
+test("efficiency insights are visible to read-only operators", () => {
+  assert.equal(navigationLabels("viewer").has("Efficiency"), true);
 });

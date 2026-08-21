@@ -20,6 +20,7 @@ const NAV_SECTIONS: {
       { path: "/shadow-report", label: "Shadow Report", icon: EyeOff, color: "text-amber-600", activeBg: "bg-amber-50" },
       { path: "/approvals", label: "Approvals", icon: UserCheck, color: "text-amber-600", activeBg: "bg-amber-50" },
       { path: "/costs", label: "Costs", icon: DollarSign, color: "text-orange-600", activeBg: "bg-orange-50" },
+      { path: "/efficiency", label: "Efficiency", icon: Gauge, color: "text-cyan-600", activeBg: "bg-cyan-50" },
       { path: "/metering", label: "Metering", icon: Gauge, color: "text-emerald-600", activeBg: "bg-emerald-50" },
       { path: "/audit", label: "Audit Log", icon: History, color: "text-stone-600", activeBg: "bg-stone-100" },
       { path: "/compliance", label: "Compliance", icon: FileCheck, color: "text-sky-600", activeBg: "bg-sky-50" },
@@ -118,6 +119,12 @@ export function visibleNavigationSections(role?: Role) {
     }
     return true;
   });
+}
+
+export function allNavigationPaths() {
+  return NAV_SECTIONS.flatMap((section) =>
+    section.items.map((item) => item.path),
+  );
 }
 
 export function Layout() {
