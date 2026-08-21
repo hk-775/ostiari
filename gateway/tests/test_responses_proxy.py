@@ -304,7 +304,6 @@ class TestTranslation:
             ("reasoning", {"context": "all_turns"}),
             ("text", {"format": {"type": "json_schema"}}),
             ("include", ["message.output_text.logprobs"]),
-            ("include", ["reasoning.encrypted_content"]),
             ("max_tool_calls", 1),
             ("parallel_tool_calls", "false"),
             ("service_tier", "priority"),
@@ -353,6 +352,31 @@ class TestTranslation:
                     "model": "gpt-4o",
                     "input": "ping",
                     "reasoning": reasoning,
+                },
+            )
+        assert response.status_code == 200
+
+    def test_standard_codex_transport_metadata_is_accepted(self):
+        async def _route(self_inner, **kwargs):
+            return _route_result()
+
+        client = _app()
+        with patch(
+            "ostiari_gateway.modules.llm_gateway.axon_router.AxonRouter.available",
+            True,
+        ), patch(
+            "ostiari_gateway.modules.llm_gateway.axon_router.AxonRouter.route",
+            new=_route,
+        ):
+            response = client.post(
+                "/v1/responses",
+                headers={"X-Agent-Id": "codex"},
+                json={
+                    "model": "gpt-4o",
+                    "input": "ping",
+                    "reasoning": {},
+                    "include": ["reasoning.encrypted_content"],
+                    "parallel_tool_calls": True,
                 },
             )
         assert response.status_code == 200

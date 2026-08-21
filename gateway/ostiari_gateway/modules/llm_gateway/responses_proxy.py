@@ -305,10 +305,13 @@ def _translate(body: dict[str, Any]) -> tuple[dict[str, Any], bool]:
             "Responses reasoning.context='all_turns' requires "
             "include=['reasoning.encrypted_content']."
         )
-    if include == _ENCRYPTED_REASONING_INCLUDE and reasoning_context != "all_turns":
+    if (
+        include == _ENCRYPTED_REASONING_INCLUDE
+        and reasoning_context not in (None, "all_turns")
+    ):
         raise ResponsesRequestError(
-            "Field 'include' requests encrypted reasoning content without "
-            "reasoning.context='all_turns'."
+            "Field 'include' requests encrypted reasoning content with an "
+            "unsupported reasoning context."
         )
     if body.get("text") not in (None, {}):
         raise ResponsesRequestError(
