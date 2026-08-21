@@ -82,6 +82,11 @@ def test_container_build_and_local_state_images_are_digest_pinned() -> None:
     frontend = (ROOT / "deploy/docker/Dockerfile.frontend").read_text()
     assert 'node-version: "24.16.0"' in ci
     assert "FROM node:24.16.0-alpine@sha256:" in frontend
+    assert (
+        "FROM nginx:1.31.1-alpine@sha256:"
+        "8b1e78743a03dbb2c95171cc58639fef29abc8816598e27fb910ed2e621e589a"
+        in frontend
+    )
 
 
 def test_make_install_covers_the_complete_source_platform() -> None:
