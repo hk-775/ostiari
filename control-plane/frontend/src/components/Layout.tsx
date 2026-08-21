@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router";
 import { Shield, Server, Wrench, FileText, Activity, Plug, History, DollarSign, Radio, FlaskConical, Brain, ShieldCheck, Beaker, Bot, Network, Users, Key, LogOut, EyeOff, FileCheck, Gauge, Wallet, TrendingUp, Coins, Radar, UserCheck, Menu, X } from "lucide-react";
-import { useAuthStore } from "../stores/authStore";
+import { Role, useAuthStore } from "../stores/authStore";
 
 const NAV_SECTIONS: {
   label: string;
@@ -20,6 +20,7 @@ const NAV_SECTIONS: {
       { path: "/shadow-report", label: "Shadow Report", icon: EyeOff, color: "text-amber-600", activeBg: "bg-amber-50" },
       { path: "/approvals", label: "Approvals", icon: UserCheck, color: "text-amber-600", activeBg: "bg-amber-50" },
       { path: "/costs", label: "Costs", icon: DollarSign, color: "text-orange-600", activeBg: "bg-orange-50" },
+      { path: "/efficiency", label: "Efficiency", icon: Gauge, color: "text-cyan-600", activeBg: "bg-cyan-50" },
       { path: "/metering", label: "Metering", icon: Gauge, color: "text-emerald-600", activeBg: "bg-emerald-50" },
       { path: "/audit", label: "Audit Log", icon: History, color: "text-stone-600", activeBg: "bg-stone-100" },
       { path: "/compliance", label: "Compliance", icon: FileCheck, color: "text-sky-600", activeBg: "bg-sky-50" },
@@ -110,6 +111,22 @@ const ROLE_BADGES: Record<string, string> = {
 // Sections that require write access (hidden for viewers)
 const WRITE_SECTIONS = ["Control", "Configure", "Test"];
 
+export function visibleNavigationSections(role?: Role) {
+  return NAV_SECTIONS.filter((section) => {
+    if (section.adminOnly && role !== "admin") return false;
+    if (!["admin", "operator"].includes(role ?? "") && WRITE_SECTIONS.includes(section.label)) {
+      return false;
+    }
+    return true;
+  });
+}
+
+export function allNavigationPaths() {
+  return NAV_SECTIONS.flatMap((section) =>
+    section.items.map((item) => item.path),
+  );
+}
+
 export function Layout() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -122,11 +139,7 @@ export function Layout() {
     navigate("/login");
   };
 
-  const visibleSections = NAV_SECTIONS.filter((section) => {
-    if (section.adminOnly && user?.role !== "admin") return false;
-    if (!["admin", "operator"].includes(user?.role ?? "") && WRITE_SECTIONS.includes(section.label)) return false;
-    return true;
-  });
+  const visibleSections = visibleNavigationSections(user?.role);
 
   return (
     <div className="flex min-h-screen overflow-x-hidden">

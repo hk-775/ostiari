@@ -304,7 +304,7 @@ class AgenticExecutor:
                         plan, model_used, is_template=use_template,
                     )
 
-                # Report usage to control plane (fire-and-forget). Use the REAL
+                # Queue usage for durable control-plane delivery. Use the REAL
                 # input/output split from the provider — output is priced 3-5x
                 # input, so a 50/50 estimate drifts budgets in both directions.
                 in_tok = llm_response.input_tokens

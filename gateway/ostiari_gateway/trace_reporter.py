@@ -23,8 +23,8 @@ log = logging.getLogger("ostiari.sidecar.traces")
 class TraceReporter:
     """Reports tool call events to the control plane for the live trace viewer.
 
-    Sends immediately (not batched) for real-time visibility.
-    Fire-and-forget — never blocks the agent response.
+    Persists each event before an immediate delivery attempt. Confirmed events
+    are acknowledged; failed deliveries remain queued for retry and recovery.
 
     Also persists per-agent spend to the Control Plane so budgets
     survive gateway restarts.
@@ -221,8 +221,9 @@ class TraceReporter:
     ) -> None:
         """Report a crossed budget threshold to the control plane.
 
-        Fire-and-forget, like trace reporting. The gateway logs the alert either
-        way; this is what makes it visible to an operator who isn't tailing logs.
+        The gateway logs the alert and persists it before delivery so an
+        operator can recover it even when the control plane is temporarily
+        unavailable.
         """
         if not self.enabled:
             return

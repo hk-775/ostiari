@@ -1,14 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
-import { Gauge, AlertTriangle, CheckCircle, TrendingDown } from "lucide-react";
+import { AlertTriangle, CheckCircle } from "lucide-react";
 import { fetchAPI } from "../lib/api";
-
-interface CostSummary {
-  total_cost_usd: number;
-  total_tokens: number;
-  total_requests: number;
-  by_model: { model: string; cost: number; tokens: number; requests: number }[];
-  by_agent: { agent_id: string; cost: number; tokens: number; requests: number }[];
-}
+import { analyzeEfficiency, CostSummary } from "../lib/efficiency";
 
 async function fetchData(): Promise<CostSummary> {
   return fetchAPI<CostSummary>("/api/costs/summary?period_days=7");
@@ -40,42 +33,16 @@ export function Efficiency() {
     );
   }
 
-  const avgTokensPerReq = data.total_requests > 0 ? Math.round(data.total_tokens / data.total_requests) : 0;
-  const costPerReq = data.total_requests > 0 ? data.total_cost_usd / data.total_requests : 0;
-
-  // Efficiency scoring (heuristic)
-  const tokenEfficiency = Math.min(100, Math.max(0, 100 - (avgTokensPerReq - 500) / 20));
-  const costEfficiency = Math.min(100, Math.max(0, 100 - (costPerReq - 0.002) * 10000));
-  const routingEfficiency = data.by_model.length > 1 ? 85 : 50; // multiple models = better routing
-  const overallScore = Math.round((tokenEfficiency + costEfficiency + routingEfficiency) / 3);
-
-  // Identify potential waste
-  const insights: { type: "warning" | "good"; message: string }[] = [];
-
-  if (avgTokensPerReq > 2000) {
-    insights.push({ type: "warning", message: `High avg tokens per request (${avgTokensPerReq}). Consider using shorter prompts or smaller context windows.` });
-  } else {
-    insights.push({ type: "good", message: `Token usage per request is efficient (avg ${avgTokensPerReq} tokens).` });
-  }
-
-  if (data.by_model.length === 1) {
-    insights.push({ type: "warning", message: `Only 1 model in use. Enable routing rules to send simple tasks to cheaper models.` });
-  } else {
-    insights.push({ type: "good", message: `Using ${data.by_model.length} models — routing is distributing across cost tiers.` });
-  }
-
-  const expensiveAgents = data.by_agent.filter(a => a.requests > 5 && (a.cost / a.requests) > costPerReq * 2);
-  if (expensiveAgents.length > 0) {
-    insights.push({ type: "warning", message: `Agent(s) ${expensiveAgents.map(a => a.agent_id).join(", ")} cost 2x+ the average. Review their prompts or route to cheaper models.` });
-  } else {
-    insights.push({ type: "good", message: "No agents significantly over-spending relative to the fleet average." });
-  }
-
-  if (data.total_requests > 0 && costPerReq > 0.01) {
-    insights.push({ type: "warning", message: `Average cost per request ($${costPerReq.toFixed(4)}) is high. Consider using Haiku for simple tasks.` });
-  } else if (data.total_requests > 0) {
-    insights.push({ type: "good", message: `Average cost per request ($${costPerReq.toFixed(4)}) is within efficient range.` });
-  }
+  const {
+    hasUsage,
+    avgTokensPerReq,
+    costPerReq,
+    tokenEfficiency,
+    costEfficiency,
+    routingEfficiency,
+    overallScore,
+    insights,
+  } = analyzeEfficiency(data);
 
   return (
     <div className="space-y-6">
@@ -88,7 +55,9 @@ export function Efficiency() {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
         <div className="stat-card text-center">
           <div className={`inline-flex h-16 w-16 items-center justify-center rounded-full ${overallScore >= 70 ? "bg-emerald-50 text-emerald-600" : overallScore >= 40 ? "bg-amber-50 text-amber-600" : "bg-rose-50 text-rose-600"}`}>
-            <span className="text-2xl font-bold">{overallScore}</span>
+            <span className="text-2xl font-bold">
+              {hasUsage ? overallScore : "—"}
+            </span>
           </div>
           <p className="mt-2 text-xs text-stone-500">Overall Score</p>
         </div>
@@ -112,9 +81,17 @@ export function Efficiency() {
       {/* Efficiency Scores */}
       <div className="card p-6 space-y-3">
         <h3 className="text-sm font-medium text-stone-700">Efficiency Breakdown</h3>
-        <ScoreBar label="Token Efficiency" score={Math.round(tokenEfficiency)} color={tokenEfficiency >= 70 ? "bg-emerald-500" : tokenEfficiency >= 40 ? "bg-amber-500" : "bg-red-500"} />
-        <ScoreBar label="Cost Efficiency" score={Math.round(costEfficiency)} color={costEfficiency >= 70 ? "bg-emerald-500" : costEfficiency >= 40 ? "bg-amber-500" : "bg-red-500"} />
-        <ScoreBar label="Routing Diversity" score={routingEfficiency} color={routingEfficiency >= 70 ? "bg-emerald-500" : routingEfficiency >= 40 ? "bg-amber-500" : "bg-red-500"} />
+        {hasUsage ? (
+          <>
+            <ScoreBar label="Token Efficiency" score={Math.round(tokenEfficiency)} color={tokenEfficiency >= 70 ? "bg-emerald-500" : tokenEfficiency >= 40 ? "bg-amber-500" : "bg-red-500"} />
+            <ScoreBar label="Cost Efficiency" score={Math.round(costEfficiency)} color={costEfficiency >= 70 ? "bg-emerald-500" : costEfficiency >= 40 ? "bg-amber-500" : "bg-red-500"} />
+            <ScoreBar label="Routing Diversity" score={routingEfficiency} color={routingEfficiency >= 70 ? "bg-emerald-500" : routingEfficiency >= 40 ? "bg-amber-500" : "bg-red-500"} />
+          </>
+        ) : (
+          <p className="text-sm text-stone-500">
+            Efficiency scores will appear after the first governed request is reported.
+          </p>
+        )}
       </div>
 
       {/* Insights */}
