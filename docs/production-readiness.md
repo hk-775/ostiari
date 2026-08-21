@@ -77,8 +77,9 @@ The current deployment contract supports:
 - Codex CLI `0.148.0` is supported through a pinned capability catalog and a
   protected loopback conformance gate. CI verifies stateless request shape,
   typed streaming, a function-call/output round trip, OpenAI-shaped errors, and
-  cancellation. Unsupported stateful and reasoning fields continue to fail
-  closed.
+  cancellation. Unsupported stateful fields and non-empty reasoning requests
+  continue to fail closed; Codex's no-op `effort/summary = none` shape is
+  accepted.
 - A protected retention workflow verifies seven production-rehearsal evidence
   classes against the exact release commit and deployed image digests. It
   rejects stale, incomplete, mismatched, over-budget, or threshold-violating
