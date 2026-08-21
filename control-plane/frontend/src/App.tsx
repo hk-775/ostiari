@@ -69,6 +69,52 @@ function AuthInitializer({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+const PROTECTED_ROUTES = [
+  { path: "/dashboard", element: <Dashboard /> },
+  { path: "/architecture", element: <Architecture /> },
+  { path: "/gateways", element: <Gateways /> },
+  { path: "/agents", element: <Agents /> },
+  { path: "/tools", element: <Tools /> },
+  { path: "/mcp-servers", element: <McpServers /> },
+  { path: "/policies", element: <Policies /> },
+  { path: "/costs", element: <Costs /> },
+  { path: "/experiments", element: <Experiments /> },
+  { path: "/models", element: <Models /> },
+  { path: "/efficiency", element: <Efficiency /> },
+  { path: "/traces", element: <LiveTraces /> },
+  { path: "/shadow-report", element: <ShadowReport /> },
+  { path: "/quotas", element: <Quotas /> },
+  { path: "/agent-quotas", element: <AgentQuotas /> },
+  { path: "/protocol-governance", element: <ProtocolGovernance /> },
+  { path: "/sandbox", element: <Sandbox /> },
+  { path: "/audit", element: <AuditLog /> },
+  { path: "/compliance", element: <Compliance /> },
+  { path: "/metering", element: <Metering /> },
+  { path: "/payments", element: <Payments /> },
+  { path: "/roi", element: <Roi /> },
+  { path: "/discovery", element: <Discovery /> },
+  { path: "/approvals", element: <Approvals /> },
+  { path: "/token-broker", element: <TokenBroker /> },
+  {
+    path: "/providers",
+    element: (
+      <RequireAdmin>
+        <Providers />
+      </RequireAdmin>
+    ),
+  },
+  {
+    path: "/users",
+    element: (
+      <RequireAdmin>
+        <Users />
+      </RequireAdmin>
+    ),
+  },
+] as const;
+
+export const PROTECTED_ROUTE_PATHS = PROTECTED_ROUTES.map((route) => route.path);
+
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
@@ -79,33 +125,9 @@ export default function App() {
             <Route path="/login" element={<LoginPage />} />
             <Route path="/auth/sso-callback" element={<SSOCallbackPage />} />
             <Route element={<RequireAuth><Layout /></RequireAuth>}>
-              <Route path="/dashboard" element={<Dashboard />} />
-              <Route path="/architecture" element={<Architecture />} />
-              <Route path="/gateways" element={<Gateways />} />
-              <Route path="/agents" element={<Agents />} />
-              <Route path="/tools" element={<Tools />} />
-              <Route path="/mcp-servers" element={<McpServers />} />
-              <Route path="/policies" element={<Policies />} />
-              <Route path="/costs" element={<Costs />} />
-              <Route path="/experiments" element={<Experiments />} />
-              <Route path="/models" element={<Models />} />
-              <Route path="/efficiency" element={<Efficiency />} />
-              <Route path="/traces" element={<LiveTraces />} />
-              <Route path="/shadow-report" element={<ShadowReport />} />
-              <Route path="/quotas" element={<Quotas />} />
-              <Route path="/agent-quotas" element={<AgentQuotas />} />
-              <Route path="/protocol-governance" element={<ProtocolGovernance />} />
-              <Route path="/sandbox" element={<Sandbox />} />
-              <Route path="/audit" element={<AuditLog />} />
-              <Route path="/compliance" element={<Compliance />} />
-              <Route path="/metering" element={<Metering />} />
-              <Route path="/payments" element={<Payments />} />
-              <Route path="/roi" element={<Roi />} />
-              <Route path="/discovery" element={<Discovery />} />
-              <Route path="/approvals" element={<Approvals />} />
-              <Route path="/token-broker" element={<TokenBroker />} />
-              <Route path="/providers" element={<RequireAdmin><Providers /></RequireAdmin>} />
-              <Route path="/users" element={<RequireAdmin><Users /></RequireAdmin>} />
+              {PROTECTED_ROUTES.map((route) => (
+                <Route key={route.path} path={route.path} element={route.element} />
+              ))}
             </Route>
           </Routes>
         </AuthInitializer>

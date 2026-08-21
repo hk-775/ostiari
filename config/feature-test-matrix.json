@@ -1,0 +1,281 @@
+{
+  "schema_version": 1,
+  "capabilities": [
+    {
+      "id": "runtime_decisions",
+      "area": "Runtime decisions",
+      "automated_tests": [
+        "tests/unit/test_guard.py",
+        "tests/unit/test_parameter_risk.py",
+        "tests/unit/test_policy_engine.py",
+        "tests/integration/test_policy_hot_reload.py"
+      ],
+      "protected_checks": [".github/workflows/ci.yml"],
+      "live_evidence": []
+    },
+    {
+      "id": "reliability",
+      "area": "Reliability",
+      "automated_tests": [
+        "tests/unit/test_breaker.py",
+        "tests/unit/test_checkpoint.py",
+        "tests/unit/test_anomaly_loop.py",
+        "tests/unit/test_anomaly_drift.py",
+        "tests/unit/test_anomaly_hallucination.py",
+        "tests/unit/test_anomaly_contradiction.py",
+        "tests/integration/test_reliability_integration.py"
+      ],
+      "protected_checks": [".github/workflows/ci.yml"],
+      "live_evidence": []
+    },
+    {
+      "id": "tool_governance",
+      "area": "Tool governance",
+      "automated_tests": [
+        "gateway/tests/test_adversarial.py",
+        "gateway/tests/test_tool_proxy_limits.py",
+        "gateway/tests/test_agent_llm_authorization.py",
+        "gateway/tests/test_hitl.py"
+      ],
+      "protected_checks": [".github/workflows/ci.yml"],
+      "live_evidence": ["canary"]
+    },
+    {
+      "id": "llm_governance",
+      "area": "LLM governance",
+      "automated_tests": [
+        "gateway/tests/test_axon_router.py",
+        "gateway/tests/test_llm_gateway.py",
+        "gateway/tests/test_agent_routing.py",
+        "gateway/tests/test_smart_routing.py",
+        "gateway/tests/test_provider_routes.py",
+        "control-plane/backend/tests/test_agent_routing.py",
+        "control-plane/backend/tests/test_provider_routes.py"
+      ],
+      "protected_checks": [".github/workflows/ci.yml"],
+      "live_evidence": ["canary", "load"]
+    },
+    {
+      "id": "llm_compatible_apis",
+      "area": "LLM-compatible APIs",
+      "automated_tests": [
+        "gateway/tests/test_messages_shim.py",
+        "gateway/tests/test_chat_proxy.py",
+        "gateway/tests/test_responses_proxy.py",
+        "tests/unit/test_codex_conformance.py"
+      ],
+      "protected_checks": [
+        ".github/workflows/ci.yml",
+        "tools/codex_conformance.py"
+      ],
+      "live_evidence": ["canary"]
+    },
+    {
+      "id": "llm_security",
+      "area": "LLM security",
+      "automated_tests": [
+        "gateway/tests/test_security_failclosed.py",
+        "gateway/tests/test_adversarial.py",
+        "tests/unit/test_redaction.py",
+        "tests/unit/test_net_guard.py"
+      ],
+      "protected_checks": [".github/workflows/ci.yml"],
+      "live_evidence": ["canary"]
+    },
+    {
+      "id": "mcp",
+      "area": "MCP",
+      "automated_tests": [
+        "gateway/tests/test_mcp.py",
+        "gateway/tests/test_mcp_bridge.py",
+        "control-plane/backend/tests/test_discovery.py"
+      ],
+      "protected_checks": [".github/workflows/ci.yml"],
+      "live_evidence": []
+    },
+    {
+      "id": "a2a",
+      "area": "A2A",
+      "automated_tests": [
+        "gateway/tests/test_cross_agent.py",
+        "control-plane/backend/tests/test_a2a_agents.py",
+        "control-plane/backend/tests/test_trust.py"
+      ],
+      "protected_checks": [".github/workflows/ci.yml"],
+      "live_evidence": []
+    },
+    {
+      "id": "human_approval",
+      "area": "Human approval",
+      "automated_tests": [
+        "gateway/tests/test_hitl.py",
+        "control-plane/backend/tests/test_approvals.py"
+      ],
+      "protected_checks": [".github/workflows/ci.yml"],
+      "live_evidence": []
+    },
+    {
+      "id": "cost_control",
+      "area": "Cost control",
+      "automated_tests": [
+        "gateway/tests/test_runtime_controls.py",
+        "gateway/tests/test_cost_reporter_delivery.py",
+        "control-plane/backend/tests/test_agent_quotas.py",
+        "control-plane/backend/tests/test_quotas_demo_seed.py"
+      ],
+      "protected_checks": [".github/workflows/ci.yml"],
+      "live_evidence": ["load"]
+    },
+    {
+      "id": "payments",
+      "area": "Payments",
+      "automated_tests": [
+        "gateway/tests/test_payments.py",
+        "control-plane/backend/tests/test_payments_router.py",
+        "control-plane/backend/tests/test_broker_accounting.py",
+        "control-plane/backend/tests/test_token_broker.py"
+      ],
+      "protected_checks": [".github/workflows/ci.yml"],
+      "live_evidence": ["payment"]
+    },
+    {
+      "id": "observability",
+      "area": "Observability",
+      "automated_tests": [
+        "gateway/tests/test_event_outbox.py",
+        "gateway/tests/test_trace_reporter_id.py",
+        "control-plane/backend/tests/test_trace_persistence.py",
+        "control-plane/backend/tests/test_trace_spans.py",
+        "control-plane/backend/tests/test_trace_websocket_auth.py",
+        "control-plane/backend/tests/test_audit_tamper_evident.py"
+      ],
+      "protected_checks": [".github/workflows/ci.yml"],
+      "live_evidence": ["alarm", "canary"]
+    },
+    {
+      "id": "fleet_operations",
+      "area": "Fleet operations",
+      "automated_tests": [
+        "gateway/tests/test_control_plane_registration.py",
+        "gateway/tests/test_config_auth.py",
+        "gateway/tests/test_workload_identity.py",
+        "control-plane/backend/tests/test_gateway_callbacks.py",
+        "control-plane/backend/tests/test_workload_identity.py",
+        "control-plane/backend/tests/test_runtime_state.py"
+      ],
+      "protected_checks": [".github/workflows/ci.yml"],
+      "live_evidence": ["load", "rollback"]
+    },
+    {
+      "id": "administration",
+      "area": "Administration",
+      "automated_tests": [
+        "control-plane/backend/tests/test_auth.py",
+        "control-plane/backend/tests/test_oidc.py",
+        "control-plane/backend/tests/test_sso_flow.py",
+        "control-plane/backend/tests/test_provider_routes.py",
+        "control-plane/frontend/tests/api.test.ts",
+        "control-plane/frontend/tests/authStore.test.ts",
+        "control-plane/frontend/tests/efficiency.test.ts",
+        "control-plane/frontend/tests/layout.test.tsx",
+        "control-plane/frontend/tests/sso.test.ts"
+      ],
+      "protected_checks": [".github/workflows/ci.yml"],
+      "live_evidence": ["canary"]
+    },
+    {
+      "id": "reporting",
+      "area": "Reporting",
+      "automated_tests": [
+        "control-plane/backend/tests/test_compliance.py",
+        "control-plane/backend/tests/test_metering.py",
+        "control-plane/backend/tests/test_roi.py",
+        "control-plane/backend/tests/test_broker_accounting.py"
+      ],
+      "protected_checks": [".github/workflows/ci.yml"],
+      "live_evidence": ["canary"]
+    },
+    {
+      "id": "deployment",
+      "area": "Deployment",
+      "automated_tests": [
+        "tests/unit/test_release_distribution.py",
+        "tests/unit/test_production_evidence.py",
+        "control-plane/backend/tests/test_clean_install.py",
+        "control-plane/backend/tests/test_migrations.py"
+      ],
+      "protected_checks": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/retain-production-evidence.yml",
+        "tools/production_evidence.py"
+      ],
+      "live_evidence": [
+        "scans",
+        "load",
+        "backup_restore",
+        "rollback",
+        "alarm",
+        "canary",
+        "payment"
+      ]
+    },
+    {
+      "id": "frontend_operator_workflows",
+      "area": "Frontend operator workflows",
+      "automated_tests": [
+        "control-plane/frontend/tests/api.test.ts",
+        "control-plane/frontend/tests/authStore.test.ts",
+        "control-plane/frontend/tests/efficiency.test.ts",
+        "control-plane/frontend/tests/layout.test.tsx",
+        "control-plane/frontend/tests/sandboxRunner.test.ts",
+        "control-plane/frontend/tests/sso.test.ts"
+      ],
+      "protected_checks": [".github/workflows/ci.yml"],
+      "live_evidence": ["canary"]
+    },
+    {
+      "id": "persistence_scaling_tenancy",
+      "area": "Persistence, scaling, and tenancy",
+      "automated_tests": [
+        "gateway/tests/test_event_outbox.py",
+        "gateway/tests/test_shared_store_posture.py",
+        "control-plane/backend/tests/test_migrations.py",
+        "control-plane/backend/tests/test_multitenancy.py",
+        "control-plane/backend/tests/test_replica_coordination.py"
+      ],
+      "protected_checks": [".github/workflows/ci.yml"],
+      "live_evidence": ["load", "backup_restore", "rollback"]
+    },
+    {
+      "id": "codex_client",
+      "area": "Codex client compatibility",
+      "automated_tests": [
+        "tests/unit/test_codex_conformance.py",
+        "gateway/tests/test_responses_proxy.py"
+      ],
+      "protected_checks": [
+        ".github/workflows/ci.yml",
+        "tools/codex_conformance.py"
+      ],
+      "live_evidence": []
+    },
+    {
+      "id": "production_rehearsal",
+      "area": "Production rehearsal evidence",
+      "automated_tests": ["tests/unit/test_production_evidence.py"],
+      "protected_checks": [
+        ".github/workflows/retain-production-evidence.yml",
+        "tools/production_evidence.py"
+      ],
+      "live_evidence": [
+        "scans",
+        "load",
+        "backup_restore",
+        "rollback",
+        "alarm",
+        "canary",
+        "payment"
+      ]
+    }
+  ]
+}

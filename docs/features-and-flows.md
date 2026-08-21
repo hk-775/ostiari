@@ -344,8 +344,9 @@ After the provider responds, it replaces that reservation with actual spend.
 Reservations close the concurrent-request overspend window and expire if a
 request fails before reconciliation. Budget alerts fire at 80%, 90%, and 100%.
 
-Without Redis, counters are process-local. With the optional shared store,
-replicas can use atomic shared rate and budget state.
+Without Redis, counters are process-local and suitable only for development.
+Production requires Redis so replicas share atomic rate, budget, wallet, and
+event-outbox state; readiness fails closed when that shared path is unhealthy.
 
 ## 11. Payments and Monetization Flow
 
@@ -428,8 +429,10 @@ enable and configure controls:
 - Set `OSTIARI_ENCRYPTION_KEY` so stored provider keys survive restarts.
 - Apply the provider-route migration and push the complete route catalog from
   the Providers page after configuring or rotating credentials.
-- Set the same trace ingest key on the control plane and gateways; the reporter
-  sends it as `X-Ingest-Key`.
+- Configure the dedicated workload OIDC issuer/audience and give every gateway
+  a rotating projected token or per-gateway OAuth client. The control plane
+  binds the verified issuer/subject pair to one gateway and tenant. Legacy
+  ingest/service keys are development-only.
 - Restrict CORS origins.
 - Use TLS and network policy so agents cannot bypass the gateway.
 - Use PostgreSQL and Redis; both are production requirements for their
@@ -448,9 +451,11 @@ configuration, encrypted provider material, approvals, sanitized traces, SSO
 state, and offline gateway updates. Bounded in-memory structures are hot caches,
 not the source of truth. A legacy `state.json` is read only for one-time upgrades.
 
-The gateway is primarily an enforcement process. Unless Redis or an external
-control-plane store is configured, counters and hot configuration are local to
-that process and should be restored by registration and config push.
+The gateway is primarily an enforcement process. Production persists trace,
+cost, payment, and budget-alert events to gateway-scoped Redis Streams before
+delivery and acknowledges them only after the control plane commits them.
+Configuration is restored by authenticated registration/config push. Local
+in-memory counters and event buffers remain development-only fallbacks.
 
 ## 16. Deployment Flows
 
@@ -478,5 +483,6 @@ See [`STARTUP.md`](../STARTUP.md) for end-to-end deployment instructions and
 | LLM routing and shims | `gateway/ostiari_gateway/modules/llm_gateway/` |
 | Fleet API behavior | `control-plane/backend/control_plane/routers/` |
 | UI routes | `control-plane/frontend/src/App.tsx` |
+| Feature-to-test evidence | [`feature-test-matrix.md`](feature-test-matrix.md), `config/feature-test-matrix.json` |
 | Local commands | [`Makefile`](../Makefile), [`QUICKSTART.md`](../QUICKSTART.md) |
 | Production settings | [`STARTUP.md`](../STARTUP.md), [`deploy/README.md`](../deploy/README.md), [`auth/README.md`](../auth/README.md) |

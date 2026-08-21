@@ -313,9 +313,13 @@ tool plans cost nothing and concurrent calls cannot all spend the same remainder
 | **Quota check precedes validation** | Never spend CPU scoring a call the agent can't afford — and never let a blocked agent exhaust the Guard |
 | **Payment gate runs after the safety gates** | So the agent is never charged for a call that would have been blocked anyway |
 | **Cost reporting is buffered** | Cost events accumulate and flush in batches of 20 to `POST /api/costs/record/batch`, so per-call latency doesn't pay for a control-plane round trip |
-| **Trace reporting is not buffered** | Sent immediately, one POST per event, for real-time visibility in the trace viewer |
+| **Trace reporting is durably queued** | Persisted to a gateway-scoped Redis Stream before delivery; acknowledged only after the control plane commits the event |
 
-> **"Fire-and-forget" in `TraceReporter`'s docstring overstates it.** Every `trace_reporter.report(...)` call in the request path is **awaited inline**, on a client with a 3-second timeout, so a slow or unreachable control plane adds up to 3s to the agent's response — and refusal paths report *before* returning, so blocked calls pay it too. Failures are swallowed at DEBUG (`Failed to report trace`), which is the "forget" half and is genuine: a down control plane never breaks a request. But it is not off the critical path. Reporting is skipped entirely when no control-plane URL is configured (`TraceReporter.enabled` is false), which is why this never shows up in standalone testing.
+`TraceReporter.report(...)` still attempts immediate delivery for real-time
+visibility, but an HTTP failure no longer loses the trace. The same stable event
+ID is retried after recovery or restart, and the control plane deduplicates it.
+Production readiness fails closed if the durable Redis stream cannot be read,
+written, or acknowledged. The in-memory queue is a development-only fallback.
 
 ---
 
@@ -2360,7 +2364,7 @@ The reporter buffers up to 20 records before auto-flushing, but `/invoke`,
 provider usage, so in practice each completed LLM call normally posts a batch of
 one. `close()` flushes on shutdown.
 
-Two caveats to "fire-and-forget":
+Two durability details:
 
 - **The post is on the request's critical path.** Each path awaits the flush on a
   client with a 5s timeout. A control plane that is slow rather than down adds
@@ -2421,12 +2425,10 @@ sent as empty strings or `null`, not omitted:
 | `limit_type` | Which quota tripped, when one did. |
 | `timestamp` | `time.time()` float, stamped at the gateway. |
 
-**The post is awaited, on a 3-second-timeout client, and there are 16 call sites
-in the `/tool/{action}` path alone.** A control plane that is slow rather than down
-adds that latency to every tool call. A failure is caught and logged at
-**debug** — so with the default log level, a control plane that stops ingesting
-traces looks exactly like a gateway with no traffic. If the trace viewer goes
-quiet, check the gateway at debug level before assuming the agents stopped.
+The post uses a 3-second timeout. A failed attempt is logged, remains in the
+durable outbox, and is retried with the same `trace_id`; it is not discarded.
+Operators should treat an unhealthy outbox in `/ready` as an ingestion outage
+rather than inferring that an empty trace feed means no governed traffic.
 
 ---
 
@@ -2620,7 +2622,7 @@ the control plane at `POST /api/quotas/alerts` via the trace reporter, so alerts
 visible from `GET /api/quotas/alerts` without writing any code. `record_spend` is
 synchronous, so the report is dispatched as a task on the running event loop; called
 outside a loop (a sync script or test) it logs and the spend still books, rather
-than failing the booking. Delivery is fire-and-forget — a control plane that's down
+than failing the booking. Delivery is durable — a control plane that's down
 loses the notification, not the spend.
 
 Note that a single large spend can cross **two** thresholds at once — $9 against a
@@ -3460,9 +3462,10 @@ The status field is `tier`, not `status`, and the gateway id is sent **twice** �
 as both `sidecar_id` and `gateway_id` — because consumers read different names
 (the trace viewer's Gateway column reads `gateway_id`). The full payload also
 carries `framework`, `is_mcp`, `blocked_reason`, `endpoint`, `session_id`,
-`plan`, `step`, `params`, and `delegation_chain`. Ingest is best-effort: a failed
-`POST /api/traces/ingest` is logged at debug and swallowed, so a control plane
-that's down loses traces silently rather than failing the agent's call.
+`plan`, `step`, `params`, and `delegation_chain`. Ingest is durable: a failed
+`POST /api/traces/ingest` failures retain the event in the gateway-scoped
+durable outbox. Production readiness fails closed until delivery and
+acknowledgement recover.
 
 Without the model field, you cannot:
 - Debug routing decisions ("why did this request go to GPT-4o instead of Claude?")
