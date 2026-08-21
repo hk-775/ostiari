@@ -57,16 +57,11 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secrets.existingSecret }}
                   key: config-admin-key
-            - name: OSTIARI_SERVICE_TOKEN
+            - name: OSTIARI_WORKLOAD_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.secrets.existingSecret }}
-                  key: service-token
-            - name: OSTIARI_INGEST_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.secrets.existingSecret }}
-                  key: ingest-key
+                  key: {{ .Values.workloadIdentity.clientSecretKey }}
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -83,7 +78,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.secrets.existingSecret }}
-                  key: x402-private-key
+                  key: x402-private-key # gitleaks:allow - Kubernetes Secret key name
                   optional: {{ ne .Values.payments.x402Mode "live" }}
             - name: OSTIARI_X402_ALLOWED_ASSETS
               valueFrom:

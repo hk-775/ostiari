@@ -5,12 +5,15 @@ Dev/demo stays permissive; production (OSTIARI_ENV=production) fails closed.
 
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
 pytestmark = pytest.mark.anyio
 
-_FERNET_KEY = "-oUl3c_Lb7U-Z1JawknrorCyThuwnRMc_6leonQpjeo="
+_FERNET_KEY = (  # gitleaks:allow - deterministic test-only Fernet key
+    "-oUl3c_Lb7U-Z1JawknrorCyThuwnRMc_6leonQpjeo="
+)
 
 
 def _secure_production_env(monkeypatch):
@@ -19,14 +22,24 @@ def _secure_production_env(monkeypatch):
     monkeypatch.setenv("OSTIARI_NO_DEMO", "1")
     monkeypatch.setenv("OSTIARI_TENANCY_MODE", "single")
     monkeypatch.setenv("OSTIARI_ORG_ID", "production-org")
+    monkeypatch.setenv("OSTIARI_CONTROL_PLANE_REPLICAS", "2")
+    monkeypatch.setenv("REDIS_URL", "rediss://redis.internal:6379/0")
     monkeypatch.setenv(
         "DATABASE_URL",
         "postgresql+asyncpg://ostiari:secret@db.internal:5432/ostiari",
     )
     monkeypatch.setenv("OSTIARI_JWT_SECRET", "j" * 40)
     monkeypatch.setenv("OSTIARI_ADMIN_PASSWORD", "a" * 20)
-    monkeypatch.setenv("OSTIARI_INGEST_KEY", "i" * 40)
-    monkeypatch.setenv("OSTIARI_SERVICE_TOKEN", "s" * 40)
+    monkeypatch.delenv("OSTIARI_INGEST_KEY", raising=False)
+    monkeypatch.delenv("OSTIARI_SERVICE_TOKEN", raising=False)
+    monkeypatch.setenv(
+        "OSTIARI_WORKLOAD_OIDC_ISSUER",
+        "https://workload.example.com",
+    )
+    monkeypatch.setenv(
+        "OSTIARI_WORKLOAD_OIDC_AUDIENCE",
+        "ostiari-control-plane",
+    )
     monkeypatch.setenv("OSTIARI_CONFIG_ADMIN_KEY", "c" * 40)
     monkeypatch.setenv("OSTIARI_GATEWAY_AGENT_TOKEN", "g" * 40)
     monkeypatch.setenv("OSTIARI_GATEWAY_AGENT_ID", "control-plane")
@@ -66,12 +79,35 @@ class TestProductionPosture:
         with pytest.raises(RuntimeError, match="HTTPS origins"):
             validate_production_posture()
 
-    def test_multi_tenant_mode_is_rejected_until_schema_is_ready(self, monkeypatch):
+    def test_multi_tenant_mode_is_supported(self, monkeypatch):
         from control_plane.env import validate_production_posture
 
         _secure_production_env(monkeypatch)
         monkeypatch.setenv("OSTIARI_TENANCY_MODE", "multi")
+        validate_production_posture()
+
+    def test_unknown_tenancy_mode_is_rejected(self, monkeypatch):
+        from control_plane.env import validate_production_posture
+
+        _secure_production_env(monkeypatch)
+        monkeypatch.setenv("OSTIARI_TENANCY_MODE", "shared")
         with pytest.raises(RuntimeError, match="OSTIARI_TENANCY_MODE"):
+            validate_production_posture()
+
+    def test_redis_is_required(self, monkeypatch):
+        from control_plane.env import validate_production_posture
+
+        _secure_production_env(monkeypatch)
+        monkeypatch.delenv("REDIS_URL")
+        with pytest.raises(RuntimeError, match="REDIS_URL"):
+            validate_production_posture()
+
+    def test_replica_count_must_be_positive(self, monkeypatch):
+        from control_plane.env import validate_production_posture
+
+        _secure_production_env(monkeypatch)
+        monkeypatch.setenv("OSTIARI_CONTROL_PLANE_REPLICAS", "0")
+        with pytest.raises(RuntimeError, match="OSTIARI_CONTROL_PLANE_REPLICAS"):
             validate_production_posture()
 
     def test_production_org_is_required(self, monkeypatch):
@@ -88,6 +124,22 @@ class TestProductionPosture:
         _secure_production_env(monkeypatch)
         monkeypatch.delenv("OSTIARI_GATEWAY_CALLBACK_ALLOW")
         with pytest.raises(RuntimeError, match="OSTIARI_GATEWAY_CALLBACK_ALLOW"):
+            validate_production_posture()
+
+    def test_workload_oidc_is_required(self, monkeypatch):
+        from control_plane.env import validate_production_posture
+
+        _secure_production_env(monkeypatch)
+        monkeypatch.delenv("OSTIARI_WORKLOAD_OIDC_ISSUER")
+        with pytest.raises(RuntimeError, match="OSTIARI_WORKLOAD_OIDC_ISSUER"):
+            validate_production_posture()
+
+    def test_legacy_machine_credentials_are_rejected(self, monkeypatch):
+        from control_plane.env import validate_production_posture
+
+        _secure_production_env(monkeypatch)
+        monkeypatch.setenv("OSTIARI_SERVICE_TOKEN", "legacy-secret")
+        with pytest.raises(RuntimeError, match="legacy shared credential"):
             validate_production_posture()
 
 
@@ -127,7 +179,11 @@ class TestJwtSecret:
         code = "import control_plane.auth.service"
         r = subprocess.run(
             [sys.executable, "-c", code],
-            env={"OSTIARI_ENV": "production", "PATH": "/usr/bin:/bin"},
+            env={
+                "OSTIARI_ENV": "production",
+                "PATH": "/usr/bin:/bin",
+                "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
+            },
             capture_output=True, text=True, cwd=".",
         )
         assert r.returncode != 0
@@ -157,7 +213,11 @@ class TestAdminSeed:
         monkeypatch.delenv("OSTIARI_ADMIN_PASSWORD", raising=False)
         # login as the seeded admin works in dev
         r = await client.post("/api/auth/login",
-                              json={"email": "admin@ostiari.ai", "password": "admin"})
+                              json={
+                                  "email": "admin@ostiari.ai",
+                                  "password": "admin",
+                                  "org_id": "default",
+                              })
         assert r.status_code == 200
         assert "access_token" in r.json()
 
@@ -171,15 +231,19 @@ class TestIngest:
         r = await client.post("/api/traces/ingest", json={"action": "x", "tier": "allow"})
         assert r.status_code == 200
 
-    async def test_prod_ingest_requires_key(self, client, monkeypatch):
+    async def test_prod_ingest_requires_workload_identity(
+        self,
+        client,
+        monkeypatch,
+    ):
         monkeypatch.setenv("OSTIARI_ENV", "production")
         monkeypatch.delenv("OSTIARI_INGEST_KEY", raising=False)
         r = await client.post("/api/traces/ingest", json={"action": "x", "tier": "allow"})
         assert r.status_code == 401
 
-    async def test_prod_ingest_with_key_ok(self, client, monkeypatch):
+    async def test_prod_ingest_rejects_legacy_key(self, client, monkeypatch):
         monkeypatch.setenv("OSTIARI_ENV", "production")
         monkeypatch.setenv("OSTIARI_INGEST_KEY", "sekret")
         r = await client.post("/api/traces/ingest", json={"action": "x", "tier": "allow"},
                               headers={"X-Ingest-Key": "sekret"})
-        assert r.status_code == 200
+        assert r.status_code == 401

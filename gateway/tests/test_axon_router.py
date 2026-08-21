@@ -1,32 +1,54 @@
-"""Tests for AxonLLM embedded as Ostiari's LLM router.
-
-AxonLLM owns routing governance and token cost tracking, so ``TestAxonIsRequired``
-covers the gateway warning loudly when it starts without it — and refusing to
-start when ``OSTIARI_REQUIRE_AXON=1``. ``TestToolPassThrough`` covers tool specs
-reaching it rather than being routed around. The live routing tests need AxonLLM
-(src.gateway) importable AND its config present; they're skipped otherwise. Result
-normalization and the mid-flight fallback are tested without network.
-"""
+"""Tests for the AxonLLM distribution embedded in Ostiari."""
 
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
+import tomllib
 from ostiari_gateway.modules.llm_gateway.axon_router import (
     AxonResult,
     AxonRouter,
-    _to_result,
 )
 from ostiari_gateway.modules.llm_gateway.executor import _parse_args
 
 
-def _axon_importable() -> bool:
-    """Whether AxonLLM's ``src.gateway`` can be imported here.
+def _public_router(
+    captured: dict | None = None,
+    *,
+    content: str = "ok",
+):
+    """Small public AsyncRouter-shaped fake for adapter unit tests."""
+    from axonllm import ChatCompletionResponse, TokenUsage
 
-    Must prepare sys.path the way AxonRouter._ensure does. A bare
-    ``import src.gateway`` always fails — AxonLLM's editable install exposes
-    ``<root>/src``, not ``<root>`` — so these tests skipped unconditionally and
-    the version guard below never actually ran.
-    """
+    class _Completions:
+        async def create(self, **kwargs):
+            if captured is not None:
+                captured.update(kwargs)
+            return ChatCompletionResponse(
+                id="chat-test",
+                choices=[{"message": {"content": content}}],
+                usage=TokenUsage(
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    total_tokens=0,
+                ),
+                model="m",
+                provider="p",
+            )
+
+    return SimpleNamespace(
+        chat=SimpleNamespace(completions=_Completions()),
+        _runtime=SimpleNamespace(
+            router=SimpleNamespace(),
+            provider_factory=SimpleNamespace(),
+        ),
+    )
+
+
+def _axon_importable() -> bool:
+    """Whether the bundled AxonLLM public API can be imported here."""
     import sys
 
     from ostiari_gateway.modules.llm_gateway.axon_router import _axon_root
@@ -35,38 +57,71 @@ def _axon_importable() -> bool:
     if root and root not in sys.path:
         sys.path.insert(0, root)
     try:
-        import src.gateway  # noqa: F401
+        import axonllm  # noqa: F401
         return True
     except ImportError:
         return False
 
 
 requires_axon = pytest.mark.skipif(not _axon_importable(),
-                                   reason="AxonLLM (src.gateway) not installed")
+                                   reason="bundled AxonLLM is not importable")
+
+
+class TestBundledDistribution:
+    def test_upstream_release_is_pinned_with_license(self):
+        root = Path(__file__).resolve().parents[2]
+        vendor = root / "vendor" / "axonllm"
+        metadata = tomllib.loads((vendor / "pyproject.toml").read_text())
+        provenance = (vendor / "UPSTREAM.md").read_text()
+
+        assert metadata["project"]["name"] == "axon-llm"
+        assert metadata["project"]["version"] == "0.3.1"
+        assert "v0.3.1" in provenance
+        assert "a7730a516928272c570da53845248f1f61c31f7c" in provenance
+        assert (vendor / "LICENSE").is_file()
+        assert (vendor / "THIRD_PARTY_NOTICES.md").is_file()
+
+    def test_repository_checkout_discovers_bundled_config(self, monkeypatch):
+        from ostiari_gateway.modules.llm_gateway.axon_router import _axon_root
+
+        monkeypatch.delenv("OSTIARI_AXON_ROOT", raising=False)
+        root = _axon_root()
+        assert root is not None
+        assert Path(root).resolve() == (
+            Path(__file__).resolve().parents[1]
+            / "ostiari_gateway"
+            / "_embedded"
+            / "axonllm"
+        ).resolve()
+
+    def test_gateway_wheel_declares_and_embeds_exact_axon_contract(self):
+        root = Path(__file__).resolve().parents[2]
+        metadata = tomllib.loads((root / "gateway" / "pyproject.toml").read_text())
+        dependencies = metadata["project"]["dependencies"]
+
+        assert "axon-llm[server]==0.3.1" in dependencies
+        wheel = metadata["tool"]["hatch"]["build"]["targets"]["wheel"]
+        assert "force-include" not in wheel
+
+        vendor = root / "vendor" / "axonllm"
+        embedded = root / "gateway" / "ostiari_gateway" / "_embedded" / "axonllm"
+        relative_paths = (
+            "config/models.yaml",
+            "config/providers.yaml.example",
+            "config/pricing.yaml",
+            "config/leaderboard.yaml",
+            "config/ensemble.yaml",
+            "LICENSE",
+            "THIRD_PARTY_NOTICES.md",
+            "UPSTREAM.md",
+        )
+        for relative_path in relative_paths:
+            assert (embedded / relative_path).read_bytes() == (
+                vendor / relative_path
+            ).read_bytes()
 
 
 class TestResultNormalization:
-    def test_to_result_text(self):
-        out = {
-            "model": "claude-sonnet", "provider": "bedrock",
-            "choices": [{"message": {"role": "assistant", "content": "hello"}}],
-            "usage": {"prompt_tokens": 5, "completion_tokens": 2},
-        }
-        r = _to_result(out)
-        assert r.content == "hello"
-        assert r.model == "claude-sonnet" and r.provider == "bedrock"
-        assert r.input_tokens == 5 and r.output_tokens == 2
-
-    def test_to_result_tool_calls(self):
-        out = {
-            "model": "m", "provider": "p",
-            "choices": [{"message": {"content": None, "tool_calls": [
-                {"id": "c1", "function": {"name": "f", "arguments": '{"x": 1}'}}]}}],
-            "usage": {},
-        }
-        r = _to_result(out)
-        assert r.tool_calls[0]["function"]["name"] == "f"
-
     def test_parse_args_variants(self):
         assert _parse_args('{"a": 1}') == {"a": 1}
         assert _parse_args({"a": 1}) == {"a": 1}
@@ -75,16 +130,10 @@ class TestResultNormalization:
 
 
 class TestAxonIsRequired:
-    """AxonLLM is optional to install but load-bearing when absent.
+    """An active production LLM gateway must have its routing authority.
 
-    The direct-provider fallback works well enough that a gateway with no
-    AxonLLM serves traffic and reports healthy — which is exactly how it ran
-    unnoticed while no routing governance or token cost tracking applied. That
-    invisibility is the defect, so the check stays and startup says so out loud;
-    what it does *not* do is refuse to boot, because AxonLLM is a separate
-    private repo and a hard requirement made it a deployment dependency of
-    gateways that never make an LLM call. ``OSTIARI_REQUIRE_AXON=1`` opts back
-    into refusing.
+    Tool-only gateways do not activate this module. Development can deliberately
+    test the direct provider path; production always fails closed.
     """
 
     def test_require_raises_when_disabled(self, monkeypatch):
@@ -115,8 +164,8 @@ class TestAxonIsRequired:
         assert a.available is False
         assert "Error" in a.error or "error" in a.error.lower()
 
-    def test_gateway_starts_without_axon_but_warns(self, monkeypatch, caplog):
-        """Default: boot, and say plainly what is no longer being enforced.
+    def test_development_starts_without_axon_but_warns(self, monkeypatch, caplog):
+        """Development can exercise the explicit diagnostic fallback.
 
         A silent start is the failure mode this whole class exists for, so the
         warning has to name the two things that stopped applying — an operator
@@ -128,6 +177,7 @@ class TestAxonIsRequired:
         from ostiari_gateway.server import create_app
 
         monkeypatch.setenv("OSTIARI_DISABLE_AXON_ROUTER", "1")
+        monkeypatch.delenv("OSTIARI_ENV", raising=False)
         monkeypatch.delenv("OSTIARI_REQUIRE_AXON", raising=False)
         with caplog.at_level(logging.WARNING):
             app = create_app(initial_config=SidecarConfig(
@@ -139,8 +189,8 @@ class TestAxonIsRequired:
         assert "routing governance" in warned and "cost tracking" in warned
         assert "OSTIARI_REQUIRE_AXON" in warned, "the warning must name its own off switch"
 
-    def test_require_axon_refuses_to_start(self, monkeypatch):
-        """Opt back in to failing loudly at boot — the production setting."""
+    def test_explicit_requirement_refuses_to_start(self, monkeypatch):
+        """Development can opt into the production fail-closed contract."""
         from ostiari_gateway.models import ModulesConfig, SidecarConfig
         from ostiari_gateway.server import create_app
 
@@ -150,6 +200,23 @@ class TestAxonIsRequired:
             create_app(initial_config=SidecarConfig(
                 sidecar_id="needs-axon", modules=ModulesConfig(llm_gateway=True),
                 llm={"default_model": "claude-sonnet-4-6"}))
+
+    def test_production_refuses_without_axon_automatically(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from ostiari_gateway.server import _check_axon
+
+        monkeypatch.setenv("OSTIARI_DISABLE_AXON_ROUTER", "1")
+        monkeypatch.setenv("OSTIARI_ENV", "production")
+        monkeypatch.delenv("OSTIARI_REQUIRE_AXON", raising=False)
+
+        registry = SimpleNamespace(
+            get=lambda name: SimpleNamespace(
+                _executor=SimpleNamespace(_axon=AxonRouter())
+            )
+        )
+        with pytest.raises(RuntimeError, match="routing governance"):
+            _check_axon(registry)
 
     def test_health_reports_the_ungoverned_state(self, monkeypatch):
         """Every request still 200s on the fallback, so /health has to say so."""
@@ -192,7 +259,7 @@ class TestAvailabilityAndFallback:
             await a.route(messages=[{"role": "user", "content": "hi"}], model="x")
 
     def test_executor_falls_back_when_axon_unavailable(self, monkeypatch):
-        """When Axon is unavailable, the executor uses the direct provider path."""
+        """Development retains an explicit diagnostic provider path."""
         from unittest.mock import patch
 
         from ostiari_gateway.config_manager import ConfigManager
@@ -201,6 +268,8 @@ class TestAvailabilityAndFallback:
         from ostiari_gateway.modules.llm_gateway.providers import LLMResponse
 
         monkeypatch.setenv("OSTIARI_DISABLE_AXON_ROUTER", "1")
+        monkeypatch.delenv("OSTIARI_ENV", raising=False)
+        monkeypatch.delenv("OSTIARI_REQUIRE_AXON", raising=False)
         ex = AgenticExecutor(config=LLMConfig(default_model="m"), manager=ConfigManager())
         assert ex._axon.available is False
 
@@ -213,6 +282,40 @@ class TestAvailabilityAndFallback:
                                           context={})
             res = anyio.run(go)
         assert res.content == "direct"
+
+    def test_executor_fails_closed_when_axon_unavailable_in_production(
+        self, monkeypatch
+    ):
+        from unittest.mock import patch
+
+        import anyio
+        from ostiari_gateway.config_manager import ConfigManager
+        from ostiari_gateway.modules.llm_gateway.executor import AgenticExecutor
+        from ostiari_gateway.modules.llm_gateway.models import LLMConfig
+
+        monkeypatch.setenv("OSTIARI_DISABLE_AXON_ROUTER", "1")
+        monkeypatch.setenv("OSTIARI_ENV", "production")
+        ex = AgenticExecutor(
+            config=LLMConfig(default_model="m"),
+            manager=ConfigManager(),
+        )
+
+        with patch.object(
+            ex,
+            "_call_with_fallback",
+            side_effect=AssertionError("production must not bypass AxonLLM"),
+        ):
+            async def go():
+                return await ex._call_llm(
+                    "m",
+                    [],
+                    [{"role": "user", "content": "hi"}],
+                    None,
+                    context={},
+                )
+
+            with pytest.raises(RuntimeError, match="routing governance"):
+                anyio.run(go)
 
 
 @requires_axon
@@ -229,13 +332,21 @@ class TestLiveRouting:
     async def test_available_from_any_cwd(self):
         a = self._router()
         assert a.available is True
+        await a.close()
 
     @pytest.mark.anyio
     async def test_smart_routing_selects_a_model(self):
         a = self._router()
-        r = await a.route(messages=[{"role": "user", "content": "write a python function"}],
-                          smart=True, max_tokens=8)
-        assert isinstance(r, AxonResult) and r.model  # some model was selected
+        core = a._core_router()
+        decision = await core._smart_strategy.select_model(
+            "write a python function",
+            set(core.model_registry.models),
+            "default",
+            "ostiari",
+            tenant_id="default",
+        )
+        assert decision.selected_model
+        await a.close()
 
 
 class TestToolPassThrough:
@@ -245,11 +356,10 @@ class TestToolPassThrough:
     them into each provider's dialect, so there is no reason to go around it —
     going around it is how a call loses routing governance and cost tracking.
 
-    ``supports_tools()`` remains as a version guard: Ostiari doesn't pin an
-    AxonLLM version, and an older checkout has no ``tools`` field, so a ``tools``
-    key in the request dict is discarded silently. The model then answers as if
-    no tools exist ("I don't have access to a database") — a confident, fluent,
-    wrong HTTP 200 that no error surfaces. Callers degrade rather than ship that.
+    ``supports_tools()`` remains as a source-integrity guard. Ostiari pins the
+    bundled release, but an incompatible override may lack the ``tools`` field
+    and silently discard the key. The model then answers as if no tools exist —
+    a confident, fluent, wrong HTTP 200 that no error surfaces.
     """
 
     def test_supports_tools_reflects_the_dataclass(self):
@@ -258,7 +368,7 @@ class TestToolPassThrough:
 
         a = AxonRouter()
         try:
-            from src.gateway.models import ChatCompletionRequest
+            from axonllm import ChatCompletionRequest
         except ImportError:
             assert a.supports_tools() is False
             return
@@ -271,7 +381,7 @@ class TestToolPassThrough:
         tool-using call quietly degrades off the governed routing path."""
         import dataclasses
 
-        from src.gateway.models import ChatCompletionRequest
+        from axonllm import ChatCompletionRequest
         fields = {f.name for f in dataclasses.fields(ChatCompletionRequest)}
         assert {"tools", "tool_choice"} <= fields, (
             "the installed AxonLLM predates tool pass-through — upgrade it, or "
@@ -286,15 +396,21 @@ class TestToolPassThrough:
         monkeypatch.setattr(a, "_ensure", lambda: None)
         a._available = True
 
-        class _Agent:
-            async def handle_chat_completion(self, request_data, ctx):
-                assert request_data["tools"], "tools must reach AxonLLM"
-                return {"model": "m", "provider": "p", "usage": {},
-                        "choices": [{"message": {"content": "ok"}}]}
-
-        a._agent = _Agent()
-        res = await a.route(messages=[{"role": "user", "content": "hi"}], model="claude-sonnet",
-                            tools=[{"type": "function", "function": {"name": "db_query"}}])
+        captured: dict = {}
+        a._router = _public_router(captured)
+        res = await a.route(
+            messages=[{"role": "user", "content": "hi"}],
+            model="claude-sonnet",
+            top_p=0.8,
+            tools=[{"type": "function", "function": {"name": "db_query"}}],
+            tool_choice={
+                "type": "function",
+                "function": {"name": "db_query"},
+            },
+        )
+        assert captured["tools"], "tools must reach AxonLLM"
+        assert captured["top_p"] == 0.8
+        assert captured["tool_choice"]["function"]["name"] == "db_query"
         assert res.content == "ok"
 
     @pytest.mark.anyio
@@ -304,7 +420,7 @@ class TestToolPassThrough:
         monkeypatch.setattr(a, "supports_tools", lambda: False)
         monkeypatch.setattr(a, "_ensure", lambda: None)
         a._available = True
-        a._agent = object()  # never reached — the guard fires first
+        a._router = object()  # never reached — the guard fires first
 
         with pytest.raises(RuntimeError, match="cannot carry tool specs"):
             await a.route(
@@ -319,7 +435,6 @@ class TestToolPassThrough:
 
         import anyio
         from ostiari_gateway.config_manager import ConfigManager
-        from ostiari_gateway.modules.llm_gateway.axon_router import AxonResult
         from ostiari_gateway.modules.llm_gateway.executor import AgenticExecutor
         from ostiari_gateway.modules.llm_gateway.models import LLMConfig
 
@@ -382,7 +497,6 @@ class TestToolPassThrough:
         """No tools → AxonLLM keeps its routing job (smart/fallback/ensemble)."""
         import anyio
         from ostiari_gateway.config_manager import ConfigManager
-        from ostiari_gateway.modules.llm_gateway.axon_router import AxonResult
         from ostiari_gateway.modules.llm_gateway.executor import AgenticExecutor
         from ostiari_gateway.modules.llm_gateway.models import LLMConfig
 
@@ -480,13 +594,7 @@ class TestTemperatureIsOmittedWhenUnset:
         monkeypatch.setattr(a, "_ensure", lambda: None)
         a._available = True
 
-        class _Agent:
-            async def handle_chat_completion(self, request_data, ctx):
-                captured.update(request_data)
-                return {"model": "m", "provider": "p", "usage": {},
-                        "choices": [{"message": {"content": "ok"}}]}
-
-        a._agent = _Agent()
+        a._router = _public_router(captured)
         return a
 
     @pytest.mark.anyio

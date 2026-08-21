@@ -1,0 +1,87 @@
+# Provider configurations for AxonLLM Router.
+# API keys can be set here or via environment variables.
+# Environment variables take precedence over values in this file.
+#
+# Bedrock doesn't need configuration here — it uses AWS credentials automatically.
+
+providers:
+  # Anthropic (direct API)
+  # Set ANTHROPIC_API_KEY env var or add api_key below
+  anthropic:
+    base_url: https://api.anthropic.com
+    auth_type: api_key
+    # api_key: replace-with-anthropic-api-key
+
+  # OpenAI
+  # Set OPENAI_API_KEY env var or add api_key below
+  openai:
+    base_url: https://api.openai.com
+    auth_type: api_key
+    # api_key: sk-your-key-here
+    # Multiple independently balanced routes may replace the single key:
+    # routes:
+    #   - route_id: openai:primary
+    #     api_key_env: OPENAI_PRIMARY_API_KEY
+    #     weight: 3
+    #     priority: 0
+    #     max_concurrency: 80
+    #     capacity_group: openai-account-a
+    #     capacity_limit: 100
+    #   - route_id: openai:backup
+    #     api_key_env: OPENAI_BACKUP_API_KEY
+    #     endpoint: https://api.openai.com
+    #     weight: 1
+    #     priority: 0
+    #     max_concurrency: 40
+
+  # Azure OpenAI. Set both AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT.
+  azure_openai:
+    base_url: ""
+    auth_type: azure_key
+
+  # Google Vertex AI. Supply refreshable credentials through ADC or
+  # GCP_CREDENTIALS_JSON (service-account or AWS workload-identity external
+  # account), plus GCP_PROJECT_ID and GCP_LOCATION. VERTEX_AI_ENDPOINT
+  # overrides the regional default below.
+  vertex_ai:
+    base_url: https://us-central1-aiplatform.googleapis.com
+    auth_type: gcp_service_account
+    extra_params:
+      project: ""
+      location: us-central1
+
+  # Cohere
+  cohere:
+    base_url: https://api.cohere.ai
+    auth_type: api_key
+
+  # Google AI Studio
+  google_ai:
+    base_url: https://generativelanguage.googleapis.com
+    auth_type: api_key
+
+  # xAI
+  xai:
+    base_url: https://api.x.ai
+    auth_type: api_key
+
+  # Groq
+  groq:
+    base_url: https://api.groq.com/openai
+    auth_type: api_key
+
+  # Together AI
+  together:
+    base_url: https://api.together.xyz
+    auth_type: api_key
+
+  # Fireworks AI
+  fireworks:
+    base_url: https://api.fireworks.ai/inference
+    auth_type: api_key
+
+  # AI21 direct API. Jamba 1.5 is also available through Bedrock without this
+  # credential; this entry is for direct Jamba 1.6.
+  ai21:
+    base_url: https://api.ai21.com/studio
+    auth_type: api_key

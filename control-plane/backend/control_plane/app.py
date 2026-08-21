@@ -1,6 +1,7 @@
 """FastAPI application for the control plane."""
 
 from contextlib import asynccontextmanager
+from typing import Any, cast
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,7 +12,11 @@ from control_plane.auth.middleware import AuthMiddleware
 from control_plane.auth.router import router as auth_router
 from control_plane.auth.sso_router import router as sso_router
 from control_plane.database import async_session, engine
-from control_plane.env import is_production, validate_production_posture
+from control_plane.env import (
+    control_plane_replicas,
+    is_production,
+    validate_production_posture,
+)
 from control_plane.models.database import Base
 from control_plane.routers import (
     a2a_agents,
@@ -54,6 +59,8 @@ async def lifespan(app: FastAPI):
         import_legacy_state,
         load_runtime_caches,
         load_state,
+        start_runtime_cache_sync,
+        stop_runtime_cache_sync,
     )
     from control_plane.routers.gateways import start_health_check, stop_health_check
 
@@ -62,7 +69,11 @@ async def lifespan(app: FastAPI):
             await conn.run_sync(Base.metadata.create_all)
 
     from control_plane.routers.approvals import load_approval_cache
-    from control_plane.routers.traces import load_recent_trace_cache
+    from control_plane.routers.traces import (
+        load_recent_trace_cache,
+        start_trace_bus,
+        stop_trace_bus,
+    )
 
     async with async_session() as db:
         await import_legacy_state(db, load_state())
@@ -99,13 +110,20 @@ async def lifespan(app: FastAPI):
             await seed_demo_broker_pools(db)
 
     # Start background health-check loop for gateways
+    start_runtime_cache_sync()
+    start_trace_bus()
     start_health_check()
 
     yield
 
     # Stop health-check loop
-    stop_health_check()
+    await stop_health_check()
+    await stop_trace_bus()
+    await stop_runtime_cache_sync()
 
+    from control_plane.redis_client import close_redis
+
+    await close_redis()
     await engine.dispose()
 
 
@@ -194,8 +212,35 @@ async def ready():
                 "detail": str(exc),
             },
         )
-    return {
+    dependencies: dict[str, str] = {
         "status": "ready",
         "service": "control-plane",
         "database": "available",
     }
+    if is_production() or control_plane_replicas() > 1:
+        from control_plane.persistence import runtime_cache_sync_error
+        from control_plane.redis_client import get_redis
+        from control_plane.routers.traces import trace_bus_error
+
+        try:
+            redis = await get_redis()
+            if redis is None or not await cast("Any", redis).ping():
+                raise RuntimeError("Redis unavailable")
+            sync_error = runtime_cache_sync_error()
+            bus_error = trace_bus_error()
+            if sync_error:
+                raise RuntimeError(f"runtime synchronization failed: {sync_error}")
+            if bus_error:
+                raise RuntimeError(f"trace fan-out failed: {bus_error}")
+        except Exception as exc:  # noqa: BLE001 - readiness must fail closed
+            return JSONResponse(
+                status_code=503,
+                content={
+                    **dependencies,
+                    "status": "not_ready",
+                    "redis": "unavailable",
+                    "detail": str(exc),
+                },
+            )
+        dependencies["redis"] = "available"
+    return dependencies

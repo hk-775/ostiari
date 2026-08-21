@@ -1,0 +1,345 @@
+{
+  "_comment": "Narration for the three architecture diagrams on site/architecture.html. Every claim here is read off the diagram it accompanies or the source that generated it. Each cue lights diagram cells by their drawio data-cell-id: \"cells\" are boxes and \"links\" are connectors. Cues use sentence indexes rather than timestamps, so the player apportions each measured track duration across its transcript. Regenerate audio after editing and update the measured durations, voice, engine, and sample rate with the committed tracks.",
+  "voice": "Matthew",
+  "engine": "generative",
+  "sample_rate": "22050",
+  "tracks": [
+    {
+      "id": "infrastructure",
+      "panel": "panel-infrastructure",
+      "label": "Infrastructure",
+      "ssml": "<speak>This is AxonLLM's production AWS topology. <break time=\"450ms\"/>Applications invoke the AgentCore endpoint with an OIDC token; the runtime verifies it again and resolves the exact canonical principal and project. <break time=\"550ms\"/>Administrators use either a custom-domain ALB with Cognito authentication, or a generated CloudFront hostname with application-managed PKCE sessions. <break time=\"550ms\"/>Cognito handles OIDC or enterprise SAML login, while SCIM provisions users and groups into AxonLLM authority. <break time=\"550ms\"/>The AgentCore runtime serves chat, model listing, governed query, and bounded project configuration. A separate private Fargate service serves the dashboard and tenant administration. <break time=\"600ms\"/>Both runtimes use one DynamoDB authority table, whose roles, scopes, status, and project grants replace credential claims. <break time=\"600ms\"/>Separation of duties is explicit: only AgentCore has model and Athena execution authority; the control plane has no chat or query routes and cannot assume datasource roles. <break time=\"600ms\"/>Provider secrets load from one exact Secrets Manager version, Bedrock uses IAM, and security events use a durable outbox and dead-letter queue. <break time=\"550ms\"/>Immutable images, least-privilege roles, observability, encrypted backups, and signed evidence complete the operational boundary. <break time=\"450ms\"/>The core trust rule is simple: credentials identify a caller, but server-held authority decides what that caller may do.</speak>",
+      "text": "This is AxonLLM's production AWS topology. Applications invoke the AgentCore endpoint with an OIDC token; the runtime verifies it again and resolves the exact canonical principal and project. Administrators use either a custom-domain ALB with Cognito authentication, or a generated CloudFront hostname with application-managed PKCE sessions. Cognito handles OIDC or enterprise SAML login, while SCIM provisions users and groups into AxonLLM authority. The AgentCore runtime serves chat, model listing, governed query, and bounded project configuration. A separate private Fargate service serves the dashboard and tenant administration. Both runtimes use one DynamoDB authority table, whose roles, scopes, status, and project grants replace credential claims. Separation of duties is explicit: only AgentCore has model and Athena execution authority; the control plane has no chat or query routes and cannot assume datasource roles. Provider secrets load from one exact Secrets Manager version, Bedrock uses IAM, and security events use a durable outbox and dead-letter queue. Immutable images, least-privilege roles, observability, encrypted backups, and signed evidence complete the operational boundary. The core trust rule is simple: credentials identify a caller, but server-held authority decides what that caller may do.",
+      "duration": 81.95,
+      "cues": [
+        {
+          "sentence": 1,
+          "cells": [
+            "users",
+            "acedge",
+            "task1"
+          ],
+          "links": [
+            "e1",
+            "e1b"
+          ]
+        },
+        {
+          "sentence": 2,
+          "cells": [
+            "browser",
+            "cf",
+            "alb"
+          ],
+          "links": [
+            "e2",
+            "e2b",
+            "e3",
+            "e3b"
+          ]
+        },
+        {
+          "sentence": 3,
+          "cells": [
+            "idp",
+            "cognito",
+            "task2"
+          ],
+          "links": [
+            "eidp",
+            "escim"
+          ]
+        },
+        {
+          "sentence": 4,
+          "cells": [
+            "agentcore",
+            "task1",
+            "query",
+            "providers"
+          ]
+        },
+        {
+          "sentence": 5,
+          "cells": [
+            "ecs",
+            "task2"
+          ]
+        },
+        {
+          "sentence": 6,
+          "cells": [
+            "ddb"
+          ],
+          "links": [
+            "e7",
+            "e7b"
+          ]
+        },
+        {
+          "sentence": 7,
+          "cells": [
+            "task1",
+            "task2",
+            "query",
+            "providers",
+            "asgnote"
+          ]
+        },
+        {
+          "sentence": 8,
+          "cells": [
+            "secrets",
+            "providers",
+            "outbox"
+          ]
+        },
+        {
+          "sentence": 9,
+          "cells": [
+            "cw",
+            "ecr",
+            "iam",
+            "backup"
+          ]
+        },
+        {
+          "sentence": 10,
+          "cells": []
+        }
+      ]
+    },
+    {
+      "id": "pipeline",
+      "panel": "panel-pipeline",
+      "label": "Request Pipeline",
+      "ssml": "<speak>This is the governed chat request path. <break time=\"450ms\"/>Body limits, CSRF, authentication, canonical tenant authority, and RBAC run before chat orchestration. <break time=\"500ms\"/>AxonLLM parses and validates the request, resolves hierarchy quotas, and caps maximum output tokens. <break time=\"500ms\"/>It detects prompt injection, redacts input PII, enforces fleet rate admission, checks model access and budgets, and applies input guardrails. <break time=\"600ms\"/>An exact cache lookup runs first, followed by an optional semantic lookup. A hit skips the provider but still re-applies current output policy and audit. <break time=\"600ms\"/>On a miss, AxonLLM selects an eligible region and reserves bounded spend before dispatch. <break time=\"500ms\"/>Direct routing retries and falls back across mappings. Smart routing classifies the prompt and scores allowed models. Ensemble runs a panel, requires quorum, and synthesizes with a judge. <break time=\"650ms\"/>After a provider response, usage, actual cost, reserved budget, trace, and spend are finalized before output policy. <break time=\"550ms\"/>Output guardrails then run, and output PII policy restores eligible caller values while redacting newly generated PII. A detector failure in configured output inspection withholds the response. <break time=\"650ms\"/>The audit chain records metadata and security events, then eligible session and cache state is written. Prompt and response bodies are not placed in the audit record. <break time=\"600ms\"/>Streaming is conditional: supported policy-free routes relay chunks, output inspection buffers a bounded response, and unsupported native routes simulate chunks from a completed response. <break time=\"650ms\"/>Fallback ends after the first provider byte, while accounting and audit still finalize on success, failure, cancellation, or client abandonment. <break time=\"500ms\"/>The caller receives normalized JSON or SSE only after the controls required for that path have completed.</speak>",
+      "text": "This is the governed chat request path. Body limits, CSRF, authentication, canonical tenant authority, and RBAC run before chat orchestration. AxonLLM parses and validates the request, resolves hierarchy quotas, and caps maximum output tokens. It detects prompt injection, redacts input PII, enforces fleet rate admission, checks model access and budgets, and applies input guardrails. An exact cache lookup runs first, followed by an optional semantic lookup. A hit skips the provider but still re-applies current output policy and audit. On a miss, AxonLLM selects an eligible region and reserves bounded spend before dispatch. Direct routing retries and falls back across mappings. Smart routing classifies the prompt and scores allowed models. Ensemble runs a panel, requires quorum, and synthesizes with a judge. After a provider response, usage, actual cost, reserved budget, trace, and spend are finalized before output policy. Output guardrails then run, and output PII policy restores eligible caller values while redacting newly generated PII. A detector failure in configured output inspection withholds the response. The audit chain records metadata and security events, then eligible session and cache state is written. Prompt and response bodies are not placed in the audit record. Streaming is conditional: supported policy-free routes relay chunks, output inspection buffers a bounded response, and unsupported native routes simulate chunks from a completed response. Fallback ends after the first provider byte, while accounting and audit still finalize on success, failure, cancellation, or client abandonment. The caller receives normalized JSON or SSE only after the controls required for that path have completed.",
+      "duration": 108.15,
+      "cues": [
+        {
+          "sentence": 1,
+          "cells": [
+            "p0",
+            "p1"
+          ]
+        },
+        {
+          "sentence": 2,
+          "cells": [
+            "p3",
+            "box2"
+          ]
+        },
+        {
+          "sentence": 3,
+          "cells": [
+            "p4",
+            "p5",
+            "p6",
+            "p7",
+            "p8",
+            "p9"
+          ]
+        },
+        {
+          "sentence": 4,
+          "cells": [
+            "p10"
+          ]
+        },
+        {
+          "sentence": 5,
+          "cells": [
+            "p10",
+            "p12",
+            "p14"
+          ]
+        },
+        {
+          "sentence": 6,
+          "cells": [
+            "p11",
+            "box2"
+          ]
+        },
+        {
+          "sentence": 7,
+          "cells": [
+            "path_direct",
+            "box1"
+          ],
+          "links": [
+            "q14"
+          ]
+        },
+        {
+          "sentence": 8,
+          "cells": [
+            "path_smart",
+            "box1"
+          ],
+          "links": [
+            "q13"
+          ]
+        },
+        {
+          "sentence": 9,
+          "cells": [
+            "path_ens",
+            "box1"
+          ],
+          "links": [
+            "q12"
+          ]
+        },
+        {
+          "sentence": 10,
+          "cells": [
+            "llm",
+            "p15"
+          ]
+        },
+        {
+          "sentence": 11,
+          "cells": [
+            "p12",
+            "p13"
+          ]
+        },
+        {
+          "sentence": 12,
+          "cells": [
+            "p13",
+            "box3"
+          ]
+        },
+        {
+          "sentence": 13,
+          "cells": [
+            "p14",
+            "p17"
+          ]
+        },
+        {
+          "sentence": 14,
+          "cells": [
+            "p14"
+          ]
+        },
+        {
+          "sentence": 15,
+          "cells": [
+            "p18",
+            "box5"
+          ]
+        },
+        {
+          "sentence": 16,
+          "cells": [
+            "box5",
+            "p15",
+            "p14"
+          ]
+        },
+        {
+          "sentence": 17,
+          "cells": []
+        }
+      ]
+    },
+    {
+      "id": "components",
+      "panel": "panel-components",
+      "label": "Components",
+      "ssml": "<speak>This is the component view of AxonLLM. <break time=\"450ms\"/>Starlette, AgentCore, and operations tooling enter through explicit adapters and share services assembled in one bootstrap module. <break time=\"550ms\"/>Configuration combines environment and application settings with model mappings, pricing, leaderboard data, ensemble presets, region topology, and an exact production secret version. <break time=\"600ms\"/>The HTTP trust boundary enforces body limits, CSRF, authentication, canonical authority resolution, tenant authorization, and admin RBAC. <break time=\"600ms\"/>Identity services verify browser sessions, ALB headers, OIDC tokens, and Axon API keys; Cognito handles SAML federation, SCIM handles provisioning, and optional Cedar policy can only narrow baseline RBAC. <break time=\"650ms\"/>GatewayAgent coordinates validation, governance, safety, caching, routing, accounting, output policy, and both native and policy-buffered streaming. <break time=\"600ms\"/>Routing includes direct strategies, smart cost-quality selection, ensemble synthesis, regional residency, retries, fallback, and provider route pools. <break time=\"600ms\"/>Governance, safety, audit metadata, event delivery, telemetry, governed Athena query, and tenant administration all use narrowly scoped services. <break time=\"600ms\"/>DynamoDB is the tenant-qualified authority for principals, projects, configuration, usage, key hashes, SCIM, policy, budgets, audit, event destinations, query state, and browser sessions. <break time=\"550ms\"/>The result is one auditable service graph reused across HTTP and AgentCore without turning the control plane into a second data plane.</speak>",
+      "text": "This is the component view of AxonLLM. Starlette, AgentCore, and operations tooling enter through explicit adapters and share services assembled in one bootstrap module. Configuration combines environment and application settings with model mappings, pricing, leaderboard data, ensemble presets, region topology, and an exact production secret version. The HTTP trust boundary enforces body limits, CSRF, authentication, canonical authority resolution, tenant authorization, and admin RBAC. Identity services verify browser sessions, ALB headers, OIDC tokens, and Axon API keys; Cognito handles SAML federation, SCIM handles provisioning, and optional Cedar policy can only narrow baseline RBAC. GatewayAgent coordinates validation, governance, safety, caching, routing, accounting, output policy, and both native and policy-buffered streaming. Routing includes direct strategies, smart cost-quality selection, ensemble synthesis, regional residency, retries, fallback, and provider route pools. Governance, safety, audit metadata, event delivery, telemetry, governed Athena query, and tenant administration all use narrowly scoped services. DynamoDB is the tenant-qualified authority for principals, projects, configuration, usage, key hashes, SCIM, policy, budgets, audit, event destinations, query state, and browser sessions. The result is one auditable service graph reused across HTTP and AgentCore without turning the control plane into a second data plane.",
+      "duration": 99.45,
+      "cues": [
+        {
+          "sentence": 1,
+          "cells": [
+            "entry",
+            "e_serve",
+            "e_agentcore",
+            "e_cli",
+            "core"
+          ],
+          "links": [
+            "c1",
+            "c2"
+          ]
+        },
+        {
+          "sentence": 2,
+          "cells": [
+            "cfg",
+            "cfgfiles"
+          ]
+        },
+        {
+          "sentence": 3,
+          "cells": [
+            "mw",
+            "mw1",
+            "mw2",
+            "mw3"
+          ]
+        },
+        {
+          "sentence": 4,
+          "cells": [
+            "idsvc",
+            "idlist"
+          ],
+          "links": [
+            "c3"
+          ]
+        },
+        {
+          "sentence": 5,
+          "cells": [
+            "core",
+            "corenote"
+          ]
+        },
+        {
+          "sentence": 6,
+          "cells": [
+            "routing",
+            "r_router",
+            "r_smart",
+            "r_ens",
+            "r_region",
+            "r_reg",
+            "prov",
+            "provlist"
+          ]
+        },
+        {
+          "sentence": 7,
+          "cells": [
+            "gov",
+            "govlist",
+            "sec",
+            "seclist",
+            "obs",
+            "obslist",
+            "querysvc",
+            "surfaces"
+          ]
+        },
+        {
+          "sentence": 8,
+          "cells": [
+            "pers"
+          ]
+        },
+        {
+          "sentence": 9,
+          "cells": []
+        }
+      ]
+    }
+  ]
+}

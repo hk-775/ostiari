@@ -14,6 +14,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.auth.dependencies import get_current_org
+from control_plane.auth.workload import authorize_reported_gateway
 from control_plane.database import get_db
 from control_plane.models.database import Gateway, UsageRecord
 from control_plane.models.scoping import get_scoped, scoped
@@ -24,6 +25,7 @@ from control_plane.services.runtime_state import (
     clear_runtime_namespace,
     delete_runtime_state,
     put_runtime_state,
+    put_runtime_state_once,
 )
 
 log = logging.getLogger("control_plane.quotas")
@@ -84,6 +86,7 @@ class QuotaResponse(BaseModel):
 class BudgetAlert(BaseModel):
     """A budget threshold crossing reported by a gateway."""
 
+    event_id: str = Field(default="", max_length=64)
     gateway_id: str = ""
     agent_id: str = ""
     threshold: str = ""
@@ -316,28 +319,43 @@ async def create_quota(
 
 
 @router.post("/alerts")
-async def ingest_budget_alert(body: BudgetAlert):
+async def ingest_budget_alert(request: Request, body: BudgetAlert):
     """Receive a budget threshold crossing (80/90/100%) from a gateway.
 
     Unauthenticated gateway path, like payment/approval ingest: the org comes from
-    the reporting gateway's row, never from the payload. Kept in memory — an alert
-    is a notification whose underlying spend is already recorded in usage_records.
+    the reporting gateway's row, never from the payload. Alerts are stored
+    immutably by event ID and restored into the bounded hot cache after restarts.
     """
     from control_plane.database import async_session
-    from control_plane.models.scoping import org_of_gateway
-
     async with async_session() as db:
-        alert_org = await org_of_gateway(db, body.gateway_id)
+        gateway = await authorize_reported_gateway(request, db, body.gateway_id)
+        alert_org = gateway.org_id if gateway is not None else "default"
+        if not body.event_id:
+            body.event_id = uuid.uuid4().hex
         if not body.timestamp:
             body.timestamp = time.time()
-        alert_key = f"{body.timestamp:020.6f}:{uuid.uuid4().hex}"
-        await put_runtime_state(
+        payload = body.model_dump(mode="json")
+        inserted, stored = await put_runtime_state_once(
             db,
             alert_org,
             "budget_alerts",
-            alert_key,
-            body.model_dump(mode="json"),
+            body.event_id,
+            payload,
         )
+        if not inserted:
+            if stored != payload:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Budget alert event '{body.event_id}' was already "
+                        "recorded with different data"
+                    ),
+                )
+            if not any(
+                alert.event_id == body.event_id for alert in _alerts[alert_org]
+            ):
+                _alerts[alert_org].append(BudgetAlert(**stored))
+            return {"recorded": True, "duplicate": True, "event_id": body.event_id}
         await db.commit()
         _alerts[alert_org].append(body)
     log.warning(

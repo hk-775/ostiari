@@ -210,21 +210,45 @@ class MessagesProxy:
         #
         # Tool-bearing calls route through it too. AxonLLM carries tool specs and
         # translates them per provider; the ``supports_tools()`` check survives
-        # only as a version guard, since Ostiari doesn't pin an AxonLLM version and
-        # an older checkout would drop the caller's tools without saying so.
+        # only as a source-integrity guard. Ostiari pins AxonLLM, but an
+        # incompatible operator override must not silently drop caller tools.
         _wants_tools = bool(body.get("tools"))
+        from ostiari_gateway.modules.llm_gateway.axon_router import (
+            governed_routing_required,
+        )
+
         if (self._axon is not None and self._axon.available
                 and not (_wants_tools and not self._axon.supports_tools())):
             return await self._forward_axon(request, body, requested_model, agent_id,
                                             session_id, framework, streaming, reservation_id,
                                             agent_reservation_id)
         if _wants_tools and self._axon is not None and self._axon.available:
+            if governed_routing_required():
+                return _err(
+                    501,
+                    "api_error",
+                    "The embedded AxonLLM version cannot carry tool definitions",
+                )
             log.warning("AxonLLM predates tool pass-through — using the direct provider "
                         "path for %d tool(s); routing governance and cost tracking are "
                         "bypassed for this call. Upgrade AxonLLM.",
                         len(body.get("tools") or []))
 
-        # ── Fallback: no AxonLLM — Ostiari's own ModelRouter + direct call ─
+        if governed_routing_required():
+            await self._report(
+                agent_id,
+                framework,
+                session_id,
+                requested_model,
+                tier="block",
+                reason="LLM router unavailable",
+                limit_type="router",
+                reservation_id=reservation_id,
+                agent_reservation_id=agent_reservation_id,
+            )
+            return _err(503, "api_error", "LLM router unavailable")
+
+        # ── Development fallback: Ostiari's ModelRouter + direct call ────
         routing_meta: dict[str, str] = {}
         model = self._route(
             agent_id,
@@ -510,6 +534,23 @@ class MessagesProxy:
                 system=None,                 # already folded into oai_messages
             )
         except BrokerPoolDepletedError as e:
+            from ostiari_gateway.modules.llm_gateway.axon_router import (
+                governed_routing_required,
+            )
+
+            if governed_routing_required():
+                await self._report(
+                    agent_id,
+                    framework,
+                    session_id,
+                    requested_model,
+                    tier="block",
+                    reason=str(e),
+                    limit_type="broker_pool",
+                    reservation_id=reservation_id,
+                    agent_reservation_id=agent_reservation_id,
+                )
+                return _err(503, "api_error", str(e))
             try:
                 model = self._direct_model(
                     requested_model
@@ -546,7 +587,24 @@ class MessagesProxy:
             return await self._forward_translated(
                 body, model, provider, streaming, meta
             )
-        except Exception as e:  # noqa: BLE001 — fall back to the direct path
+        except Exception as e:
+            from ostiari_gateway.modules.llm_gateway.axon_router import (
+                governed_routing_required,
+            )
+
+            if governed_routing_required():
+                await self._report(
+                    agent_id,
+                    framework,
+                    session_id,
+                    requested_model,
+                    tier="block",
+                    reason=f"router error: {e}",
+                    limit_type="router",
+                    reservation_id=reservation_id,
+                    agent_reservation_id=agent_reservation_id,
+                )
+                return _err(502, "api_error", "Upstream routing failed")
             log.warning("AxonLLM shim route failed (%s) — using direct path", e)
             # Use the client's own requested model (a valid Anthropic ID from
             # Claude Code) rather than an Axon-registry/Bedrock name that the

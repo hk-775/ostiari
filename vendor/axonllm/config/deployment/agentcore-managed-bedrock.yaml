@@ -1,0 +1,39 @@
+schema_version: 1
+target: agentcore
+deployment_profile: production
+region: us-east-1
+
+network:
+  mode: managed
+  vpc_cidr: 10.42.0.0/16
+  availability_zone_ids:
+    - use1-az4
+    - use1-az1
+  egress:
+    mode: endpoints-only
+    services:
+      - ecr.api
+      - ecr.dkr
+      - bedrock-runtime
+      - cognito-idp
+      - dynamodb
+      - kms
+      - s3
+      - logs
+      - secretsmanager
+      - sqs
+      - sns
+
+control_plane:
+  enabled: true
+  access: public-authenticated
+  hostname:
+    mode: generated
+
+identity:
+  mode: managed-cognito
+
+runtime:
+  state: active
+  providers:
+    - bedrock

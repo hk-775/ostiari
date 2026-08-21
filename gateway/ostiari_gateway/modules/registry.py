@@ -21,7 +21,7 @@ class SidecarModule(Protocol):
         """Register routes and startup logic on the FastAPI app."""
         ...
 
-    def shutdown(self) -> None:
+    async def shutdown(self) -> None:
         """Clean up resources."""
         ...
 
@@ -60,12 +60,12 @@ class ModuleRegistry:
         log.info("Activated module: %s", module_name)
         return True
 
-    def deactivate(self, module_name: str) -> bool:
+    async def deactivate(self, module_name: str) -> bool:
         """Deactivate a module."""
         module = self._active.pop(module_name, None)
         if module is None:
             return False
-        module.shutdown()
+        await module.shutdown()
         log.info("Deactivated module: %s", module_name)
         return True
 
@@ -87,6 +87,22 @@ class ModuleRegistry:
             for m in self._available.values()
         ]
 
-    def shutdown_all(self) -> None:
+    async def shutdown_all(self) -> None:
         for name in list(self._active.keys()):
-            self.deactivate(name)
+            await self.deactivate(name)
+
+    async def start_all(self) -> None:
+        """Start background workers for active modules."""
+        for module in self._active.values():
+            start = getattr(module, "start", None)
+            if start is not None:
+                await start()
+
+    def delivery_status(self) -> dict[str, Any]:
+        """Return durable delivery health from active modules."""
+        status: dict[str, Any] = {}
+        for module in self._active.values():
+            inspect = getattr(module, "delivery_status", None)
+            if inspect is not None:
+                status.update(inspect())
+        return status

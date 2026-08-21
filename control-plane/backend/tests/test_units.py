@@ -86,6 +86,18 @@ class TestRateLimiterFallback:
         allowed = [ok for ok, _ in results]
         assert allowed == [True, True, False]
 
+    async def test_production_fails_closed_without_redis(self, monkeypatch):
+        async def _no_redis():
+            return None
+
+        monkeypatch.setattr("control_plane.rate_limiter.get_redis", _no_redis)
+        monkeypatch.setenv("OSTIARI_ENV", "production")
+
+        assert await RateLimiter(prefix="test").check("client-x", 10) == (
+            False,
+            0,
+        )
+
 
 # ─── Redis client graceful absence ───────────────────────────────────────────
 

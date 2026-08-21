@@ -1,0 +1,1689 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AxonLLM — Architecture</title>
+    <meta name="description" content="How AxonLLM is built: its AgentCore data plane, shared control plane, governed request pipeline, and reusable component graph.">
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%237c3aed'/%3E%3Cpath d='M8 22L16 10L24 22' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3Ccircle cx='16' cy='10' r='2.5' fill='white'/%3E%3C/svg%3E">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="architecture-flow.css">
+    <style>
+        :root {
+            /* Same tokens as index.html — see the comment there for why stone
+               neutrals and violet-600. Kept as a copy rather than a shared
+               stylesheet because the site is two flat files served from S3 with
+               no build step; a third request for ~2KB of CSS costs more than the
+               duplication does. */
+            --bg: #fafaf9;
+            --surface: #ffffff;
+            --border: #e7e5e4;
+            --border-soft: #f5f5f4;
+            --text: #1c1917;
+            --text-mid: #57534e;
+            --text-dim: #78716c;
+            --accent: #7c3aed;
+            --accent-hover: #6d28d9;
+            --accent-soft: #f5f3ff;
+            --accent-ring: #ede9fe;
+            --accent-glow: rgba(139, 92, 246, 0.12);
+            --green: #047857;
+            --green-soft: #ecfdf5;
+            --red: #be123c;
+            --red-soft: #fff1f2;
+            --amber: #b45309;
+            --amber-soft: #fffbeb;
+            --blue: #0369a1;
+            --blue-soft: #f0f9ff;
+            --radius: 16px;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        a:focus-visible,
+        button:focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+            box-shadow: 0 0 0 5px var(--accent-ring);
+            border-radius: 6px;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 24px;
+        }
+
+        /* The diagrams are 1491-1563px wide. At the 1200px container they read
+           as thumbnails, so the viewer gets its own wider container and the
+           prose keeps the narrow one. */
+        .container-wide {
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 0 24px;
+        }
+
+        nav {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 100;
+            padding: 16px 0;
+            background: rgba(250, 250, 249, 0.8);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
+        }
+
+        nav .container {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .logo {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 1.25rem;
+            font-weight: 800;
+            color: var(--accent);
+            text-decoration: none;
+            letter-spacing: -0.5px;
+        }
+
+        .logo svg { width: 30px; height: 30px; flex-shrink: 0; }
+        .logo-text { color: var(--accent); }
+        .logo-text span { color: var(--text); }
+
+        .nav-links {
+            display: flex;
+            gap: 32px;
+            list-style: none;
+        }
+
+        .nav-links a {
+            color: var(--text-dim);
+            text-decoration: none;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: color 0.2s;
+        }
+
+        .nav-links a:hover { color: var(--text); }
+        .nav-links a.active { color: var(--accent); }
+
+        .nav-cta {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 18px;
+            background: var(--accent);
+            color: #fff;
+            border-radius: 8px;
+            text-decoration: none;
+            font-size: 0.85rem;
+            font-weight: 600;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .nav-cta:hover {
+            background: var(--accent-hover);
+            box-shadow: 0 4px 12px rgba(124, 58, 237, 0.2);
+        }
+
+        .page { padding: 120px 0 40px; }
+
+        .page h1 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            letter-spacing: -1.5px;
+            margin-bottom: 8px;
+        }
+
+        .page .subtitle {
+            color: var(--text-mid);
+            font-size: 1.1rem;
+            max-width: 720px;
+            margin-bottom: 28px;
+        }
+
+        .page-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 8px; }
+
+        .ghost-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 20px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            text-decoration: none;
+            font-size: 0.85rem;
+            font-weight: 500;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .ghost-link:hover {
+            border-color: var(--accent);
+            box-shadow: 0 2px 8px var(--accent-glow);
+        }
+
+        .journeys {
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            border-top: 1px solid var(--border);
+            padding: 64px 0 72px;
+        }
+
+        .journeys-head {
+            align-items: end;
+            display: flex;
+            gap: 24px;
+            justify-content: space-between;
+            margin: 0 auto 26px;
+            max-width: 1200px;
+            padding: 0 24px;
+        }
+
+        .journeys h2 {
+            font-size: 2rem;
+            font-weight: 800;
+            letter-spacing: -1px;
+            line-height: 1.2;
+            margin-bottom: 8px;
+        }
+
+        .journeys .lede {
+            color: var(--text-mid);
+            font-size: 0.98rem;
+            margin: 0;
+            max-width: 760px;
+        }
+
+        .journeys .axon-flow {
+            text-align: left;
+        }
+
+        /* --- Diagram viewer ------------------------------------------------ */
+
+        .viewer { padding: 24px 0 64px; }
+
+        .tabs {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+        }
+
+        /* Tabs are <button>, not <a href="#...">: the panel swap is the whole
+           interaction, and an anchor would also scroll the page and push a
+           history entry for it. */
+        .tab {
+            appearance: none;
+            font: inherit;
+            font-size: 0.9rem;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 18px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            color: var(--text-mid);
+            cursor: pointer;
+            transition: color 0.2s, border-color 0.2s, background 0.2s;
+        }
+
+        .tab:hover { color: var(--text); border-color: var(--text-dim); }
+
+        .tab[aria-selected="true"] {
+            background: var(--accent-soft);
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .tab-num {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: var(--border-soft);
+            font-size: 0.7rem;
+            font-weight: 700;
+            color: var(--text-dim);
+        }
+
+        .tab[aria-selected="true"] .tab-num { background: var(--accent-ring); color: var(--accent); }
+
+        .stage {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.04);
+            overflow: hidden;
+        }
+
+        .stage-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 14px 20px;
+            border-bottom: 1px solid var(--border-soft);
+            flex-wrap: wrap;
+        }
+
+        .stage-caption { font-size: 0.85rem; color: var(--text-dim); }
+        .stage-caption strong { color: var(--text); font-weight: 600; }
+        .stage-caption code {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.78rem;
+            color: var(--accent);
+            background: var(--accent-soft);
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+
+        .zoom-controls { display: flex; align-items: center; gap: 6px; }
+
+        .zoom-btn {
+            appearance: none;
+            font: inherit;
+            width: 32px;
+            height: 32px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-mid);
+            cursor: pointer;
+            transition: border-color 0.2s, color 0.2s;
+        }
+
+        .zoom-btn:hover { border-color: var(--accent); color: var(--accent); }
+        .zoom-btn[disabled] { opacity: 0.4; cursor: default; }
+        .zoom-btn[disabled]:hover { border-color: var(--border); color: var(--text-mid); }
+
+        .zoom-level {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            min-width: 48px;
+            text-align: center;
+        }
+
+        /* Shown only where the diagram cannot fit at a readable size — see the
+           narrow-viewport block. A 1500px diagram on a phone is a pan-and-zoom
+           surface, and saying so beats leaving it to be discovered. */
+        .canvas-hint {
+            display: none;
+            padding: 10px 20px;
+            border-bottom: 1px solid var(--border-soft);
+            background: var(--accent-soft);
+            color: var(--accent);
+            font-size: 0.78rem;
+            font-weight: 500;
+        }
+
+        /* Scroll container. grab/grabbing cursor advertises the drag; the JS
+           adds .is-panning while a pointer is down. */
+        .canvas {
+            overflow: auto;
+            background:
+                linear-gradient(var(--border-soft) 1px, transparent 1px) 0 0 / 24px 24px,
+                linear-gradient(90deg, var(--border-soft) 1px, transparent 1px) 0 0 / 24px 24px,
+                var(--surface);
+            cursor: grab;
+            max-height: 78vh;
+        }
+
+        .canvas.is-panning { cursor: grabbing; }
+
+        .panel { display: none; padding: 24px; }
+        .panel.is-active { display: block; }
+
+        /* transform-origin top-left so zooming grows down-and-right into the
+           scroll area instead of pulling the diagram off the top-left edge. */
+        .panel svg {
+            display: block;
+            height: auto;
+            transform-origin: 0 0;
+            transition: width 0.15s ease-out;
+        }
+
+        /* --- Narration highlights ------------------------------------------
+           The narration lights the boxes it is talking about. Drawio tags every
+           shape it exports with data-cell-id, so the cue data names cells by the
+           same id they have in architecture.drawio and nothing here has to know
+           what a box is made of.
+
+           Dimming is on the panel rather than on each cell: .is-dimmed goes on
+           the panel, and the lit cells opt back out. Fading ~130 cells to bring
+           six forward is one class toggle instead of 130.
+
+           .arch-cell is added by markCells() rather than selected on
+           [data-cell-id] here, because drawio's two wrapper groups carry that
+           attribute as well and dimming those would dim the whole diagram. */
+        .panel.is-dimmed .arch-cell {
+            opacity: 0.28;
+            transition: opacity 0.4s ease;
+        }
+
+        /* Never dimmed: the title and subtitle are what the reader orients by,
+           and .arch-frame marks the structural containers the lit cells sit in
+           — fading a VPC boundary makes the task inside it look unplaced. */
+        .panel.is-dimmed .arch-cell.arch-frame,
+        .panel.is-dimmed .arch-cell.is-lit {
+            opacity: 1;
+        }
+
+        /* A drop-shadow filter rather than a stroke or a background: the cells
+           are groups of paths and text with their own fills, and this lifts one
+           without touching any of them. Violet at two radii reads as a glow at
+           the 55–100% zooms the canvas actually uses. */
+        .panel .arch-cell.is-lit {
+            filter: drop-shadow(0 0 3px var(--accent))
+                    drop-shadow(0 0 10px var(--accent-glow));
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .panel.is-dimmed .arch-cell { transition: none; }
+        }
+
+        /* --- Narration ----------------------------------------------------- */
+
+        /* Revealed by JS once the narration manifest has actually loaded. A play
+           button that is visible before its track is known is a control that can
+           only disappoint — and site/narration/ is absent on any deploy made
+           before it existed, so this has to fail by not appearing. */
+        .narration[hidden] { display: none; }
+
+        .narration {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 12px 20px;
+            border-bottom: 1px solid var(--border-soft);
+            background: linear-gradient(90deg, var(--accent-soft), var(--surface) 70%);
+        }
+
+        .narr-play {
+            appearance: none;
+            font: inherit;
+            flex-shrink: 0;
+            width: 38px;
+            height: 38px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border: none;
+            border-radius: 50%;
+            background: var(--accent);
+            color: #fff;
+            cursor: pointer;
+            transition: background 0.2s, transform 0.1s;
+        }
+
+        .narr-play:hover { background: var(--accent-hover); }
+        .narr-play:active { transform: scale(0.94); }
+        .narr-play svg { width: 16px; height: 16px; }
+        /* Two glyphs, one swapped out by [data-state]. Toggling an SVG path's
+           `d` attribute from JS would put the icon shapes in the script, where
+           nobody looks for them. */
+        .narration[data-state="playing"] .narr-icon-play,
+        .narration:not([data-state="playing"]) .narr-icon-pause { display: none; }
+
+        .narr-body { flex: 1; min-width: 0; }
+
+        .narr-head {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+            margin-bottom: 5px;
+        }
+
+        .narr-title {
+            font-size: 0.82rem;
+            font-weight: 600;
+            color: var(--text);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .narr-time {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.72rem;
+            color: var(--text-dim);
+            flex-shrink: 0;
+            margin-left: auto;
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* role="slider", so it must take focus and show it. 6px tall with a 9px
+           hit area courtesy of the padding on .narr-track-hit below. */
+        .narr-track {
+            position: relative;
+            height: 6px;
+            border-radius: 3px;
+            background: var(--accent-ring);
+            cursor: pointer;
+        }
+
+        .narr-track:focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: 3px;
+        }
+
+        .narr-fill {
+            position: absolute;
+            left: 0; top: 0; bottom: 0;
+            width: 0;
+            border-radius: 3px;
+            background: var(--accent);
+        }
+
+        /* The knob is inside the fill's right edge rather than positioned
+           separately, so there is one number driving both and they cannot
+           disagree mid-drag. */
+        .narr-fill::after {
+            content: '';
+            position: absolute;
+            right: -5px;
+            top: 50%;
+            width: 10px;
+            height: 10px;
+            margin-top: -5px;
+            border-radius: 50%;
+            background: var(--accent);
+            box-shadow: 0 0 0 3px var(--surface);
+        }
+
+        .narr-aside {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-shrink: 0;
+        }
+
+        .narr-voice {
+            font-size: 0.7rem;
+            color: var(--text-dim);
+            white-space: nowrap;
+        }
+
+        .narr-transcript-btn {
+            appearance: none;
+            font: inherit;
+            font-size: 0.72rem;
+            font-weight: 600;
+            padding: 5px 11px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            color: var(--text-mid);
+            cursor: pointer;
+            white-space: nowrap;
+            transition: border-color 0.2s, color 0.2s;
+        }
+
+        .narr-transcript-btn:hover { border-color: var(--accent); color: var(--accent); }
+        .narr-transcript-btn[aria-expanded="true"] {
+            background: var(--accent-soft);
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        /* Two elements rather than one: the tinted band has to span the full
+           stage width to read as a row of it, and the prose has to stop around
+           78ch to stay readable. Put both on one element and max-width clips
+           the background too, leaving a half-filled stripe. */
+        .narr-transcript {
+            padding: 14px 20px 16px;
+            border-bottom: 1px solid var(--border-soft);
+            background: var(--bg);
+        }
+
+        .narr-transcript[hidden] { display: none; }
+
+        .narr-transcript p {
+            max-width: 78ch;
+            font-size: 0.86rem;
+            line-height: 1.7;
+            color: var(--text-mid);
+        }
+
+        /* --- Prose sections ------------------------------------------------ */
+
+        .arch-section { padding: 0 0 56px; }
+
+        .section-label {
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: var(--accent);
+            margin-bottom: 12px;
+        }
+
+        .arch-section h2 {
+            font-size: 1.75rem;
+            font-weight: 800;
+            letter-spacing: -1px;
+            margin-bottom: 12px;
+        }
+
+        .arch-section > .container > p,
+        .arch-section > .container > .lede {
+            color: var(--text-mid);
+            font-size: 1rem;
+            max-width: 760px;
+            line-height: 1.7;
+            margin-bottom: 24px;
+        }
+
+        /* Step numbers come from data-step, not a CSS counter: the source skips
+           and fractionally numbers its steps (2.5, 9.5, 11.6), and a counter
+           would silently renumber them 1..17 while the prose claims these are
+           the source's own numbers. */
+        .flow-list { list-style: none; max-width: 820px; }
+
+        .flow-list li {
+            position: relative;
+            /* Clears the fixed 60px badge with a 14px gutter. The badge is a
+               fixed width rather than min-width + padding so the widest label
+               ("13–14") can't grow past this indent and sit under the text. */
+            padding-left: 74px;
+            margin-bottom: 14px;
+            color: var(--text-mid);
+            font-size: 0.92rem;
+        }
+
+        .flow-list li::before {
+            content: attr(data-step);
+            position: absolute;
+            left: 0;
+            top: 1px;
+            width: 60px;
+            height: 26px;
+            background: var(--accent-soft);
+            border: 1px solid var(--accent-ring);
+            border-radius: 13px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.72rem;
+            font-weight: 500;
+            color: var(--accent);
+        }
+
+        .flow-list strong { color: var(--text); font-weight: 600; }
+
+        .flow-list code {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8rem;
+            color: var(--text-dim);
+        }
+
+        .component-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+
+        .component-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 24px;
+            transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+        }
+
+        .component-card:hover {
+            border-color: var(--accent);
+            box-shadow: 0 8px 24px var(--accent-glow);
+            transform: translateY(-2px);
+        }
+
+        .component-card h3 {
+            font-size: 1rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+            color: var(--accent);
+        }
+
+        .component-card p {
+            color: var(--text-mid);
+            font-size: 0.875rem;
+            line-height: 1.65;
+        }
+
+        .component-card code {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.78rem;
+            color: var(--text-dim);
+        }
+
+        footer {
+            padding: 40px 0;
+            border-top: 1px solid var(--border);
+            text-align: center;
+        }
+
+        footer p { color: var(--text-dim); font-size: 0.85rem; }
+        footer a { color: var(--text-dim); text-decoration: none; transition: color 0.2s; }
+        footer a:hover { color: var(--text); }
+
+        @media (max-width: 768px) {
+            .nav-links { display: none; }
+            .page { padding: 100px 0 32px; }
+            .page h1 { font-size: 1.9rem; letter-spacing: -1px; }
+            .canvas { max-height: 60vh; }
+            .stage-caption { display: none; }
+            .canvas-hint { display: block; }
+
+            /* The nav is logo + two CTAs and overflowed by 12px at 390px, which
+               is enough to make the whole document scroll sideways. The label
+               text is what costs the width, so the icons carry the meaning and
+               aria-label carries it for screen readers. */
+            .nav-cta { padding: 8px 12px; gap: 0; }
+            .nav-cta .cta-label { display: none; }
+            .nav-cta svg { width: 17px; height: 17px; }
+
+            /* At 390px, fit-to-width lands a 1500px diagram at 40% — too small
+               to read. Better to start it at a legible scale and let it be
+               panned, which is what the hint above the canvas says to do. */
+            .panel { padding: 12px; }
+
+            /* The engine credit is the only thing here that isn't a control;
+               drop it first so play, scrub and transcript keep one row. */
+            .narration { padding: 10px 14px; gap: 10px; }
+            .narr-voice { display: none; }
+            .narr-transcript { padding: 12px 14px 14px; }
+        }
+
+        /* Pan-and-zoom is a pointer affordance. Without it the diagram is a
+           fixed-width image in a scroll box, which still works — so the
+           fallback is the download link, not a broken page. */
+        @media (prefers-reduced-motion: reduce) {
+            .panel svg { transition: none; }
+            .component-card { transition: none; }
+            .component-card:hover { transform: none; }
+        }
+
+        @media (max-width: 760px) {
+            .journeys { padding: 48px 0 56px; }
+            .journeys-head { align-items: stretch; flex-direction: column; }
+            .journeys h2 { font-size: 1.6rem; }
+        }
+    </style>
+</head>
+<body>
+
+<nav>
+    <div class="container">
+        <a href="/" class="logo">
+            <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+                <rect width="32" height="32" rx="8" fill="url(#axon-grad)"/>
+                <path d="M8 22L16 10L24 22" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                <circle cx="16" cy="10" r="2.5" fill="white"/>
+                <circle cx="8" cy="22" r="2" fill="white" opacity="0.7"/>
+                <circle cx="24" cy="22" r="2" fill="white" opacity="0.5"/>
+                <line x1="12" y1="16" x2="20" y2="16" stroke="white" stroke-width="1.5" opacity="0.5"/>
+                <defs><linearGradient id="axon-grad" x1="0" y1="0" x2="32" y2="32"><stop stop-color="#8b5cf6"/><stop offset="1" stop-color="#6d28d9"/></linearGradient></defs>
+            </svg>
+            <span class="logo-text">Axon<span>LLM</span></span>
+        </a>
+        <ul class="nav-links">
+            <li><a href="/#how-it-works">How It Works</a></li>
+            <li><a href="/#features">Features</a></li>
+            <li><a href="/#routing">Routing</a></li>
+            <li><a href="/#providers">Providers</a></li>
+            <li><a href="architecture.html" class="active" aria-current="page">Architecture</a></li>
+        </ul>
+        <div style="display:flex;gap:10px;align-items:center;">
+            <a href="/admin/dashboard" class="nav-cta" aria-label="Open the dashboard">
+                <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/></svg>
+                <span class="cta-label">Dashboard</span>
+            </a>
+            <a href="https://github.com/AxonLLM/axonllm" class="nav-cta" aria-label="View the source on GitHub" style="background:var(--surface);color:var(--text);border:1px solid var(--border);">
+                <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+                <span class="cta-label">GitHub</span>
+            </a>
+        </div>
+    </div>
+</nav>
+
+<section class="page">
+    <div class="container">
+        <p class="section-label">Architecture</p>
+        <h1>How AxonLLM is built</h1>
+        <p class="subtitle">
+            Start with four executable request stories, then inspect the AWS
+            infrastructure, ordered gateway pipeline, and component graph behind them.
+            The engineering diagrams are generated from the source and include narrated
+            walkthroughs.
+        </p>
+        <div class="page-actions">
+            <a href="/admin/dashboard?tour=1" class="ghost-link">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+                Start dashboard showcase
+            </a>
+            <a href="architecture.drawio" download class="ghost-link">
+                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+                Download .drawio (all three pages)
+            </a>
+            <a href="/admin/architecture" class="ghost-link">
+                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+                Same diagram inside the dashboard
+            </a>
+        </div>
+    </div>
+</section>
+
+<section class="journeys" id="interactive-flow">
+    <div class="journeys-head">
+        <div>
+            <p class="section-label">Interactive Request Journeys</p>
+            <h2>See where every decision is made</h2>
+            <p class="lede">Play each scenario step by step. The highlighted path separates caller identity, governance, routing, provider or data execution, and durable evidence.</p>
+        </div>
+    </div>
+    <div class="container-wide">
+        <div class="axon-flow" data-axon-flow aria-label="Interactive AxonLLM request architecture"></div>
+    </div>
+</section>
+
+<section class="viewer">
+    <div class="container-wide">
+        <div class="tabs" role="tablist" aria-label="Architecture views">
+            <button class="tab" role="tab" id="tab-infrastructure"
+                    aria-controls="panel-infrastructure" aria-selected="true">
+                <span class="tab-num">1</span> Infrastructure
+            </button>
+            <button class="tab" role="tab" id="tab-pipeline"
+                    aria-controls="panel-pipeline" aria-selected="false" tabindex="-1">
+                <span class="tab-num">2</span> Request Pipeline
+            </button>
+            <button class="tab" role="tab" id="tab-components"
+                    aria-controls="panel-components" aria-selected="false" tabindex="-1">
+                <span class="tab-num">3</span> Components
+            </button>
+        </div>
+
+        <div class="stage">
+            <div class="stage-bar">
+                <p class="stage-caption" id="stage-caption">
+                    <strong>Production Topology</strong> — AgentCore data plane + private Fargate control plane + canonical DynamoDB authority
+                </p>
+                <div class="zoom-controls">
+                    <button class="zoom-btn" id="zoom-out" title="Zoom out" aria-label="Zoom out">
+                        <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg>
+                    </button>
+                    <span class="zoom-level" id="zoom-level" aria-live="polite">100%</span>
+                    <button class="zoom-btn" id="zoom-in" title="Zoom in" aria-label="Zoom in">
+                        <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+                    </button>
+                    <button class="zoom-btn" id="zoom-fit" title="Fit to width" aria-label="Fit to width">
+                        <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V5a1 1 0 011-1h3M20 8V5a1 1 0 00-1-1h-3M4 16v3a1 1 0 001 1h3M20 16v3a1 1 0 01-1 1h-3"/></svg>
+                    </button>
+                </div>
+            </div>
+
+            <!-- hidden until the manifest loads: see .narration in the CSS -->
+            <div class="narration" id="narration" data-state="paused" hidden>
+                <button class="narr-play" id="narr-play" aria-label="Play narration">
+                    <svg class="narr-icon-play" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+                    <svg class="narr-icon-pause" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+                </button>
+                <div class="narr-body">
+                    <div class="narr-head">
+                        <span class="narr-title" id="narr-title">Narrated walkthrough</span>
+                        <span class="narr-time" id="narr-time">0:00 / 0:00</span>
+                    </div>
+                    <!-- A div with role="slider" rather than <input type="range">:
+                         the range thumb cannot be styled consistently across
+                         browsers without vendor pseudo-elements, and the keyboard
+                         contract (arrows, Home/End) is short enough to implement. -->
+                    <div class="narr-track" id="narr-track" role="slider" tabindex="0"
+                         aria-label="Narration position"
+                         aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
+                         aria-valuetext="0 percent">
+                        <div class="narr-fill" id="narr-fill"></div>
+                    </div>
+                </div>
+                <div class="narr-aside">
+                    <span class="narr-voice">Narration &middot; Matthew</span>
+                    <button class="narr-transcript-btn" id="narr-transcript-btn"
+                            aria-expanded="false" aria-controls="narr-transcript">Transcript</button>
+                </div>
+            </div>
+            <div class="narr-transcript" id="narr-transcript" hidden>
+                <p id="narr-transcript-text"></p>
+            </div>
+
+            <p class="canvas-hint">Drag to pan &middot; use &minus; and + to zoom</p>
+
+            <div class="canvas" id="canvas">
+                <!-- The SVGs are fetched rather than inlined: three of them is
+                     ~200KB, and only one is ever visible. -->
+                <div class="panel is-active" role="tabpanel" id="panel-infrastructure"
+                     aria-labelledby="tab-infrastructure"
+                     data-src="architecture-infrastructure.svg" tabindex="0"></div>
+                <div class="panel" role="tabpanel" id="panel-pipeline"
+                     aria-labelledby="tab-pipeline"
+                     data-src="architecture-pipeline.svg" tabindex="0" hidden></div>
+                <div class="panel" role="tabpanel" id="panel-components"
+                     aria-labelledby="tab-components"
+                     data-src="architecture-components.svg" tabindex="0" hidden></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="arch-section" id="request-flow">
+    <div class="container">
+        <p class="section-label">Request Pipeline</p>
+        <h2>What happens to a request</h2>
+        <p class="lede">
+            The normal non-streaming path through
+            <code>GatewayAgent.handle_chat_completion</code> is ordered so authority and
+            admission run before provider spend, accounting runs immediately after the
+            provider result, and output policy runs before release. Streaming uses the
+            same controls with the lifecycle differences called out below.
+        </p>
+        <ol class="flow-list">
+            <li data-step="1–2"><strong>Parse the request and extract context</strong> — project, user, and model resolved from the token or API key</li>
+            <li data-step="2.5"><strong>Validate</strong> — skipped for smart and ensemble routing, where the model is not yet chosen</li>
+            <li data-step="2.7"><strong>Enforce quotas and cap <code>max_tokens</code></strong> — the policy hierarchy resolves org &rarr; business unit &rarr; project &rarr; env</li>
+            <li data-step="2.8"><strong>Detect prompt injection</strong> — NFKD normalization and homoglyph-resistant patterns; audited and dispatched even when allowed</li>
+            <li data-step="2.9"><strong>Redact PII</strong> — replaced with tokens, and the mapping held for step 11.5</li>
+            <li data-step="3"><strong>Rate limit</strong> — sliding window per project and user</li>
+            <li data-step="4–5"><strong>Check model access</strong> — project allow-list intersected with the user's</li>
+            <li data-step="6–7"><strong>Check budgets</strong> — project and user, tightest limit wins</li>
+            <li data-step="8"><strong>Apply request guardrails</strong></li>
+            <li data-step="9"><strong>Look up the cache</strong> — exact key first, then a semantic match on the reworded question; a hit returns here and never reaches a provider</li>
+            <li data-step="9.5"><strong>Route by region</strong> — hub to spoke, honouring data-residency zones; skipped in single-region deploys</li>
+            <li data-step="10"><strong>Route and execute</strong> — direct with a fallback chain, smart (classify &rarr; leaderboard &rarr; cost/quality), or ensemble (panel &rarr; quorum &rarr; synthesis)</li>
+            <li data-step="12"><strong>Finalize usage, cost, and reserved spend</strong> — provider usage is durable before output policy can withhold a response</li>
+            <li data-step="11"><strong>Apply response guardrails</strong> — only <code>block</code> changes execution today; warn/redact rules record matches</li>
+            <li data-step="11.5"><strong>Re-inject PII</strong> — the original values restored into the response, per chunk when streaming</li>
+            <li data-step="11.6"><strong>Append audit metadata</strong> — tenant SHA-256 hash chain without prompt or response bodies</li>
+            <li data-step="13–14"><strong>Budget status and session storage</strong> — recorded after the response is complete</li>
+            <li data-step="15"><strong>Stream, if asked</strong> — eligible routes relay native chunks; output inspection buffers, and other routes can emit simulated chunks</li>
+            <li data-step="15.5"><strong>Write the cache</strong> — only eligible non-streaming, post-policy responses are stored</li>
+            <li data-step="16"><strong>Return</strong> — JSON, with routing and cache metadata attached</li>
+        </ol>
+    </div>
+</section>
+
+<section class="arch-section" id="aws-services">
+    <div class="container">
+        <p class="section-label">Infrastructure</p>
+        <h2>AWS services it deploys onto</h2>
+        <p>
+            The production topology separates the AgentCore data plane from a private
+            Fargate web control plane. They share canonical DynamoDB authority but have
+            different routes and IAM permissions.
+        </p>
+        <div class="component-grid">
+            <div class="component-card">
+                <h3>Amazon CloudFront</h3>
+                <p>Provides the generated-domain browser option with WAF, a VPC origin, Cognito authorization-code PKCE, and opaque DynamoDB-backed sessions.</p>
+            </div>
+            <div class="component-card">
+                <h3>Application Load Balancer</h3>
+                <p>Provides the custom-domain option. ALB Cognito authentication produces signed OIDC headers that AxonLLM verifies before canonical authorization.</p>
+            </div>
+            <div class="component-card">
+                <h3>Amazon Bedrock AgentCore</h3>
+                <p>Runs the OIDC-authenticated data plane for chat, model listing, governed query, bounded project configuration, health, and readiness.</p>
+            </div>
+            <div class="component-card">
+                <h3>Amazon DynamoDB</h3>
+                <p>One tenant-qualified authority table for principals, projects, key hashes, sessions, SCIM, policy, budgets, usage, audit, events, and query lifecycle.</p>
+            </div>
+            <div class="component-card">
+                <h3>AWS Secrets Manager</h3>
+                <p>Production provider settings load from one exact secret ARN and version, with only allowlisted fields accepted by the runtime.</p>
+            </div>
+            <div class="component-card">
+                <h3>Amazon Bedrock</h3>
+                <p>Bedrock and Bedrock Mantle use scoped runtime IAM instead of a stored provider API key.</p>
+            </div>
+            <div class="component-card">
+                <h3>CloudWatch Logs</h3>
+                <p>Collects logs, metrics, alarms, and readiness signals. Optional OTLP export carries completed usage telemetry.</p>
+            </div>
+            <div class="component-card">
+                <h3>Amazon ECR</h3>
+                <p>Stores separately built, immutable ARM64 AgentCore and AMD64 control-plane images identified by digest.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="arch-section" id="components">
+    <div class="container">
+        <p class="section-label">Components</p>
+        <h2>What's inside the gateway</h2>
+        <p>
+            Wired in one place — <code>build_gateway_components()</code> in
+            <code>src/gateway/bootstrap.py</code>. Every component takes its
+            collaborators as constructor arguments, which is what makes the
+            persistence layer optional rather than assumed.
+        </p>
+        <div class="component-grid">
+            <div class="component-card">
+                <h3>GatewayAgent</h3>
+                <p>The orchestrator for validation, governance, safety, routing, accounting, output policy, and native or policy-buffered streaming.</p>
+            </div>
+            <div class="component-card">
+                <h3>Router</h3>
+                <p>Provider fallback chain with exponential backoff, plus the entry points for smart and ensemble routing.</p>
+            </div>
+            <div class="component-card">
+                <h3>SmartRoutingStrategy</h3>
+                <p>Classifies the task, consults the model leaderboard, and picks on a cost/quality tradeoff read from the live pricing table.</p>
+            </div>
+            <div class="component-card">
+                <h3>EnsembleStrategy</h3>
+                <p>Dispatches a panel, takes a quorum, ranks the answers, and synthesizes. Budget is pre-checked at (N+1)&times;cost before any of it runs.</p>
+            </div>
+            <div class="component-card">
+                <h3>RegionRouter + SpokeHealthMonitor</h3>
+                <p>Hub-and-spoke topology with data-residency zones, active-passive and active-active weighted failover, and a background health task.</p>
+            </div>
+            <div class="component-card">
+                <h3>MultiProviderFactory</h3>
+                <p>Thirteen adapters behind AWS SDK and HTTP transports, with provider route pools for credentials, endpoints, health, and capacity.</p>
+            </div>
+            <div class="component-card">
+                <h3>PolicyHierarchyResolver</h3>
+                <p>Resolves inherited limits: budget and rate take the minimum, allowed models intersect, PII types union, and PII redaction cannot be switched off downstream.</p>
+            </div>
+            <div class="component-card">
+                <h3>QuotaEnforcer + CostTracker</h3>
+                <p>Rate, token, and spend limits with budget-threshold alerts, priced per request against the pricing table.</p>
+            </div>
+            <div class="component-card">
+                <h3>PIIRedactor</h3>
+                <p>Redacts shaped and optional named-entity PII, restores eligible caller values, and fails closed when configured output inspection cannot complete.</p>
+            </div>
+            <div class="component-card">
+                <h3>AuditTrail</h3>
+                <p>Tenant-qualified SHA-256 hash chains over operation metadata and security events; prompt and response bodies are not stored.</p>
+            </div>
+            <div class="component-card">
+                <h3>EventDispatcher</h3>
+                <p>Fans security and budget events out to webhook, SNS, and CloudWatch destinations with per-destination event filters.</p>
+            </div>
+            <div class="component-card">
+                <h3>DynamoPersistence</h3>
+                <p>Optional for local development, but required for canonical production authority, shared admission, sessions, durable audit, and AgentCore readiness.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<footer>
+    <div class="container">
+        <p>AxonLLM is open source under the MIT-0 License &middot; <a href="https://github.com/AxonLLM/axonllm">GitHub</a> &middot; <a href="https://github.com/AxonLLM/axonllm/blob/main/CHANGELOG.md">Changelog</a></p>
+    </div>
+</footer>
+
+<script>
+(function () {
+    'use strict';
+
+    var canvas = document.getElementById('canvas');
+    var tabs = Array.prototype.slice.call(document.querySelectorAll('.tab'));
+    var panels = Array.prototype.slice.call(document.querySelectorAll('.panel'));
+    var zoomLevel = document.getElementById('zoom-level');
+    var zoomIn = document.getElementById('zoom-in');
+    var zoomOut = document.getElementById('zoom-out');
+    var zoomFit = document.getElementById('zoom-fit');
+    var caption = document.getElementById('stage-caption');
+
+    var CAPTIONS = {
+        'panel-infrastructure': '<strong>Production Topology</strong> — AgentCore data plane + private Fargate control plane + canonical DynamoDB authority',
+        'panel-pipeline': '<strong>Request Pipeline</strong> — step numbering follows <code>src/gateway/agent.py</code>',
+        'panel-components': '<strong>Components</strong> — the graph as wired by <code>build_gateway_components()</code>'
+    };
+
+    var MIN = 0.4, MAX = 3, STEP = 1.25;
+
+    // Zoom is per-panel: switching tabs and coming back should not silently
+    // reset a diagram you had zoomed into.
+    var zoom = {};
+    // Natural width in px, read once from the SVG's own width attribute. Needed
+    // because the fit calculation and every zoom set width explicitly, which
+    // destroys the attribute we would otherwise measure against.
+    var natural = {};
+
+    function activePanel() {
+        for (var i = 0; i < panels.length; i++) {
+            if (panels[i].classList.contains('is-active')) return panels[i];
+        }
+        return panels[0];
+    }
+
+    function applyZoom(panel) {
+        var svg = panel.querySelector('svg');
+        if (!svg || !natural[panel.id]) return;
+        var z = zoom[panel.id] || 1;
+        svg.style.width = (natural[panel.id] * z) + 'px';
+        zoomLevel.textContent = Math.round(z * 100) + '%';
+        zoomOut.disabled = z <= MIN + 1e-9;
+        zoomIn.disabled = z >= MAX - 1e-9;
+    }
+
+    function setZoom(panel, z) {
+        zoom[panel.id] = Math.min(MAX, Math.max(MIN, z));
+        applyZoom(panel);
+    }
+
+    // Below this the type inside the diagram stops being readable, so fit()
+    // refuses to go there and the canvas scrolls instead. 0.55 is where the
+    // 9-10px labels in the export land around 5px.
+    var READABLE_FLOOR = 0.55;
+
+    function fit(panel) {
+        if (!natural[panel.id]) return;
+        // Padding is 24px a side at desktop and 12px narrow; measure it rather
+        // than hardcoding, so the two media queries can't disagree with this.
+        var pad = 2 * parseFloat(getComputedStyle(panel).paddingLeft || 0);
+        var scale = (canvas.clientWidth - pad) / natural[panel.id];
+        // Never scale past 1: an upscaled SVG is sharp, but a 1500px diagram
+        // blown up to 1900px just wastes the space it gains.
+        setZoom(panel, Math.max(READABLE_FLOOR, Math.min(1, scale)));
+    }
+
+    function load(panel) {
+        if (panel.dataset.loaded) { applyZoom(panel); return; }
+        panel.dataset.loaded = 'pending';
+        fetch(panel.dataset.src)
+            .then(function (r) {
+                if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+                return r.text();
+            })
+            .then(function (svgText) {
+                panel.innerHTML = svgText;
+                var svg = panel.querySelector('svg');
+                if (!svg) throw new Error('no <svg> in ' + panel.dataset.src);
+                // The export sets width/height in px and a matching viewBox.
+                // Drop height so the aspect ratio follows the width we set.
+                natural[panel.id] = parseFloat(svg.getAttribute('width')) || 1400;
+                svg.removeAttribute('height');
+                svg.setAttribute('role', 'img');
+                markCells(panel);
+                panel.dataset.loaded = 'done';
+                if (zoom[panel.id]) { applyZoom(panel); } else { fit(panel); }
+                // A panel can finish loading while its narration is already
+                // playing — switching tabs mid-track, or the first tab loading
+                // after autoplay. Light whatever the current cue asks for.
+                if (panel.classList.contains('is-active')) paintHighlight();
+            })
+            .catch(function (err) {
+                panel.dataset.loaded = '';
+                panel.innerHTML = '<p style="color:var(--text-dim);font-size:0.9rem;padding:24px 0">'
+                    + 'Could not load this diagram (' + String(err.message).replace(/[<>&]/g, '')
+                    + '). The <a href="architecture.drawio" download>.drawio file</a> has all three pages.</p>';
+            });
+    }
+
+    /* --- Narration highlights ----------------------------------------------
+       Drawio wraps the diagram in two groups that themselves carry
+       data-cell-id ("0" and "1"), so the real cells are the third level down.
+       Tag them once at load with .arch-cell and index them by id, and the
+       highlight code never has to walk that structure again. */
+
+    // panel id -> { cellId: <g> } for the cells the cues can name.
+    var cells = {};
+
+    // Containers, not content: dimming these leaves the boxes inside them
+    // floating. Titles are here for the same reason — see the CSS.
+    var FRAME_CELLS = {
+        'title1': 1, 'title2': 1, 'title3': 1,
+        'sub1': 1, 'sub2': 1, 'sub3': 1,
+        'vpc': 1, 'ecs': 1
+    };
+
+    function markCells(panel) {
+        var index = {};
+        var all = panel.querySelectorAll('svg g[data-cell-id]');
+        Array.prototype.forEach.call(all, function (g) {
+            // Leaf groups only. The wrappers carry the attribute too, and one of
+            // them is the whole diagram — dimming it would fade everything at
+            // once, including the cells meant to stand out. Testing for a nested
+            // data-cell-id finds the real cells without this code having to know
+            // how deep drawio happens to nest them.
+            if (g.querySelector('g[data-cell-id]')) return;
+            var id = g.getAttribute('data-cell-id');
+            g.classList.add('arch-cell');
+            if (FRAME_CELLS[id]) g.classList.add('arch-frame');
+            index[id] = g;
+        });
+        cells[panel.id] = index;
+    }
+
+    /* Which cue is live at a given position.
+
+       Cue times are not stored. Each cue names a sentence index, and a
+       sentence's span is its share of the track's measured duration by
+       character count — the same apportionment scripts/demo/make_captions.py
+       uses to time the demo video's captions. So re-recording a track re-times
+       its highlights: there is no second set of numbers to keep in step. */
+    function cueAt(track, at) {
+        if (!track || !track.cues || !track.cues.length) return null;
+        var bounds = track.starts;
+        if (!bounds) return null;
+        var live = null;
+        for (var i = 0; i < track.cues.length; i++) {
+            if (at + 0.001 < bounds[i]) break;
+            live = track.cues[i];
+        }
+        return live;
+    }
+
+    /* Split on the same boundary make_captions.py uses: after . ! ? followed by
+       a space and a capital — not on every period, because "$1.26", "1.4
+       seconds" and "MIT-0" all contain one.
+
+       Written as a scan rather than a lookbehind split. Lookbehind is a syntax
+       error in Safari before 16.4, and a syntax error anywhere in this script
+       takes the zoom, pan and tab controls down with the narration. */
+    function splitSentences(text) {
+        var out = [];
+        var re = /[.!?]\s+(?=[A-Z])/g;
+        var from = 0;
+        var m;
+        while ((m = re.exec(text)) !== null) {
+            // Keep the terminator with the sentence it ends; resume at the capital.
+            out.push(text.slice(from, m.index + 1));
+            from = re.lastIndex;
+        }
+        out.push(text.slice(from));
+        return out.filter(function (s) { return s.length > 0; });
+    }
+
+    // Sentence start times, in seconds, for a track: each sentence takes its
+    // share of the measured duration by character count.
+    function sentenceStarts(text, duration) {
+        var sents = splitSentences(text.trim());
+        var total = 0, i;
+        for (i = 0; i < sents.length; i++) total += sents[i].length;
+        if (!total) return null;
+        var starts = [];
+        var at = 0;
+        for (i = 0; i < sents.length; i++) {
+            starts.push(at);
+            at += duration * sents[i].length / total;
+        }
+        return starts;
+    }
+
+    var litPanel = null;   // panel currently carrying .is-dimmed
+    var litCue = null;     // cue object whose cells are lit, for change detection
+
+    /* Screen rect enclosing a cue's boxes, or null if it can't be measured.
+
+       Measured from the shapes, not the groups. Drawio puts every label in a
+       <foreignObject width="100%">, so a group's own rect is the width of the
+       whole diagram and would report every cell as being everywhere.
+
+       Built from cue.cells — the boxes — and not cue.links. A cue lights the
+       arrows between its boxes too, and an arrow can be long enough to cross the
+       viewport on its own: on a phone that made "is any of this cue on screen?"
+       answer yes while both boxes it joined sat off the right edge. The boxes
+       are what the viewer is being asked to look at, so they alone say where. */
+    function litRect(index, cue) {
+        var box = null;
+        cue.cells.forEach(function (id) {
+            var g = index[id];
+            if (!g) return;
+            var shapes = g.querySelectorAll('path, rect, ellipse, circle, polygon, image');
+            Array.prototype.forEach.call(shapes, function (el) {
+                var r = el.getBoundingClientRect();
+                if (!r.width && !r.height) return;
+                if (!box) { box = { left: r.left, right: r.right, top: r.top, bottom: r.bottom }; return; }
+                box.left = Math.min(box.left, r.left);
+                box.right = Math.max(box.right, r.right);
+                box.top = Math.min(box.top, r.top);
+                box.bottom = Math.max(box.bottom, r.bottom);
+            });
+        });
+        return box;
+    }
+
+    /* Bring a cue's cells into view if none of them are on screen.
+
+       Where the diagram fits the canvas — every desktop width — this never
+       fires. It exists for the narrow case, measured on a 390px viewport: the
+       infrastructure diagram is 1563px wide, so by the time the narration
+       reaches CloudWatch and ECR those boxes are off the right edge and the
+       viewer is looking at a dimmed diagram with nothing lit on it.
+
+       Only when nothing is visible, and never mid-drag: nudging a diagram the
+       viewer is holding takes the canvas away from them. `panning` is declared
+       further down with the pan handlers; that assignment runs during this
+       script, long before any audio event can call this. */
+    function scrollCueIntoView(panel, cue) {
+        if (panning) return;
+        var index = cells[panel.id] || {};
+        var box = litRect(index, cue);
+        if (!box) return;
+        var view = canvas.getBoundingClientRect();
+        var showsX = box.right > view.left && box.left < view.right;
+        var showsY = box.bottom > view.top && box.top < view.bottom;
+        if (showsX && showsY) return;
+        // Smooth, unless the reader asked for less motion — in which case a
+        // diagram sliding under them is exactly what they asked not to have.
+        var still = window.matchMedia
+            && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        var opts = { behavior: still ? 'auto' : 'smooth' };
+        // Centre it: a cue's cells are a cluster, and scrolling its left edge to
+        // the left edge of the canvas often leaves the rest of the cluster out.
+        if (!showsX) {
+            opts.left = canvas.scrollLeft + (box.left - view.left)
+                - (view.width - (box.right - box.left)) / 2;
+        }
+        if (!showsY) {
+            opts.top = canvas.scrollTop + (box.top - view.top)
+                - (view.height - (box.bottom - box.top)) / 2;
+        }
+        canvas.scrollTo(opts);
+    }
+
+    function clearHighlight() {
+        if (!litPanel) { litCue = null; return; }
+        litPanel.classList.remove('is-dimmed');
+        var index = cells[litPanel.id] || {};
+        Object.keys(index).forEach(function (id) {
+            index[id].classList.remove('is-lit');
+        });
+        litPanel = null;
+        litCue = null;
+    }
+
+    /* Light the cells for wherever the audio is now.
+
+       Called from timeupdate (every ~250ms), so it returns early when the cue
+       has not changed rather than rewriting class lists four times a second. */
+    function paintHighlight() {
+        var panel = activePanel();
+        // Highlighting a paused diagram would leave most of it faded with no
+        // audio to explain why, so a pause restores the whole picture.
+        if (!currentTrack || audio.paused) { clearHighlight(); return; }
+
+        var cue = cueAt(currentTrack, position());
+        // A cue with no cells is how a track's closing lines say "show the whole
+        // diagram again" — the summing-up sentences are about all of it.
+        if (!cue || !cue.cells.length) { clearHighlight(); return; }
+        if (panel === litPanel && cue === litCue) return;
+
+        if (litPanel && litPanel !== panel) clearHighlight();
+        var index = cells[panel.id];
+        if (!index) return;  // SVG still loading; the load handler repaints
+
+        Object.keys(index).forEach(function (id) {
+            // Boxes and the connectors between them both light. Forced to a
+            // boolean deliberately: classList.toggle treats an undefined second
+            // argument as absent and flips the class instead of setting it, so a
+            // cue with no links would light every cell it meant to leave dark.
+            var on = cue.cells.indexOf(id) !== -1
+                || !!(cue.links && cue.links.indexOf(id) !== -1);
+            index[id].classList.toggle('is-lit', on);
+        });
+        panel.classList.add('is-dimmed');
+        litPanel = panel;
+        litCue = cue;
+        scrollCueIntoView(panel, cue);
+    }
+
+    /* --- Narration ---------------------------------------------------------
+       One <audio> element reused across the three tracks rather than three
+       elements: only one can be playing, and a single element makes "switching
+       tabs stops the narration" fall out of setting .src instead of needing to
+       be remembered for each. */
+
+    var narrRoot = document.getElementById('narration');
+    var narrPlay = document.getElementById('narr-play');
+    var narrTitle = document.getElementById('narr-title');
+    var narrTime = document.getElementById('narr-time');
+    var narrTrack = document.getElementById('narr-track');
+    var narrFill = document.getElementById('narr-fill');
+    var narrTranscript = document.getElementById('narr-transcript');
+    var narrTranscriptText = document.getElementById('narr-transcript-text');
+    var narrTranscriptBtn = document.getElementById('narr-transcript-btn');
+
+    var audio = new Audio();
+    audio.preload = 'none';  // three MP3s is ~1.6MB; fetch the one that's asked for
+    var byPanel = {};        // panel id -> track from the manifest
+    var currentTrack = null;
+    // A seek made before the file has loaded. See seekTo() — with preload='none'
+    // there is nothing to seek within yet, so the position is held here and
+    // applied when metadata arrives.
+    var pendingSeek = null;
+
+    function clock(s) {
+        if (!isFinite(s) || s < 0) s = 0;
+        var m = Math.floor(s / 60);
+        var sec = Math.floor(s % 60);
+        return m + ':' + (sec < 10 ? '0' : '') + sec;
+    }
+
+    // The manifest's duration is measured by ffprobe at build time, so the bar
+    // is correct before the file has loaded far enough to report its own.
+    function trackDuration() {
+        if (audio.src && isFinite(audio.duration) && audio.duration > 0) return audio.duration;
+        return (currentTrack && currentTrack.duration) || 0;
+    }
+
+    function position() {
+        if (pendingSeek !== null) return pendingSeek;
+        return audio.src ? audio.currentTime : 0;
+    }
+
+    function paintProgress() {
+        var dur = trackDuration();
+        var at = position();
+        var pct = dur > 0 ? Math.min(100, (at / dur) * 100) : 0;
+        narrFill.style.width = pct + '%';
+        narrTime.textContent = clock(at) + ' / ' + clock(dur);
+        narrTrack.setAttribute('aria-valuenow', Math.round(pct));
+        narrTrack.setAttribute('aria-valuetext', clock(at) + ' of ' + clock(dur));
+    }
+
+    function showTrack(panelId) {
+        var track = byPanel[panelId];
+        // Pause on every switch, including to a panel with no track: audio that
+        // keeps playing while a different diagram is on screen is narration
+        // describing something the viewer isn't looking at.
+        //
+        // The button state is set here rather than left to the 'pause' event.
+        // Pausing an element that never started firing timeupdate emits no
+        // pause event, so a switch away from a just-started track would leave a
+        // pause icon over silent audio.
+        audio.pause();
+        narrRoot.dataset.state = 'paused';
+        // Explicitly, not via the 'pause' handler: as above, pausing an element
+        // that never started fires no pause event, which would leave the panel
+        // we are switching away from dimmed for the rest of the visit.
+        clearHighlight();
+        pendingSeek = null;
+        currentTrack = track || null;
+        narrRoot.hidden = !track;
+        if (!track) return;
+        narrTitle.textContent = track.label + ' — narrated walkthrough';
+        narrTranscriptText.textContent = track.text;
+        narrPlay.setAttribute('aria-label', 'Play ' + track.label + ' narration');
+        // Assigning .src always restarts the track. Guard on the resolved URL so
+        // re-selecting the tab you're already on doesn't rewind it.
+        var want = new URL(track.audio, document.baseURI).href;
+        if (audio.src !== want) {
+            audio.src = want;
+            audio.currentTime = 0;
+        }
+        paintProgress();
+    }
+
+    /* Seek to a position in seconds.
+
+       Assigning currentTime on an element with readyState 0 is dropped on the
+       floor — with preload='none' that is every seek made before the first
+       play, and the bar would jump while the audio started from zero anyway.
+       So the position is parked in pendingSeek and applied once metadata is in.
+       audio.load() forces the fetch that preload='none' declined, which is what
+       makes the parked seek resolve without the user pressing play first. */
+    function seekTo(seconds) {
+        var dur = trackDuration();
+        if (!dur) return;
+        var to = Math.min(dur, Math.max(0, seconds));
+        if (audio.readyState > 0) {
+            pendingSeek = null;
+            audio.currentTime = to;
+        } else {
+            pendingSeek = to;
+            audio.load();
+        }
+        paintProgress();
+    }
+
+    function seekToClientX(clientX) {
+        var dur = trackDuration();
+        if (!dur) return;
+        var box = narrTrack.getBoundingClientRect();
+        var frac = Math.min(1, Math.max(0, (clientX - box.left) / box.width));
+        seekTo(frac * dur);
+    }
+
+    function initNarration(manifest) {
+        var tracks = (manifest && manifest.tracks) || [];
+        tracks.forEach(function (t) {
+            var duration = t.duration || 0;
+            var cues = t.cues || [];
+            // Resolve each cue's sentence index to a time once, here, rather
+            // than on every timeupdate. A cue naming a sentence the text does
+            // not have is dropped: a manifest edited without re-checking should
+            // cost that one highlight, not the player.
+            var starts = sentenceStarts(t.text, duration);
+            var live = starts ? cues.filter(function (c) {
+                return c.sentence >= 0 && c.sentence < starts.length;
+            }) : [];
+            // The manifest names the panel it belongs to; audio lives beside it.
+            byPanel[t.panel] = {
+                label: t.label,
+                text: t.text,
+                duration: duration,
+                audio: 'narration/' + t.id + '.mp3',
+                cues: live,
+                starts: live.map(function (c) { return starts[c.sentence]; })
+            };
+        });
+        if (!tracks.length) return;
+
+        narrPlay.addEventListener('click', function () {
+            if (audio.paused) {
+                // A rejected play() is the autoplay policy or a missing file.
+                // Either way the button must not be left claiming it's playing.
+                audio.play().catch(function () { narrRoot.dataset.state = 'paused'; });
+            } else {
+                audio.pause();
+            }
+        });
+
+        audio.addEventListener('play', function () {
+            narrRoot.dataset.state = 'playing';
+            paintHighlight();
+        });
+        audio.addEventListener('pause', function () {
+            narrRoot.dataset.state = 'paused';
+            // Undim: a faded diagram with nothing playing reads as broken.
+            clearHighlight();
+        });
+        audio.addEventListener('ended', function () {
+            narrRoot.dataset.state = 'paused';
+            // Rewind so the button plays rather than doing nothing on a finished
+            // track — the customer demo case is playing one twice.
+            audio.currentTime = 0;
+            clearHighlight();
+            paintProgress();
+        });
+        audio.addEventListener('timeupdate', function () {
+            paintProgress();
+            paintHighlight();
+        });
+        audio.addEventListener('loadedmetadata', function () {
+            // Apply a seek made while there was nothing to seek within.
+            if (pendingSeek !== null) {
+                var to = Math.min(audio.duration, pendingSeek);
+                pendingSeek = null;
+                audio.currentTime = to;
+            }
+            paintProgress();
+        });
+        audio.addEventListener('error', function () {
+            narrRoot.dataset.state = 'paused';
+            narrTitle.textContent = (currentTrack ? currentTrack.label + ' — ' : '')
+                + 'narration unavailable';
+        });
+
+        // Click and drag to scrub. Pointer capture so a drag that leaves the
+        // 6px bar keeps scrubbing instead of stopping the moment it slips off.
+        narrTrack.addEventListener('pointerdown', function (e) {
+            narrTrack.setPointerCapture(e.pointerId);
+            seekToClientX(e.clientX);
+        });
+        narrTrack.addEventListener('pointermove', function (e) {
+            if (narrTrack.hasPointerCapture(e.pointerId)) seekToClientX(e.clientX);
+        });
+
+        narrTrack.addEventListener('keydown', function (e) {
+            var dur = trackDuration();
+            if (!dur) return;
+            // Relative to position(), not audio.currentTime: two ArrowRights in
+            // a row before the file has loaded must land on 10s, not 5s twice.
+            var at = position();
+            var to = null;
+            if (e.key === 'ArrowRight' || e.key === 'ArrowUp') to = at + 5;
+            else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') to = at - 5;
+            else if (e.key === 'Home') to = 0;
+            // Not dur exactly: seeking to the very end fires 'ended', which
+            // rewinds to 0 — the opposite of what End asks for. Land just short.
+            else if (e.key === 'End') to = Math.max(0, dur - 0.25);
+            if (to === null) return;
+            e.preventDefault();
+            seekTo(to);
+        });
+
+        narrTranscriptBtn.addEventListener('click', function () {
+            var open = narrTranscriptBtn.getAttribute('aria-expanded') === 'true';
+            narrTranscriptBtn.setAttribute('aria-expanded', open ? 'false' : 'true');
+            narrTranscript.hidden = open;
+        });
+
+        showTrack(activePanel().id);
+    }
+
+    // Failure is silence: no manifest, no player. The diagrams are the page and
+    // they don't depend on this, so a 404 here must not surface as an error.
+    fetch('narration/architecture-narration.json')
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (m) { if (m) initNarration(m); })
+        .catch(function () { /* no narration on this deploy */ });
+
+    function select(tab) {
+        tabs.forEach(function (t) {
+            var on = t === tab;
+            t.setAttribute('aria-selected', on ? 'true' : 'false');
+            t.tabIndex = on ? 0 : -1;
+        });
+        panels.forEach(function (p) {
+            var on = p.id === tab.getAttribute('aria-controls');
+            p.classList.toggle('is-active', on);
+            p.hidden = !on;
+            if (on) {
+                caption.innerHTML = CAPTIONS[p.id] || '';
+                canvas.scrollLeft = 0;
+                canvas.scrollTop = 0;
+                load(p);
+                showTrack(p.id);
+            }
+        });
+    }
+
+    tabs.forEach(function (tab) {
+        tab.addEventListener('click', function () { select(tab); });
+    });
+
+    // Left/Right moves between tabs, which is what the tablist role promises.
+    document.querySelector('.tabs').addEventListener('keydown', function (e) {
+        var i = tabs.indexOf(document.activeElement);
+        if (i === -1) return;
+        var next = e.key === 'ArrowRight' ? i + 1 : e.key === 'ArrowLeft' ? i - 1 : -1;
+        if (next === -1) return;
+        e.preventDefault();
+        var target = tabs[(next + tabs.length) % tabs.length];
+        target.focus();
+        select(target);
+    });
+
+    zoomIn.addEventListener('click', function () {
+        var p = activePanel();
+        setZoom(p, (zoom[p.id] || 1) * STEP);
+    });
+    zoomOut.addEventListener('click', function () {
+        var p = activePanel();
+        setZoom(p, (zoom[p.id] || 1) / STEP);
+    });
+    zoomFit.addEventListener('click', function () { fit(activePanel()); });
+
+    // Drag to pan. Pointer events rather than mouse events so a trackpad drag
+    // and a touch drag take the same path; touch-action stays default so
+    // two-finger scrolling still works on the canvas.
+    var panning = false, startX = 0, startY = 0, startL = 0, startT = 0;
+
+    canvas.addEventListener('pointerdown', function (e) {
+        if (e.button !== 0) return;
+        panning = true;
+        startX = e.clientX; startY = e.clientY;
+        startL = canvas.scrollLeft; startT = canvas.scrollTop;
+        canvas.classList.add('is-panning');
+    });
+
+    canvas.addEventListener('pointermove', function (e) {
+        if (!panning) return;
+        canvas.scrollLeft = startL - (e.clientX - startX);
+        canvas.scrollTop = startT - (e.clientY - startY);
+    });
+
+    function endPan() {
+        panning = false;
+        canvas.classList.remove('is-panning');
+    }
+    canvas.addEventListener('pointerup', endPan);
+    canvas.addEventListener('pointercancel', endPan);
+    canvas.addEventListener('pointerleave', endPan);
+
+    // Refit only the panels the user has not zoomed themselves — an explicit
+    // zoom shouldn't be undone by a window resize.
+    var resizeTimer;
+    window.addEventListener('resize', function () {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(function () {
+            var p = activePanel();
+            if (p.dataset.loaded === 'done' && !p.dataset.userZoomed) fit(p);
+        }, 150);
+    });
+
+    [zoomIn, zoomOut].forEach(function (btn) {
+        btn.addEventListener('click', function () { activePanel().dataset.userZoomed = '1'; });
+    });
+    zoomFit.addEventListener('click', function () { delete activePanel().dataset.userZoomed; });
+
+    load(panels[0]);
+})();
+</script>
+<script src="architecture-flow.js"></script>
+
+</body>
+</html>

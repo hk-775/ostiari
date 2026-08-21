@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { CircleAlert, LoaderCircle, ShieldCheck } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { safeReturnPath, SSO_RETURN_KEY } from "../lib/sso";
 import { useAuthStore } from "../stores/authStore";
 

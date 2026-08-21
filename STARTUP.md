@@ -55,7 +55,7 @@ Ostiari is a **runtime governance layer for AI agents**. Every tool call, model 
 | Control-plane frontend | `control-plane/frontend` | 9000 | React/Vite dashboard UI |
 
 **Prerequisites (Parts 1 & 2):** Python 3.11+ for the full platform (the core
-library and gateway support 3.10+), plus Node.js 18+. No AWS account or cloud
+library and gateway support 3.10+), plus Node.js 20+. No AWS account or cloud
 credentials are required for local use — all AWS integrations (Bedrock, S3) are
 optional and import-guarded.
 
@@ -71,12 +71,8 @@ A clean Ostiari with an **empty control plane**: no seeded agents, no demo tools
 git clone https://github.com/hk-775/ostiari.git
 cd ostiari
 
-# Core library + gateway (editable installs)
-pip install -e .
-pip install -e gateway/
-
-# Frontend
-cd control-plane/frontend && npm install && cd ../..
+# Core library, bundled AxonLLM, gateway, control plane, and frontend
+make install
 ```
 
 ## 1.2 Start with no demo data
@@ -442,9 +438,7 @@ Everything running with **seeded demo data** and **all gateways up**: the fastes
 ```bash
 git clone https://github.com/hk-775/ostiari.git
 cd ostiari
-pip install -e .
-pip install -e gateway/
-cd control-plane/frontend && npm install && cd ../..
+make install
 ```
 
 ## 2.2 Start the full demo stack
@@ -585,8 +579,8 @@ docker build -f deploy/docker/Dockerfile.frontend \
 | `OSTIARI_OIDC_ISSUER` / `OSTIARI_OIDC_AUDIENCE` | Required production issuer and exact audience for agent tokens |
 | `OSTIARI_GATEWAY_RATE_LIMIT_RPM` | Required positive production request limit, enforced fleet-wide through Redis |
 | `OSTIARI_HITL=on` | Enables the human-approval gate for the *intervene* tier (202 + `X-Approval-Id` resubmit). Off in a fail-closed production deployment means the middle tier becomes a refusal |
-| `OSTIARI_REQUIRE_AXON=1` | Refuse to start without AxonLLM instead of warning. The right setting in production — see [`docs/axon-router.md`](docs/axon-router.md) |
-| `OSTIARI_REQUIRE_REDIS=true` + `OSTIARI_REDIS_URL` | Required in production; Redis loss fails shared enforcement closed and makes `/ready` return 503 |
+| `OSTIARI_REQUIRE_AXON=1` | Apply the production fail-closed Axon contract outside production. Source/container installs already bundle AxonLLM; production makes it mandatory automatically when LLM routing is active. |
+| `OSTIARI_REQUIRE_REDIS=true` + `OSTIARI_REDIS_URL` | Required in production; Redis loss fails shared enforcement and durable event delivery closed and makes `/ready` return 503 |
 | `OSTIARI_X402_MODE` | Production accepts `off` or `live`; `simulated` is refused |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | LLM credentials (mount from a secret) |
 
@@ -808,9 +802,12 @@ The enforced boundary and unresolved release gates are tracked in
 - [ ] `OSTIARI_HITL=on` wherever `OSTIARI_ENV=production` is set. Production is
       fail-closed, so HITL off turns every scored *intervene* into a 403 with an
       empty Approvals queue. Validate thresholds in `shadow` first.
-- [ ] `OSTIARI_REQUIRE_AXON=1` on gateways that route LLM traffic — without
-      AxonLLM, routing governance and token cost tracking silently stop applying.
+- [ ] Verify every LLM-enabled gateway reports `llm_router.governed=true`.
+      Production requires the bundled Axon router automatically;
+      `OSTIARI_REQUIRE_AXON=1` applies that contract in staging.
 - [ ] Authenticated Redis configured with `OSTIARI_REQUIRE_REDIS=true`; verify
+      trace, cost, payment, and budget-alert outbox recovery after a gateway
+      restart; verify
       `/ready` fails when Redis is unavailable.
 - [ ] `OSTIARI_X402_MODE=off` unless live settlement credentials and acceptance
       tests are complete; production refuses simulated mode.

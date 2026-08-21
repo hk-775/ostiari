@@ -492,7 +492,8 @@ the same thing on every entry point:
 - On **`/invoke`**, where Ostiari owns the loop, messages really are redacted in
   place and the redacted set is what goes upstream (`pii_reversible: true` keeps a
   map so the response is restored on the way back).
-- On the **`/v1/messages` and `/v1/chat/completions` shims** it acts as a
+- On the **`/v1/messages`, `/v1/chat/completions`, and `/v1/responses` shims**
+  it acts as a
   *detector*: the proxies treat `pii_redacted` the same as `blocked` and return
   **403**. That's deliberate — those clients drive their own tool loops off the
   exact text they sent, and silently swapping in redacted content would
@@ -510,12 +511,11 @@ traffic, then switch to `block`.
 **What to avoid — the failure mode that makes this worth its own warning:** these
 controls are **fail-closed by design**. An enabled control that is unavailable or
 that raises **blocks the request**. That is the correct posture, and it is also how
-this feature was once completely broken: both detectors used to import from
-AxonLLM, which was an *optional* install, so on any machine without it, turning
-either switch on blocked **every** request — benign ones included. They now come
-from a hard dependency, so the import can't fail that way. Keep the property in
-mind anyway when you enable them: a broken detector means no traffic, not
-unchecked traffic.
+this feature was once completely broken: both detectors imported private AxonLLM
+internals from a separate checkout, so a missing checkout made either switch
+block **every** request. They now come from Ostiari's hard dependency, while the
+separately bundled AxonLLM router handles routing. Keep the property in mind:
+a broken detector means no traffic, not unchecked traffic.
 
 ---
 
@@ -1007,10 +1007,10 @@ Mechanism and reproduction in
 Every stored record carries an `org_id`, and read endpoints are scoped to the
 caller's org. Two things make this non-obvious, and both have bitten:
 
-**1. Gateways have no user token.** A gateway posting traces, usage, payments, or
-approvals authenticates as itself, not as a person — so there is no caller org to
-scope by. The org is derived from the **reporting gateway's row** (`org_of_gateway`),
-which is the only trustworthy source available on those paths.
+**1. Gateways use workload identity, not a user token.** A gateway posting
+traces, usage, payments, or approvals authenticates with a short-lived workload
+token. Its verified tenant selects the tenant-qualified gateway row
+`(org_id, gateway_id)`; the persisted issuer/subject binding must also match.
 
 **2. The payload is not believed.** An ingest body naming its own `org_id` was
 previously honored, which let any caller that could reach `/api/traces/ingest` file a
@@ -1020,64 +1020,41 @@ body is now overwritten with the gateway-derived value before storage.
 
 | Surface | How the org is decided |
 |---|---|
-| Trace / usage / payment / approval **ingest** | the reporting gateway's `gateways` row |
+| Trace / usage / payment / approval **ingest** | verified workload tenant plus the bound tenant-qualified gateway row |
 | Everything a **human** reads | the caller's token (`get_current_org`) |
 | Approvals addressed **by id** | owner org of that approval; a tokened caller from another org gets 404 |
 
-An unknown or empty gateway falls back to the default org, so its records are still
-kept rather than silently dropped — the demo posture, consistent across ingest paths.
+Only the unauthenticated development posture retains unknown gateways under the
+configured default org. Production requires a registered, bound gateway and
+rejects missing tenant claims in multi-tenant mode.
 
 **3. Who may ingest at all.** Deriving the org from the gateway row only helps if the
-caller *is* a gateway. Trace ingest authenticates machine callers with a shared secret,
-`OSTIARI_INGEST_KEY`, presented as an `X-Ingest-Key` header (constant-time compared) —
-not a user JWT, since a gateway has no user identity:
+caller *is* that gateway. Production machine APIs therefore use a dedicated workload
+OIDC trust boundary, separate from browser/user OIDC:
 
-| `OSTIARI_INGEST_KEY` | `OSTIARI_ENV` | Behavior |
-|---|---|---|
-| set | any | header must match, else **401** |
-| unset | dev/demo | **open** — anyone reachable may ingest |
-| unset | `production` | every ingest is **401**; the control plane will not accept anonymous traces |
+- each gateway uses either a projected short-lived token file or its own OAuth 2.0
+  client credentials;
+- the control plane validates the dedicated issuer, signature, expiry, and audience;
+- first registration binds the verified issuer/subject pair to exactly one gateway;
+- every later lifecycle, config, approval, trace, cost, payment, quota-alert, and
+  spend request checks that binding and the gateway id in its path or body;
+- a configurable gateway-id claim is enforced when present, while standard OAuth
+  client-credentials tokens may rely on the immutable issuer/subject binding;
+- issuer/JWKS outages fail closed with a retryable **503**, rather than falling back
+  to a shared key.
 
-The production refusal exists because forged traces poison everything downstream —
-compliance reports, ROI, metering, billing.
-
-**Two gaps to know before you rely on it,** both verified against a running control
-plane with `OSTIARI_INGEST_KEY=secret123`:
-
-1. **The check is on `/api/traces/ingest` only.** The other machine-ingest paths
-   have no `_require_ingest_auth` dependency and accept an anonymous POST with the
-   key set:
-
-   | Ingest path | No header, key set |
-   |---|---|
-   | `POST /api/traces/ingest` | **401** |
-   | `POST /api/costs/record`, `/record/batch` | **200** |
-   | `POST /api/approvals` | **200** |
-   | `POST /api/payments/ingest` | **200** |
-
-   So metering, cost, approval, and payment records can still be forged. Traces are
-   the one path closed; the "billing" half of the threat model is not.
-
-2. **The gateway never sends the header.** `trace_reporter.py` posts to
-   `/api/traces/ingest` with `json=event` and no headers, and nothing in the gateway
-   reads `OSTIARI_INGEST_KEY` — grep it and the only hits are in the control plane
-   and the deploy docs. So setting the key **breaks trace reporting**: every report
-   401s, and because `report()` swallows failures at debug level, Live Traces simply
-   goes quiet with no error surfaced anywhere.
-
-Until the gateway learns to send it, setting `OSTIARI_INGEST_KEY` trades forged
-traces for *no* traces. In production that is still arguably the right trade — an
-empty trace view is honest, a poisoned one is not — but go in knowing the dashboard
-will be blank, and don't set it expecting the demo to keep working. The
-[deploy README](../deploy/README.md) documents it as required on the control plane
-*and every gateway*; the gateway half of that is aspirational.
+Production startup rejects `OSTIARI_SERVICE_TOKEN` and `OSTIARI_INGEST_KEY`. They
+remain only for the local development stack. Configure the control plane with
+`OSTIARI_WORKLOAD_OIDC_ISSUER` and `OSTIARI_WORKLOAD_OIDC_AUDIENCE`, then give each
+gateway its own projected token or OAuth client. Reusing one OAuth subject for two
+gateway ids is rejected.
 
 **Approvals are the subtle one.** The queue holds an agent's raw tool parameters —
 SQL, recipients, payloads — plus the reviewer's identity. A flat id-keyed store put
 one tenant's most sensitive call detail in every other tenant's review queue, and let
-anyone decide it. It's now keyed per org. The id-addressed routes stay reachable
-without a token because that's the gateway's own resume-check path; a caller that
-*does* present a token is held to its own org.
+anyone decide it. It's now keyed per org. Production gateway resume checks carry a
+verified workload token and are bound to the gateway's persisted tenant. Tokenless
+approval polling exists only in the explicit local-development compatibility posture.
 
 **Discovery, too:** "shadow AI" is computed as seen-minus-known, so an unscoped read
 listed another tenant's agent ids and gateway names as *your* shadow AI.
@@ -1090,9 +1067,8 @@ For a real deployment, in order:
 
 1. Set the production secrets **before first boot**: `OSTIARI_ADMIN_PASSWORD`
    (the control plane refuses to seed an admin without it), `OSTIARI_JWT_SECRET`,
-   `OSTIARI_ENCRYPTION_KEY`, and `OSTIARI_INGEST_KEY` — reading §10a first, because
-   the gateway does not yet send the ingest header, so setting the key silences
-   Live Traces rather than authenticating it.
+   `OSTIARI_ENCRYPTION_KEY`, and workload OIDC settings. Configure a distinct
+   projected token or OAuth client for every gateway.
 2. **Register** gateways, agents, tools, MCP servers (Configure).
 3. Start every gateway in **shadow** mode.
 4. Write **policies** (deny-by-default for destructive; explicit allow for safe;
@@ -1138,8 +1114,8 @@ For a real deployment, in order:
 | Caller ignores the 202 | Approved call never re-submitted, looks lost | Retry with `X-Approval-Id` |
 | Assigning a write-capable role to a read-only user | Operator/admin tokens can mutate governance | Keep read-only users on `viewer`; backend RBAC rejects viewer writes (§9.2) |
 | Enabling detection straight to `block` | Fail-closed + untuned = blocked traffic | `injection_mode: flag` first (§5.5) |
-| No `OSTIARI_INGEST_KEY` outside dev | Forged traces poison compliance evidence | Production startup refuses it; set the same key on control plane and gateways |
-| Missing gateway service credential | Lifecycle, cost, approval, payment, and alert ingest fail | Set the same `OSTIARI_SERVICE_TOKEN` on the control plane and every trusted gateway |
+| Missing workload OIDC configuration | Lifecycle, cost, approval, payment, and alert ingest fail closed | Configure the dedicated issuer/audience and one projected token or OAuth client per gateway |
+| Reusing one workload subject across gateway ids | One machine identity could impersonate multiple gateways | The control plane rejects the second binding; provision a distinct client or subject |
 
 ---
 

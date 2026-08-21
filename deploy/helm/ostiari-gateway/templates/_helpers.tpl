@@ -30,6 +30,15 @@
 {{- fail "gateway.oidcIssuer must use HTTPS in production" -}}
 {{- end -}}
 {{- $_ := required "gateway.oidcAudience is required for production" .Values.gateway.oidcAudience -}}
+{{- $_ := required "workloadIdentity.tokenUrl is required for production" .Values.workloadIdentity.tokenUrl -}}
+{{- if not (hasPrefix "https://" .Values.workloadIdentity.tokenUrl) -}}
+{{- fail "workloadIdentity.tokenUrl must use HTTPS in production" -}}
+{{- end -}}
+{{- $_ := required "workloadIdentity.clientId is required for production" .Values.workloadIdentity.clientId -}}
+{{- $_ := required "workloadIdentity.clientSecretKey is required for production" .Values.workloadIdentity.clientSecretKey -}}
+{{- if not (has .Values.workloadIdentity.clientAuthMethod (list "client_secret_basic" "client_secret_post")) -}}
+{{- fail "workloadIdentity.clientAuthMethod must be client_secret_basic or client_secret_post" -}}
+{{- end -}}
 {{- if lt (int .Values.gateway.rateLimitRpm) 1 -}}
 {{- fail "gateway.rateLimitRpm must be a positive integer for production" -}}
 {{- end -}}

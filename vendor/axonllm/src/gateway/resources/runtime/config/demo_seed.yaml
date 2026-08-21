@@ -1,0 +1,1019 @@
+# Demo seed data for local development.
+# Loaded when AXON_LOAD_DEMO_DATA=true.
+
+projects:
+  - project_id: proj-alpha
+    name: Alpha Team
+    budget_limit: 500.0
+    alert_threshold: 400.0
+    cache_enabled: true
+    # On for the demo so the setting is visible in the dashboard, but it only
+    # takes effect once the gateway has an embedder (AXON_SEMANTIC_CACHE=true).
+    # Without one the lookup is skipped and exact-match caching carries on.
+    semantic_cache_enabled: true
+    prompt_caching_enabled: true
+    members:
+      - chat-user
+      - test-user
+      - user-alice
+      - user-bob
+    allowed_models:
+      - claude-opus
+      - claude-sonnet
+      - claude-haiku
+      - gpt-4o
+      - gpt-4o-mini
+      - gpt-5.5
+      - gpt-5.5-pro
+      - gpt-5.4
+      - gpt-4.1
+      - o3
+      - o4-mini
+      - nova-pro
+      - nova-lite
+      - nova-micro
+      - deepseek-r1
+      - llama-3.3-70b
+      - llama-4-maverick
+      - llama-4-scout
+      - mistral-large
+      - pixtral-large
+      - gpt-oss-120b
+      - qwen3-235b
+      - gemini-3.5-flash
+      - gemini-3.1-pro
+      - gemini-2.5-pro
+      - grok-4.3
+      - grok-4.5
+      - groq-llama-3.3-70b
+      - groq-llama-3.1-8b
+      - together-llama-3.3-70b
+      - together-deepseek-v4
+      - together-qwen-3.5-9b
+      - together-gpt-oss-120b
+      - fireworks-deepseek-v4
+      - fireworks-gpt-oss-120b
+      - jamba-1.5-large-bedrock
+      - jamba-1.5-mini-bedrock
+      - jamba-large
+      - jamba-mini
+      - gpt-5.6-sol
+      - gpt-5.6-terra
+      - gpt-5.6-luna
+      - claude-sonnet-5
+      - claude-opus-4-8
+      - claude-haiku-4-5-mantle
+      - gpt-oss-120b-mantle
+      - deepseek-v3-mantle
+      - qwen3-32b-mantle
+
+  - project_id: proj-beta
+    name: Beta Team
+    budget_limit: 200.0
+    alert_threshold: 150.0
+    members:
+      - user-carol
+    allowed_models:
+      - claude-haiku
+      - gpt-4o-mini
+      - nova-lite
+      - nova-micro
+
+user_budgets:
+  - user_id: user-alice
+    budget_limit: 50.0
+    alert_threshold: 40.0
+  - user_id: user-bob
+    budget_limit: 100.0
+    alert_threshold: 80.0
+  - user_id: user-carol
+    budget_limit: 75.0
+    alert_threshold: 60.0
+  - user_id: chat-user
+    budget_limit: 200.0
+    alert_threshold: 150.0
+  - user_id: test-user
+    budget_limit: 100.0
+    alert_threshold: 80.0
+
+usage_seeds:
+  - project_id: proj-beta
+    user_id: user-carol
+    provider: bedrock-mantle
+    model: gpt-5.4
+    prompt_tokens: 1130
+    completion_tokens: 1050
+    cost: 0.00953
+    latency_ms: 919.6
+    minutes_ago: 123
+  - project_id: proj-alpha
+    user_id: user-bob
+    provider: google_ai
+    model: gemini-2.5-pro
+    prompt_tokens: 1370
+    completion_tokens: 1130
+    cost: 0.007363
+    latency_ms: 1280.3
+    minutes_ago: 225
+  - project_id: proj-alpha
+    user_id: user-bob
+    provider: bedrock
+    model: claude-opus
+    prompt_tokens: 780
+    completion_tokens: 910
+    cost: 0.07995
+    latency_ms: 2041.6
+    minutes_ago: 223
+  - project_id: proj-beta
+    user_id: user-carol
+    provider: bedrock
+    model: claude-sonnet
+    prompt_tokens: 780
+    completion_tokens: 430
+    cost: 0.00879
+    latency_ms: 1816.0
+    minutes_ago: 96
+    cached_tokens: 526
+    cache_creation_tokens: 50
+  - project_id: proj-alpha
+    user_id: user-alice
+    provider: bedrock-mantle
+    model: gpt-5.4
+    prompt_tokens: 2780
+    completion_tokens: 1110
+    cost: 0.01166
+    latency_ms: 892.1
+    minutes_ago: 300
+  - project_id: proj-beta
+    user_id: user-carol
+    provider: bedrock
+    model: claude-sonnet
+    prompt_tokens: 1830
+    completion_tokens: 1100
+    cost: 0.02199
+    latency_ms: 1730.4
+    minutes_ago: 133
+  - project_id: proj-beta
+    user_id: user-carol
+    provider: bedrock
+    model: claude-sonnet
+    prompt_tokens: 1970
+    completion_tokens: 1130
+    cost: 0.02286
+    latency_ms: 1409.4
+    minutes_ago: 110
+  - project_id: proj-alpha
+    user_id: user-alice
+    provider: bedrock-mantle
+    model: deepseek-v3-mantle
+    prompt_tokens: 1480
+    completion_tokens: 840
+    cost: 0.001452
+    latency_ms: 1016.2
+    minutes_ago: 347
+  - project_id: proj-beta
+    user_id: user-carol
+    provider: anthropic
+    model: claude-haiku
+    prompt_tokens: 2270
+    completion_tokens: 1000
+    cost: 0.005816
+    latency_ms: 820.7
+    minutes_ago: 156
+  - project_id: proj-beta
+    user_id: user-carol
+    provider: bedrock-mantle
+    model: gpt-5.4
+    prompt_tokens: 1340
+    completion_tokens: 1110
+    cost: 0.01022
+    latency_ms: 1072.2
+    minutes_ago: 84
+  - project_id: proj-beta
+    user_id: user-carol
+    provider: google_ai
+    model: gemini-2.5-pro
+    prompt_tokens: 880
+    completion_tokens: 850
+    cost: 0.00535
+    latency_ms: 991.3
+    minutes_ago: 152
+  - project_id: proj-beta
+    user_id: user-carol
+    provider: google_ai
+    model: gemini-2.5-pro
+    prompt_tokens: 1220
+    completion_tokens: 350
+    cost: 0.003275
+    latency_ms: 907.0
+    minutes_ago: 89
+  - project_id: proj-alpha
+    user_id: user-alice
+    provider: bedrock-mantle
+    model: gpt-5.4
+    prompt_tokens: 1920
+    completion_tokens: 660
+    cost: 0.0072
+    latency_ms: 1151.7
+    minutes_ago: 312
+  - project_id: proj-alpha
+    user_id: user-bob
+    provider: anthropic
+    model: claude-haiku
+    prompt_tokens: 660
+    completion_tokens: 1100
+    cost: 0.004928
+    latency_ms: 839.6
+    minutes_ago: 232
+    cached_tokens: 460
+    cache_creation_tokens: 66
+  - project_id: proj-alpha
+    user_id: user-alice
+    provider: bedrock
+    model: claude-sonnet
+    prompt_tokens: 2020
+    completion_tokens: 1100
+    cost: 0.02256
+    latency_ms: 1679.2
+    minutes_ago: 260
+    cached_tokens: 1375
+    cache_creation_tokens: 123
+  - project_id: proj-alpha
+    user_id: user-alice
+    provider: bedrock
+    model: claude-opus
+    prompt_tokens: 260
+    completion_tokens: 1280
+    cost: 0.0999
+    latency_ms: 3265.7
+    minutes_ago: 290
+    cached_tokens: 101
+    cache_creation_tokens: 36
+  - project_id: proj-alpha
+    user_id: user-alice
+    provider: bedrock-mantle
+    model: deepseek-v3-mantle
+    prompt_tokens: 810
+    completion_tokens: 370
+    cost: 0.000687
+    latency_ms: 907.1
+    minutes_ago: 288
+  - project_id: proj-alpha
+    user_id: user-bob
+    provider: openai
+    model: gpt-5.5-pro
+    prompt_tokens: 2140
+    completion_tokens: 750
+    cost: 0.0407
+    latency_ms: 2807.3
+    minutes_ago: 248
+  - project_id: proj-alpha
+    user_id: user-alice
+    provider: bedrock-mantle
+    model: qwen3-32b-mantle
+    prompt_tokens: 1110
+    completion_tokens: 740
+    cost: 0.000814
+    latency_ms: 664.9
+    minutes_ago: 360
+  - project_id: proj-alpha
+    user_id: user-bob
+    provider: bedrock-mantle
+    model: qwen3-32b-mantle
+    prompt_tokens: 2750
+    completion_tokens: 570
+    cost: 0.001006
+    latency_ms: 466.0
+    minutes_ago: 176
+  - project_id: proj-alpha
+    user_id: user-bob
+    provider: anthropic
+    model: claude-sonnet
+    prompt_tokens: 1920
+    completion_tokens: 1090
+    cost: 0.02211
+    latency_ms: 906.7
+    minutes_ago: 238
+  - project_id: proj-alpha
+    user_id: user-alice
+    provider: openai
+    model: gpt-5.5-pro
+    prompt_tokens: 700
+    completion_tokens: 340
+    cost: 0.0171
+    latency_ms: 3499.2
+    minutes_ago: 269
+  - project_id: proj-alpha
+    user_id: user-alice
+    provider: bedrock
+    model: claude-sonnet
+    prompt_tokens: 850
+    completion_tokens: 410
+    cost: 0.0087
+    latency_ms: 1072.7
+    minutes_ago: 329
+    cached_tokens: 453
+    cache_creation_tokens: 52
+  - project_id: proj-alpha
+    user_id: user-bob
+    provider: bedrock-mantle
+    model: gpt-5.5
+    prompt_tokens: 2740
+    completion_tokens: 1380
+    cost: 0.017225
+    latency_ms: 1055.3
+    minutes_ago: 229
+  - project_id: proj-alpha
+    user_id: user-alice
+    provider: google_ai
+    model: gemini-2.5-pro
+    prompt_tokens: 2010
+    completion_tokens: 830
+    cost: 0.006663
+    latency_ms: 837.9
+    minutes_ago: 263
+  - project_id: proj-alpha
+    user_id: user-bob
+    provider: bedrock-mantle
+    model: deepseek-v3-mantle
+    prompt_tokens: 1310
+    completion_tokens: 1260
+    cost: 0.001905
+    latency_ms: 1031.2
+    minutes_ago: 216
+  - project_id: proj-alpha
+    user_id: user-bob
+    provider: bedrock
+    model: claude-opus
+    prompt_tokens: 1720
+    completion_tokens: 1180
+    cost: 0.1143
+    latency_ms: 2092.4
+    minutes_ago: 245
+    cached_tokens: 1147
+    cache_creation_tokens: 142
+  - project_id: proj-beta
+    user_id: user-carol
+    provider: openai
+    model: gpt-5.5-pro
+    prompt_tokens: 640
+    completion_tokens: 220
+    cost: 0.012
+    latency_ms: 3018.2
+    minutes_ago: 140
+  - project_id: proj-alpha
+    user_id: user-alice
+    provider: anthropic
+    model: claude-haiku
+    prompt_tokens: 2280
+    completion_tokens: 800
+    cost: 0.005024
+    latency_ms: 546.0
+    minutes_ago: 340
+  - project_id: proj-alpha
+    user_id: user-alice
+    provider: bedrock-mantle
+    model: qwen3-32b-mantle
+    prompt_tokens: 2260
+    completion_tokens: 240
+    cost: 0.000644
+    latency_ms: 387.1
+    minutes_ago: 353
+  - project_id: proj-alpha
+    user_id: user-bob
+    provider: bedrock-mantle
+    model: deepseek-v3-mantle
+    prompt_tokens: 2160
+    completion_tokens: 980
+    cost: 0.001824
+    latency_ms: 687.8
+    minutes_ago: 180
+  - project_id: proj-beta
+    user_id: user-carol
+    provider: bedrock-mantle
+    model: gpt-5.5
+    prompt_tokens: 410
+    completion_tokens: 500
+    cost: 0.005513
+    latency_ms: 736.9
+    minutes_ago: 128
+  - project_id: proj-alpha
+    user_id: user-alice
+    provider: bedrock-mantle
+    model: qwen3-32b-mantle
+    prompt_tokens: 2780
+    completion_tokens: 1280
+    cost: 0.00158
+    latency_ms: 924.0
+    minutes_ago: 351
+  - project_id: proj-alpha
+    user_id: user-bob
+    provider: bedrock
+    model: claude-opus
+    prompt_tokens: 1930
+    completion_tokens: 1160
+    cost: 0.11595
+    latency_ms: 4041.1
+    minutes_ago: 185
+    cached_tokens: 1004
+    cache_creation_tokens: 234
+  - project_id: proj-alpha
+    user_id: user-alice
+    provider: bedrock-mantle
+    model: deepseek-v3-mantle
+    prompt_tokens: 2260
+    completion_tokens: 200
+    cost: 0.000918
+    latency_ms: 745.2
+    minutes_ago: 310
+  - project_id: proj-alpha
+    user_id: user-alice
+    provider: google_ai
+    model: gemini-2.5-pro
+    prompt_tokens: 2140
+    completion_tokens: 860
+    cost: 0.006975
+    latency_ms: 1073.8
+    minutes_ago: 274
+  - project_id: proj-alpha
+    user_id: user-bob
+    provider: bedrock-mantle
+    model: gpt-5.5
+    prompt_tokens: 220
+    completion_tokens: 260
+    cost: 0.002875
+    latency_ms: 677.9
+    minutes_ago: 192
+  - project_id: proj-beta
+    user_id: user-carol
+    provider: google_ai
+    model: gemini-2.5-pro
+    prompt_tokens: 1210
+    completion_tokens: 540
+    cost: 0.004213
+    latency_ms: 1056.4
+    minutes_ago: 131
+  - project_id: proj-alpha
+    user_id: user-alice
+    provider: bedrock-mantle
+    model: gpt-5.5
+    prompt_tokens: 2450
+    completion_tokens: 730
+    cost: 0.010363
+    latency_ms: 1007.9
+    minutes_ago: 296
+  - project_id: proj-alpha
+    user_id: user-alice
+    provider: bedrock-mantle
+    model: qwen3-32b-mantle
+    prompt_tokens: 1580
+    completion_tokens: 800
+    cost: 0.000956
+    latency_ms: 628.1
+    minutes_ago: 306
+  - project_id: proj-alpha
+    user_id: user-bob
+    provider: bedrock
+    model: claude-opus
+    prompt_tokens: 2620
+    completion_tokens: 420
+    cost: 0.0708
+    latency_ms: 2911.5
+    minutes_ago: 202
+  - project_id: proj-alpha
+    user_id: user-alice
+    provider: bedrock-mantle
+    model: gpt-5.4
+    prompt_tokens: 640
+    completion_tokens: 990
+    cost: 0.00856
+    latency_ms: 915.3
+    minutes_ago: 316
+  - project_id: proj-alpha
+    user_id: user-bob
+    provider: bedrock-mantle
+    model: qwen3-32b-mantle
+    prompt_tokens: 1580
+    completion_tokens: 720
+    cost: 0.000892
+    latency_ms: 740.1
+    minutes_ago: 174
+  - project_id: proj-beta
+    user_id: user-carol
+    provider: anthropic
+    model: claude-sonnet
+    prompt_tokens: 2010
+    completion_tokens: 1030
+    cost: 0.02148
+    latency_ms: 1049.5
+    minutes_ago: 147
+  - project_id: proj-alpha
+    user_id: user-alice
+    provider: bedrock-mantle
+    model: gpt-5.4
+    prompt_tokens: 2230
+    completion_tokens: 670
+    cost: 0.00759
+    latency_ms: 893.4
+    minutes_ago: 335
+  - project_id: proj-alpha
+    user_id: user-alice
+    provider: openai
+    model: gpt-5.5-pro
+    prompt_tokens: 2950
+    completion_tokens: 380
+    cost: 0.02995
+    latency_ms: 3333.7
+    minutes_ago: 251
+  - project_id: proj-alpha
+    user_id: user-alice
+    provider: bedrock
+    model: claude-opus
+    prompt_tokens: 2640
+    completion_tokens: 90
+    cost: 0.04635
+    latency_ms: 2110.7
+    minutes_ago: 286
+  - project_id: proj-alpha
+    user_id: user-alice
+    provider: bedrock
+    model: claude-opus
+    prompt_tokens: 250
+    completion_tokens: 640
+    cost: 0.05175
+    latency_ms: 3166.4
+    minutes_ago: 255
+  - project_id: proj-alpha
+    user_id: user-bob
+    provider: bedrock-mantle
+    model: gpt-5.4
+    prompt_tokens: 3120
+    completion_tokens: 90
+    cost: 0.00384
+    latency_ms: 533.1
+    minutes_ago: 172
+  - project_id: proj-alpha
+    user_id: user-bob
+    provider: bedrock-mantle
+    model: deepseek-v3-mantle
+    prompt_tokens: 2220
+    completion_tokens: 1060
+    cost: 0.001938
+    latency_ms: 943.8
+    minutes_ago: 168
+  - project_id: proj-beta
+    user_id: user-carol
+    provider: anthropic
+    model: claude-haiku
+    prompt_tokens: 2170
+    completion_tokens: 540
+    cost: 0.003896
+    latency_ms: 425.7
+    minutes_ago: 114
+  - project_id: proj-alpha
+    user_id: user-bob
+    provider: bedrock-mantle
+    model: qwen3-32b-mantle
+    prompt_tokens: 2310
+    completion_tokens: 1160
+    cost: 0.00139
+    latency_ms: 678.3
+    minutes_ago: 197
+  - project_id: proj-alpha
+    user_id: user-alice
+    provider: openai
+    model: gpt-5.5-pro
+    prompt_tokens: 1640
+    completion_tokens: 1190
+    cost: 0.0558
+    latency_ms: 2922.9
+    minutes_ago: 279
+  - project_id: proj-beta
+    user_id: user-carol
+    provider: bedrock-mantle
+    model: qwen3-32b-mantle
+    prompt_tokens: 2300
+    completion_tokens: 1360
+    cost: 0.001548
+    latency_ms: 969.0
+    minutes_ago: 166
+  - project_id: proj-beta
+    user_id: user-carol
+    provider: bedrock-mantle
+    model: gpt-5.4
+    prompt_tokens: 1230
+    completion_tokens: 1140
+    cost: 0.01035
+    latency_ms: 757.8
+    minutes_ago: 103
+  - project_id: proj-alpha
+    user_id: user-alice
+    provider: anthropic
+    model: claude-sonnet
+    prompt_tokens: 2030
+    completion_tokens: 270
+    cost: 0.01014
+    latency_ms: 1039.7
+    minutes_ago: 322
+  - project_id: proj-alpha
+    user_id: user-bob
+    provider: openai
+    model: gpt-5.5-pro
+    prompt_tokens: 2200
+    completion_tokens: 120
+    cost: 0.0158
+    latency_ms: 2026.1
+    minutes_ago: 194
+  - project_id: proj-alpha
+    user_id: user-bob
+    provider: anthropic
+    model: claude-haiku
+    prompt_tokens: 2430
+    completion_tokens: 390
+    cost: 0.003504
+    latency_ms: 345.3
+    minutes_ago: 209
+  - project_id: proj-alpha
+    user_id: user-alice
+    provider: bedrock-mantle
+    model: gpt-5.4
+    prompt_tokens: 2700
+    completion_tokens: 1220
+    cost: 0.01246
+    latency_ms: 804.3
+    minutes_ago: 333
+  - project_id: proj-alpha
+    user_id: user-bob
+    provider: bedrock
+    model: claude-opus
+    prompt_tokens: 3170
+    completion_tokens: 320
+    cost: 0.07155
+    latency_ms: 1763.7
+    minutes_ago: 213
+  - project_id: proj-alpha
+    user_id: user-alice
+    provider: bedrock
+    model: claude-sonnet
+    prompt_tokens: 2170
+    completion_tokens: 1220
+    cost: 0.02481
+    latency_ms: 1487.2
+    minutes_ago: 281
+  - project_id: proj-alpha
+    user_id: user-bob
+    provider: openai
+    model: gpt-5.5-pro
+    prompt_tokens: 1120
+    completion_tokens: 1350
+    cost: 0.0596
+    latency_ms: 4720.3
+    minutes_ago: 227
+  - project_id: proj-beta
+    user_id: user-carol
+    provider: bedrock-mantle
+    model: gpt-5.5
+    prompt_tokens: 390
+    completion_tokens: 90
+    cost: 0.001388
+    latency_ms: 1188.7
+    minutes_ago: 77
+  - project_id: proj-beta
+    user_id: user-carol
+    provider: bedrock
+    model: claude-sonnet
+    prompt_tokens: 1920
+    completion_tokens: 310
+    cost: 0.01041
+    latency_ms: 1162.1
+    minutes_ago: 160
+    cached_tokens: 1265
+    cache_creation_tokens: 185
+  - project_id: proj-beta
+    user_id: user-carol
+    provider: bedrock-mantle
+    model: gpt-5.4
+    prompt_tokens: 2580
+    completion_tokens: 200
+    cost: 0.00418
+    latency_ms: 508.0
+    minutes_ago: 118
+  - project_id: proj-alpha
+    user_id: user-bob
+    provider: anthropic
+    model: claude-sonnet
+    prompt_tokens: 230
+    completion_tokens: 630
+    cost: 0.01014
+    latency_ms: 778.6
+    minutes_ago: 187
+    cached_tokens: 82
+    cache_creation_tokens: 30
+policies:
+  - name: allow-all-read
+    description: Allow all users read access
+    policy_text: 'permit(principal, action == Action::"read", resource);'
+    mode: ENFORCE
+  - name: allow-all-write
+    description: Allow authenticated users to make requests (write actions)
+    policy_text: 'permit(principal, action == Action::"write", resource);'
+    mode: ENFORCE
+  - name: restrict-gpt4
+    description: Restrict GPT-4 to senior devs
+    policy_text: 'forbid(principal, action, resource) unless { principal.role == "senior" };'
+    mode: LOG_ONLY
+
+# --- Policy hierarchy --------------------------------------------------------
+# The org > business_unit > project > environment tree the Govern > Hierarchy
+# page renders and the quota enforcer reads on every request. Distinct from the
+# `policies` section above, which is Cedar authorization text.
+#
+# Seeded because the feature's whole point is inheritance, and inheritance is
+# invisible with one level: before this, the only nodes that existed were flat
+# per-project ones synthesized from each project's budget_limit, every one with
+# parent_id: null. Nothing on screen showed a limit being narrowed by a parent.
+#
+# Two rules govern what the numbers may say, and both are enforced by tests:
+#
+# 1. A child may never exceed its parent — the resolver rejects it outright
+#    (PolicyHierarchyResolver.validate_node_limits), so a seed that violated
+#    this would fail at startup rather than load quietly.
+# 2. The resolved limits must not throttle the shipped demo. proj-alpha is the
+#    project the chat playground posts to (bootstrap picks the first seeded
+#    project as its default), so its effective rate and budget stay at least
+#    what a demo session needs, and its allowed_models stays a superset of the
+#    48 models the project itself lists. The tighter values live on proj-beta
+#    and on the environment nodes, which no demo traffic touches.
+policy_nodes:
+  - node_id: org:acme
+    node_type: org
+    parent_id: null
+    display_name: Acme Corp
+    limits:
+      rate_limit_rpm: 5000
+      budget_limit: 50000.0
+      max_tokens_per_request: 32768
+
+  # Redaction is switched on at the BU rather than the org so the page shows
+  # both states: a child inheriting PII settings it did not ask for, and a
+  # sibling BU with redaction off. Once a parent enables it no descendant can
+  # turn it off, which is the invariant worth being able to point at.
+  - node_id: bu:platform
+    node_type: business_unit
+    parent_id: org:acme
+    display_name: Platform Engineering
+    limits:
+      rate_limit_rpm: 2000
+      budget_limit: 20000.0
+      pii_redaction_enabled: true
+      # Widened past the original email+ssn so the demo prompt's phone, card and
+      # host address are actually redacted on the request path. They were being
+      # caught in the preview panel but passed through on a real call, which
+      # made the panel look like it was overstating what the gateway does.
+      #
+      # Not the full pattern set: aws_account_id matches any bare 12-digit
+      # number and passport matches a letter followed by 6-9 digits, both of
+      # which fire on ordinary identifiers in demo traffic. Leaving them off is
+      # itself the point — the type list is a policy decision, not a default.
+      pii_redact_types:
+        - email
+        - ssn
+        - phone
+        - credit_card
+        - ip_address
+        - medical_record
+
+  # Entity detection lives here rather than on bu:platform so the two BUs show
+  # the two regimes side by side: platform redacts what regex can match, research
+  # also redacts names and addresses. Putting it on platform would have changed
+  # what every existing demo request does, and proj-alpha (the playground's
+  # default project) hangs off platform.
+  #
+  # This is the only node in the seed that costs money per request — Comprehend
+  # bills ~$0.0001/100 chars, more than the model's own input tokens for the same
+  # text. Scoped to one BU on purpose; see the README section on the limits of
+  # regex for why it is not a sensible global default.
+  - node_id: bu:research
+    node_type: business_unit
+    parent_id: org:acme
+    display_name: Applied Research
+    limits:
+      rate_limit_rpm: 1000
+      budget_limit: 15000.0
+      max_tokens_per_request: 16384
+      pii_redaction_enabled: true
+      # Matches bu:platform's list rather than a shorter one. The first draft
+      # here was [email, ssn, phone], which made proj-beta redact the name but
+      # leave the credit card and host IP in place — the BU with the extra
+      # detector was measurably *less* protective than its sibling on the
+      # structured types, which reads as a bug in the product rather than a
+      # policy choice. The two BUs should differ in one axis only: entity
+      # detection.
+      pii_redact_types:
+        - email
+        - ssn
+        - phone
+        - credit_card
+        - ip_address
+        - medical_record
+      pii_ner_enabled: true
+      # name only, not the full name/address/age default. Research prompts are
+      # full of place names and organisations, and address would redact "Seattle"
+      # out of a legitimate question. The narrower set is the honest demo of how
+      # you would actually deploy this.
+      pii_ner_types:
+        - name
+
+  # No allowed_models here: proj-alpha carries the demo's 48-model list on the
+  # project record itself, and an intersection at this level would silently
+  # shrink what the Models page offers. Budget matches the project's own 500.0
+  # so the Quotas page agrees with the Projects page.
+  - node_id: proj-alpha
+    node_type: project
+    parent_id: bu:platform
+    display_name: Alpha Team
+    limits:
+      rate_limit_rpm: 1000
+      budget_limit: 500.0
+
+  - node_id: proj-beta
+    node_type: project
+    parent_id: bu:research
+    display_name: Beta Team
+    limits:
+      rate_limit_rpm: 200
+      budget_limit: 200.0
+      allowed_models:
+        - claude-haiku
+        - gpt-4o-mini
+        - nova-lite
+        - nova-micro
+
+  # Environment nodes are addressed as "<project>:<env>" — get_ancestry builds
+  # that id when a caller passes ?env=, so the separator is not decorative.
+  #
+  # prod is the *tighter* of the two on purpose. The intuition runs the other
+  # way (production should get more headroom), but these are per-request
+  # ceilings on a shared gateway: a runaway prod job is the expensive one, and
+  # a dev sandbox is where someone legitimately asks for a long completion.
+  - node_id: proj-alpha:prod
+    node_type: environment
+    parent_id: proj-alpha
+    display_name: Alpha Production
+    limits:
+      rate_limit_rpm: 600
+      max_tokens_per_request: 4096
+      # Strict regime: redaction is permanent here. Once this is false no
+      # descendant can re-enable re-injection, so responses come back with the
+      # placeholder tokens still in place rather than the original values.
+      pii_reinject: false
+
+  - node_id: proj-alpha:dev
+    node_type: environment
+    parent_id: proj-alpha
+    display_name: Alpha Development
+    limits:
+      rate_limit_rpm: 300
+      max_tokens_per_request: 8192
+
+  - node_id: proj-beta:prod
+    node_type: environment
+    parent_id: proj-beta
+    display_name: Beta Production
+    limits:
+      rate_limit_rpm: 120
+      max_tokens_per_request: 4096
+
+unhealthy_providers:
+  - provider: azure_openai
+    cooldown_seconds: 600
+
+# --- API Keys page -----------------------------------------------------------
+# Issued through APIKeyService at startup, so these are real hashed records.
+# The raw key is generated and discarded -- the dashboard only ever shows the
+# prefix and metadata, so there is nothing to hardcode here.
+api_keys:
+  - project_id: proj-alpha
+    name: alpha-prod-gateway
+    scopes: [chat:invoke, models:read]
+    created_by: user-alice
+    expires_in_days: 90
+  - project_id: proj-alpha
+    name: alpha-ci-pipeline
+    scopes: [chat:invoke]
+    created_by: user-bob
+    expires_in_days: 30
+  - project_id: proj-alpha
+    name: alpha-legacy-key
+    scopes: [chat:invoke]
+    created_by: user-alice
+    revoked: true
+  - project_id: proj-beta
+    name: beta-eval-harness
+    scopes: [chat:invoke, models:read]
+    created_by: user-carol
+    expires_in_days: 14
+
+# --- Audit Log page ----------------------------------------------------------
+# Recorded via AuditTrail.record so each entry gets a real hash-chain link and
+# the page's integrity check passes. Order matters: entries chain in sequence.
+# Covers the event types the page filters on, including the security-relevant
+# ones (injection, PII, policy deny, auth failure) so those views aren't empty.
+audit_events:
+  - event_type: auth_success
+    user_id: user-alice
+    project_id: proj-alpha
+    request_id: req-demo-0001
+    data: {method: api_key, key_name: alpha-prod-gateway}
+  - event_type: llm_request
+    user_id: user-alice
+    project_id: proj-alpha
+    request_id: req-demo-0002
+    data: {model: claude-sonnet-5, provider: anthropic, message_count: 3}
+  - event_type: pii_redaction
+    user_id: user-alice
+    project_id: proj-alpha
+    request_id: req-demo-0002
+    data: {redacted_types: [EMAIL, PHONE], count: 2}
+  - event_type: llm_response
+    user_id: user-alice
+    project_id: proj-alpha
+    request_id: req-demo-0002
+    data: {model: claude-sonnet-5, provider: anthropic, completion_tokens: 210}
+  - event_type: injection_detected
+    user_id: user-bob
+    project_id: proj-alpha
+    request_id: req-demo-0003
+    data:
+      threat_level: medium
+      patterns: [ignore_previous_instructions]
+      blocked: false
+  - event_type: injection_blocked
+    user_id: user-bob
+    project_id: proj-alpha
+    request_id: req-demo-0004
+    data:
+      threat_level: high
+      patterns: [system_prompt_exfiltration, role_override]
+      blocked: true
+  - event_type: policy_deny
+    user_id: user-bob
+    project_id: proj-alpha
+    request_id: req-demo-0005
+    data: {policy: restrict-gpt4, reason: principal.role != senior, model: gpt-4o}
+  - event_type: auth_failure
+    user_id: unknown
+    project_id: proj-beta
+    request_id: req-demo-0006
+    data: {method: api_key, reason: key_expired}
+  - event_type: key_issued
+    user_id: user-carol
+    project_id: proj-beta
+    request_id: req-demo-0007
+    data: {key_name: beta-eval-harness, scopes: [chat:invoke, models:read]}
+  - event_type: key_rotated
+    user_id: user-alice
+    project_id: proj-alpha
+    request_id: req-demo-0008
+    data: {key_name: alpha-ci-pipeline}
+  - event_type: key_revoked
+    user_id: user-alice
+    project_id: proj-alpha
+    request_id: req-demo-0009
+    data: {key_name: alpha-legacy-key, reason: superseded}
+  - event_type: llm_request
+    user_id: user-carol
+    project_id: proj-beta
+    request_id: req-demo-0010
+    data: {model: nova-lite, provider: bedrock, message_count: 1}
+
+# --- Webhooks page -----------------------------------------------------------
+# Registered destinations only; nothing is dispatched at startup, so the stats
+# counters stay at zero until a real event fires. Config values are
+# non-routable placeholders by design -- see the note in README.
+webhook_destinations:
+  - name: security-alerts-slack
+    type: webhook
+    config:
+      url: https://hooks.example.invalid/services/DEMO/SECURITY/ALERTS
+      timeout_seconds: 5
+    event_filter: [injection_blocked, policy_deny, auth_failure]
+    enabled: true
+  - name: audit-archive-cloudwatch
+    type: cloudwatch
+    config:
+      log_group: /axonllm/demo/audit
+      region: us-east-1
+    enabled: true
+  - name: budget-alerts-sns
+    type: sns
+    config:
+      topic_arn: arn:aws:sns:us-east-1:000000000000:axonllm-demo-budget-alerts
+      region: us-east-1
+    event_filter: [budget_exceeded]
+    enabled: true
+  - name: legacy-pagerduty
+    type: webhook
+    config:
+      url: https://events.example.invalid/v2/enqueue
+    enabled: false

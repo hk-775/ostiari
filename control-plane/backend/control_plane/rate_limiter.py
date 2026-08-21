@@ -5,6 +5,7 @@ from collections import defaultdict
 
 import redis.asyncio as aioredis
 
+from control_plane.env import is_production
 from control_plane.redis_client import get_redis
 
 
@@ -39,6 +40,8 @@ class RateLimiter:
         """Check if request is allowed. Returns (allowed, remaining)."""
         r: aioredis.Redis | None = await get_redis()
         if r is None:
+            if is_production():
+                return False, 0
             return _fallback.check(key, limit_rpm)
 
         redis_key = f"{self.prefix}:{key}"
@@ -58,5 +61,7 @@ class RateLimiter:
                 return False, 0
             return True, limit_rpm - current
         except Exception:
+            if is_production():
+                return False, 0
             # Fallback to in-memory on Redis error
             return _fallback.check(key, limit_rpm)

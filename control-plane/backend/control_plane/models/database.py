@@ -8,7 +8,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     Float,
-    ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -40,15 +40,26 @@ class Organization(Base):
 
 class Gateway(Base):
     __tablename__ = "gateways"
+    __table_args__ = (
+        UniqueConstraint(
+            "workload_issuer",
+            "workload_subject",
+            name="uq_gateways_workload_identity",
+        ),
+    )
 
+    org_id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=DEFAULT_ORG, index=True, nullable=False
+    )
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    org_id: Mapped[str] = mapped_column(String(64), default=DEFAULT_ORG, index=True, nullable=True)
     name: Mapped[str] = mapped_column(String(128))
     description: Mapped[str] = mapped_column(Text, default="")
     endpoint: Mapped[str] = mapped_column(String(512))
     status: Mapped[str] = mapped_column(String(20), default="registered")
     last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     config: Mapped[dict] = mapped_column(JSON, default=dict)
+    workload_issuer: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    workload_subject: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
@@ -62,9 +73,18 @@ class Gateway(Base):
 
 class Tool(Base):
     __tablename__ = "tools"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["org_id", "gateway_id"],
+            ["gateways.org_id", "gateways.id"],
+            name="fk_tools_gateway",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    org_id: Mapped[str] = mapped_column(String(64), default=DEFAULT_ORG, index=True, nullable=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64), default=DEFAULT_ORG, index=True, nullable=False
+    )
     name: Mapped[str] = mapped_column(String(128))
     endpoint: Mapped[str] = mapped_column(String(512))
     method: Mapped[str] = mapped_column(String(10), default="POST")
@@ -75,7 +95,7 @@ class Tool(Base):
     # / hand-registered tools send everything as a JSON body).
     path_params: Mapped[list | None] = mapped_column(JSON, nullable=True)
     query_params: Mapped[list | None] = mapped_column(JSON, nullable=True)
-    gateway_id: Mapped[str] = mapped_column(String(64), ForeignKey("gateways.id"))
+    gateway_id: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
@@ -85,16 +105,24 @@ class Tool(Base):
 
 class Policy(Base):
     __tablename__ = "policies"
+    __table_args__ = (
+        UniqueConstraint("org_id", "name", name="uq_policies_org_name"),
+        ForeignKeyConstraint(
+            ["org_id", "gateway_id"],
+            ["gateways.org_id", "gateways.id"],
+            name="fk_policies_gateway",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    org_id: Mapped[str] = mapped_column(String(64), default=DEFAULT_ORG, index=True, nullable=True)
-    # NOTE: name is globally unique for now — two orgs can't reuse a policy name.
-    # Composite (org_id, name) uniqueness is deferred (see multi-tenancy plan).
-    name: Mapped[str] = mapped_column(String(128), unique=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64), default=DEFAULT_ORG, index=True, nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(128))
     description: Mapped[str] = mapped_column(Text, default="")
     content: Mapped[dict] = mapped_column(JSON)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    gateway_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("gateways.id"), nullable=True)
+    gateway_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
@@ -106,9 +134,18 @@ class Policy(Base):
 
 class McpServer(Base):
     __tablename__ = "mcp_servers"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["org_id", "gateway_id"],
+            ["gateways.org_id", "gateways.id"],
+            name="fk_mcp_servers_gateway",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    org_id: Mapped[str] = mapped_column(String(64), default=DEFAULT_ORG, index=True, nullable=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64), default=DEFAULT_ORG, index=True, nullable=False
+    )
     name: Mapped[str] = mapped_column(String(128))
     mode: Mapped[str] = mapped_column(String(20))  # embedded | remote | stdio
     # For embedded mode
@@ -125,7 +162,7 @@ class McpServer(Base):
     blocked_tools: Mapped[list] = mapped_column(JSON, default=list)
     prefix: Mapped[str] = mapped_column(String(64), default="")
     # Association
-    gateway_id: Mapped[str] = mapped_column(String(64), ForeignKey("gateways.id"))
+    gateway_id: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
@@ -135,15 +172,23 @@ class UsageRecord(Base):
     __tablename__ = "usage_records"
     __table_args__ = (
         UniqueConstraint(
+            "org_id",
             "gateway_id",
             "event_id",
-            name="uq_usage_records_gateway_event",
+            name="uq_usage_records_org_gateway_event",
+        ),
+        ForeignKeyConstraint(
+            ["org_id", "gateway_id"],
+            ["gateways.org_id", "gateways.id"],
+            name="fk_usage_records_gateway",
         ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    org_id: Mapped[str] = mapped_column(String(64), default=DEFAULT_ORG, index=True, nullable=True)
-    gateway_id: Mapped[str] = mapped_column(String(64), ForeignKey("gateways.id"))
+    org_id: Mapped[str] = mapped_column(
+        String(64), default=DEFAULT_ORG, index=True, nullable=False
+    )
+    gateway_id: Mapped[str] = mapped_column(String(64))
     # Stable gateway-generated identity. Retries of one unconfirmed batch reuse
     # this value, so usage, pool consumption, and billing are applied once.
     event_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -181,14 +226,23 @@ class A2AAgentRecord(Base):
     """
 
     __tablename__ = "a2a_agents"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["org_id", "gateway_id"],
+            ["gateways.org_id", "gateways.id"],
+            name="fk_a2a_agents_gateway",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    org_id: Mapped[str] = mapped_column(String(64), default=DEFAULT_ORG, index=True, nullable=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64), default=DEFAULT_ORG, index=True, nullable=False
+    )
     name: Mapped[str] = mapped_column(String(128))          # display name
     agent_key: Mapped[str] = mapped_column(String(128))     # a2a.<agent_key>
     url: Mapped[str] = mapped_column(String(512))
     auth_token: Mapped[str] = mapped_column(String(512), default="")
-    gateway_id: Mapped[str] = mapped_column(String(64), ForeignKey("gateways.id"))
+    gateway_id: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
@@ -239,7 +293,9 @@ class ReconciliationRecord(Base):
     __tablename__ = "reconciliation_records"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    org_id: Mapped[str] = mapped_column(String(64), default=DEFAULT_ORG, index=True, nullable=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64), default=DEFAULT_ORG, index=True, nullable=False
+    )
     provider: Mapped[str] = mapped_column(String(64))
     period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -262,8 +318,10 @@ class Wallet(Base):
 
     __tablename__ = "wallets"
 
+    org_id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=DEFAULT_ORG, index=True, nullable=False
+    )
     agent_id: Mapped[str] = mapped_column(String(128), primary_key=True)
-    org_id: Mapped[str] = mapped_column(String(64), default=DEFAULT_ORG, index=True, nullable=True)
     address: Mapped[str] = mapped_column(String(128), default="")
     balance_usdc: Mapped[float] = mapped_column(Float, default=0.0)
     daily_limit_usdc: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -281,14 +339,17 @@ class PaymentRecord(Base):
     __tablename__ = "payment_records"
     __table_args__ = (
         UniqueConstraint(
+            "org_id",
             "gateway_id",
             "event_id",
-            name="uq_payment_records_gateway_event",
+            name="uq_payment_records_org_gateway_event",
         ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    org_id: Mapped[str] = mapped_column(String(64), default=DEFAULT_ORG, index=True, nullable=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64), default=DEFAULT_ORG, index=True, nullable=False
+    )
     # Generated by the gateway once and retained across reporter retries.
     event_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     agent_id: Mapped[str] = mapped_column(String(128), default="unknown")
@@ -310,7 +371,9 @@ class AuditLog(Base):
     __tablename__ = "audit_logs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    org_id: Mapped[str] = mapped_column(String(64), default=DEFAULT_ORG, index=True, nullable=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64), default=DEFAULT_ORG, index=True, nullable=False
+    )
     actor: Mapped[str] = mapped_column(String(128))
     action: Mapped[str] = mapped_column(String(64))
     resource_type: Mapped[str] = mapped_column(String(64))
@@ -327,10 +390,13 @@ class AuditLog(Base):
 
 
 class AuditChainHead(Base):
-    """Serialized head of the global tamper-evident audit chain."""
+    """Serialized head of one tenant's tamper-evident audit chain."""
 
     __tablename__ = "audit_chain_heads"
 
+    org_id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=DEFAULT_ORG, nullable=False
+    )
     name: Mapped[str] = mapped_column(String(32), primary_key=True)
     entry_hash: Mapped[str] = mapped_column(String(64), default="")
     updated_at: Mapped[datetime] = mapped_column(
@@ -451,6 +517,23 @@ class RuntimeStateSequence(Base):
     )
     namespace: Mapped[str] = mapped_column(String(64), primary_key=True)
     next_value: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+
+class RuntimeStateRevision(Base):
+    """Monotonic cache-invalidation revision for one tenant namespace."""
+
+    __tablename__ = "runtime_state_revisions"
+
+    org_id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=DEFAULT_ORG, nullable=False
+    )
+    namespace: Mapped[str] = mapped_column(String(64), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
 
 
 class ProviderRouteRecord(Base):

@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "account_id": "123456789012",
+  "partition": "aws",
+  "region": "us-east-1",
+  "source_revision": "1111111111111111111111111111111111111111",
+  "release_evidence_ids": [
+    "github-run:123456789"
+  ],
+  "image_reference": "123456789012.dkr.ecr.us-east-1.amazonaws.com/axonllm/standalone@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "platform": "linux/amd64",
+  "providers": [
+    "anthropic",
+    "bedrock"
+  ],
+  "provider_secrets": [
+    {
+      "name": "ANTHROPIC_API_KEY",
+      "value_from": "arn:aws:secretsmanager:us-east-1:123456789012:secret:axonllm/providers-AbCd12:ANTHROPIC_API_KEY::"
+    }
+  ],
+  "task": {
+    "family": "axonllm-standalone",
+    "service_name": "axonllm-standalone",
+    "cpu": 1024,
+    "memory_mib": 2048,
+    "desired_count": 2,
+    "execution_role_arn": "arn:aws:iam::123456789012:role/AxonLLMStandaloneExecution",
+    "task_role_arn": "arn:aws:iam::123456789012:role/AxonLLMStandaloneTask",
+    "log_group_name": "/axonllm/standalone",
+    "log_group_arn": "arn:aws:logs:us-east-1:123456789012:log-group:/axonllm/standalone"
+  },
+  "network": {
+    "cluster_arn": "arn:aws:ecs:us-east-1:123456789012:cluster/customer-production",
+    "subnet_ids": [
+      "subnet-0123456789abcdef0",
+      "subnet-0fedcba9876543210"
+    ],
+    "security_group_ids": [
+      "sg-0123456789abcdef0"
+    ],
+    "target_group_arn": "arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/axonllm/1111111111111111",
+    "target_type": "ip",
+    "health_check_path": "/ready",
+    "assign_public_ip": false
+  },
+  "state": {
+    "table_name": "axonllm-state",
+    "data_key_arn": "arn:aws:kms:us-east-1:123456789012:key/11111111-2222-3333-4444-555555555555",
+    "routing_signing_key_arn": "arn:aws:kms:us-east-1:123456789012:key/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+  },
+  "identity": {
+    "issuer": "https://id.example.com",
+    "audience": "axonllm-production",
+    "tenant_claim": "tenant_id",
+    "project_claim": "project_id"
+  }
+}

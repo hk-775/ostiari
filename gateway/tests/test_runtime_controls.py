@@ -87,25 +87,41 @@ def test_full_config_preserves_omitted_broker_state_and_clears_explicit_empty():
         assert policy.blocked_providers == set()
 
 
-class _Registry:
-    def __init__(self) -> None:
-        self.models = {"old": object()}
+def _runtime_router(config: dict):
+    from src.gateway.model_registry import ModelRegistry
+    from src.gateway.routing_config import RoutingConfigSnapshot
 
-    def validate(self, config):
-        return []
+    registry = ModelRegistry.from_config(config)
 
-    def _parse_entry(self, entry):
-        return dict(entry)
+    class _EmbeddedRouter:
+        _runtime = SimpleNamespace(
+            router=SimpleNamespace(
+                model_registry=registry,
+                available_providers=None,
+            )
+        )
+
+        def config_snapshot(self):
+            return RoutingConfigSnapshot.from_registry(registry)
+
+        def apply_snapshot(self, snapshot):
+            snapshot.apply(registry)
+
+    return _EmbeddedRouter(), registry
 
 
 def test_axon_registry_is_replaced_at_runtime():
-    registry = _Registry()
+    embedded, registry = _runtime_router({
+        "models": [{
+            "name": "old",
+            "description": "old",
+            "providers": [{"provider": "openai", "model_id": "old"}],
+        }],
+    })
     axon = AxonRouter()
     axon._built = True
     axon._available = True
-    axon._agent = SimpleNamespace(
-        router=SimpleNamespace(model_registry=registry, available_providers=None)
-    )
+    axon._router = embedded
     catalog = {
         "models": [{
             "name": "virtual-model",
@@ -128,19 +144,17 @@ def test_axon_registry_is_replaced_at_runtime():
 
 
 def test_invalid_axon_registry_does_not_replace_last_applied_catalog():
-    class _InvalidRegistry(_Registry):
-        def validate(self, config):
-            if config["models"][0]["name"] == "invalid":
-                return [SimpleNamespace(field="models[0]", message="invalid")]
-            return []
-
-    registry = _InvalidRegistry()
+    embedded, registry = _runtime_router({
+        "models": [{
+            "name": "old",
+            "description": "old",
+            "providers": [{"provider": "openai", "model_id": "old"}],
+        }],
+    })
     axon = AxonRouter()
     axon._built = True
     axon._available = True
-    axon._agent = SimpleNamespace(
-        router=SimpleNamespace(model_registry=registry, available_providers=None)
-    )
+    axon._router = embedded
     valid = {
         "models": [{
             "name": "valid",
@@ -155,7 +169,7 @@ def test_invalid_axon_registry_does_not_replace_last_applied_catalog():
             "models": [{
                 "name": "invalid",
                 "description": "runtime",
-                "providers": [{"provider": "openai", "model_id": "gpt-4o"}],
+                "providers": [{"provider": "openai"}],
             }],
         })
 

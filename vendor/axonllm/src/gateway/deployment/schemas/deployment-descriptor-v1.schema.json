@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:axonllm:deployment-descriptor:v1",
+  "title": "AxonLLM deployment descriptor v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "descriptor_id",
+    "schema",
+    "schema_version",
+    "resolution",
+    "target",
+    "account_id",
+    "region",
+    "source_revision",
+    "network",
+    "images",
+    "resources",
+    "release_evidence_ids"
+  ],
+  "properties": {
+    "descriptor_id": {
+      "$ref": "#/$defs/sha256"
+    },
+    "schema": {
+      "const": "urn:axonllm:deployment-descriptor:v1"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "resolution": {
+      "enum": [
+        "planned",
+        "resolved"
+      ]
+    },
+    "target": {
+      "const": "agentcore"
+    },
+    "account_id": {
+      "type": "string",
+      "pattern": "^[0-9]{12}$"
+    },
+    "region": {
+      "type": "string",
+      "pattern": "^[a-z]{2,8}(?:-[a-z0-9]+)+-[0-9]+$"
+    },
+    "source_revision": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "network": {
+      "type": "object",
+      "minProperties": 1
+    },
+    "images": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/image"
+      }
+    },
+    "resources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/resource_binding"
+      }
+    },
+    "release_evidence_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}$"
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "reference"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "reference": {
+          "type": "string",
+          "pattern": "^[^\\s@]+@sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "resource_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "resource_type",
+        "identifier",
+        "ownership"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "resource_type": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9]+(?:::[A-Za-z0-9]+){1,2}$"
+        },
+        "identifier": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "pattern": "^[^\\r\\n]+$"
+        },
+        "ownership": {
+          "enum": [
+            "axonllm",
+            "customer"
+          ]
+        }
+      }
+    }
+  }
+}

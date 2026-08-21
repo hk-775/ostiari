@@ -195,7 +195,7 @@ graph TB
 - Python 3.11+ for the control-plane backend (`control-plane/backend/pyproject.toml`
   sets `requires-python = ">=3.11"`); the Guard library and the gateway both
   accept 3.10+. CI runs a single Python 3.11 / `ubuntu-latest` job.
-- Node.js 18+ (for the frontend)
+- Node.js 20+ (for the frontend)
 - Docker (optional, for containerized deployment)
 
 ---
@@ -216,9 +216,10 @@ deploy one gateway per agent (or per group of agents).
 git clone https://github.com/hk-775/ostiari.git
 cd ostiari
 
-# Install the core library, then the gateway package
+# Install the core library, bundled AxonLLM, then the gateway package
 pip install -e .
-pip install -e gateway/
+pip install -e "vendor/axonllm[server]"
+pip install -e "gateway[payments,redis]"
 
 # Start (empty — will be configured via control plane)
 ostiari-gateway --sidecar-id crm-agent --port 8421
@@ -326,7 +327,7 @@ curl http://localhost:8400/api/health
 
 ```bash
 cd control-plane/frontend
-npm install
+npm ci
 npm run dev
 ```
 
@@ -2140,7 +2141,7 @@ The gateway calculates LLM cost locally (no round-trip to control plane) and enf
 
 > **Where a budget alert goes.** The gateway subscribes to `on_budget_alert` at
 > startup and reports each crossing to the control plane at
-> `POST /api/quotas/alerts` using the gateway service credential. The org is
+> `POST /api/quotas/alerts` using its rotating workload OIDC credential. The org is
 > resolved from the reporting gateway's row, never from the payload.
 > `record_spend` is synchronous, so the report is handed to the
 > running event loop as a task; if there's no loop (a sync script or test), the
@@ -2406,7 +2407,7 @@ surfaces as a 500 rather than being passed through.
 | MCP remote: connection refused | MCP server not running | Start the MCP server, verify URL |
 | MCP stdio: command not found | Binary not in PATH | Install the MCP server binary in the gateway image |
 | Cost dashboard shows $0 | LLM Gateway not enabled on gateways | Enable `llm_gateway` module in gateway config |
-| Traces not appearing | Gateway not reporting to control plane, or `OSTIARI_INGEST_KEY` mismatch | Verify gateway knows the control plane URL; if ingest auth is on, both sides need the same key (ingest is *required* in production) |
+| Traces not appearing | Gateway is not reporting, its workload token cannot be refreshed, or its identity is not bound to the named gateway | Verify the control-plane URL, workload issuer/audience, per-gateway OAuth client or projected token file, and the gateway registration response. Production rejects legacy shared ingest keys. |
 | Traces vanished after a restart | The database migration was not applied or the application is pointed at a different database | Run `alembic upgrade head`, verify `DATABASE_URL`, and confirm the `trace_records` table is populated |
 | Traces missing /invoke tool calls | Old gateway version | Update gateway — trace reporter in executor is now automatic |
 | Experiment results empty | Not enough time elapsed | Wait for traffic to accumulate, check period_days |
@@ -2432,7 +2433,7 @@ These features are already built and ready to use:
 ### LLM Gateway Module
 
 Enable in the gateway config to get:
-- **Smart model routing** — TaskClassifier picks the best model for each prompt (code → Sonnet, simple QA → Haiku)
+- **Smart model routing** — the embedded Axon router picks a healthy, policy-allowed model for each prompt
 - **Fallback chains** — if primary model fails, auto-retry with next model
 - **PII redaction** — strips emails, SSNs, credit cards before LLM sees them (reversible)
 - **Prompt injection detection** — blocks suspicious prompts

@@ -1,4 +1,4 @@
-name: Publish to PyPI
+name: Publish Ostiari release set
 
 on:
   release:
@@ -17,18 +17,66 @@ jobs:
     runs-on: ubuntu-latest
     environment: pypi
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
-      - run: pip install hatchling build
-      - run: python -m build
+
+      - name: Build the complete Python release set
+        run: |
+          pip install build
+          mkdir -p release-dist
+          python -m build --outdir "$GITHUB_WORKSPACE/release-dist" .
+          python -m build --outdir "$GITHUB_WORKSPACE/release-dist" vendor/axonllm
+          python -m build --outdir "$GITHUB_WORKSPACE/release-dist" gateway
+          python -m build --outdir "$GITHUB_WORKSPACE/release-dist" control-plane/backend
+
+      - name: Verify release wheels outside the checkout
+        run: |
+          python -m venv /tmp/ostiari-release-verify
+          /tmp/ostiari-release-verify/bin/pip install --upgrade pip
+          /tmp/ostiari-release-verify/bin/pip install release-dist/*.whl
+          (
+            cd /tmp
+            PYTHONNOUSERSITE=1 \
+            /tmp/ostiari-release-verify/bin/python - <<'PY'
+          from importlib.metadata import version
+          from pathlib import Path
+          import sys
+
+          import axonllm
+          import control_plane
+          import ostiari
+          import ostiari_gateway
+          from ostiari_gateway.modules.llm_gateway.axon_router import AxonRouter
+
+          environment = Path(sys.prefix).resolve()
+          for module in (axonllm, control_plane, ostiari, ostiari_gateway):
+              source = Path(module.__file__).resolve()
+              assert environment in source.parents, (module.__name__, source)
+
+          assert version("axon-llm") == "0.3.1"
+          router = AxonRouter()
+          router.require()
+          assert router.supports_tools()
+          assert environment in Path(router.root).resolve().parents
+          print("complete release wheel set verified")
+          PY
+          )
+
       - name: Generate release SBOM
         run: |
-          pip install .
+          pip install release-dist/*.whl
           python tools/python_sbom.py python-sbom.cdx.json
-      - uses: pypa/gh-action-pypi-publish@release/v1
-      - name: Attach SBOM to the GitHub release
+
+      - name: Publish all Python distributions
+        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
+        with:
+          packages-dir: release-dist/
+
+      - name: Attach distributions and SBOM to the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${GITHUB_REF_NAME}" python-sbom.cdx.json --clobber
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" \
+            release-dist/* python-sbom.cdx.json --clobber

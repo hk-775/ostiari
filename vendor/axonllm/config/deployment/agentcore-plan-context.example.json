@@ -1,0 +1,33 @@
+{
+  "account_id": "123456789012",
+  "descriptor": {
+    "release_evidence_ids": [
+      "github-run:123456789"
+    ],
+    "resolution": "planned",
+    "resources": [
+      {
+        "identifier": "arn:aws:dynamodb:us-east-1:123456789012:table/axonllm-state",
+        "name": "primary-state-table",
+        "ownership": "axonllm",
+        "resource_type": "AWS::DynamoDB::Table"
+      }
+    ]
+  },
+  "images": {
+    "agentcore": "123456789012.dkr.ecr.us-east-1.amazonaws.com/axonllm-agentcore@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "schema_version": 1,
+  "source": {
+    "revision": "2222222222222222222222222222222222222222",
+    "sha256": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "stacks": [
+    {
+      "changes": [],
+      "name": "AxonLLMApplicationStateStack",
+      "stack_state_sha256": null,
+      "template_sha256": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    }
+  ]
+}

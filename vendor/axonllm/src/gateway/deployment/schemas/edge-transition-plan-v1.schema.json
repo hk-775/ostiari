@@ -1,0 +1,472 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:axonllm:edge-transition-plan:v1",
+  "title": "AxonLLM edge transition plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "plan_id",
+    "schema",
+    "schema_version",
+    "operation",
+    "mutating",
+    "approval_required",
+    "account_id",
+    "region",
+    "source_revision",
+    "deployment_plan_id",
+    "deployment_descriptor_id",
+    "production",
+    "serverless",
+    "change_set",
+    "qualification",
+    "rollback",
+    "gates"
+  ],
+  "properties": {
+    "plan_id": {
+      "$ref": "#/$defs/sha256"
+    },
+    "schema": {
+      "const": "urn:axonllm:edge-transition-plan:v1"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "operation": {
+      "enum": [
+        "prepare",
+        "cutover",
+        "rollback"
+      ]
+    },
+    "mutating": {
+      "const": false
+    },
+    "approval_required": {
+      "const": true
+    },
+    "account_id": {
+      "$ref": "#/$defs/account"
+    },
+    "region": {
+      "$ref": "#/$defs/region"
+    },
+    "source_revision": {
+      "$ref": "#/$defs/commit"
+    },
+    "deployment_plan_id": {
+      "$ref": "#/$defs/sha256"
+    },
+    "deployment_descriptor_id": {
+      "$ref": "#/$defs/sha256"
+    },
+    "production": {
+      "$ref": "#/$defs/production"
+    },
+    "serverless": {
+      "$ref": "#/$defs/serverless"
+    },
+    "change_set": {
+      "$ref": "#/$defs/change_set"
+    },
+    "qualification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "legacy_report_sha256",
+        "serverless_report_sha256",
+        "legacy_overall_status",
+        "serverless_overall_status",
+        "parity",
+        "supplemental_evidence"
+      ],
+      "properties": {
+        "legacy_report_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "serverless_report_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "legacy_overall_status": {
+          "const": "PASS"
+        },
+        "serverless_overall_status": {
+          "const": "PASS"
+        },
+        "parity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "canary_outcomes",
+            "load_contract"
+          ],
+          "properties": {
+            "status": {
+              "const": "PASS"
+            },
+            "canary_outcomes": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object"
+              }
+            },
+            "load_contract": {
+              "type": "object"
+            }
+          }
+        },
+        "supplemental_evidence": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        }
+      }
+    },
+    "rollback": {
+      "$ref": "#/$defs/rollback"
+    },
+    "gates": {
+      "type": "array",
+      "minItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "passed"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{2,127}$"
+          },
+          "passed": {
+            "const": true
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "account": {
+      "type": "string",
+      "pattern": "^[0-9]{12}$"
+    },
+    "region": {
+      "type": "string",
+      "pattern": "^[a-z]{2,8}(?:-[a-z0-9]+)+-[0-9]+$"
+    },
+    "commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "raw_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "stack_name": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9-]{0,127}$"
+    },
+    "hostname": {
+      "type": "string",
+      "pattern": "^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])$"
+    },
+    "production": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "partition",
+        "stack_name",
+        "stack_state_sha256",
+        "distribution_id",
+        "distribution_arn",
+        "hostname",
+        "web_acl_arn",
+        "browser_client_id",
+        "state_table_name",
+        "current_backend",
+        "desired_backend"
+      ],
+      "properties": {
+        "partition": {
+          "enum": [
+            "aws",
+            "aws-cn",
+            "aws-us-gov"
+          ]
+        },
+        "stack_name": {
+          "$ref": "#/$defs/stack_name"
+        },
+        "stack_state_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "distribution_id": {
+          "type": "string",
+          "pattern": "^[A-Z0-9]{13,32}$"
+        },
+        "distribution_arn": {
+          "type": "string",
+          "pattern": "^arn:(?:aws|aws-cn|aws-us-gov):cloudfront::[0-9]{12}:distribution/[A-Z0-9]{13,32}$"
+        },
+        "hostname": {
+          "$ref": "#/$defs/hostname"
+        },
+        "web_acl_arn": {
+          "type": "string",
+          "pattern": "^arn:(?:aws|aws-cn|aws-us-gov):wafv2:us-east-1:[0-9]{12}:global/webacl/[A-Za-z0-9_-]+/[0-9a-f-]{36}$"
+        },
+        "browser_client_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9]{1,128}$"
+        },
+        "state_table_name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]{3,255}$"
+        },
+        "current_backend": {
+          "enum": [
+            "fargate",
+            "serverless"
+          ]
+        },
+        "desired_backend": {
+          "enum": [
+            "fargate",
+            "serverless"
+          ]
+        }
+      }
+    },
+    "serverless": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stack_name",
+        "stack_state_sha256",
+        "workers_stack_name",
+        "workers_stack_state_sha256",
+        "qualification_url",
+        "distribution_id",
+        "browser_client_id",
+        "production_hostname",
+        "state_table_name",
+        "source_revision",
+        "control_api_sha256",
+        "static_assets_sha256",
+        "control_api_origin_domain_name",
+        "control_api_origin_path",
+        "origin_credential_secret_arn",
+        "static_bucket_regional_domain_name"
+      ],
+      "properties": {
+        "stack_name": {
+          "$ref": "#/$defs/stack_name"
+        },
+        "stack_state_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "workers_stack_name": {
+          "$ref": "#/$defs/stack_name"
+        },
+        "workers_stack_state_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "qualification_url": {
+          "type": "string",
+          "pattern": "^https://[a-z0-9.-]+$"
+        },
+        "distribution_id": {
+          "type": "string",
+          "pattern": "^[A-Z0-9]{13,32}$"
+        },
+        "browser_client_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9]{1,128}$"
+        },
+        "production_hostname": {
+          "$ref": "#/$defs/hostname"
+        },
+        "state_table_name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]{3,255}$"
+        },
+        "source_revision": {
+          "$ref": "#/$defs/commit"
+        },
+        "control_api_sha256": {
+          "$ref": "#/$defs/raw_sha256"
+        },
+        "static_assets_sha256": {
+          "$ref": "#/$defs/raw_sha256"
+        },
+        "control_api_origin_domain_name": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+\\.execute-api\\.[a-z0-9-]+\\.(?:amazonaws\\.com|amazonaws\\.com\\.cn)$"
+        },
+        "control_api_origin_path": {
+          "type": "string",
+          "pattern": "^/[A-Za-z0-9_-]{1,128}$"
+        },
+        "origin_credential_secret_arn": {
+          "type": "string",
+          "pattern": "^arn:(?:aws|aws-cn|aws-us-gov):secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]{1,512}$"
+        },
+        "static_bucket_regional_domain_name": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]\\.s3\\.[a-z0-9-]+\\.(?:amazonaws\\.com|amazonaws\\.com\\.cn)$"
+        }
+      }
+    },
+    "change_set": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "arn",
+        "status",
+        "execution_status",
+        "template_sha256",
+        "stack_state_sha256",
+        "changes"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z][-A-Za-z0-9]{0,127}$"
+        },
+        "arn": {
+          "type": "string",
+          "pattern": "^arn:(?:aws|aws-cn|aws-us-gov):cloudformation:[a-z0-9-]+:[0-9]{12}:changeSet/[A-Za-z0-9-]+/[0-9a-f-]{36}$"
+        },
+        "status": {
+          "const": "CREATE_COMPLETE"
+        },
+        "execution_status": {
+          "const": "AVAILABLE"
+        },
+        "template_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "stack_state_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "changes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/change"
+          }
+        }
+      }
+    },
+    "change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logical_id",
+        "resource_type",
+        "action",
+        "replacement"
+      ],
+      "properties": {
+        "logical_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9]{0,254}$"
+        },
+        "resource_type": {
+          "enum": [
+            "AWS::CloudFront::Distribution",
+            "AWS::CloudFront::Function",
+            "AWS::CloudFront::OriginAccessControl"
+          ]
+        },
+        "action": {
+          "enum": [
+            "Add",
+            "Modify"
+          ]
+        },
+        "replacement": {
+          "const": "False"
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "category",
+        "evidence_id",
+        "report_sha256",
+        "endpoint",
+        "status"
+      ],
+      "properties": {
+        "category": {
+          "enum": [
+            "audit",
+            "authentication",
+            "budgets",
+            "configuration",
+            "exports",
+            "scim",
+            "workers"
+          ]
+        },
+        "evidence_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}$"
+        },
+        "report_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "endpoint": {
+          "type": "string",
+          "pattern": "^https://[a-z0-9.-]+$"
+        },
+        "status": {
+          "const": "PASS"
+        }
+      }
+    },
+    "rollback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "retain_fargate",
+        "window_hours",
+        "not_before",
+        "previous_parameters_sha256"
+      ],
+      "properties": {
+        "retain_fargate": {
+          "const": true
+        },
+        "window_hours": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 168
+        },
+        "not_before": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "previous_parameters_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    }
+  }
+}

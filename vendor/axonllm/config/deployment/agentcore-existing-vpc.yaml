@@ -1,0 +1,30 @@
+schema_version: 1
+target: agentcore
+deployment_profile: production
+region: us-east-1
+
+network:
+  mode: existing
+  vpc_id: vpc-0123456789abcdef0
+  private_subnet_ids:
+    - subnet-0123456789abcdef0
+    - subnet-0fedcba9876543210
+  security_group_ids: []
+  egress:
+    mode: existing-egress
+    approved_https_prefix_list_id: pl-0123456789abcdef0
+
+control_plane:
+  enabled: true
+  access: public-authenticated
+  hostname:
+    mode: generated
+
+identity:
+  mode: managed-cognito
+
+runtime:
+  state: active
+  providers:
+    - bedrock
+    - anthropic

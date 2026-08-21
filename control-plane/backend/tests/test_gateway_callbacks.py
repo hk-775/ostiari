@@ -58,6 +58,7 @@ def test_production_callback_accepts_allowed_destination(monkeypatch):
 async def test_machine_registration_rejects_unadvertised_production_callback(
     client,
     monkeypatch,
+    workload_signer,
 ):
     monkeypatch.setenv("OSTIARI_ENV", "production")
     monkeypatch.setenv("OSTIARI_TENANCY_MODE", "single")
@@ -65,6 +66,7 @@ async def test_machine_registration_rejects_unadvertised_production_callback(
     response = await client.post(
         "/api/gateways/gw/register",
         json={"org_id": "production-org"},
+        headers=workload_signer("gw", tenant_id="production-org"),
     )
     assert response.status_code == 422
 

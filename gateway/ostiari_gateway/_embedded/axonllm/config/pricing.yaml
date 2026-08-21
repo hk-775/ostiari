@@ -1,0 +1,352 @@
+# Token pricing per provider and model.
+# Costs are per 1,000 tokens.
+#
+# Keyed by provider name, then by the *provider-side* model_id from
+# models.yaml — the id sent to the provider, not the gateway's friendly name.
+# That is the key CostTracker.calculate_cost looks up, and a miss returns 0.00.
+# Development reports those gaps; production routing excludes the affected
+# mappings until this table contains a finite, non-zero usable rate.
+#
+# Sources, fetched 2026-07-30 unless noted:
+#   openai          developers.openai.com/api/docs/pricing
+#   anthropic       platform.claude.com/docs/en/about-claude/pricing
+#   google_ai       ai.google.dev/gemini-api/docs/pricing
+#   groq            groq.com/pricing
+#   ai21            ai21.com/pricing
+#   fireworks       fireworks.ai/models/fireworks/<model> (per-model, not the
+#                   aggregate /pricing page — that one covers embeddings only)
+#   bedrock         AWS Price List API, us-east-1, on-demand standard tier
+#   bedrock-mantle  same, Mantle SKUs (see the note on that section)
+#   azure_openai    prices.azure.com/api/retail/prices, East US (2026-08-11)
+#   vertex_ai       cloud.google.com/vertex-ai/generative-ai/pricing
+#                   (2026-08-11)
+#   cohere          cohere.com/pricing and docs.cohere.com/docs/models
+#                   (2026-08-11)
+#
+# Rates are the standard on-demand, non-batch, non-cached, short-context tier.
+# Where a provider charges more above a context threshold, the sub-threshold
+# rate is used and the premium noted — CostTracker prices a request from token
+# counts alone and has no context tier to switch on, so encoding the higher
+# rate would overcharge every ordinary request.
+
+providers:
+  openai:
+    gpt-4:
+      prompt_token_cost: 0.03
+      completion_token_cost: 0.06
+    gpt-3.5-turbo:
+      prompt_token_cost: 0.001
+      completion_token_cost: 0.002
+    gpt-4o:
+      prompt_token_cost: 0.0025
+      completion_token_cost: 0.01
+    gpt-4o-mini:
+      prompt_token_cost: 0.00015
+      completion_token_cost: 0.0006
+    o4-mini:
+      prompt_token_cost: 0.0011
+      completion_token_cost: 0.0044
+    gpt-4.1:
+      prompt_token_cost: 0.002
+      completion_token_cost: 0.008
+      cached_token_cost: 0.0005
+    o3:
+      prompt_token_cost: 0.002
+      completion_token_cost: 0.008
+      cached_token_cost: 0.0005
+    # Served over /v1/responses, not Chat Completions. Priced at the
+    # <272K-context tier; OpenAI publishes no cached-input rate for it.
+    gpt-5.5-pro:
+      prompt_token_cost: 0.03
+      completion_token_cost: 0.18
+
+  # Azure's provider-side id is a deployment name, not a model SKU. This rate
+  # is valid only for an East US deployment named gpt-4o that targets Global
+  # Standard GPT-4o 2024-08-06. Microsoft's Retail Prices API reports
+  # gpt-4o-0806-Inp-glbl / Outp-glbl at $2.50 / $10.00 per MTok and cached
+  # input at $1.25 per MTok. Regional, Data Zone, provisioned, other-version,
+  # and custom-named deployments must use tenant-specific mappings and rates.
+  azure_openai:
+    gpt-4o:
+      prompt_token_cost: 0.0025
+      completion_token_cost: 0.01
+      cached_token_cost: 0.00125
+
+  anthropic:
+    claude-3:
+      prompt_token_cost: 0.003
+      completion_token_cost: 0.015
+      cached_token_cost: 0.0003
+      cache_creation_token_cost: 0.00375
+    claude-sonnet-4-20250514:
+      prompt_token_cost: 0.003
+      completion_token_cost: 0.015
+      cached_token_cost: 0.0003
+      cache_creation_token_cost: 0.00375
+    claude-sonnet-4-6:
+      prompt_token_cost: 0.003
+      completion_token_cost: 0.015
+      cached_token_cost: 0.0003
+      cache_creation_token_cost: 0.00375
+    claude-3-5-haiku-latest:
+      prompt_token_cost: 0.0008
+      completion_token_cost: 0.004
+      cached_token_cost: 0.00008
+      cache_creation_token_cost: 0.001
+    claude-opus-4-20250514:
+      prompt_token_cost: 0.015
+      completion_token_cost: 0.075
+      cached_token_cost: 0.0015
+      cache_creation_token_cost: 0.01875
+    # Opus 4.5 and later are $5/$25 per MTok — a third of Opus 4.1 and earlier.
+    # This entry read 0.015/0.075, the retired Opus 4.1 rate, so every request
+    # to Opus 4.8 was billed at 3x. Wrong in the opposite direction to an
+    # unpriced model, and invisible for the same reason: nothing cross-checks a
+    # rate that parses.
+    claude-opus-4-8:
+      prompt_token_cost: 0.005
+      completion_token_cost: 0.025
+      cached_token_cost: 0.0005
+      cache_creation_token_cost: 0.00625
+    claude-haiku-4-5-20251001:
+      prompt_token_cost: 0.001
+      completion_token_cost: 0.005
+      cached_token_cost: 0.0001
+      cache_creation_token_cost: 0.00125
+
+  bedrock:
+    claude-3:
+      prompt_token_cost: 0.003
+      completion_token_cost: 0.015
+      cached_token_cost: 0.0003
+      cache_creation_token_cost: 0.00375
+    us.anthropic.claude-opus-4-6-v1:
+      prompt_token_cost: 0.015
+      completion_token_cost: 0.075
+      cached_token_cost: 0.0015
+      cache_creation_token_cost: 0.01875
+    # Regional endpoints carry a 10% premium over global on Claude 4.5 and
+    # later, and the us. prefix is a regional inference profile — so these use
+    # the regional rate the Price List reports for us-east-1 ($1.10/$5.50 per
+    # MTok for Haiku 4.5, against $1.00/$5.00 global).
+    us.anthropic.claude-haiku-4-5-20251001-v1:0:
+      prompt_token_cost: 0.0011
+      completion_token_cost: 0.0055
+      cached_token_cost: 0.00011
+      cache_creation_token_cost: 0.001375
+    us.anthropic.claude-sonnet-4-6:
+      prompt_token_cost: 0.0033
+      completion_token_cost: 0.0165
+      cached_token_cost: 0.00033
+      cache_creation_token_cost: 0.004125
+    us.amazon.nova-pro-v1:0:
+      prompt_token_cost: 0.0008
+      completion_token_cost: 0.0032
+    us.amazon.nova-lite-v1:0:
+      prompt_token_cost: 0.00006
+      completion_token_cost: 0.00024
+    us.amazon.nova-micro-v1:0:
+      prompt_token_cost: 0.000035
+      completion_token_cost: 0.00014
+    us.deepseek.r1-v1:0:
+      prompt_token_cost: 0.00135
+      completion_token_cost: 0.00540
+    us.meta.llama3-3-70b-instruct-v1:0:
+      prompt_token_cost: 0.00072
+      completion_token_cost: 0.00072
+    us.meta.llama4-maverick-17b-instruct-v1:0:
+      prompt_token_cost: 0.00024
+      completion_token_cost: 0.00097
+    us.meta.llama4-scout-17b-instruct-v1:0:
+      prompt_token_cost: 0.00017
+      completion_token_cost: 0.00066
+    # 2402 is the original Mistral Large, still listed in us-east-1 at $4/$12
+    # per MTok — 2x the 2407 snapshot below, not a transcription error. Both are
+    # kept: models.yaml pins 2402, and 2407 is the rate to reuse if it moves.
+    mistral.mistral-large-2402-v1:0:
+      prompt_token_cost: 0.004
+      completion_token_cost: 0.012
+    mistral.mistral-large-2407-v1:0:
+      prompt_token_cost: 0.002
+      completion_token_cost: 0.006
+    us.mistral.pixtral-large-2502-v1:0:
+      prompt_token_cost: 0.002
+      completion_token_cost: 0.006
+    openai.gpt-oss-120b-1:0:
+      prompt_token_cost: 0.00015
+      completion_token_cost: 0.0006
+    qwen.qwen3-235b-a22b-2507-v1:0:
+      prompt_token_cost: 0.00022
+      completion_token_cost: 0.00088
+    qwen.qwen3-vl-235b-a22b:
+      prompt_token_cost: 0.00053
+      completion_token_cost: 0.00266
+    # AI21 Jamba 1.5 on-demand rates in us-east-1. These are separate from the
+    # direct AI21 Jamba 1.6 keys below because billing uses the exact provider
+    # and provider-side model id.
+    ai21.jamba-1-5-mini-v1:0:
+      prompt_token_cost: 0.0002
+      completion_token_cost: 0.0004
+    ai21.jamba-1-5-large-v1:0:
+      prompt_token_cost: 0.002
+      completion_token_cost: 0.008
+
+  # Mantle SKUs are published separately in the Price List
+  # (…-mantle-input-tokens-standard) but priced identically to the corresponding
+  # on-demand Bedrock SKU: of the 66 model/direction pairs where us-east-1 lists
+  # both, all 66 agree to the cent. So a Mantle rate is the Bedrock rate, and
+  # the overlap below is expected rather than duplication to collapse — these
+  # are separate lookup keys because the provider name differs.
+  bedrock-mantle:
+    anthropic.claude-haiku-4-5:
+      prompt_token_cost: 0.0011
+      completion_token_cost: 0.0055
+      cached_token_cost: 0.00011
+      cache_creation_token_cost: 0.001375
+    anthropic.claude-sonnet-5:
+      prompt_token_cost: 0.0022
+      completion_token_cost: 0.011
+      cached_token_cost: 0.00022
+      cache_creation_token_cost: 0.00275
+    anthropic.claude-opus-4-8:
+      prompt_token_cost: 0.0055
+      completion_token_cost: 0.0275
+      cached_token_cost: 0.00055
+      cache_creation_token_cost: 0.006875
+    deepseek.v3.1:
+      prompt_token_cost: 0.00058
+      completion_token_cost: 0.00168
+    qwen.qwen3-32b:
+      prompt_token_cost: 0.00015
+      completion_token_cost: 0.0006
+    openai.gpt-oss-120b:
+      prompt_token_cost: 0.00015
+      completion_token_cost: 0.0006
+    # openai.gpt-5.4, -5.6-luna and -5.6-terra appear in the Price List only in
+    # us-gov-east-1 / us-gov-west-1, at rates carrying the GovCloud premium.
+    # openai.gpt-5.5 and openai.gpt-5.6-sol are absent in every region. Left
+    # unpriced rather than filled from GovCloud or inferred from a sibling.
+    # Production routing excludes them until an operator supplies verified or
+    # contracted rates through AXON_PRICING_CONFIG.
+
+  vertex_ai:
+    gemini-pro:
+      prompt_token_cost: 0.00025
+      completion_token_cost: 0.0005
+    gemini-2.5-pro:
+      prompt_token_cost: 0.00125
+      completion_token_cost: 0.01
+      cached_token_cost: 0.000125
+    # Standard on-demand text/image/video input and text output. Audio input
+    # has a separate $1/MTok rate that the current token accounting cannot
+    # distinguish, so this launch mapping is for non-audio requests.
+    gemini-2.5-flash:
+      prompt_token_cost: 0.0003
+      completion_token_cost: 0.0025
+      cached_token_cost: 0.00003
+    gemini-2.0-flash:
+      prompt_token_cost: 0.0001
+      completion_token_cost: 0.0004
+
+  google_ai:
+    gemini-3.5-flash:
+      prompt_token_cost: 0.0015
+      completion_token_cost: 0.009
+    # Above 200k input tokens this rises to $4/$18 per MTok. The sub-threshold
+    # rate is used; see the header note on context tiers.
+    gemini-3.1-pro-preview:
+      prompt_token_cost: 0.002
+      completion_token_cost: 0.012
+    # Standard <=200k-token tier; larger contexts use Google's higher tier.
+    gemini-2.5-pro:
+      prompt_token_cost: 0.00125
+      completion_token_cost: 0.01
+
+  groq:
+    llama-3.1-8b-instant:
+      prompt_token_cost: 0.00005
+      completion_token_cost: 0.00008
+    llama-3.3-70b-versatile:
+      prompt_token_cost: 0.00059
+      completion_token_cost: 0.00079
+
+  # Cohere's pricing page lists Command R at $0.15/$0.60 per MTok and Command
+  # R+ 08-2024 at $2.50/$10.00. The model documentation marks these versioned
+  # ids live and the old unversioned aliases deprecated.
+  cohere:
+    command-r-08-2024:
+      prompt_token_cost: 0.00015
+      completion_token_cost: 0.0006
+    command-r-plus-08-2024:
+      prompt_token_cost: 0.0025
+      completion_token_cost: 0.01
+
+  ai21:
+    # AI21 publishes one rate per Jamba tier rather than per point release, so
+    # the 1.6 ids carry the listed Jamba Mini / Jamba Large prices.
+    jamba-1.6-mini:
+      prompt_token_cost: 0.0002
+      completion_token_cost: 0.0004
+    jamba-1.6-large:
+      prompt_token_cost: 0.002
+      completion_token_cost: 0.008
+
+  # Rates from xAI's own GET /v1/language-models, which reports prices in
+  # hundred-thousandths of a cent per token — 12500 is $1.25 per MTok. Calibrated
+  # against docs.x.ai/docs/models, which prints grok-4.3 at $1.25/$2.50 and
+  # grok-4.5 at $2.00/$6.00, so the divisor is 10,000.
+  #
+  # Both rates double above 200k input tokens (grok-4.3 → $2.50/$5.00). The
+  # sub-threshold rate is used; see the header note on context tiers.
+  xai:
+    grok-4.3:
+      prompt_token_cost: 0.00125
+      completion_token_cost: 0.0025
+      cached_token_cost: 0.0002
+    grok-4.5:
+      prompt_token_cost: 0.002
+      completion_token_cost: 0.006
+      cached_token_cost: 0.0003
+
+  # Rates from the `pricing` block on each model in Together's GET /v1/models,
+  # in USD per 1M tokens. Only serverless-servable ids are listed — see the note
+  # in models.yaml on why the rest cannot be used regardless of price.
+  together:
+    meta-llama/Llama-3.3-70B-Instruct-Turbo:
+      prompt_token_cost: 0.00104
+      completion_token_cost: 0.00104
+    deepseek-ai/DeepSeek-V4-Pro:
+      prompt_token_cost: 0.00174
+      completion_token_cost: 0.00348
+      cached_token_cost: 0.0002
+    Qwen/Qwen3.5-9B:
+      prompt_token_cost: 0.00017
+      completion_token_cost: 0.00025
+    openai/gpt-oss-120b:
+      prompt_token_cost: 0.00015
+      completion_token_cost: 0.0006
+
+  # Rates from each model's own page on fireworks.ai/models, in USD per 1M
+  # tokens. An earlier note here said Fireworks published no per-model price
+  # table and left both mappings unpriced on that basis; that was wrong. The
+  # aggregate /pricing page does only show tiers for embeddings, but each
+  # serverless text model carries its own input/cached/output rate, which is
+  # where these come from.
+  #
+  # Both keys are ids GET /inference/v1/models returns (checked 2026-07-30), so
+  # the lookup they have to match is confirmed, not assumed. That matters more
+  # here than for other providers: the key is the full account-qualified path,
+  # and a near-miss bills $0.00 silently rather than erroring.
+  fireworks:
+    accounts/fireworks/models/deepseek-v4-pro:
+      prompt_token_cost: 0.00174
+      completion_token_cost: 0.00348
+      cached_token_cost: 0.000145
+    # $0.15/$0.60, matching Bedrock and Together to the cent for the same
+    # open-weight model. The agreement is the reason the old note gave for
+    # *not* recording a third value; it is in fact each provider publishing
+    # the same rate, and Fireworks publishes its own cached-input rate too.
+    accounts/fireworks/models/gpt-oss-120b:
+      prompt_token_cost: 0.00015
+      completion_token_cost: 0.0006
+      cached_token_cost: 0.000014

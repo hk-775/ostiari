@@ -4,11 +4,19 @@ Thank you for your interest in contributing to Ostiari.
 
 ## Development Setup
 
+Use Python 3.11+ and Node.js 24.16.0 for the complete platform. The root Guard
+library retains Python 3.10 compatibility.
+
 ```bash
 git clone https://github.com/hk-775/ostiari.git
 cd ostiari
-pip install -e ".[dev]"
+make install
 ```
+
+`make install` installs the core package, the pinned MIT-0 AxonLLM snapshot
+under `vendor/axonllm`, the gateway, the control plane, and frontend
+dependencies. Use the individual editable-install commands from the Makefile
+only when developing one component in isolation.
 
 ## Running Tests
 
@@ -34,14 +42,15 @@ cd gateway && PYTHONPATH=. pytest tests/
 cd control-plane/backend && PYTHONPATH=. pytest tests/
 ```
 
-Two groups of gateway tests skip unless you opt in:
+One group of gateway tests skips unless you opt in:
 
 - **Redis-backed shared store** — set `OSTIARI_TEST_REDIS_URL` to a throwaway
   Redis. The tests call `flushdb`, so do **not** point them at anything you care
   about.
-- **AxonLLM routing** — the `@requires_axon` tests need AxonLLM installed and
-  `OSTIARI_AXON_ROOT` set. AxonLLM is a separate repo, so CI does not install it
-  and these skip there.
+AxonLLM routing tests are mandatory. CI installs the exact bundled release and
+constructs the real embedded router. If you update `vendor/axonllm`, also update
+`vendor/axonllm/UPSTREAM.md`, retain the upstream license/notices, and run the
+gateway and production-image checks.
 
 `make test` runs the suites the way CI does.
 

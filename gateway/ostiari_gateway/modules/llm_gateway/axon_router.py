@@ -1,24 +1,22 @@
-"""AxonLLM as Ostiari's embedded LLM router.
+"""AxonLLM as Ostiari's embedded LLM routing data plane.
 
-Ostiari governs (auth, injection, quota, trace, HITL) and delegates the *routing*
-of the actual model call to AxonLLM's in-process ``GatewayAgent`` — no extra
-network hop, one Python call. AxonLLM owns model/provider selection, health-aware
-fallback, cost tracking, smart routing, and ensemble; Ostiari owns everything
-around it.
+Ostiari governs identity, authorization, injection, quotas, tracing, HITL,
+durable usage, and lifecycle. It delegates model/provider selection,
+health-aware fallback, smart routing, and ensemble execution to AxonLLM's
+public in-process ``AsyncRouter`` API. No Axon server, admin surface, identity
+service, database, background worker, or extra network hop is constructed.
 
-``build_gateway_agent()`` (AxonLLM's own bootstrap) wires the whole router graph
-standalone — no AWS/Dynamo required (persistence auto-disables).
+The pinned AxonLLM 0.3.1 release exposes smart/ensemble configuration on the
+core router rather than the public constructor. Those two advanced modes are
+wired in one isolated compatibility helper; every request, configuration
+update, availability query, and shutdown uses the public embedded API.
 
-AxonLLM is an **optional** runtime dependency, but a load-bearing one: it is where
-routing governance and token cost tracking happen, so a gateway that quietly runs
-without it enforces less than it claims to while still returning 200s. It is a
-separate private repo and not on PyPI, so requiring it made it a deployment
-dependency of every gateway, CI runner, and contributor checkout — including the
-ones that only ever proxy tools. So ``require()`` is called at startup to *warn*,
-naming what is off, and ``/health`` reports ``llm_router`` for anything reading
-machine-side. ``OSTIARI_REQUIRE_AXON=1`` restores refuse-to-boot, which is the
-right setting in production. The direct-provider fallback in each caller remains
-for a *mid-flight* failure (one call, logged), and
+AxonLLM is bundled with Ostiari, but the LLM module remains optional. When the
+module is enabled, AxonLLM is load-bearing: it is where routing governance and
+token cost tracking happen, so production refuses to start or fall back to a
+direct provider path when the router is unavailable. Development keeps the
+explicit fallback for diagnostics. ``/health`` reports ``llm_router`` for
+machine-side verification, and
 ``OSTIARI_DISABLE_AXON_ROUTER=1`` remains for tests and for deliberately
 exercising that path.
 
@@ -70,6 +68,27 @@ _PROVIDER_ROUTE_PUBLIC_FIELDS = frozenset({
 })
 
 
+def governed_routing_required() -> bool:
+    """Whether bypassing AxonLLM must fail closed.
+
+    Production always requires governed routing when the LLM module is active.
+    Development can opt into the same contract with ``OSTIARI_REQUIRE_AXON``.
+    """
+    import os
+
+    production = os.environ.get("OSTIARI_ENV", "").strip().lower() in {
+        "production",
+        "prod",
+    }
+    explicit = os.environ.get("OSTIARI_REQUIRE_AXON", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    return production or explicit
+
+
 class AxonResult:
     """Normalized result of an AxonLLM-routed call."""
 
@@ -87,10 +106,10 @@ class AxonResult:
 
 
 class AxonRouter:
-    """Thin adapter over AxonLLM's GatewayAgent for in-process routed calls."""
+    """Ostiari-owned adapter over AxonLLM's public embedded router."""
 
     def __init__(self, broker_policy: Any = None) -> None:
-        self._agent: Any = None
+        self._router: Any = None
         self._built = False
         self._available = False
         self._error: str = ""
@@ -134,11 +153,8 @@ class AxonRouter:
         while enforcing none of that — a silent downgrade of the guarantee Ostiari
         exists to make.
 
-        The caller decides what to do about it. At startup ``_check_axon`` logs
-        this as a warning and continues, because AxonLLM is a separate private
-        repo and a hard requirement makes it a deployment dependency of every
-        gateway — including ones that never make an LLM call. Set
-        ``OSTIARI_REQUIRE_AXON=1`` to have that warning refuse to start instead.
+        Tool-only gateways never construct this router. When the LLM module is
+        active, production startup treats this failure as fatal.
         """
         self._ensure()
         if self._available:
@@ -152,10 +168,9 @@ class AxonRouter:
             )
         raise RuntimeError(
             f"AxonLLM could not be embedded ({self._error or 'unknown error'}): routing "
-            "governance and token cost tracking happen in AxonLLM, so LLM calls return "
-            "200s while enforcing neither. Install AxonLLM "
-            "(pip install -e /path/to/AxonLLM) or point OSTIARI_AXON_ROOT at its "
-            "checkout."
+            "governance and token cost tracking happen in AxonLLM. Reinstall the "
+            "bundled vendor/axonllm package or point OSTIARI_AXON_ROOT at a "
+            "compatible AxonLLM config root."
         )
 
     def _ensure(self) -> None:
@@ -175,32 +190,44 @@ class AxonRouter:
         try:
             axon_root = _prepare_axon_path()
             self._root = axon_root
+            if axon_root is None:
+                raise FileNotFoundError(
+                    "AxonLLM config root was not found"
+                )
 
-            from src.gateway.bootstrap import build_gateway_agent
+            from axonllm import build_router
 
-            # AxonLLM resolves its config files relative to cwd (its own CLI
-            # chdir's to the repo root). Do the same transiently while building,
-            # then restore cwd.
-            prev = os.getcwd()
-            try:
-                if axon_root:
-                    os.chdir(axon_root)
-                self._agent = build_gateway_agent()
-            finally:
-                os.chdir(prev)
+            paths = _router_config_paths(axon_root)
+            self._router = build_router(
+                models=paths["models"],
+                providers=paths["providers"],
+                pricing=paths["pricing"],
+                bedrock_region=(
+                    os.environ.get("AXON_BEDROCK_REGION")
+                    or os.environ.get("AWS_REGION")
+                    or os.environ.get("AWS_DEFAULT_REGION")
+                    or "us-east-1"
+                ),
+                require_priced_mappings=governed_routing_required(),
+            )
+            _configure_advanced_modes(self._router, axon_root)
 
             self._available = True
             self._error = ""
             self._apply_model_registry()
             self._apply_provider_routes()
-            log.info("AxonLLM router embedded — GatewayAgent routing active (root=%s)", axon_root)
-        except Exception as e:  # noqa: BLE001 — any failure => unavailable, degrade
-            self._agent = None
+            log.info(
+                "AxonLLM router embedded through public AsyncRouter API "
+                "(root=%s)",
+                axon_root,
+            )
+        except Exception as e:  # noqa: BLE001 — any failure => unavailable
+            self._router = None
             self._available = False
             # Keep the class name: "No module named 'src'" and a config
             # KeyError need different fixes, and the message alone hides which.
             self._error = f"{type(e).__name__}: {e}"
-            log.warning("AxonLLM router unavailable (%s) — falling back to direct provider calls", e)
+            log.warning("AxonLLM router unavailable (%s)", e)
 
     def configure_model_registry(self, config: dict[str, Any]) -> dict[str, Any]:
         """Replace AxonLLM's in-process model registry with a validated catalog."""
@@ -280,9 +307,8 @@ class AxonRouter:
     def provider_route_snapshot(self) -> list[dict[str, Any]]:
         """Return route configuration and health without credential values."""
         self._ensure()
-        if self._available and self._agent is not None:
-            factory = getattr(self._agent, "provider_fn_factory", None)
-            snapshot = getattr(factory, "route_snapshot", None)
+        if self._available and self._router is not None:
+            snapshot = getattr(self._router, "route_snapshot", None)
             if callable(snapshot):
                 return snapshot()
         return [
@@ -302,22 +328,20 @@ class AxonRouter:
         if (
             self._provider_routes_config is None
             or not self._available
-            or self._agent is None
+            or self._router is None
         ):
             return {
                 "routes": len(self._provider_routes_config or []),
                 "providers": 0,
             }
-        factory = getattr(self._agent, "provider_fn_factory", None)
-        configure = getattr(factory, "configure_routes", None)
+        configure = getattr(self._router, "configure_routes", None)
         if not callable(configure):
             raise RuntimeError(
                 "embedded AxonLLM does not support provider route pools"
             )
         result = configure(deepcopy(self._provider_routes_config))
-        router = getattr(self._agent, "router", None)
-        if router is not None:
-            router.available_providers = factory.available_providers
+        core = self._core_router()
+        if core is not None:
             self._base_available_providers = None
             self._broker_router_id = None
             self._apply_broker_policy()
@@ -332,32 +356,27 @@ class AxonRouter:
         if (
             self._model_registry_config is None
             or not self._available
-            or self._agent is None
+            or self._router is None
         ):
             return
-        router = getattr(self._agent, "router", None)
-        registry = getattr(router, "model_registry", None)
-        if registry is None:
-            raise RuntimeError("AxonLLM router has no model registry")
-
-        errors = registry.validate(self._model_registry_config)
-        if errors:
-            details = "; ".join(f"{error.field}: {error.message}" for error in errors)
-            raise ValueError(f"invalid model registry: {details}")
-
-        parsed = {
-            entry["name"]: registry._parse_entry(entry)
-            for entry in self._model_registry_config["models"]
-        }
-        registry.models = parsed
+        current = self._router.config_snapshot()
+        snapshot = type(current).from_config(
+            self._model_registry_config,
+            revision=current.revision + 1,
+        )
+        self._router.apply_snapshot(snapshot)
         # The broker filter caches the router's original provider set. Rebuild
         # that baseline after a catalog change so newly-added mappings can route.
-        if self._broker_router_id == id(router):
-            router.available_providers = self._base_available_providers
+        core = self._core_router()
+        if core is not None and self._broker_router_id == id(core):
+            core.available_providers = self._base_available_providers
         self._base_available_providers = None
         self._broker_router_id = None
         self._apply_broker_policy()
-        log.info("AxonLLM model registry applied: %d models", len(parsed))
+        log.info(
+            "AxonLLM model registry applied: %d models",
+            len(self._model_registry_config["models"]),
+        )
 
     def knows_model(self, model: str) -> bool:
         """Whether AxonLLM's registry recognizes this model name.
@@ -371,8 +390,7 @@ class AxonRouter:
             return False
         self._ensure()
         try:
-            reg = getattr(getattr(self._agent, "router", None), "model_registry", None)
-            return bool(reg and model in reg.models)
+            return bool(self._router and self._router.knows_model(model))
         except Exception:  # noqa: BLE001
             return False
 
@@ -381,8 +399,7 @@ class AxonRouter:
         self._ensure()
         self._apply_broker_policy()
         try:
-            router = getattr(self._agent, "router", None)
-            return bool(router and router.is_model_available(model))
+            return bool(self._router and self._router.model_available(model))
         except Exception:  # noqa: BLE001
             return False
 
@@ -391,28 +408,22 @@ class AxonRouter:
         self._ensure()
         self._apply_broker_policy()
         try:
-            router = getattr(self._agent, "router", None)
-            registry = getattr(router, "model_registry", None)
-            return bool(
-                router
-                and registry
-                and any(router.is_model_available(name) for name in registry.models)
-            )
+            return bool(self._router and self._router.has_available_models())
         except Exception:  # noqa: BLE001
             return False
 
     def _apply_broker_policy(self) -> None:
         """Intersect Axon's configured providers with funded pool availability."""
-        if not self._available or self._agent is None or self._broker_policy is None:
+        if not self._available or self._router is None or self._broker_policy is None:
             return
-        router = getattr(self._agent, "router", None)
-        registry = getattr(router, "model_registry", None)
-        if router is None or registry is None:
+        core = self._core_router()
+        registry = getattr(core, "model_registry", None)
+        if core is None or registry is None:
             return
 
-        router_id = id(router)
+        router_id = id(core)
         if self._broker_router_id != router_id:
-            current = getattr(router, "available_providers", None)
+            current = getattr(core, "available_providers", None)
             self._base_available_providers = (
                 frozenset(current) if current is not None else None
             )
@@ -420,7 +431,7 @@ class AxonRouter:
 
         blocked = self._broker_policy.blocked_providers
         if not blocked:
-            router.available_providers = self._base_available_providers
+            core.available_providers = self._base_available_providers
             return
 
         all_providers = {
@@ -433,11 +444,18 @@ class AxonRouter:
             if self._base_available_providers is not None
             else all_providers
         )
-        router.available_providers = frozenset(
+        core.available_providers = frozenset(
             provider
             for provider in base
             if self._broker_policy.is_provider_available(provider)
         )
+
+    def _core_router(self) -> Any:
+        """Return Axon's documented compatibility alias for policy filtering."""
+        if self._router is None:
+            return None
+        runtime = getattr(self._router, "_runtime", None)
+        return getattr(runtime, "router", None)
 
     def supports_tools(self) -> bool:
         """Whether AxonLLM can carry tool specs through to the provider.
@@ -448,14 +466,13 @@ class AxonRouter:
         answers confidently that it has no such capability. It carries them now,
         translating into each provider's dialect.
 
-        Kept as a runtime probe because Ostiari doesn't pin an AxonLLM version: an
-        older checkout still returns False here and callers still degrade rather
-        than lose the caller's tools silently.
+        Ostiari vendors one exact release, but this probe keeps source checkouts
+        fail-closed if somebody replaces the bundled package incorrectly.
         """
         try:
             import dataclasses
 
-            from src.gateway.models import ChatCompletionRequest
+            from axonllm import ChatCompletionRequest
             return any(f.name == "tools" for f in dataclasses.fields(ChatCompletionRequest))
         except Exception:  # noqa: BLE001
             return False
@@ -467,7 +484,9 @@ class AxonRouter:
         model: str = "",
         max_tokens: int = 4096,
         temperature: float | None = None,
+        top_p: float | None = None,
         tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
         smart: bool = False,
         ensemble: str | bool = False,
         agent_id: str = "",
@@ -494,7 +513,7 @@ class AxonRouter:
         never could.
         """
         self._ensure()
-        if not self._available or self._agent is None:
+        if not self._available or self._router is None:
             raise RuntimeError("AxonLLM router not available")
         self._apply_broker_policy()
 
@@ -526,51 +545,98 @@ class AxonRouter:
                 msgs.append({"role": "system", "content": sys_text})
         msgs.extend(messages)
 
-        # Mode → model string / context flags per AxonLLM's detection contract.
-        req_model = model
-        ctx: dict[str, Any] = {"project_id": "default", "user_id": agent_id or "ostiari",
-                               "scopes": [], "session_id": session_id}
-        if ensemble:
-            req_model = "ensemble" if ensemble is True else f"ensemble:{ensemble}"
-        elif smart or not model:
-            ctx["smart_routing"] = True
-            req_model = ""  # empty model => smart auto-select
+        from axonllm import ChatCompletionRequest
 
-        request_data: dict[str, Any] = {
-            "model": req_model,
+        request = ChatCompletionRequest(
+            model=model,
+            messages=msgs,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            tools=tools,
+            tool_choice=tool_choice,
+            stream=False,
+        )
+        prompt = _last_user_text(msgs)
+        core = self._core_router()
+        if core is None:
+            raise RuntimeError("AxonLLM routing core is unavailable")
+
+        if ensemble:
+            preset_name = None if ensemble is True else str(ensemble)
+            config = getattr(core, "_ensemble_config", None)
+            preset = (
+                config.default_preset()
+                if preset_name is None
+                else config.get_preset(preset_name)
+            ) if config is not None else None
+            if preset is None:
+                raise RuntimeError(
+                    f"AxonLLM ensemble preset is unavailable: "
+                    f"{preset_name or 'default'}"
+                )
+            response, decision = await core.ensemble_route(
+                request,
+                self._router._runtime.provider_factory,
+                prompt,
+                preset,
+                project_id="default",
+                user_id=agent_id or "ostiari",
+                tenant_id="default",
+            )
+            return _to_public_result(
+                response,
+                routing={"mode": "ensemble", "decision": decision},
+            )
+
+        if smart or not model:
+            response, decision = await core.smart_route(
+                request,
+                self._router._runtime.provider_factory,
+                prompt,
+                project_id="default",
+                user_id=agent_id or "ostiari",
+                tenant_id="default",
+            )
+            return _to_public_result(
+                response,
+                routing={"mode": "smart", "decision": decision},
+            )
+
+        completion_args: dict[str, Any] = {
+            "model": model,
             "messages": msgs,
             "max_tokens": max_tokens,
+            "tools": tools,
             "stream": False,
         }
-        # Omitted entirely when None — see the docstring. A key present with value
-        # None is NOT equivalent: AxonLLM reads it with ``data.get("temperature")``,
-        # which returns None either way, but Mantle's paths test
-        # ``is not None`` on the parsed value, so only genuine absence keeps the
-        # parameter off the wire.
         if temperature is not None:
-            request_data["temperature"] = temperature
-        if tools:
-            request_data["tools"] = tools
+            completion_args["temperature"] = temperature
+        if top_p is not None:
+            completion_args["top_p"] = top_p
+        if tool_choice is not None:
+            completion_args["tool_choice"] = tool_choice
+        response = await self._router.chat.completions.create(
+            **completion_args,
+        )
+        return _to_public_result(response)
 
-        out = await self._agent.handle_chat_completion(request_data, ctx)
-        if not isinstance(out, dict):
-            raise RuntimeError("AxonLLM returned a streaming iterator (unsupported here)")
-        return _to_result(out)
+    async def close(self) -> None:
+        """Release Axon provider sessions and credential providers."""
+        router = self._router
+        self._router = None
+        self._available = False
+        if router is not None:
+            await router.close()
 
 
 def _prepare_axon_path() -> str | None:
-    """Put AxonLLM's repo root on sys.path so ``src.gateway`` imports work.
+    """Expose AxonLLM's pinned config root to the embedded compatibility layer.
 
-    AxonLLM's modules import each other as ``src.gateway.*``, but its editable
-    install puts ``<root>/src`` on sys.path — which makes ``gateway`` importable
-    and ``src.gateway`` not. So the root has to go on the path *before* importing,
-    rather than importing ``src.gateway`` in order to find the root, which can
-    never succeed. That ordering is why the router silently ran unavailable: every
-    call took the direct-provider fallback, with no AxonLLM cost tracking or
-    routing governance, and nothing looked wrong.
-
-    Returns the root, or None if AxonLLM couldn't be located. Idempotent, and
-    shared with ModelRouter's TaskClassifier import, which hit the same trap.
+    The public ``axonllm`` package supplies the router API. The repository root
+    is also placed on ``sys.path`` because AxonLLM 0.3.1 keeps smart and
+    ensemble strategy configuration in a compatibility module outside that
+    public facade. This workaround is intentionally isolated here.
     """
     import sys
 
@@ -583,13 +649,8 @@ def _prepare_axon_path() -> str | None:
 def _axon_root() -> str | None:
     """Locate AxonLLM's repo root (which holds its ``config/`` dir).
 
-    Prefer an explicit override, else derive it from the installed package.
-
-    Deliberately locates the package as ``gateway``, not ``src.gateway``: the
-    editable install exposes it under the former, and the latter is exactly what
-    isn't importable until this function's result is on sys.path. Importing
-    ``src.gateway`` here made the whole probe fail on a fresh install, which read
-    as "AxonLLM not installed" when it was.
+    Prefer an explicit override, then wheel-packaged configuration, the bundled
+    source tree, and finally a compatible standalone AxonLLM checkout.
     """
     import importlib.util
     import os
@@ -598,8 +659,24 @@ def _axon_root() -> str | None:
     if override and os.path.isdir(os.path.join(override, "config")):
         return override
 
-    # find_spec avoids importing the package (importing it as `gateway` would
-    # register a second copy of modules that also live under `src.gateway`).
+    # Wheel installs carry the reviewed routing catalog inside ostiari_gateway.
+    # AxonLLM's code is supplied by the exact companion axon-llm distribution.
+    from pathlib import Path
+
+    packaged = Path(__file__).resolve().parents[2] / "_embedded" / "axonllm"
+    if (packaged / "config").is_dir():
+        return str(packaged)
+
+    # Clean Ostiari source checkouts carry an immutable AxonLLM snapshot.
+    # Resolve it without requiring contributors to export an environment
+    # variable or clone a second repository.
+    for parent in Path(__file__).resolve().parents:
+        bundled = parent / "vendor" / "axonllm"
+        if (bundled / "config").is_dir():
+            return str(bundled)
+
+    # Compatibility fallback for operators who deliberately replace the
+    # bundled source with an external checkout.
     for name in ("gateway", "src.gateway"):
         try:
             spec = importlib.util.find_spec(name)
@@ -614,6 +691,95 @@ def _axon_root() -> str | None:
     return None
 
 
+def _router_config_paths(axon_root: str) -> dict[str, str]:
+    """Resolve the routing-only files consumed by Axon's embedded API."""
+    import os
+    from pathlib import Path
+
+    root = Path(axon_root)
+
+    def _path(env_name: str, default: str) -> str:
+        configured = os.environ.get(env_name, "").strip()
+        path = Path(configured) if configured else root / default
+        if not path.is_absolute():
+            path = root / path
+        if not path.is_file():
+            raise FileNotFoundError(f"{env_name or default} not found: {path}")
+        return str(path)
+
+    providers_default = (
+        "config/providers.yaml"
+        if (root / "config/providers.yaml").is_file()
+        else "config/providers.yaml.example"
+    )
+    return {
+        "models": _path("AXON_MODELS_CONFIG", "config/models.yaml"),
+        "providers": _path("AXON_PROVIDERS_CONFIG", providers_default),
+        "pricing": _path("AXON_PRICING_CONFIG", "config/pricing.yaml"),
+    }
+
+
+def _configure_advanced_modes(router: Any, axon_root: str) -> None:
+    """Wire smart/ensemble modes on the exact bundled Axon 0.3.1 core.
+
+    Axon's public ``build_router`` intentionally constructs only the low-latency
+    routing runtime. Version 0.3.1 still exposes its smart and ensemble
+    strategies on the documented compatibility core, so this is the one
+    isolated place where Ostiari binds those optional modes.
+    """
+    from pathlib import Path
+
+    from src.gateway.ensemble_config import EnsembleConfig
+    from src.gateway.feedback_tracker import FeedbackTracker
+    from src.gateway.model_leaderboard import ModelLeaderboard
+    from src.gateway.models import RoutingStrategy
+    from src.gateway.smart_routing import SmartRoutingStrategy
+    from src.gateway.task_classifier import TaskClassifier
+
+    runtime = getattr(router, "_runtime", None)
+    core = getattr(runtime, "router", None)
+    registry = getattr(runtime, "model_registry", None)
+    if core is None or registry is None:
+        raise RuntimeError("AxonLLM public router lacks its routing runtime")
+
+    root = Path(axon_root)
+    leaderboard = ModelLeaderboard()
+    leaderboard.load(
+        str(root / "config/leaderboard.yaml"),
+        valid_models=set(registry.models),
+    )
+    cost_tracker = getattr(core, "_cost_tracker", None)
+    if cost_tracker is None:
+        raise RuntimeError("AxonLLM routing core lacks cost tracking")
+    smart = SmartRoutingStrategy(
+        classifier=TaskClassifier(),
+        leaderboard=leaderboard,
+        model_registry=registry,
+        health_tracker=core.health_tracker,
+        cost_tracker=cost_tracker,
+        feedback_tracker=FeedbackTracker(),
+        confidence_threshold=leaderboard.config.get(
+            "confidence_threshold",
+            0.3,
+        ),
+        cost_quality_tradeoff=leaderboard.config.get(
+            "cost_quality_tradeoff",
+            0.3,
+        ),
+        default_model=leaderboard.config.get(
+            "default_model",
+            "claude-sonnet",
+        ),
+        pricing_config=cost_tracker.pricing_config,
+    )
+    core._smart_strategy = smart
+    core._strategies[RoutingStrategy.SMART] = smart
+
+    ensemble = EnsembleConfig()
+    ensemble.load(str(root / "config/ensemble.yaml"))
+    core._ensemble_config = ensemble
+
+
 def _flatten_blocks(system: Any) -> str:
     if isinstance(system, list):
         return "\n".join(b.get("text", "") for b in system
@@ -621,27 +787,52 @@ def _flatten_blocks(system: Any) -> str:
     return str(system or "")
 
 
-def _to_result(out: dict[str, Any]) -> AxonResult:
-    # AxonLLM signals failure by returning an {"error": ...} dict, not by raising
-    # (e.g. an unknown model id → {"error": {...}, "status_code": 404}). Such a
-    # payload has no "choices", so parsing it optimistically yields content="" and
-    # 0 tokens — an empty HTTP 200 that looks like a successful call. Raise instead
-    # so callers fall back to the direct provider path.
-    if "choices" not in out and (err := out.get("error")):
-        detail = err.get("message") or err.get("type") if isinstance(err, dict) else err
-        raise RuntimeError(f"AxonLLM error: {detail} (status {out.get('status_code', '?')})")
+def _last_user_text(messages: list[dict[str, Any]]) -> str:
+    """Return the latest user text used by smart/ensemble classification."""
+    for message in reversed(messages):
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "".join(
+                str(part.get("text", ""))
+                for part in content
+                if isinstance(part, dict)
+                and part.get("type") in {"text", "input_text"}
+            )
+    return ""
 
-    choices = out.get("choices") or [{}]
-    msg = (choices[0] or {}).get("message", {}) if choices else {}
-    content = msg.get("content") or ""
-    tool_calls = msg.get("tool_calls") or []
-    usage = out.get("usage") or {}
+
+def _to_public_result(
+    response: Any,
+    *,
+    routing: dict[str, Any] | None = None,
+) -> AxonResult:
+    """Normalize Axon's public response dataclass for Ostiari's shims."""
+    import dataclasses
+
+    choices = response.choices or [{}]
+    message = (choices[0] or {}).get("message", {}) if choices else {}
+    usage = response.usage
+    raw = dataclasses.asdict(response)
+    if routing:
+        serializable = {
+            key: (
+                dataclasses.asdict(value)
+                if dataclasses.is_dataclass(value)
+                else value
+            )
+            for key, value in routing.items()
+        }
+        raw["routing"] = serializable
     return AxonResult(
-        content=content,
-        model=out.get("model", ""),
-        provider=out.get("provider", ""),
-        input_tokens=int(usage.get("prompt_tokens", 0) or 0),
-        output_tokens=int(usage.get("completion_tokens", 0) or 0),
-        tool_calls=tool_calls,
-        raw=out,
+        content=message.get("content") or "",
+        model=response.model,
+        provider=response.provider,
+        input_tokens=int(usage.prompt_tokens or 0),
+        output_tokens=int(usage.completion_tokens or 0),
+        tool_calls=message.get("tool_calls") or [],
+        raw=raw,
     )

@@ -105,7 +105,6 @@ class TestGatewayEndpoint:
         assert response.status_code == 200, response.text
         assert c.get("/config/task-classification").json() == body
         module = c.app.state.module_registry.get("llm_gateway")
-        module._executor._router._task_classifier = None
         assert module._executor._router.select_model({
             "messages": [{"role": "user", "content": "write code"}],
         }) == "gpt-4o"

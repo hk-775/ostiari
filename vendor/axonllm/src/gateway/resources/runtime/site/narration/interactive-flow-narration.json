@@ -1,0 +1,188 @@
+{
+  "_comment": "Per-step narration for the interactive request journeys shared by site/index.html and site/architecture.html. File names are <scenario-id>-<zero-based-step>.mp3 in this directory. Keep each script aligned with the matching SCENARIOS entry in site/architecture-flow.js, then regenerate with scripts/build_narration_audio.sh interactive.",
+  "voice": "Matthew",
+  "engine": "generative",
+  "sample_rate": "24000",
+  "tracks": [
+    {
+      "id": "smart-chat-0",
+      "ssml": "<speak>Receive one API shape. <break time=\"250ms\"/> The application sends a request to the chat completions endpoint. It can name a virtual model, or leave routing to Axon L L M.</speak>",
+      "duration": 9.5
+    },
+    {
+      "id": "smart-chat-1",
+      "ssml": "<speak>Resolve canonical identity. <break time=\"250ms\"/> Tenant, project, user, environment, and request I D are established before any policy decision.</speak>",
+      "duration": 8.26
+    },
+    {
+      "id": "smart-chat-2",
+      "ssml": "<speak>Check model access. <break time=\"250ms\"/> Tenant and project membership are intersected with user model grants. Cross-tenant access is rejected.</speak>",
+      "duration": 7.32
+    },
+    {
+      "id": "smart-chat-3",
+      "ssml": "<speak>Reserve quota before billing. <break time=\"250ms\"/> Rate, token, and spend limits resolve through the hierarchy. The tightest inherited limit wins.</speak>",
+      "duration": 7.66
+    },
+    {
+      "id": "smart-chat-4",
+      "ssml": "<speak>Protect the prompt. <break time=\"250ms\"/> Injection patterns are scored, and personally identifiable information is replaced with request-local tokens before provider egress.</speak>",
+      "duration": 8.57
+    },
+    {
+      "id": "smart-chat-5",
+      "ssml": "<speak>Avoid an unnecessary call. <break time=\"250ms\"/> The exact cache is checked first, then the tenant-scoped semantic cache. A safe hit returns early.</speak>",
+      "duration": 7.82
+    },
+    {
+      "id": "smart-chat-6",
+      "ssml": "<speak>Rank eligible models. <break time=\"250ms\"/> Intent, benchmark quality, real price, provider health, and the configured strategy determine the route.</speak>",
+      "duration": 8.02
+    },
+    {
+      "id": "smart-chat-7",
+      "ssml": "<speak>Call the selected provider. <break time=\"250ms\"/> The adapter translates the request into the chosen provider protocol while preserving tool calls and streaming.</speak>",
+      "duration": 7.42
+    },
+    {
+      "id": "smart-chat-8",
+      "ssml": "<speak>Guard the response. <break time=\"250ms\"/> Response rules run, and original personal information is restored, including across streaming chunk boundaries.</speak>",
+      "duration": 7.58
+    },
+    {
+      "id": "smart-chat-9",
+      "ssml": "<speak>Append tamper-evident audit. <break time=\"250ms\"/> Actor, tenant, policy decision, route, and outcome join the S H A two fifty-six audit chain.</speak>",
+      "duration": 8.57
+    },
+    {
+      "id": "smart-chat-10",
+      "ssml": "<speak>Attribute cost and latency. <break time=\"250ms\"/> Usage, provider, model, cache status, tokens, spend, and trace data fill the dashboard in real time.</speak>",
+      "duration": 9.19
+    },
+    {
+      "id": "fallback-0",
+      "ssml": "<speak>Accept the model request. <break time=\"250ms\"/> The client uses the same endpoint regardless of which provider ultimately serves it.</speak>",
+      "duration": 5.88
+    },
+    {
+      "id": "fallback-1",
+      "ssml": "<speak>Bind tenant and actor. <break time=\"250ms\"/> The request receives canonical tenant and project context used by every later control.</speak>",
+      "duration": 6.55
+    },
+    {
+      "id": "fallback-2",
+      "ssml": "<speak>Authorize the requested model. <break time=\"250ms\"/> The effective model allow-list is enforced before provider selection.</speak>",
+      "duration": 5.74
+    },
+    {
+      "id": "fallback-3",
+      "ssml": "<speak>Reserve the maximum exposure. <break time=\"250ms\"/> Budget and token checks happen before the first external call, not after fallback succeeds.</speak>",
+      "duration": 6.98
+    },
+    {
+      "id": "fallback-4",
+      "ssml": "<speak>Build a healthy route chain. <break time=\"250ms\"/> Weight, latency, cost, region, and provider health order the eligible mappings.</speak>",
+      "duration": 7.1
+    },
+    {
+      "id": "fallback-5",
+      "ssml": "<speak>Try the primary provider. <break time=\"250ms\"/> A timeout or retryable provider error is recorded. No response bytes have reached the client yet.</speak>",
+      "duration": 7.25
+    },
+    {
+      "id": "fallback-6",
+      "ssml": "<speak>Fail over transparently. <break time=\"250ms\"/> The next eligible provider receives the normalized request after bounded retry and backoff.</speak>",
+      "duration": 6.82
+    },
+    {
+      "id": "fallback-7",
+      "ssml": "<speak>Normalize the answer. <break time=\"250ms\"/> The successful provider response returns in the same Open A I compatible shape. Mid-stream switching is never faked.</speak>",
+      "duration": 8.14
+    },
+    {
+      "id": "fallback-8",
+      "ssml": "<speak>Record both attempts. <break time=\"250ms\"/> The audit entry preserves the primary failure, fallback selection, and final outcome.</speak>",
+      "duration": 6.5
+    },
+    {
+      "id": "fallback-9",
+      "ssml": "<speak>Charge only what happened. <break time=\"250ms\"/> Cost and traces identify the provider that answered, and expose fallback latency to operators.</speak>",
+      "duration": 6.86
+    },
+    {
+      "id": "governed-sql-0",
+      "ssml": "<speak>Submit a query request. <break time=\"250ms\"/> The analyst sends S Q L and a configured data source to the query endpoint.</speak>",
+      "duration": 6.0
+    },
+    {
+      "id": "governed-sql-1",
+      "ssml": "<speak>Resolve tenant scope. <break time=\"250ms\"/> Data source and project references are interpreted only inside the caller tenant.</speak>",
+      "duration": 5.88
+    },
+    {
+      "id": "governed-sql-2",
+      "ssml": "<speak>Require query select. <break time=\"250ms\"/> Members may run approved select queries. Configuration mutations remain tenant-admin only.</speak>",
+      "duration": 7.32
+    },
+    {
+      "id": "governed-sql-3",
+      "ssml": "<speak>Parse and constrain S Q L. <break time=\"250ms\"/> S Q L Glot rejects mutation statements, multiple statements, and policy violations before execution.</speak>",
+      "duration": 8.69
+    },
+    {
+      "id": "governed-sql-4",
+      "ssml": "<speak>Execute with Athena. <break time=\"250ms\"/> The approved select runs through the configured workgroup and bounded result settings.</speak>",
+      "duration": 5.78
+    },
+    {
+      "id": "governed-sql-5",
+      "ssml": "<speak>Return a bounded result. <break time=\"250ms\"/> Rows, columns, execution metadata, and reconciliation state return without exposing credentials.</speak>",
+      "duration": 8.3
+    },
+    {
+      "id": "governed-sql-6",
+      "ssml": "<speak>Audit actor and statement. <break time=\"250ms\"/> The immutable record captures who queried which data source, the decision, and the outcome.</speak>",
+      "duration": 6.86
+    },
+    {
+      "id": "governed-sql-7",
+      "ssml": "<speak>Expose operational evidence. <break time=\"250ms\"/> Latency, status, reconciliation, and usage data are available to the tenant control plane.</speak>",
+      "duration": 7.97
+    },
+    {
+      "id": "tenant-rbac-0",
+      "ssml": "<speak>Start with a tenant-scoped session. <break time=\"250ms\"/> O I D C, bearer token, or A P I key resolves to one canonical tenant principal.</speak>",
+      "duration": 8.47
+    },
+    {
+      "id": "tenant-rbac-1",
+      "ssml": "<speak>Carry the actor everywhere. <break time=\"250ms\"/> Tenant I D, roles, project memberships, and scopes follow the request. Client-supplied authority is not trusted.</speak>",
+      "duration": 8.9
+    },
+    {
+      "id": "tenant-rbac-2",
+      "ssml": "<speak>Evaluate action and role. <break time=\"250ms\"/> Tenant admins may create or update configuration. Members receive read, chat, and query select access only.</speak>",
+      "duration": 8.59
+    },
+    {
+      "id": "tenant-rbac-3",
+      "ssml": "<speak>Apply the control-plane decision. <break time=\"250ms\"/> An allowed admin mutation reaches tenant configuration. A member write or delete is denied before the handler.</speak>",
+      "duration": 8.18
+    },
+    {
+      "id": "tenant-rbac-4",
+      "ssml": "<speak>Return an explicit result. <break time=\"250ms\"/> Allowed reads and writes return normally. Denials identify the missing action without leaking another tenant.</speak>",
+      "duration": 7.44
+    },
+    {
+      "id": "tenant-rbac-5",
+      "ssml": "<speak>Audit every decision. <break time=\"250ms\"/> Successful changes and denied attempts both record tenant, actor, resource, method, and correlation I D.</speak>",
+      "duration": 8.18
+    },
+    {
+      "id": "tenant-rbac-6",
+      "ssml": "<speak>Make access observable. <break time=\"250ms\"/> Operators can review authorization outcomes, configuration health, and tenant activity from one dashboard.</speak>",
+      "duration": 7.92
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+schema_version: 1
+target: agentcore
+deployment_profile: production
+region: us-east-1
+
+network:
+  mode: managed
+  vpc_cidr: 10.42.0.0/16
+  availability_zone_ids:
+    - use1-az4
+    - use1-az1
+  egress:
+    mode: managed-nat
+    nat_gateway_count: 2
+    cost_acknowledgement: true
+    approved_https_prefix_list_id: pl-0123456789abcdef0
+
+control_plane:
+  enabled: true
+  access: public-authenticated
+  hostname:
+    mode: generated
+
+identity:
+  mode: managed-cognito
+
+runtime:
+  state: active
+  providers:
+    - bedrock
+    - openai
+    - anthropic

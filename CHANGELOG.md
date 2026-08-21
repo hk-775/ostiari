@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **AxonLLM is now a real embedded distribution.** Ostiari bundles the reviewed
+  MIT-0 `axon-llm==0.3.1` source, records its upstream tag/commit, installs it
+  in clean checkouts and the production gateway image, and exercises the public
+  embedded router in CI. Production LLM traffic fails closed instead of
+  silently switching to a direct provider.
+- **Governed OpenAI Responses API.** `POST /v1/responses` supports stateless
+  text/image input, function tools, non-streaming objects, and typed SSE events
+  through the same authorization, security, quota, cost, trace, and Axon route
+  as Chat Completions. Unsupported stateful/background fields are rejected.
 - **Native detection engine (`ostiari.detect`)** — PII redaction and prompt-injection
   detection with no external dependencies. 12 PII types (Luhn-checked cards,
   parser-validated IPv6, credentials), 7 injection categories, Unicode/zero-width
@@ -19,15 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   connectivity probe and four seeded models.
 - `gateway/register_demo_providers.py` — seeds the in-memory provider store from the
   env file the gateways already load.
-- **A gateway starting without AxonLLM now says so.** Routing governance and token cost
-  tracking live in AxonLLM, and the direct-provider fallback is good enough that a
-  gateway without it serves traffic and reports healthy — which is how it once ran
-  unnoticed. With `llm_gateway` enabled, startup logs a warning naming exactly what
-  stopped applying and how to fix it. It warns rather than refusing because AxonLLM is
-  a separate private repo, not on PyPI: a hard requirement would make it a deployment
-  dependency of every gateway, CI runner, and contributor checkout, including the ones
-  that only ever proxy tools. `OSTIARI_REQUIRE_AXON=1` refuses to start instead, and is
-  the right setting in production.
+- **Axon failure is observable in development.** Deliberately disabling the
+  router for diagnostics is reported in startup logs and `GET /health`.
+  Production and explicit `OSTIARI_REQUIRE_AXON=1` deployments refuse the
+  ungoverned fallback.
 - `GET /health` reports `llm_router` (`embedded`, `root`, `governed`, `cost_tracking`,
   `tools`, and `reason` when down) — "the gateway is up" and "LLM calls are governed"
   are different facts, and nothing else in the payload distinguished them.

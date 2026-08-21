@@ -34,6 +34,18 @@ class _BrokenRedis:
     def hgetall(self, key):
         raise ConnectionError("redis unavailable")
 
+    def xadd(self, key, fields):
+        raise ConnectionError("redis unavailable")
+
+    def xrange(self, key, min="-", max="+", count=100):
+        raise ConnectionError("redis unavailable")
+
+    def xdel(self, key, *receipts):
+        raise ConnectionError("redis unavailable")
+
+    def xlen(self, key):
+        raise ConnectionError("redis unavailable")
+
 
 class TestRequiredStore:
     def test_required_store_fails_closed_on_runtime_errors(self):
@@ -77,6 +89,8 @@ class TestRequiredStore:
 
 
 class _DegradedStore:
+    required = True
+
     def attach(self):
         return None
 
@@ -91,6 +105,28 @@ class _DegradedStore:
     def budget_spend(self, key):
         return None
 
+    def outbox_enqueue(self, stream, event_id, payload):
+        return False
+
+    def outbox_read(self, stream, *, count=100):
+        return None
+
+    def outbox_ack(self, stream, receipts):
+        return False
+
+    def outbox_depth(self, stream):
+        return None
+
+
+class _HealthyCacheBrokenOutbox(_DegradedStore):
+    def status(self, *, check=False):
+        return {
+            "configured": True,
+            "required": True,
+            "healthy": True,
+            "last_error": "",
+        }
+
 
 def test_readiness_fails_when_required_redis_is_unhealthy(monkeypatch):
     degraded = _DegradedStore()
@@ -102,3 +138,16 @@ def test_readiness_fails_when_required_redis_is_unhealthy(monkeypatch):
 
     assert response.status_code == 503
     assert response.json()["redis"]["healthy"] is False
+
+
+def test_readiness_fails_when_required_outbox_is_unhealthy(monkeypatch):
+    degraded = _HealthyCacheBrokenOutbox()
+    monkeypatch.setattr(shared_store, "get_shared_store", lambda: degraded)
+    monkeypatch.setattr(shared_store, "shared_store_required", lambda: True)
+
+    client = TestClient(create_app(initial_config=SidecarConfig(sidecar_id="ready")))
+    response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json()["redis"]["healthy"] is True
+    assert response.json()["delivery"]["traces"]["healthy"] is False
