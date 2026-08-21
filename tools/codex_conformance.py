@@ -428,6 +428,8 @@ def _assert_request_contract(requests: list[dict[str, Any]]) -> None:
         raise AssertionError(f"unexpected model: {first.get('model')}")
     if first.get("stream") is not True or first.get("store") is not False:
         raise AssertionError("Codex did not request a stateless streamed response")
+    if first.get("parallel_tool_calls") is not False:
+        raise AssertionError("Codex did not request single-tool execution")
     for field in ("previous_response_id", "service_tier", "text"):
         if first.get(field) not in (None, {}):
             raise AssertionError(f"unsupported field sent by Codex: {field}")
@@ -466,6 +468,7 @@ def _request_diagnostics(requests: list[dict[str, Any]]) -> str:
         "service_tier",
         "store",
         "stream",
+        "parallel_tool_calls",
     )
     sanitized = [
         {field: request.get(field) for field in safe_fields if field in request}
