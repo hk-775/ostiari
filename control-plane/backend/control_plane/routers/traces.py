@@ -31,7 +31,7 @@ from control_plane.auth.dependencies import get_current_org, principal_from_toke
 from control_plane.auth.workload import authorize_reported_gateway
 from control_plane.database import get_db
 from control_plane.env import control_plane_replicas, is_production
-from control_plane.models.database import TraceRecord
+from control_plane.models.database import DEFAULT_ORG, TraceRecord
 from control_plane.redis_client import get_redis
 
 log = logging.getLogger("control_plane.traces")
@@ -41,7 +41,6 @@ router = APIRouter(tags=["traces"])
 # All trace state is keyed by org (tenant) so one org's traces are never
 # stored in, listed from, or broadcast to another org's buffer/sockets.
 # Single-org dev/demo uses only the "default" org, so behavior is unchanged.
-DEFAULT_ORG = "default"
 _TRACE_CACHE_SIZE = 200
 
 # org -> buffer of recent traces (for new WebSocket clients to catch up)
@@ -67,25 +66,6 @@ _trace_bus_errors: dict[str, str] = {
     "publish": "",
     "subscribe": "",
 }
-
-
-async def _event_org(db: AsyncSession, event: dict[str, Any]) -> str:
-    """The org a trace event belongs to, derived from the reporting gateway.
-
-    Gateways post traces with no user token, so there is no caller org to scope
-    by — and the event body must NOT be believed either: trusting `org_id` let
-    any ingest caller file a trace into an arbitrary tenant's buffer, which is
-    read back by /recent, the WebSocket fan-out, compliance, ROI, trust scoring,
-    and discovery. Reading the `gateways` row is the only trustworthy source,
-    matching costs/payments/approvals ingest.
-
-    The gateway identifies itself as `sidecar_id` (its registered gateway id);
-    `gateway_id` is accepted as an alias for events shaped by other producers.
-    """
-    from control_plane.models.scoping import org_of_gateway
-
-    gw_id = event.get("sidecar_id") or event.get("gateway_id") or ""
-    return await org_of_gateway(db, gw_id)
 
 
 def _capture_raw_params() -> bool:
@@ -560,11 +540,11 @@ async def ingest_trace(request: Request, db: AsyncSession = Depends(get_db)) -> 
         event["trace_id"] = uuid.uuid4().hex
 
     gateway_id = event.get("sidecar_id") or event.get("gateway_id") or ""
-    await authorize_reported_gateway(request, db, gateway_id)
+    gateway = await authorize_reported_gateway(request, db, gateway_id)
 
     # The org this event belongs to, derived from the reporting gateway — never
     # from the payload. All storage + fan-out below is confined to this org.
-    org = await _event_org(db, event)
+    org = gateway.org_id if gateway is not None else DEFAULT_ORG
     # An ingest caller cannot choose its own tenant: drop any org_id it sent so
     # the forged value can't survive into the stored event and mislead readers.
     event["org_id"] = org

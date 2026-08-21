@@ -79,11 +79,18 @@ class TestProductionPosture:
         with pytest.raises(RuntimeError, match="HTTPS origins"):
             validate_production_posture()
 
-    def test_multi_tenant_mode_is_rejected_until_schema_is_ready(self, monkeypatch):
+    def test_multi_tenant_mode_is_supported(self, monkeypatch):
         from control_plane.env import validate_production_posture
 
         _secure_production_env(monkeypatch)
         monkeypatch.setenv("OSTIARI_TENANCY_MODE", "multi")
+        validate_production_posture()
+
+    def test_unknown_tenancy_mode_is_rejected(self, monkeypatch):
+        from control_plane.env import validate_production_posture
+
+        _secure_production_env(monkeypatch)
+        monkeypatch.setenv("OSTIARI_TENANCY_MODE", "shared")
         with pytest.raises(RuntimeError, match="OSTIARI_TENANCY_MODE"):
             validate_production_posture()
 
@@ -206,7 +213,11 @@ class TestAdminSeed:
         monkeypatch.delenv("OSTIARI_ADMIN_PASSWORD", raising=False)
         # login as the seeded admin works in dev
         r = await client.post("/api/auth/login",
-                              json={"email": "admin@ostiari.ai", "password": "admin"})
+                              json={
+                                  "email": "admin@ostiari.ai",
+                                  "password": "admin",
+                                  "org_id": "default",
+                              })
         assert r.status_code == 200
         assert "access_token" in r.json()
 

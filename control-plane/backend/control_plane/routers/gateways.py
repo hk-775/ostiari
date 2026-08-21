@@ -28,7 +28,14 @@ from control_plane.env import (
 )
 from control_plane.models.database import Gateway, Tool
 from control_plane.models.schemas import GatewayCreate, GatewayResponse, GatewayUpdate
-from control_plane.models.scoping import get_scoped, scoped, stamp
+from control_plane.models.scoping import (
+    get_gateway as get_gateway_row,
+)
+from control_plane.models.scoping import (
+    get_scoped,
+    scoped,
+    stamp,
+)
 from control_plane.redis_client import get_redis
 from control_plane.services.audit_service import actor_of, audit
 from control_plane.services.gateway_callbacks import (
@@ -205,7 +212,7 @@ async def list_gateways(db: AsyncSession = Depends(get_db), org: str = Depends(g
 
 @router.post("", response_model=GatewayResponse)
 async def register_gateway(body: GatewayCreate, request: Request, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
-    existing = await db.get(Gateway, body.id)
+    existing = await get_gateway_row(db, body.id, org)
     if existing:
         raise HTTPException(status_code=409, detail=f"Gateway {body.id} already exists")
     try:
@@ -295,7 +302,7 @@ async def set_mode(gateway_id: str, body: dict, request: Request, db: AsyncSessi
 
     # Best-effort live push so the change is immediate; ignore transport errors.
     try:
-        await push_service.push_to_gateway(db, gateway_id)
+        await push_service.push_to_gateway(db, gateway_id, org)
     except Exception as exc:  # noqa: BLE001 — push is best-effort
         log.warning("mode set but live push failed for %s: %s", gateway_id, exc)
 
@@ -307,7 +314,7 @@ async def push_config(gateway_id: str, request: Request, db: AsyncSession = Depe
     """Push current config to a specific gateway."""
     if await get_scoped(db, Gateway, gateway_id, org) is None:
         raise HTTPException(status_code=404, detail="Gateway not found")
-    result = await push_service.push_to_gateway(db, gateway_id)
+    result = await push_service.push_to_gateway(db, gateway_id, org)
     await audit.log(db, actor_of(request), "push", "gateway", gateway_id, {"status": result.status}, org=org)
     await db.commit()
     if result.status == "error":
@@ -375,8 +382,9 @@ async def gateway_register(
                     callback_url = validate_gateway_callback(callback_url)
                 except GatewayCallbackError as exc:
                     raise HTTPException(status_code=422, detail=str(exc)) from exc
-            # A gateway declares its org at registration (no user token on this
-            # path). Absent that, it lands in the default org.
+            # The gateway declares its org at registration. Production binds
+            # that value to the verified workload token; development without
+            # workload OIDC falls back to the configured deployment org.
             requested_org = (body.get("org_id") or reg_org).strip() or reg_org
             if identity is not None and requested_org != identity.tenant_id:
                 raise HTTPException(
@@ -407,7 +415,7 @@ async def gateway_register(
         client_host = request.client.host if request.client else ""
         return f"http://{client_host}" if client_host else ""
 
-    gateway = await db.get(Gateway, gateway_id)
+    gateway = await get_gateway_row(db, gateway_id, reg_org)
     created = False
     if not gateway:
         # Auto-provision on first contact. Prefer the advertised callback URL
@@ -479,10 +487,7 @@ async def gateway_heartbeat(
     db: AsyncSession = Depends(get_db),
 ):
     """Gateway heartbeat every 30s. Returns pending config changes if any."""
-    gateway = await db.get(Gateway, gateway_id)
-    if not gateway:
-        raise HTTPException(status_code=404, detail="Gateway not found")
-    await authorize_gateway(request, db, gateway_id, gateway=gateway)
+    gateway = await authorize_gateway(request, db, gateway_id)
 
     was_unhealthy = gateway.status != "healthy"
     gateway.status = "healthy"
@@ -632,10 +637,7 @@ async def set_gateway_spend(
     gateway_id: str, request: Request, db: AsyncSession = Depends(get_db)
 ):
     """Persist the gateway's per-agent spend snapshot."""
-    gateway = await db.get(Gateway, gateway_id)
-    if gateway is None:
-        raise HTTPException(status_code=404, detail="Gateway not found")
-    await authorize_gateway(request, db, gateway_id, gateway=gateway)
+    gateway = await authorize_gateway(request, db, gateway_id)
     body = await request.json()
     spend = body.get("spend", {}) if isinstance(body, dict) else {}
     if not isinstance(spend, dict):

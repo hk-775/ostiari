@@ -22,7 +22,7 @@ from control_plane.auth.dependencies import get_current_org
 from control_plane.auth.workload import authorize_reported_gateway
 from control_plane.database import get_db
 from control_plane.models.database import Gateway, PaymentRecord, Wallet
-from control_plane.models.scoping import get_scoped, org_of_gateway, scoped, stamp
+from control_plane.models.scoping import get_scoped, scoped, stamp
 from control_plane.services.audit_service import actor_of, audit
 from control_plane.services.runtime_state import put_runtime_state
 
@@ -92,9 +92,9 @@ async def ingest_payment(
     wallet is decremented when that allowance was consumed, which can be true
     for an unconfirmed live attempt without falsely marking it settled.
     """
-    await authorize_reported_gateway(request, db, body.gateway_id)
+    gateway = await authorize_reported_gateway(request, db, body.gateway_id)
     # The org comes from the reporting gateway's row, never the payload.
-    rec_org = await org_of_gateway(db, body.gateway_id)
+    rec_org = gateway.org_id if gateway is not None else "default"
     record, created = await _upsert_payment(db, body, rec_org)
     if created and record.wallet_debited:
         w = await get_scoped(db, Wallet, body.agent_id, rec_org)
@@ -167,7 +167,11 @@ async def _upsert_payment(
         insert_fn(PaymentRecord)
         .values(**values)
         .on_conflict_do_nothing(
-            index_elements=[PaymentRecord.gateway_id, PaymentRecord.event_id]
+            index_elements=[
+                PaymentRecord.org_id,
+                PaymentRecord.gateway_id,
+                PaymentRecord.event_id,
+            ]
         )
         .returning(PaymentRecord.id)
     )
@@ -181,6 +185,7 @@ async def _upsert_payment(
     record = (
         await db.execute(
             select(PaymentRecord).where(
+                PaymentRecord.org_id == org,
                 PaymentRecord.gateway_id == body.gateway_id,
                 PaymentRecord.event_id == body.event_id,
             )

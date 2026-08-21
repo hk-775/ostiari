@@ -16,7 +16,7 @@ from __future__ import annotations
 import pytest
 from control_plane.auth.service import create_access_token
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("multi_tenant_mode")]
 
 
 def _org_headers(org: str, role: str = "admin") -> dict[str, str]:
@@ -113,24 +113,36 @@ class TestDrawDownIsolation:
         assert a["consumed_tokens"] == 0
         assert (await client.get(f"{PILOT}/pools", headers=ORG_B)).json() == []
 
-    async def test_usage_recording_draws_down_the_reporting_gateways_org(self, client):
-        """End-to-end: the org comes from the gateway record, not the payload.
-
-        `POST /api/costs/record` is called by gateways with no user token, so the
-        org has to be derived from the gateway's row — the same rule the usage
-        record itself follows.
-        """
-        await client.post("/api/gateways", headers=ORG_B,
-                          json={"id": "gw-b", "name": "B", "endpoint": "http://b:8421",
-                                "description": ""})
+    async def test_usage_recording_draws_down_the_reporting_gateways_org(
+        self,
+        client,
+        workload_signer,
+    ):
+        """The verified gateway tenant, never the payload, owns the usage."""
+        workload_headers = workload_signer("gw-b", tenant_id="org-b")
+        registered = await client.post(
+            "/api/gateways/gw-b/register",
+            headers=workload_headers,
+            json={"org_id": "org-b"},
+        )
+        assert registered.status_code == 200, registered.text
         await _fund(client, ORG_A, "anthropic", 10_000, 10.0)
         await _fund(client, ORG_B, "anthropic", 10_000, 10.0)
 
-        r = await client.post("/api/costs/record", json={
-            "gateway_id": "gw-b", "agent_id": "agent-1", "model": "claude-haiku",
-            "input_tokens": 1_000, "output_tokens": 500, "total_tokens": 1_500,
-            "cost_usd": 0.01, "action": "invoke",
-        })
+        r = await client.post(
+            "/api/costs/record",
+            headers=workload_headers,
+            json={
+                "gateway_id": "gw-b",
+                "agent_id": "agent-1",
+                "model": "claude-haiku",
+                "input_tokens": 1_000,
+                "output_tokens": 500,
+                "total_tokens": 1_500,
+                "cost_usd": 0.01,
+                "action": "invoke",
+            },
+        )
         assert r.status_code == 200, r.text
 
         a = (await client.get(f"{PILOT}/pools", headers=ORG_A)).json()[0]
@@ -153,21 +165,40 @@ class TestReconciliationIsolation:
         assert len(a) == 1 and len(b) == 1
         assert a[0]["id"] != b[0]["id"]
 
-    async def test_computed_cost_counts_only_the_callers_usage(self, client):
+    async def test_computed_cost_counts_only_the_callers_usage(
+        self,
+        client,
+        workload_signer,
+    ):
         """Drift is the number this page exists to show.
 
         Computing it over every tenant's usage inflated one org's drift by the
         whole fleet's traffic, which reads as a billing discrepancy that isn't.
         """
-        for org, headers in (("org-a", ORG_A), ("org-b", ORG_B)):
-            await client.post("/api/gateways", headers=headers,
-                              json={"id": f"gw-{org}", "name": org,
-                                    "endpoint": "http://x:8421", "description": ""})
-            await client.post("/api/costs/record", json={
-                "gateway_id": f"gw-{org}", "agent_id": "a", "model": "claude-haiku",
-                "input_tokens": 100, "output_tokens": 100, "total_tokens": 200,
-                "cost_usd": 1.0, "action": "invoke",
-            })
+        for org in ("org-a", "org-b"):
+            gateway_id = f"gw-{org}"
+            workload_headers = workload_signer(gateway_id, tenant_id=org)
+            registered = await client.post(
+                f"/api/gateways/{gateway_id}/register",
+                headers=workload_headers,
+                json={"org_id": org},
+            )
+            assert registered.status_code == 200, registered.text
+            recorded = await client.post(
+                "/api/costs/record",
+                headers=workload_headers,
+                json={
+                    "gateway_id": gateway_id,
+                    "agent_id": "a",
+                    "model": "claude-haiku",
+                    "input_tokens": 100,
+                    "output_tokens": 100,
+                    "total_tokens": 200,
+                    "cost_usd": 1.0,
+                    "action": "invoke",
+                },
+            )
+            assert recorded.status_code == 200, recorded.text
 
         r = await client.post(f"{PILOT}/reconcile", headers=ORG_A, json={
             "provider": "anthropic", "period_days": 30, "invoiced_cost_usd": 1.0,

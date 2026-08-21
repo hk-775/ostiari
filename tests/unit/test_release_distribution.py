@@ -75,6 +75,7 @@ def test_production_templates_use_per_gateway_workload_identity() -> None:
     )
     backend_env = {item["name"]: item for item in backend["env"]}
     assert backend_env["OSTIARI_CONTROL_PLANE_REPLICAS"]["value"] == "2"
+    assert backend_env["OSTIARI_TENANCY_MODE"]["value"] == "multi"
     assert (
         backend_env["REDIS_URL"]["valueFrom"]["secretKeyRef"]["key"]
         == "redis-url"

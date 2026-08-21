@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 from control_plane.auth.service import create_access_token
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("multi_tenant_mode")]
 
 
 def _org_headers(org: str, role: str = "admin") -> dict[str, str]:
@@ -63,6 +63,19 @@ class TestGatewaysIsolation:
         # Still there for the owner.
         assert (await client.get("/api/gateways/a-del", headers=ORG_A)).status_code == 200
 
+    async def test_same_gateway_id_can_exist_in_two_orgs(self, client):
+        payload = {
+            "id": "shared-gateway",
+            "name": "Shared",
+            "endpoint": "http://gateway:8421",
+            "description": "",
+        }
+        assert (await client.post("/api/gateways", headers=ORG_A, json=payload)).status_code == 200
+        assert (await client.post("/api/gateways", headers=ORG_B, json=payload)).status_code == 200
+
+        assert (await client.get("/api/gateways/shared-gateway", headers=ORG_A)).status_code == 200
+        assert (await client.get("/api/gateways/shared-gateway", headers=ORG_B)).status_code == 200
+
 
 class TestToolsIsolation:
     async def test_tool_added_to_one_org_invisible_to_other(self, client):
@@ -86,15 +99,14 @@ class TestToolsIsolation:
 
 class TestPoliciesIsolation:
     async def test_policies_isolated(self, client):
-        # Distinct names (Policy.name is globally unique this slice).
         await client.post("/api/policies", headers=ORG_A,
-                          json={"name": "pol-a", "content": {"block": ["*.delete"]}})
+                          json={"name": "shared-policy", "content": {"block": ["*.delete"]}})
         await client.post("/api/policies", headers=ORG_B,
-                          json={"name": "pol-b", "content": {"block": ["*.drop"]}})
+                          json={"name": "shared-policy", "content": {"block": ["*.drop"]}})
         a_names = {p["name"] for p in (await client.get("/api/policies", headers=ORG_A)).json()}
         b_names = {p["name"] for p in (await client.get("/api/policies", headers=ORG_B)).json()}
-        assert "pol-a" in a_names and "pol-b" not in a_names
-        assert "pol-b" in b_names and "pol-a" not in b_names
+        assert a_names == {"shared-policy"}
+        assert b_names == {"shared-policy"}
 
     async def test_policy_cannot_target_another_orgs_gateway(self, client):
         await client.post(
@@ -138,9 +150,18 @@ class TestWalletsIsolation:
                                json={"status": "paused"})
         assert r.status_code == 404
 
+    async def test_same_wallet_id_can_exist_in_two_orgs(self, client):
+        payload = {"agent_id": "shared-agent", "balance_usdc": 5.0, "address": ""}
+        assert (
+            await client.post("/api/payments/wallets", headers=ORG_A, json=payload)
+        ).status_code == 200
+        assert (
+            await client.post("/api/payments/wallets", headers=ORG_B, json=payload)
+        ).status_code == 200
+
 
 class TestAuditIsolation:
-    async def test_audit_rows_scoped_but_chain_global(self, client):
+    async def test_audit_rows_and_chains_are_tenant_scoped(self, client):
         # A config change under each org writes an org-stamped audit row.
         await client.post("/api/gateways", headers=ORG_A,
                           json={"id": "aud-a", "name": "A", "endpoint": "http://a:8421", "description": ""})
@@ -152,9 +173,8 @@ class TestAuditIsolation:
         b_resources = {r["resource_id"] for r in b_rows}
         assert "aud-a" in a_resources and "aud-a" not in b_resources
         assert "aud-b" in b_resources and "aud-b" not in a_resources
-        # The tamper-evident chain spans all orgs and stays valid.
-        v = (await client.get("/api/audit/verify", headers=ORG_A)).json()
-        assert v["valid"] is True
+        assert (await client.get("/api/audit/verify", headers=ORG_A)).json()["valid"] is True
+        assert (await client.get("/api/audit/verify", headers=ORG_B)).json()["valid"] is True
 
 
 class TestMcpServersIsolation:
@@ -184,17 +204,29 @@ class TestMcpServersIsolation:
 class TestPaymentLedgerIsolation:
     """The payment ledger/summary previously aggregated across ALL orgs."""
 
-    async def test_ledger_and_summary_scoped(self, client):
+    async def test_ledger_and_summary_scoped(self, client, workload_signer):
         # Ingest a settled charge tagged (via gateway) to each org.
         await client.post("/api/gateways", headers=ORG_A,
                           json={"id": "pay-gw-a", "name": "A", "endpoint": "http://a:8421", "description": ""})
         await client.post("/api/gateways", headers=ORG_B,
                           json={"id": "pay-gw-b", "name": "B", "endpoint": "http://b:8421", "description": ""})
-        await client.post("/api/payments/ingest", json={
+        headers_a = workload_signer("pay-gw-a", tenant_id="org-a")
+        headers_b = workload_signer("pay-gw-b", tenant_id="org-b")
+        await client.post(
+            "/api/gateways/pay-gw-a/register",
+            headers=headers_a,
+            json={"org_id": "org-a"},
+        )
+        await client.post(
+            "/api/gateways/pay-gw-b/register",
+            headers=headers_b,
+            json={"org_id": "org-b"},
+        )
+        await client.post("/api/payments/ingest", headers=headers_a, json={
             "agent_id": "x", "gateway_id": "pay-gw-a", "action": "premium",
             "amount_usdc": 0.10, "settled": True, "mode": "simulated", "source": "tool_402",
         })
-        await client.post("/api/payments/ingest", json={
+        await client.post("/api/payments/ingest", headers=headers_b, json={
             "agent_id": "y", "gateway_id": "pay-gw-b", "action": "premium",
             "amount_usdc": 0.99, "settled": True, "mode": "simulated", "source": "tool_402",
         })
@@ -215,37 +247,49 @@ class TestUsageRecordIsolation:
     caller's /api/costs/summary listed every tenant's gateway names, agent names
     and dollar totals — and each real tenant's own ledger read empty.
 
-    Ingest is tokenless (a gateway reporting its own usage), so the org has to be
-    derived from the gateway row, not from the caller or the payload.
+    Ingest is authenticated by the reporting gateway's workload token, so the
+    org comes from the immutable workload binding, never from the payload.
     """
 
-    async def _seed(self, client):
+    async def _seed(self, client, workload_signer):
         for hdr, gid in ((ORG_A, "cost-gw-a"), (ORG_B, "cost-gw-b")):
             await client.post("/api/gateways", headers=hdr,
                               json={"id": gid, "name": gid, "endpoint": "http://x:8421", "description": ""})
-        # No auth header on /record — this is how the gateway's cost reporter posts.
-        await client.post("/api/costs/record", json={
+        headers_a = workload_signer("cost-gw-a", tenant_id="org-a")
+        headers_b = workload_signer("cost-gw-b", tenant_id="org-b")
+        await client.post(
+            "/api/gateways/cost-gw-a/register",
+            headers=headers_a,
+            json={"org_id": "org-a"},
+        )
+        await client.post(
+            "/api/gateways/cost-gw-b/register",
+            headers=headers_b,
+            json={"org_id": "org-b"},
+        )
+        await client.post("/api/costs/record", headers=headers_a, json={
             "gateway_id": "cost-gw-a", "agent_id": "agent-a", "model": "claude-sonnet-4-6",
             "input_tokens": 1000, "output_tokens": 100, "total_tokens": 1100,
             "cost_usd": 0.10, "action": "chat",
         })
-        await client.post("/api/costs/record", json={
+        await client.post("/api/costs/record", headers=headers_b, json={
             "gateway_id": "cost-gw-b", "agent_id": "agent-b", "model": "gpt-4o",
             "input_tokens": 2000, "output_tokens": 200, "total_tokens": 2200,
             "cost_usd": 0.99, "action": "chat",
         })
+        return headers_a, headers_b
 
-    async def test_ingest_derives_org_from_the_gateway(self, client):
-        await self._seed(client)
+    async def test_ingest_derives_org_from_the_gateway(self, client, workload_signer):
+        await self._seed(client, workload_signer)
         a = (await client.get("/api/costs/records", headers=ORG_A)).json()
         b = (await client.get("/api/costs/records", headers=ORG_B)).json()
         assert {r["gateway_id"] for r in a} == {"cost-gw-a"}
         assert {r["gateway_id"] for r in b} == {"cost-gw-b"}
-        # Nothing fell through to the default org.
-        assert (await client.get("/api/costs/records")).json() == []
+        # An unauthenticated reader cannot inspect the default tenant.
+        assert (await client.get("/api/costs/records")).status_code == 401
 
-    async def test_summary_does_not_leak_spend_or_names(self, client):
-        await self._seed(client)
+    async def test_summary_does_not_leak_spend_or_names(self, client, workload_signer):
+        await self._seed(client, workload_signer)
         a = (await client.get("/api/costs/summary", headers=ORG_A)).json()
         b = (await client.get("/api/costs/summary", headers=ORG_B)).json()
         assert a["total_cost_usd"] == pytest.approx(0.10)
@@ -257,17 +301,18 @@ class TestUsageRecordIsolation:
         assert {m["model"] for m in b["by_model"]} == {"gpt-4o"}
         assert a["total_tokens"] == 1100 and b["total_tokens"] == 2200
 
-    async def test_batch_ingest_is_scoped_per_gateway(self, client):
-        await self._seed(client)
-        r = await client.post("/api/costs/record/batch", json=[
+    async def test_batch_ingest_is_scoped_per_gateway(self, client, workload_signer):
+        headers_a, headers_b = await self._seed(client, workload_signer)
+        r = await client.post("/api/costs/record/batch", headers=headers_a, json=[
             {"gateway_id": "cost-gw-a", "agent_id": "agent-a", "model": "gpt-4o-mini",
              "input_tokens": 10, "output_tokens": 1, "total_tokens": 11, "cost_usd": 0.01, "action": "chat"},
+        ])
+        assert r.json()["recorded"] == 1
+        r = await client.post("/api/costs/record/batch", headers=headers_b, json=[
             {"gateway_id": "cost-gw-b", "agent_id": "agent-b", "model": "gpt-4o-mini",
              "input_tokens": 10, "output_tokens": 1, "total_tokens": 11, "cost_usd": 0.02, "action": "chat"},
         ])
-        assert r.json()["recorded"] == 2
-        # One batch, two gateways, two orgs — the per-batch org cache must not
-        # smear the first gateway's org across the rest of the batch.
+        assert r.json()["recorded"] == 1
         a = (await client.get("/api/costs/summary", headers=ORG_A)).json()
         b = (await client.get("/api/costs/summary", headers=ORG_B)).json()
         assert a["total_cost_usd"] == pytest.approx(0.11)
@@ -284,10 +329,10 @@ class TestUsageRecordIsolation:
         assert {r["gateway_id"] for r in default_records} == {"never-registered"}
         assert (await client.get("/api/costs/records", headers=ORG_A)).json() == []
 
-    async def test_token_broker_report_scoped(self, client):
+    async def test_token_broker_report_scoped(self, client, workload_signer):
         """The broker report reads the CALLER's margin config; aggregating every
         org's usage against it reported one tenant's economics over another's spend."""
-        await self._seed(client)
+        await self._seed(client, workload_signer)
         a = (await client.get("/api/token-broker/report", headers=ORG_A)).json()
         b = (await client.get("/api/token-broker/report", headers=ORG_B)).json()
         assert a["total_tokens"] == 1100
@@ -296,18 +341,28 @@ class TestUsageRecordIsolation:
 
 
 class TestTraceIngestIsolation:
-    """Traces arrive with no user token, so the owning org must come from the
-    reporting gateway's row — never from the event body. The recent-trace buffer
-    is read back by /recent, the WebSocket fan-out, compliance, ROI, trust
-    scoring and discovery, so a misfiled trace leaks into all of them at once."""
+    """Workload identity, not the trace body, determines trace ownership."""
 
-    async def _seed_gateways(self, client):
+    async def _seed_gateways(self, client, workload_signer):
         await client.post("/api/gateways", headers=ORG_A,
                           json={"id": "trace-gw-a", "name": "A", "endpoint": "http://a:8421",
                                 "description": ""})
         await client.post("/api/gateways", headers=ORG_B,
                           json={"id": "trace-gw-b", "name": "B", "endpoint": "http://b:8421",
                                 "description": ""})
+        headers_a = workload_signer("trace-gw-a", tenant_id="org-a")
+        headers_b = workload_signer("trace-gw-b", tenant_id="org-b")
+        await client.post(
+            "/api/gateways/trace-gw-a/register",
+            headers=headers_a,
+            json={"org_id": "org-a"},
+        )
+        await client.post(
+            "/api/gateways/trace-gw-b/register",
+            headers=headers_b,
+            json={"org_id": "org-b"},
+        )
+        return headers_a, headers_b
 
     @staticmethod
     def _event(**kw):
@@ -316,25 +371,27 @@ class TestTraceIngestIsolation:
         base.update(kw)
         return base
 
-    async def test_ingest_derives_org_from_the_reporting_gateway(self, client):
-        await self._seed_gateways(client)
-        await client.post("/api/traces/ingest",
+    async def test_ingest_derives_org_from_the_reporting_gateway(
+        self, client, workload_signer
+    ):
+        headers_a, headers_b = await self._seed_gateways(client, workload_signer)
+        await client.post("/api/traces/ingest", headers=headers_a,
                           json=self._event(sidecar_id="trace-gw-a", trace_id="t-a"))
-        await client.post("/api/traces/ingest",
+        await client.post("/api/traces/ingest", headers=headers_b,
                           json=self._event(sidecar_id="trace-gw-b", trace_id="t-b"))
 
         a = {t["trace_id"] for t in (await client.get("/api/traces/recent", headers=ORG_A)).json()["traces"]}
         b = {t["trace_id"] for t in (await client.get("/api/traces/recent", headers=ORG_B)).json()["traces"]}
         assert a == {"t-a"}
         assert b == {"t-b"}
-        # Neither fell through to the default org.
-        assert (await client.get("/api/traces/recent")).json()["traces"] == []
+        # An unauthenticated reader cannot inspect the default tenant.
+        assert (await client.get("/api/traces/recent")).status_code == 401
 
-    async def test_payload_cannot_choose_its_own_org(self, client):
+    async def test_payload_cannot_choose_its_own_org(self, client, workload_signer):
         """The core defect: trusting the body's org_id let any ingest caller
         plant a trace in an arbitrary tenant's buffer. The gateway's row wins."""
-        await self._seed_gateways(client)
-        await client.post("/api/traces/ingest", json=self._event(
+        headers_a, _headers_b = await self._seed_gateways(client, workload_signer)
+        await client.post("/api/traces/ingest", headers=headers_a, json=self._event(
             sidecar_id="trace-gw-a", trace_id="forged", org_id="org-b",
             action="exfiltrate_all", params={"note": "planted"}))
 
@@ -343,27 +400,33 @@ class TestTraceIngestIsolation:
         a = {t["trace_id"] for t in (await client.get("/api/traces/recent", headers=ORG_A)).json()["traces"]}
         assert a == {"forged"}
 
-    async def test_forged_org_id_is_not_stored_on_the_event(self, client):
+    async def test_forged_org_id_is_not_stored_on_the_event(
+        self, client, workload_signer
+    ):
         """Even filed correctly, a surviving org_id in the body would mislead any
         consumer that reads the field instead of the buffer it came from."""
-        await self._seed_gateways(client)
-        await client.post("/api/traces/ingest", json=self._event(
+        headers_a, _headers_b = await self._seed_gateways(client, workload_signer)
+        await client.post("/api/traces/ingest", headers=headers_a, json=self._event(
             sidecar_id="trace-gw-a", trace_id="stamped", org_id="org-b"))
         stored = (await client.get("/api/traces/recent", headers=ORG_A)).json()["traces"][0]
         assert stored["org_id"] == "org-a"
 
-    async def test_gateway_id_is_populated_for_consumers(self, client):
+    async def test_gateway_id_is_populated_for_consumers(
+        self, client, workload_signer
+    ):
         """The reporter sends sidecar_id; the trace viewer's Gateway column and
         the delegation report read gateway_id. Without the alias it was blank."""
-        await self._seed_gateways(client)
-        await client.post("/api/traces/ingest",
+        headers_a, _headers_b = await self._seed_gateways(client, workload_signer)
+        await client.post("/api/traces/ingest", headers=headers_a,
                           json=self._event(sidecar_id="trace-gw-a", trace_id="t-gw"))
         stored = (await client.get("/api/traces/recent", headers=ORG_A)).json()["traces"][0]
         assert stored["gateway_id"] == "trace-gw-a"
 
-    async def test_explicit_gateway_id_is_not_overwritten(self, client):
-        await self._seed_gateways(client)
-        await client.post("/api/traces/ingest", json=self._event(
+    async def test_explicit_gateway_id_is_not_overwritten(
+        self, client, workload_signer
+    ):
+        headers_a, _headers_b = await self._seed_gateways(client, workload_signer)
+        await client.post("/api/traces/ingest", headers=headers_a, json=self._event(
             sidecar_id="trace-gw-a", gateway_id="trace-gw-a", trace_id="t-both"))
         stored = (await client.get("/api/traces/recent", headers=ORG_A)).json()["traces"][0]
         assert stored["gateway_id"] == "trace-gw-a"
@@ -376,13 +439,15 @@ class TestTraceIngestIsolation:
         assert {t["trace_id"] for t in (await client.get("/api/traces/recent")).json()["traces"]} == {"t-unknown"}
         assert (await client.get("/api/traces/recent", headers=ORG_A)).json()["traces"] == []
 
-    async def test_downstream_reports_do_not_leak_across_orgs(self, client):
+    async def test_downstream_reports_do_not_leak_across_orgs(
+        self, client, workload_signer
+    ):
         """Trust/compliance/ROI all read the same buffer, so a scoping miss shows
         up as one tenant's agents appearing in another's governance reports."""
-        await self._seed_gateways(client)
-        await client.post("/api/traces/ingest", json=self._event(
+        headers_a, headers_b = await self._seed_gateways(client, workload_signer)
+        await client.post("/api/traces/ingest", headers=headers_a, json=self._event(
             sidecar_id="trace-gw-a", trace_id="t-a", agent_id="agent-a"))
-        await client.post("/api/traces/ingest", json=self._event(
+        await client.post("/api/traces/ingest", headers=headers_b, json=self._event(
             sidecar_id="trace-gw-b", trace_id="t-b", agent_id="agent-b"))
 
         a_trust = (

@@ -106,7 +106,8 @@ def _check_production_posture() -> None:
         )
     if _os.environ.get("OSTIARI_TENANCY_MODE", "").strip().lower() != "single":
         open_controls.append(
-            "OSTIARI_TENANCY_MODE must be 'single' until composite tenant keys ship"
+            "OSTIARI_TENANCY_MODE must be 'single' because each gateway "
+            "deployment is bound to one tenant"
         )
     org_id = _os.environ.get("OSTIARI_ORG_ID", "").strip()
     if not org_id:

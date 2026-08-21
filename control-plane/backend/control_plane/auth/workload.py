@@ -8,12 +8,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi import HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.auth.oidc import OIDCError, OIDCValidator, tenant_from_claims
 from control_plane.env import configured_org_id, is_production, tenant_is_allowed
 from control_plane.models.database import Gateway
+from control_plane.models.scoping import get_gateway
 
 _GATEWAY_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _validator: OIDCValidator | None = None
@@ -183,7 +184,10 @@ async def bind_gateway_identity(
             select(Gateway).where(
                 Gateway.workload_issuer == identity.issuer,
                 Gateway.workload_subject == identity.subject,
-                Gateway.id != gateway.id,
+                or_(
+                    Gateway.org_id != gateway.org_id,
+                    Gateway.id != gateway.id,
+                ),
             )
         )
     ).scalar_one_or_none()
@@ -204,7 +208,9 @@ async def authorize_gateway(
     gateway: Gateway | None = None,
 ) -> Gateway:
     """Authorize the request against the persisted gateway identity binding."""
-    gateway = gateway or await db.get(Gateway, gateway_id)
+    identity = request_identity(request)
+    lookup_org = identity.tenant_id if identity is not None else configured_org_id()
+    gateway = gateway or await get_gateway(db, gateway_id, lookup_org)
     if gateway is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -213,7 +219,7 @@ async def authorize_gateway(
     identity = require_gateway_claim(
         request,
         gateway_id,
-        tenant_id=gateway.org_id or configured_org_id(),
+        tenant_id=gateway.org_id,
     )
     if identity is not None and (
         gateway.workload_subject != identity.subject
@@ -239,5 +245,9 @@ async def authorize_reported_gateway(
     """
     identity = require_gateway_claim(request, gateway_id)
     if identity is None and not is_production():
-        return await db.get(Gateway, gateway_id) if gateway_id else None
+        return (
+            await get_gateway(db, gateway_id, configured_org_id())
+            if gateway_id
+            else None
+        )
     return await authorize_gateway(request, db, gateway_id)

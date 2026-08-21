@@ -515,6 +515,7 @@ class TestToolBridge:
 
 
 class TestSecurityBoundary:
+    @pytest.mark.usefixtures("multi_tenant_mode")
     async def test_cross_tenant_gateway_and_run_are_hidden(self, client):
         org_a = _headers("org-a")
         org_b = _headers("org-b")

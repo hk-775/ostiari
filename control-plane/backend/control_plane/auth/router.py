@@ -27,7 +27,7 @@ from control_plane.auth.service import (
     verify_password,
 )
 from control_plane.database import get_db
-from control_plane.env import configured_org_id, is_production
+from control_plane.env import configured_org_id, is_production, tenancy_mode
 from control_plane.models.database import Organization
 
 log = logging.getLogger("control_plane.auth")
@@ -46,7 +46,9 @@ async def _seed_admin(db: AsyncSession) -> None:
     if await db.get(Organization, org_id) is None:
         db.add(Organization(id=org_id, name=org_id))
         await db.flush()
-    result = await db.execute(select(User).limit(1))
+    result = await db.execute(
+        select(User).where(User.org_id == org_id).limit(1)
+    )
     if result.scalar_one_or_none() is None:
         # In production the initial admin password must be supplied explicitly —
         # never silently seed the well-known admin/admin credential. In dev/demo
@@ -83,8 +85,23 @@ async def login(
 ):
     """Authenticate user and return JWT."""
     await _seed_admin(db)
-    account_key = await enforce_login_rate_limit(request, body.email, db)
-    result = await db.execute(select(User).where(User.email == body.email))
+    if tenancy_mode() == "multi" and not body.org_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="org_id is required for local login in multi-tenant mode",
+        )
+    login_org = body.org_id or configured_org_id()
+    account_key = await enforce_login_rate_limit(
+        request,
+        f"{login_org}:{body.email}",
+        db,
+    )
+    result = await db.execute(
+        select(User).where(
+            User.org_id == login_org,
+            User.email == body.email,
+        )
+    )
     user = result.scalar_one_or_none()
     if (
         not user
@@ -120,7 +137,13 @@ async def register(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=str(exc),
         ) from exc
-    existing = await db.execute(select(User).where(User.email == body.email))
+    user_org = getattr(user, "tenant_id", None) or configured_org_id()
+    existing = await db.execute(
+        select(User).where(
+            User.org_id == user_org,
+            User.email == body.email,
+        )
+    )
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
     new_user = User(
@@ -130,7 +153,7 @@ async def register(
         role=body.role,
         is_active=True,
         # New users join the creating admin's org.
-        org_id=getattr(user, "tenant_id", None) or configured_org_id(),
+        org_id=user_org,
     )
     db.add(new_user)
     await db.flush()

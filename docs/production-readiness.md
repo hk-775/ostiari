@@ -7,15 +7,14 @@ hardening work. It is intentionally narrower than the feature roadmap.
 
 The current deployment contract supports:
 
-- one explicitly configured tenant (`OSTIARI_TENANCY_MODE=single`);
+- a multi-tenant control plane with tenant-qualified natural keys, foreign
+  keys, idempotency constraints, users, wallets, policies, and audit chains;
+- gateways assigned to one explicit tenant per deployment;
 - multiple control-plane replicas backed by PostgreSQL and Redis;
 - multiple gateway replicas backed by Redis;
 - OIDC-authenticated agent traffic with an exact issuer, audience, and tenant;
 - immutable application image references;
 - x402 disabled or configured for live settlement.
-
-Do not advertise multi-tenant SaaS until the corresponding item below is
-complete.
 
 ## Completed in Ostiari
 
@@ -49,6 +48,11 @@ complete.
   are assigned atomically, and singleton health sweeps use a Redis lease.
   Production rate limiting and `/api/ready` fail closed when Redis or replica
   synchronization is unhealthy.
+- Reusable gateway, wallet, user, policy, usage, and payment identifiers are
+  tenant-qualified in SQL. Gateway child foreign keys include the tenant,
+  machine and user lookups always scope by verified tenant identity, and audit
+  chains have independent per-tenant heads. Multi-tenant tokens without an
+  explicit tenant claim are rejected.
 - Gateway callback destinations are restricted to an explicit hostname/CIDR
   allowlist and may never target link-local metadata addresses.
 - Production manifests run migrations first, use non-root/read-only containers,
@@ -70,34 +74,30 @@ complete.
 
 ## Remaining Ostiari gates
 
-1. **Multi-tenant schema.** Several legacy tables still use globally scoped
-   primary or unique keys. Convert them to tenant-qualified constraints before
-   changing production tenancy mode from `single`.
-
-2. **Registry and image publication authorization.** The workflow now publishes
+1. **Registry and image publication authorization.** The workflow now publishes
    the complete Python release set, but the maintainers must configure and test
    trusted-publisher ownership for all four package names and publish signed,
    digest-pinned platform images before claiming a public package/container
    install path.
 
-3. **Codex CLI conformance.** The stateless Responses subset is implemented,
+2. **Codex CLI conformance.** The stateless Responses subset is implemented,
    but current Codex uses the Responses wire API and may send reasoning or
    stateful fields that Ostiari deliberately rejects. Capture a supported Codex
    version and pass request, tool, streaming, cancellation, and error-shape
    conformance before advertising Codex compatibility.
 
-4. **Immutable upstream inputs.** Pin the remaining Docker base images by
+3. **Immutable upstream inputs.** Pin the remaining Docker base images by
    verified digest and GitHub Actions by verified commit SHA. The gateway and
    control-plane Python bases are already digest-pinned; frontend and local
    Redis inputs remain to be resolved from their official registries. Do not
    guess these values.
 
-5. **Retained production evidence.** Complete and archive dependency/container
+4. **Retained production evidence.** Complete and archive dependency/container
    scan results, load and failure tests, PostgreSQL backup restore, rollback,
    alarm delivery, authenticated canary, and capped live-payment evidence for
    the exact release digest.
 
-6. **Legal release approval.** Confirm authorization for repository copyright,
+5. **Legal release approval.** Confirm authorization for repository copyright,
    trademarks, and third-party notices before the public release.
 
 ## AxonLLM dependency record

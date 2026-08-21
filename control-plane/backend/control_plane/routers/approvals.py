@@ -27,7 +27,6 @@ from control_plane.auth.dependencies import get_current_org
 from control_plane.auth.workload import authorize_reported_gateway
 from control_plane.database import get_db
 from control_plane.models.database import ApprovalRecord
-from control_plane.models.scoping import org_of_gateway
 from control_plane.services.audit_service import actor_of, audit
 
 router = APIRouter(prefix="/api/approvals", tags=["approvals"])
@@ -127,9 +126,9 @@ async def _record_by_id(db: AsyncSession, approval_id: str) -> ApprovalRecord | 
 def _find(approval_id: str) -> tuple[str, Approval] | None:
     """Locate an approval by id across orgs, returning (org, approval).
 
-    Needed because the id-addressed routes are also the gateway's resume-check
-    path, and the gateway calls them without a user token (see
-    `_org_guard`) — so the org can't come from the caller.
+    Approval ids are generated server-side and globally collision-resistant.
+    The compatibility cache therefore remains id-addressable, while production
+    machine requests are additionally checked against their workload binding.
     """
     for org, byid in _pending.items():
         appr = byid.get(approval_id)
@@ -139,23 +138,22 @@ def _find(approval_id: str) -> tuple[str, Approval] | None:
 
 
 def _org_guard(request_org: str | None, owner_org: str) -> None:
-    """404 when a tokened caller from another org addresses this approval.
+    """404 when an authenticated caller from another org addresses an approval.
 
-    `request_org` is None for a tokenless caller — the gateway reporting or
-    polling its own approvals, which has no user token to scope by. Those are
-    allowed through (the demo posture, same as trace/usage ingest); a caller that
-    *did* present a token is held to its own org.
+    ``request_org`` is ``None`` only for development-only tokenless gateway
+    compatibility. Production gateway requests carry workload identity and are
+    separately checked against the persisted gateway binding.
     """
     if request_org is not None and request_org != owner_org:
         raise HTTPException(status_code=404, detail="Approval not found")
 
 
 def _tokenless(headers) -> bool:
-    """True when no Bearer token was presented — i.e. a gateway, not a human.
+    """True when no Bearer token was presented.
 
     `get_current_org` collapses "no token" to "default", so the org value alone
-    can't distinguish a gateway polling its own approval from a default-org user
-    reaching for another tenant's. The header is what tells them apart.
+    cannot distinguish the development compatibility path from a default-org
+    operator. Production machine endpoints require a Bearer workload token.
     """
     return not headers.get("Authorization", "").startswith("Bearer ")
 
@@ -168,12 +166,12 @@ async def create_approval(
 ) -> Approval:
     """Gateway calls this on an intervene-tier call — record it as pending.
 
-    The reporting gateway has no user token, so the owning org is derived from
-    its `gateways` row rather than from the caller or the payload.
+    The owning org is derived from the authorized gateway row rather than from
+    the caller-supplied payload.
     """
-    await authorize_reported_gateway(request, db, body.gateway_id)
+    gateway = await authorize_reported_gateway(request, db, body.gateway_id)
     aid = f"apr-{uuid.uuid4().hex[:12]}"
-    owner_org = await org_of_gateway(db, body.gateway_id)
+    owner_org = gateway.org_id if gateway is not None else "default"
     created_at = datetime.now(timezone.utc)
     record = ApprovalRecord(
         id=aid,
@@ -341,8 +339,8 @@ async def decide(request: Request, approval_id: str, body: Decision,
 def approval_status(approval_id: str) -> str | None:
     """Internal helper for the gateway resume-check. None if unknown.
 
-    Ids are globally unique, so this looks up across orgs — it is called on the
-    gateway's behalf, which has no user org to scope by.
+    Approval ids are generated server-side and globally collision-resistant, so
+    the in-process compatibility helper can look up the cache by id.
     """
     found = _find(approval_id)
     return found[1].status if found else None

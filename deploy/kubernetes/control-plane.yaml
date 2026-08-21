@@ -74,7 +74,7 @@ spec:
             - name: OSTIARI_NO_DEMO
               value: "1"
             - name: OSTIARI_TENANCY_MODE
-              value: "single"
+              value: "multi"
             - name: OSTIARI_ORG_ID
               value: "REPLACE_ORG_ID"
             - name: OSTIARI_CONTROL_PLANE_REPLICAS
