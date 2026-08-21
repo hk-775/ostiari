@@ -1,0 +1,51 @@
+services:
+  demo-tools:
+    image: ostiari-demo-tools:dev
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.demo
+    command: ["python", "demo_tools_server.py"]
+    ports:
+      - "${OSTIARI_DEMO_TOOLS_PORT:-9300}:9300"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:9300/health', timeout=4).read()",
+        ]
+      interval: 5s
+      timeout: 4s
+      retries: 6
+    restart: unless-stopped
+
+  demo-seed:
+    image: ostiari-demo-tools:dev
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.demo
+    command:
+      [
+        "/bin/sh",
+        "-c",
+        "python register_demo_tools.py && python register_demo_payments.py",
+      ]
+    environment:
+      OSTIARI_CONTROL_PLANE_URL: "http://control-plane-backend:8400"
+      OSTIARI_GATEWAY_URL: "http://gateway:8421"
+      OSTIARI_DEMO_TOOLS_URL: "http://demo-tools:9300"
+      OSTIARI_GATEWAY_ID: "${OSTIARI_GATEWAY_ID:-crm-agent}"
+    depends_on:
+      control-plane-backend:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy
+      demo-tools:
+        condition: service_healthy
+    restart: "no"

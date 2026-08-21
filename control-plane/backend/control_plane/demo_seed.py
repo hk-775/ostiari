@@ -14,6 +14,7 @@ or when register_demo_mcp.py pushes them to a running gateway.
 from __future__ import annotations
 
 import logging
+import os
 import random
 import shutil
 from datetime import datetime, timedelta, timezone
@@ -21,7 +22,15 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from control_plane.models.database import McpServer, PaymentRecord, UsageRecord, Wallet
+from control_plane.models.database import (
+    Gateway,
+    McpServer,
+    PaymentRecord,
+    Policy,
+    Tool,
+    UsageRecord,
+    Wallet,
+)
 
 log = logging.getLogger("control_plane.demo_seed")
 
@@ -32,6 +41,90 @@ _AGENTS_VOL = {
 }
 _MODELS = ["claude-haiku", "gpt-4o-mini", "claude-sonnet", "gpt-4o"]
 _TOOLS = ["web_search", "db_query", "send_email", "github.search_code", "file_read"]
+_DEMO_GATEWAYS = (
+    ("crm-agent", "CRM Agent"),
+    ("ops-agent", "Operations Agent"),
+    ("devops-agent", "DevOps Agent"),
+    ("analytics-agent", "Analytics Agent"),
+)
+
+
+def _tool_schema(*required: str) -> dict:
+    return {
+        "type": "object",
+        "properties": {name: {"type": "string"} for name in required},
+        "required": list(required),
+    }
+
+
+_DEMO_TOOL_DEFINITIONS = (
+    ("web_search", "web_search", "Search the web for information.", _tool_schema("query")),
+    ("db_query", "db_query", "Run a read-only SQL query.", _tool_schema("sql")),
+    ("send_email", "send_email", "Send an email.", _tool_schema("to", "subject", "body")),
+    ("github.list_repos", "github.list_repos", "List GitHub repositories.", _tool_schema()),
+    ("github.search_code", "github.search_code", "Search source code.", _tool_schema("query")),
+    ("github.create_issue", "github.create_issue", "Create a GitHub issue.",
+     _tool_schema("repo", "title", "body")),
+    ("drawio.list_diagrams", "drawio.list_diagrams", "List diagrams.", _tool_schema()),
+    ("drawio.create_diagram", "drawio.create_diagram", "Create a diagram.",
+     _tool_schema("name")),
+    ("drawio.add_shape", "drawio.add_shape", "Add a shape to a diagram.",
+     _tool_schema("diagram_id", "shape", "label")),
+    ("db_delete", "db_delete", "Delete rows from a database table.", _tool_schema("table")),
+    ("github.delete_repo", "github.delete_repo", "Delete a GitHub repository.",
+     _tool_schema("repo")),
+    ("drawio.delete_diagram", "drawio.delete_diagram", "Delete a diagram.",
+     _tool_schema("id")),
+    ("premium_search", "premium_search", "Run a paid premium search.", _tool_schema("query")),
+    ("market_data.fetch", "premium_search", "Fetch paid market data.", _tool_schema("query")),
+)
+
+
+async def seed_demo_gateways_and_tools(db: AsyncSession) -> None:
+    """Seed FK-safe gateway rows and functional HTTP demo tools."""
+    from control_plane.models.database import DEFAULT_ORG
+
+    gateway_url = os.environ.get(
+        "OSTIARI_DEMO_GATEWAY_URL", "http://localhost:8421"
+    ).rstrip("/")
+    tools_url = os.environ.get(
+        "OSTIARI_DEMO_TOOLS_URL", "http://localhost:9300"
+    ).rstrip("/")
+
+    for gateway_id, name in _DEMO_GATEWAYS:
+        if await db.get(Gateway, (DEFAULT_ORG, gateway_id)) is None:
+            endpoint = gateway_url if gateway_id == "crm-agent" else f"http://{gateway_id}:8421"
+            db.add(Gateway(
+                id=gateway_id, org_id=DEFAULT_ORG, name=name, endpoint=endpoint,
+                description="Seeded Ostiari demo gateway", status="registered",
+            ))
+    await db.flush()
+
+    existing_tools = set((await db.execute(
+        select(Tool.name).where(
+            Tool.org_id == DEFAULT_ORG, Tool.gateway_id == "crm-agent",
+        )
+    )).scalars())
+    for name, path, description, schema in _DEMO_TOOL_DEFINITIONS:
+        if name not in existing_tools:
+            db.add(Tool(
+                org_id=DEFAULT_ORG, gateway_id="crm-agent", name=name,
+                endpoint=f"{tools_url}/{path}", method="POST",
+                description=description, schema_json=schema,
+            ))
+
+    policy = (await db.execute(select(Policy).where(
+        Policy.org_id == DEFAULT_ORG, Policy.name == "block-destructive",
+    ))).scalar_one_or_none()
+    if policy is None:
+        db.add(Policy(
+            org_id=DEFAULT_ORG, name="block-destructive",
+            description="Block destructive calls in the demo gateway",
+            content={"block": ["*delete*", "*.drop", "*.destroy", "db_delete"]},
+            gateway_id="crm-agent", is_active=True,
+        ))
+    await db.commit()
+    log.info("Seeded demo gateways and HTTP tools")
 
 
 # Real MCP servers to seed on crm-agent. `command` is filled in at seed time
@@ -99,6 +192,7 @@ async def seed_demo_db(db: AsyncSession) -> None:
         db.add(Organization(id=DEFAULT_ORG, name="Default Organization"))
         await db.commit()
 
+    await seed_demo_gateways_and_tools(db)
     await seed_demo_mcp(db)
     await seed_demo_payments(db)
 

@@ -12,13 +12,14 @@ Idempotent: removes existing same-named tools per gateway, re-adds pointing at
 gateways are up (the Makefile runs it in demo-full).
 """
 
+import os
 import sys
 import time
 import urllib.error
 import urllib.request
 
-CONTROL_PLANE = "http://localhost:8400"
-DEMO_TOOLS = "http://localhost:9300"
+CONTROL_PLANE = os.environ.get("OSTIARI_CONTROL_PLANE_URL", "http://localhost:8400").rstrip("/")
+DEMO_TOOLS = os.environ.get("OSTIARI_DEMO_TOOLS_URL", "http://localhost:9300").rstrip("/")
 
 # Each gateway gets a role-appropriate set of tools. All point at real demo
 # endpoints so calls return canned-but-useful data. Destructive tools are

@@ -1,6 +1,175 @@
 # Ostiari Deployment Guide
 
+## Recommended launcher
+
+`./deploy/ostiari` is the supported adopter path. It provides one profile model,
+waits for readiness, verifies deployed endpoints, and keeps generated state under
+`.ostiari/deployments/`.
+
+| Profile | Data | AgentCore | Intended use |
+|---|---:|---:|---|
+| `local-demo` | Seeded | No | First run and evaluation |
+| `local-empty` | Empty | No | Local integration work |
+| `aws-demo` | Seeded | No | AWS evaluation |
+| `aws-empty` | Empty | No | Clean AWS integration |
+| `aws-agentcore-demo` | Seeded | Yes | AgentCore evaluation |
+| `aws-agentcore-empty` | Empty | Yes | Clean AgentCore integration |
+| `production` | Empty | No | Hardened production |
+| `production-agentcore` | Empty | Yes | Hardened production with AgentCore |
+
+List these at any time:
+
+```bash
+./deploy/ostiari profiles
+```
+
+### Local
+
+Docker Compose builds the gateway with embedded AxonLLM, control plane,
+dashboard, and Valkey. The demo profile also starts functional demo tools and an
+idempotent seed job.
+
+```bash
+./deploy/ostiari local up --profile local-demo
+./deploy/ostiari local status --profile local-demo
+./deploy/ostiari local logs --profile local-demo --follow
+./deploy/ostiari local down --profile local-demo
+```
+
+For an empty database:
+
+```bash
+./deploy/ostiari local up --profile local-empty
+```
+
+Use `--gateway-port`, `--control-plane-port`, `--frontend-port`,
+`--demo-tools-port`, and `--redis-port` when the defaults are occupied.
+
+### AWS evaluation
+
+Prerequisites are AWS CLI v2 credentials, Docker Buildx, Node.js 22+, and enough
+quota for the selected profile. The launcher installs its pinned CDK dependencies
+in `deploy/aws/.venv` and `deploy/aws/node_modules`, bootstraps CDK idempotently,
+and limits public access to the caller's current `/32` by default.
+
+```bash
+aws login
+./deploy/ostiari aws plan --profile aws-demo --name evaluation --region us-east-1
+./deploy/ostiari aws deploy --profile aws-demo --name evaluation --region us-east-1
+```
+
+Change `aws-demo` to `aws-empty`, `aws-agentcore-demo`, or
+`aws-agentcore-empty`. AgentCore profiles deploy the same operational Ostiari
+gateway and control plane plus an IAM-authorized AgentCore HTTP runtime that
+routes validation through the private gateway. The gateway is not replaced by
+AgentCore because registration, heartbeat, config push, and durable reporting
+are gateway lifecycle contracts.
+
+The AWS stack creates:
+
+- a two-AZ VPC and private service discovery;
+- ECS/Fargate control plane, gateway, and dashboard services;
+- encrypted PostgreSQL and serverless Valkey;
+- an internet-facing ALB restricted to the configured CIDRs;
+- CloudWatch logs and deployment circuit breakers;
+- optional demo tools and optional Bedrock AgentCore runtime.
+
+Remove an evaluation stack with:
+
+```bash
+./deploy/ostiari aws destroy --profile aws-demo --name evaluation --yes
+```
+
+### Production
+
+Production is deliberately two-phase: prepare immutable artifacts and
+configuration, then create and review a CloudFormation change set before
+execution.
+
+1. Publish architecture-correct, immutable ECR images from a clean release
+   commit:
+
+   ```bash
+   ./deploy/ostiari aws publish-images \
+     --name production \
+     --region us-east-1
+   ```
+
+   Add `--include-agentcore` for `production-agentcore`. The command creates
+   immutable, scan-on-push ECR repositories, publishes provenance/SBOM
+   attestations, and writes digest-pinned URIs to
+   `.ostiari/deployments/production/images.json`.
+
+2. Provision the external identity contracts: one OAuth client for gateway
+   workload identity, an agent-token issuer/audience, and a separate agent
+   client for AgentCore when enabled. Create an issued ACM certificate and put
+   the required secret values in AWS Secrets Manager. Secret values are never
+   stored in deployment JSON.
+
+3. Start from `deploy/aws/examples/production.json` or
+   `production-agentcore.json`. Replace every placeholder, use the image URIs
+   produced in step 1, and pass the resulting file to all production commands.
+   Set `allowed_cidrs` to the operator, VPN, or reverse-proxy ranges that should
+   reach the ALB. Fernet encryption keys must be URL-safe base64 encodings of
+   exactly 32 random bytes.
+
+4. Run preflight, synthesize the plan, and prepare the change set:
+
+   ```bash
+   ./deploy/ostiari aws preflight \
+     --profile production --name production --region us-east-1 \
+     --config /path/to/production.json
+
+   ./deploy/ostiari aws plan \
+     --profile production --name production --region us-east-1 \
+     --config /path/to/production.json
+
+   ./deploy/ostiari aws deploy \
+     --profile production --name production --region us-east-1 \
+     --config /path/to/production.json
+   ```
+
+   `deploy` does not execute production changes. It saves the complete reviewed
+   change-set response under `.ostiari/deployments/production/` and prints the
+   exact `aws execute` command. Execution is blocked when CloudFormation reports
+   resource replacement unless `--allow-replacements` is explicitly supplied.
+
+Production adds multi-AZ PostgreSQL, two NAT gateways, autoscaling, ALB access
+logs, WAF rate limiting, alarms, TLS-only ingress, retained state, deletion
+protection, and stack termination protection. It refuses demo data, mutable
+images, partial secret ARNs, non-HTTPS identity endpoints, or insecure runtime
+posture.
+
+### Operations
+
+```bash
+./deploy/ostiari aws status --name evaluation --region us-east-1
+./deploy/ostiari aws preflight --profile aws-demo --name evaluation
+```
+
+The preflight catches known failed-stack states and checks Elastic IP quota
+before profiles create NAT gateways. Production preflight also verifies every
+Secrets Manager ARN, ACM certificate, and ECR image digest without retrieving
+secret values.
+
+After an AWS deployment, the launcher prints the dashboard URL, the admin email,
+and an exact Secrets Manager command for retrieving the generated password. It
+never retrieves or writes that password itself.
+
+## Still external by design
+
+The launcher does not provision an identity provider or DNS registrar, approve
+AWS service-quota increases, or automate destructive production teardown. It
+also does not replace retained production rehearsals for restore, rollback,
+alarm delivery, authenticated canaries, load/failure behavior, and live payment
+caps. Official signed public images, private-only/existing-VPC installs,
+multi-region disaster recovery, and air-gapped packaging remain separate release
+or enterprise deployment tracks.
+
 ## Deployment Options
+
+The following lower-level templates remain supported for teams that already
+operate their own platform tooling.
 
 ### Docker Compose (Local Development)
 

@@ -57,6 +57,15 @@ The current deployment contract supports:
   allowlist and may never target link-local metadata addresses.
 - Production manifests run migrations first, use non-root/read-only containers,
   separate liveness from readiness, and require digest-pinned application images.
+- The adopter deployment CLI provides seeded and empty local/AWS profiles,
+  optional AgentCore integration, serialized PostgreSQL migrations, managed
+  PostgreSQL/Valkey, readiness verification, AWS quota/artifact preflight, and a
+  production change-set review boundary. CI synthesizes and validates every
+  profile.
+- The production image publisher creates immutable scan-on-push ECR
+  repositories, builds the ECS images for AMD64 and AgentCore for ARM64, emits
+  provenance/SBOM attestations, and records manifest-digest image URIs without
+  storing secret values.
 - AxonLLM `v0.3.1` is bundled under `vendor/axonllm`, installed in source and
   container builds, initialized through its public embedded router API, and
   required automatically for production LLM traffic.
@@ -94,11 +103,11 @@ The current deployment contract supports:
 
 ## Remaining Ostiari gates
 
-1. **Registry and image publication authorization.** The workflow now publishes
-   the complete Python release set, but the maintainers must configure and test
-   trusted-publisher ownership for all four package names and publish signed,
-   digest-pinned platform images before claiming a public package/container
-   install path.
+1. **Official registry authorization and signing.** Adopters can publish
+   digest-pinned images into their own ECR account with the deployment CLI, but
+   maintainers must still configure trusted official registries, sign the public
+   images, and retain their transparency-log evidence before claiming a
+   maintainer-hosted container install path.
 
 2. **Run the retained production-evidence gate.** The verifier and protected
    90-day retention workflow are complete. Before release approval, execute the
