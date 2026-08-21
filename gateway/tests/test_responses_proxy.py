@@ -306,6 +306,7 @@ class TestTranslation:
             ("include", ["message.output_text.logprobs"]),
             ("include", ["reasoning.encrypted_content"]),
             ("max_tool_calls", 1),
+            ("parallel_tool_calls", "false"),
             ("service_tier", "priority"),
         ],
     )
@@ -376,9 +377,48 @@ class TestTranslation:
                     "input": "ping",
                     "reasoning": {"context": "all_turns"},
                     "include": ["reasoning.encrypted_content"],
+                    "parallel_tool_calls": False,
                 },
             )
         assert response.status_code == 200
+
+    def test_single_tool_mode_fails_closed_on_multiple_upstream_calls(self):
+        async def _route(self_inner, **kwargs):
+            return _route_result(
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "first", "arguments": "{}"},
+                    },
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {"name": "second", "arguments": "{}"},
+                    },
+                ]
+            )
+
+        client = _app()
+        with patch(
+            "ostiari_gateway.modules.llm_gateway.axon_router.AxonRouter.available",
+            True,
+        ), patch(
+            "ostiari_gateway.modules.llm_gateway.axon_router.AxonRouter.route",
+            new=_route,
+        ):
+            response = client.post(
+                "/v1/responses",
+                headers={"X-Agent-Id": "codex"},
+                json={
+                    "model": "gpt-4o",
+                    "input": "ping",
+                    "parallel_tool_calls": False,
+                },
+            )
+
+        assert response.status_code == 502
+        assert "parallel_tool_calls=false" in response.json()["error"]["message"]
 
 
 class TestGovernance:

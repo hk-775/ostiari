@@ -202,7 +202,9 @@ execution, and unsupported reasoning/structured-output options rather than
 silently changing their semantics. The pinned Codex profile may send
 `reasoning.context="all_turns"` with
 `include=["reasoning.encrypted_content"]`; Ostiari accepts that pair as opaque
-stateless transport metadata without enabling model reasoning.
+stateless transport metadata without enabling model reasoning. Its
+`parallel_tool_calls=false` request is enforced at the response boundary:
+multiple upstream function calls fail closed.
 
 Codex CLI `0.148.0` is supported through the pinned profile under
 `config/codex`. The profile disables reasoning, verbosity, hosted-search,

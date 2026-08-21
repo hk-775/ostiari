@@ -81,7 +81,9 @@ The current deployment contract supports:
   continue to fail closed. Codex's no-op `effort/summary = none` shape and its
   exact stateless encrypted-context transport pair
   (`context=all_turns`, `include=reasoning.encrypted_content`) are accepted
-  without generating or persisting reasoning content.
+  without generating or persisting reasoning content. Codex's
+  `parallel_tool_calls=false` contract is enforced by rejecting any upstream
+  response containing multiple function calls.
 - A protected retention workflow verifies seven production-rehearsal evidence
   classes against the exact release commit and deployed image digests. It
   rejects stale, incomplete, mismatched, over-budget, or threshold-violating

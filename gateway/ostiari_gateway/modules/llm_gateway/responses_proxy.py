@@ -317,10 +317,12 @@ def _translate(body: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     for field in ("max_tool_calls", "service_tier"):
         if body.get(field) is not None:
             raise ResponsesRequestError(f"Field '{field}' is not supported.")
-    if body.get("parallel_tool_calls") is False:
-        raise ResponsesRequestError(
-            "Disabling parallel tool calls is not supported yet."
-        )
+    parallel_tool_calls = body.get("parallel_tool_calls")
+    if parallel_tool_calls is not None and not isinstance(
+        parallel_tool_calls,
+        bool,
+    ):
+        raise ResponsesRequestError("Field 'parallel_tool_calls' must be a boolean.")
     if body.get("truncation") not in (None, "disabled"):
         raise ResponsesRequestError("Only truncation='disabled' is supported.")
     if "input" not in body:
@@ -510,6 +512,16 @@ def _response_from_completion(
     )
 
 
+def _tool_call_count(completion: dict[str, Any]) -> int:
+    choices = completion.get("choices")
+    choice = choices[0] if isinstance(choices, list) and choices else {}
+    message = choice.get("message") if isinstance(choice, dict) else {}
+    if not isinstance(message, dict):
+        return 0
+    tool_calls = message.get("tool_calls")
+    return len(tool_calls) if isinstance(tool_calls, list) else 0
+
+
 def _sse(response: dict[str, Any]):
     sequence_number = 0
 
@@ -650,6 +662,16 @@ class ResponsesProxy:
             return _err(502, "Invalid governed router response", "api_error")
         if not isinstance(completion, dict):
             return _err(502, "Invalid governed router response", "api_error")
+        if (
+            body.get("parallel_tool_calls") is False
+            and _tool_call_count(completion) > 1
+        ):
+            return _err(
+                502,
+                "Upstream returned multiple tool calls while "
+                "parallel_tool_calls=false.",
+                "api_error",
+            )
 
         response = _response_from_completion(body, completion)
         if not streaming:

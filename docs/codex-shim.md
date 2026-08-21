@@ -62,6 +62,10 @@ stateless encrypted context metadata. Ostiari does not inspect, persist,
 generate, or return reasoning content. Failing closed on every other shape is
 intentional.
 
+Codex also sends `parallel_tool_calls=false`. Ostiari accepts that single-tool
+contract and rejects the governed upstream response if a provider returns more
+than one function call.
+
 ## Chat Completions clients
 
 Clients that support Chat Completions can use:
