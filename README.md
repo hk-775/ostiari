@@ -25,29 +25,32 @@ all of it from one dashboard.
 
 ## See it in 90 seconds
 
-The complete source platform requires Python 3.11+ and Node.js 24.16.0. The
-standalone Guard library continues to support Python 3.10+.
+The fastest path needs Docker and Python 3.11+; the launcher installs no Python
+packages on the host.
 
 ```bash
 git clone https://github.com/hk-775/ostiari.git
 cd ostiari
-make install       # Core, AxonLLM, gateway, control plane, and frontend
-make demo-full     # control plane + 4 gateways + demo tools, all seeded
+./deploy/ostiari local up --profile local-demo
 ```
 
 Open **http://localhost:9000** and click **Sign in** — the demo admin
 (`admin@ostiari.ai` / `admin`) is prefilled. You'll land on a fully-populated
-dashboard: four agent gateways governing real tool calls, live traces streaming,
-blocked destructive actions, MCP servers, agent-to-agent delegation, quotas with
-live budget bars, a human-approval queue, payments, and ROI — no setup, no mock
-data.
+dashboard with a governed gateway executing real demo tool calls, live traces,
+blocked destructive actions, quotas with live budget bars, a human-approval
+queue, payments, and ROI — no manual setup.
 
-> Everything in the demo is **real**: the gateways actually proxy and govern
-> live tool calls (a `db_delete` really gets blocked with a 403), the MCP
-> servers really run (`npx` draw.io + filesystem), and one agent really
-> delegates to another. The demo deliberately keeps external money movement
-> simulated; production deployments can opt into x402 v2 settlement and Stripe
-> Billing without changing the governance flow.
+> The Docker demo tools are live HTTP services: the gateway actually proxies
+> allowed calls and blocks destructive calls before execution. The larger
+> source-development demo adds real `npx` MCP servers and agent-to-agent
+> delegation. Both deliberately keep external money movement simulated;
+> production can opt into x402 v2 settlement and Stripe Billing without
+> changing the governance flow.
+
+Start without sample data by changing the profile to `local-empty`. For the
+larger four-gateway source-development demo, use `make install && make demo-full`.
+AWS, AgentCore, and production commands are in
+[`deploy/README.md`](deploy/README.md).
 
 **New here?** Read [`docs/control-plane-guide.md`](docs/control-plane-guide.md)
 — a complete, novice-friendly tour of the control plane with architecture

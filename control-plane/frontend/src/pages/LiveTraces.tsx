@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Radio, Pause, Play, Trash2, ChevronDown, ChevronRight } from "lucide-react";
 import { useAuthStore } from "../stores/authStore";
-import { fetchAPI } from "../lib/api";
+import { fetchAPI, websocketBase } from "../lib/api";
 
-const WS_URL = (import.meta.env.VITE_API_URL || "http://localhost:8400").replace("http", "ws");
+const WS_URL = websocketBase();
 
 interface TraceEvent {
   trace_id: string;
