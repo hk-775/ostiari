@@ -432,14 +432,22 @@ def _assert_request_contract(requests: list[dict[str, Any]]) -> None:
         if first.get(field) not in (None, {}):
             raise AssertionError(f"unsupported field sent by Codex: {field}")
     reasoning = first.get("reasoning")
+    include = first.get("include")
     if reasoning not in (None, {}) and (
         not isinstance(reasoning, dict)
         or not reasoning
-        or not set(reasoning) <= {"effort", "summary"}
-        or any(value not in (None, "none") for value in reasoning.values())
+        or not set(reasoning) <= {"context", "effort", "summary"}
+        or reasoning.get("context") not in (None, "all_turns")
+        or any(reasoning.get(field) not in (None, "none") for field in ("effort", "summary"))
     ):
-        raise AssertionError("Codex requested non-empty reasoning")
-    if first.get("include") not in (None, []):
+        raise AssertionError("Codex requested unsupported reasoning metadata")
+    reasoning_context = reasoning.get("context") if isinstance(reasoning, dict) else None
+    if reasoning_context == "all_turns":
+        if include != ["reasoning.encrypted_content"]:
+            raise AssertionError(
+                "Codex omitted encrypted reasoning transport metadata"
+            )
+    elif include not in (None, []):
         raise AssertionError("Codex requested unsupported include fields")
     if not isinstance(first.get("tools"), list) or not first["tools"]:
         raise AssertionError("Codex request did not include tools")
@@ -448,6 +456,22 @@ def _assert_request_contract(requests: list[dict[str, Any]]) -> None:
         for item in success[-1].get("input", [])
     ):
         raise AssertionError("Codex did not return the tool output")
+
+
+def _request_diagnostics(requests: list[dict[str, Any]]) -> str:
+    safe_fields = (
+        "model",
+        "reasoning",
+        "include",
+        "service_tier",
+        "store",
+        "stream",
+    )
+    sanitized = [
+        {field: request.get(field) for field in safe_fields if field in request}
+        for request in requests
+    ]
+    return json.dumps(sanitized, sort_keys=True, separators=(",", ":"))
 
 
 def _run_success(
@@ -579,21 +603,27 @@ def main() -> None:
             environment = _environment(codex_home)
 
             success_output = root / "success.txt"
-            _run_success(
-                _codex_command(
-                    codex_bin=codex_bin,
-                    catalog=catalog,
-                    workspace=workspace,
-                    port=server.server_port,
-                    output=success_output,
-                    prompt=(
-                        f"{SUCCESS_PROMPT}: use one harmless shell tool, then "
-                        "return the server-provided final answer."
+            try:
+                _run_success(
+                    _codex_command(
+                        codex_bin=codex_bin,
+                        catalog=catalog,
+                        workspace=workspace,
+                        port=server.server_port,
+                        output=success_output,
+                        prompt=(
+                            f"{SUCCESS_PROMPT}: use one harmless shell tool, then "
+                            "return the server-provided final answer."
+                        ),
                     ),
-                ),
-                environment=environment,
-                output=success_output,
-            )
+                    environment=environment,
+                    output=success_output,
+                )
+            except AssertionError as exc:
+                raise AssertionError(
+                    f"{exc}\nrequest metadata:\n"
+                    f"{_request_diagnostics(state.snapshot())}"
+                ) from exc
             _assert_request_contract(state.snapshot())
 
             _run_error(
