@@ -44,6 +44,7 @@ LIVE_EVIDENCE_KINDS = {
 FRONTEND_TESTS = {
     "control-plane/frontend/tests/api.test.ts",
     "control-plane/frontend/tests/authStore.test.ts",
+    "control-plane/frontend/tests/efficiency.test.ts",
     "control-plane/frontend/tests/layout.test.tsx",
     "control-plane/frontend/tests/sandboxRunner.test.ts",
     "control-plane/frontend/tests/sso.test.ts",

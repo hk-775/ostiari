@@ -176,6 +176,7 @@
         "control-plane/backend/tests/test_provider_routes.py",
         "control-plane/frontend/tests/api.test.ts",
         "control-plane/frontend/tests/authStore.test.ts",
+        "control-plane/frontend/tests/efficiency.test.ts",
         "control-plane/frontend/tests/layout.test.tsx",
         "control-plane/frontend/tests/sso.test.ts"
       ],
@@ -224,6 +225,7 @@
       "automated_tests": [
         "control-plane/frontend/tests/api.test.ts",
         "control-plane/frontend/tests/authStore.test.ts",
+        "control-plane/frontend/tests/efficiency.test.ts",
         "control-plane/frontend/tests/layout.test.tsx",
         "control-plane/frontend/tests/sandboxRunner.test.ts",
         "control-plane/frontend/tests/sso.test.ts"
