@@ -79,6 +79,8 @@ class DeploymentConfig:
     profile: str
     account: str
     region: str
+    availability_zone_ids: tuple[str, ...]
+    availability_zones: tuple[str, ...]
     demo: bool
     agentcore: bool
     production: bool
@@ -159,6 +161,37 @@ class DeploymentConfig:
         if not allowed_cidrs:
             raise ConfigurationError("at least one allowed CIDR is required")
 
+        zone_ids_raw = raw.get("availability_zone_ids", [])
+        zones_raw = raw.get("availability_zones", [])
+        if not isinstance(zone_ids_raw, list):
+            raise ConfigurationError("availability_zone_ids must be an array")
+        if not isinstance(zones_raw, list):
+            raise ConfigurationError("availability_zones must be an array")
+        availability_zone_ids = tuple(str(value).strip() for value in zone_ids_raw)
+        availability_zones = tuple(str(value).strip() for value in zones_raw)
+        if any(not value for value in (*availability_zone_ids, *availability_zones)):
+            raise ConfigurationError("availability-zone values may not be empty")
+        if len(set(availability_zone_ids)) != len(availability_zone_ids):
+            raise ConfigurationError("availability_zone_ids must be unique")
+        if len(set(availability_zones)) != len(availability_zones):
+            raise ConfigurationError("availability_zones must be unique")
+        if len(availability_zone_ids) != len(availability_zones):
+            raise ConfigurationError(
+                "availability_zone_ids and availability_zones must have the same length"
+            )
+        if any(
+            not re.fullmatch(r"[a-z0-9]+-az[0-9]+", zone_id) for zone_id in availability_zone_ids
+        ):
+            raise ConfigurationError("availability_zone_ids contains an invalid zone id")
+        if any(not re.fullmatch(rf"{re.escape(region)}[a-z]", zone) for zone in availability_zones):
+            raise ConfigurationError(
+                "availability_zones must contain account-specific names for the deployment region"
+            )
+        if agentcore and len(availability_zones) != 2:
+            raise ConfigurationError(
+                "AgentCore profiles require exactly two supported availability zones"
+            )
+
         org_id = str(raw.get("org_id", "default")).strip()
         if not _ORG.fullmatch(org_id):
             raise ConfigurationError("org_id has an invalid format")
@@ -168,6 +201,8 @@ class DeploymentConfig:
             profile=profile,
             account=account,
             region=region,
+            availability_zone_ids=availability_zone_ids,
+            availability_zones=availability_zones,
             demo=demo,
             agentcore=agentcore,
             production=production,

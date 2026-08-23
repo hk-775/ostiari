@@ -110,6 +110,13 @@ def main() -> int:
                 "agentcore": agentcore,
                 "production": production,
             }
+            if agentcore or production:
+                config.update(
+                    {
+                        "availability_zone_ids": ["use1-az1", "use1-az2"],
+                        "availability_zones": ["us-east-1c", "us-east-1d"],
+                    }
+                )
             if production:
                 config.update(_production(agentcore))
             config_path = root / f"{profile}.json"
@@ -137,6 +144,49 @@ def main() -> int:
             assert bool(demo_resources) is demo
             assert ("AWS::BedrockAgentCore::Runtime" in resource_types) is agentcore
             assert ("AWS::WAFv2::WebACL" in resource_types) is production
+            if config.get("availability_zones"):
+                subnet_zones = {
+                    resource["Properties"]["AvailabilityZone"]
+                    for resource in template["Resources"].values()
+                    if resource["Type"] == "AWS::EC2::Subnet"
+                }
+                assert subnet_zones == set(config["availability_zones"])
+            if agentcore:
+                execution_role_id, execution_role = next(
+                    (logical_id, resource)
+                    for logical_id, resource in template["Resources"].items()
+                    if resource["Type"] == "AWS::IAM::Role"
+                    and resource["Properties"]["AssumeRolePolicyDocument"]["Statement"][0][
+                        "Principal"
+                    ].get("Service")
+                    == "bedrock-agentcore.amazonaws.com"
+                )
+                trust = execution_role["Properties"]["AssumeRolePolicyDocument"]["Statement"][0]
+                assert {"StringEquals", "ArnLike"} <= set(trust["Condition"])
+                execution_policies = [
+                    resource
+                    for resource in template["Resources"].values()
+                    if resource["Type"] == "AWS::IAM::Policy"
+                    and {"Ref": execution_role_id} in resource["Properties"]["Roles"]
+                ]
+                actions = {
+                    action
+                    for policy in execution_policies
+                    for statement in policy["Properties"]["PolicyDocument"]["Statement"]
+                    for action in (
+                        statement["Action"]
+                        if isinstance(statement["Action"], list)
+                        else [statement["Action"]]
+                    )
+                }
+                assert {
+                    "logs:PutResourcePolicy",
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents",
+                    "xray:PutTraceSegments",
+                    "cloudwatch:PutMetricData",
+                } <= actions
             if production:
                 assert template["Resources"][
                     next(
@@ -145,6 +195,37 @@ def main() -> int:
                         if value["Type"] == "AWS::ElasticLoadBalancingV2::LoadBalancer"
                     )
                 ]["Properties"]["LoadBalancerAttributes"]
+                required_ecr_actions = {
+                    "ecr:GetAuthorizationToken",
+                    "ecr:BatchCheckLayerAvailability",
+                    "ecr:GetDownloadUrlForLayer",
+                    "ecr:BatchGetImage",
+                }
+                for task_definition in (
+                    resource
+                    for resource in template["Resources"].values()
+                    if resource["Type"] == "AWS::ECS::TaskDefinition"
+                ):
+                    execution_role_id = task_definition["Properties"]["ExecutionRoleArn"][
+                        "Fn::GetAtt"
+                    ][0]
+                    execution_policies = [
+                        resource
+                        for resource in template["Resources"].values()
+                        if resource["Type"] == "AWS::IAM::Policy"
+                        and {"Ref": execution_role_id} in resource["Properties"]["Roles"]
+                    ]
+                    actions = {
+                        action
+                        for policy in execution_policies
+                        for statement in policy["Properties"]["PolicyDocument"]["Statement"]
+                        for action in (
+                            statement["Action"]
+                            if isinstance(statement["Action"], list)
+                            else [statement["Action"]]
+                        )
+                    }
+                    assert required_ecr_actions <= actions
             subprocess.run(
                 [
                     cfn_lint,
