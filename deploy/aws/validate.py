@@ -133,17 +133,71 @@ def main() -> int:
             subprocess.run([sys.executable, str(HERE / "app.py")], env=env, check=True)
             template_path = output / f"Ostiari-{name}.template.json"
             template = json.loads(template_path.read_text())
+            assets = json.loads(
+                (output / f"Ostiari-{name}.assets.json").read_text()
+            )
             resource_types = _types(template)
-            expected_services = 4 if demo else 3
+            expected_services = 7 if demo else 3
             assert resource_types.count("AWS::ECS::Service") == expected_services
+            assert resource_types.count("AWS::CloudFront::Distribution") == 1
+            assert resource_types.count("AWS::WAFv2::WebACL") == 1
+            assert resource_types.count("AWS::WAFv2::IPSet") >= 1
             demo_resources = [
                 logical_id
                 for logical_id in template["Resources"]
                 if logical_id.startswith("DemoTools")
             ]
             assert bool(demo_resources) is demo
+            control_task = next(
+                resource
+                for logical_id, resource in template["Resources"].items()
+                if logical_id.startswith("ControlPlaneTask")
+                and resource["Type"] == "AWS::ECS::TaskDefinition"
+            )
+            control_secret_names = {
+                secret["Name"]
+                for container in control_task["Properties"]["ContainerDefinitions"]
+                for secret in container.get("Secrets", [])
+            }
+            assert ("OSTIARI_ADMIN_PASSWORD" in control_secret_names) is (not demo)
+            outputs = template.get("Outputs", {})
+            assert ("DemoLoginEnabled" in outputs) is demo
+            assert ("AdminSecretArn" in outputs) is (not demo)
+            if not production:
+                frontend_asset = next(
+                    asset["source"]
+                    for asset in assets["dockerImages"].values()
+                    if asset["source"].get("dockerFile")
+                    == "deploy/docker/Dockerfile.frontend"
+                )
+                assert frontend_asset["dockerBuildArgs"]["VITE_DEMO_LOGIN"] == (
+                    "true" if demo else "false"
+                )
             assert ("AWS::BedrockAgentCore::Runtime" in resource_types) is agentcore
-            assert ("AWS::WAFv2::WebACL" in resource_types) is production
+            assert "CloudFrontDistributionId" in outputs
+            assert "CloudFrontDomainName" in outputs
+            prefix_list_rules = [
+                resource
+                for resource in template["Resources"].values()
+                if resource["Type"] == "AWS::EC2::SecurityGroupIngress"
+                and "SourcePrefixListId" in resource["Properties"]
+            ]
+            assert len(prefix_list_rules) == 1
+            if demo:
+                demo_gateway_ids = {
+                    environment["Value"]
+                    for resource in template["Resources"].values()
+                    if resource["Type"] == "AWS::ECS::TaskDefinition"
+                    for container in resource["Properties"]["ContainerDefinitions"]
+                    for environment in container.get("Environment", [])
+                    if environment["Name"] == "OSTIARI_GATEWAY_ID"
+                }
+                assert {
+                    "crm-agent",
+                    "ops-agent",
+                    "devops-agent",
+                    "analytics-agent",
+                } <= demo_gateway_ids
             if config.get("availability_zones"):
                 subnet_zones = {
                     resource["Properties"]["AvailabilityZone"]

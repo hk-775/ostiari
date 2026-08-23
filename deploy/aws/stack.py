@@ -12,12 +12,19 @@ from aws_cdk import (
     RemovalPolicy,
     Stack,
     Tags,
+    custom_resources,
 )
 from aws_cdk import (
     aws_bedrockagentcore as agentcore,
 )
 from aws_cdk import (
     aws_certificatemanager as acm,
+)
+from aws_cdk import (
+    aws_cloudfront as cloudfront,
+)
+from aws_cdk import (
+    aws_cloudfront_origins as cloudfront_origins,
 )
 from aws_cdk import (
     aws_cloudwatch as cloudwatch,
@@ -101,6 +108,7 @@ class OstiariStack(Stack):
         self._secrets()
         self._services()
         self._load_balancer()
+        self._cloudfront()
         if config.agentcore:
             self._agentcore()
         if config.production:
@@ -318,6 +326,21 @@ class OstiariStack(Stack):
             if self.config.production
             else None
         )
+        self.cloudfront_origin_secret = secretsmanager.Secret(
+            self,
+            "CloudFrontOriginSecret",
+            secret_name=f"ostiari/{self.config.name}/cloudfront-origin",
+            generate_secret_string=secretsmanager.SecretStringGenerator(
+                password_length=48,
+                exclude_punctuation=True,
+                include_space=False,
+            ),
+            removal_policy=(
+                RemovalPolicy.RETAIN
+                if self.config.production
+                else RemovalPolicy.DESTROY
+            ),
+        )
 
     def _image(
         self,
@@ -429,7 +452,11 @@ class OstiariStack(Stack):
             "OSTIARI_GATEWAY_CALLBACK_ALLOW": gateway_dns,
             "OSTIARI_GATEWAY_AGENT_ID": "ostiari-control-plane",
             "OSTIARI_DEMO_GATEWAY_URL": f"http://{gateway_dns}:8421",
+            "OSTIARI_DEMO_GATEWAY_DOMAIN": self.config.namespace,
             "OSTIARI_DEMO_TOOLS_URL": f"http://{demo_dns}:9300",
+            "OSTIARI_DEMO_MCP_BASE_URL": f"http://{demo_dns}:9300/mcp",
+            "OSTIARI_DEMO_A2A_BASE_URL": f"http://{demo_dns}:9300",
+            "OSTIARI_DEMO_AWS_REGION": self.config.region,
         }
         if self.config.production:
             dashboard_url = f"https://{self.config.domains['dashboard']}"
@@ -455,12 +482,15 @@ class OstiariStack(Stack):
                 self.database.secret, "password"
             ),
             "OSTIARI_JWT_SECRET": ecs.Secret.from_secrets_manager(self.jwt_secret),
-            "OSTIARI_ADMIN_PASSWORD": ecs.Secret.from_secrets_manager(self.admin_password),
             "OSTIARI_CONFIG_ADMIN_KEY": ecs.Secret.from_secrets_manager(self.config_admin_key),
             "OSTIARI_GATEWAY_AGENT_TOKEN": ecs.Secret.from_secrets_manager(
                 self.gateway_agent_token
             ),
         }
+        if not self.config.demo:
+            backend_secrets["OSTIARI_ADMIN_PASSWORD"] = ecs.Secret.from_secrets_manager(
+                self.admin_password
+            )
         if self.encryption_key:
             backend_secrets["OSTIARI_ENCRYPTION_KEY"] = ecs.Secret.from_secrets_manager(
                 self.encryption_key
@@ -588,7 +618,10 @@ class OstiariStack(Stack):
             image=self._image(
                 "frontend",
                 "deploy/docker/Dockerfile.frontend",
-                build_args={"VITE_API_URL": ""},
+                build_args={
+                    "VITE_API_URL": "",
+                    "VITE_DEMO_LOGIN": "true" if self.config.demo else "false",
+                },
             ),
             port_mappings=[ecs.PortMapping(container_port=9000, name="http")],
             logging=ecs.LogDrivers.aws_logs(stream_prefix="frontend", log_retention=retention),
@@ -622,6 +655,9 @@ class OstiariStack(Stack):
                 "demo-tools",
                 container_name="demo-tools",
                 image=self._image("demo", "deploy/docker/Dockerfile.demo"),
+                environment={
+                    "OSTIARI_DEMO_A2A_BASE_URL": f"http://{demo_dns}:9300",
+                },
                 port_mappings=[ecs.PortMapping(container_port=9300, name="http")],
                 logging=ecs.LogDrivers.aws_logs(
                     stream_prefix="demo-tools", log_retention=retention
@@ -651,6 +687,67 @@ class OstiariStack(Stack):
             )
             self.gateway_service.node.add_dependency(self.demo_service)
 
+            self.demo_gateway_services: list[ecs.FargateService] = []
+            for gateway_id, construct_prefix in (
+                ("ops-agent", "OpsAgent"),
+                ("devops-agent", "DevOpsAgent"),
+                ("analytics-agent", "AnalyticsAgent"),
+            ):
+                task = self._task_definition(
+                    f"{construct_prefix}GatewayTask",
+                    cpu=512,
+                    memory=1024,
+                )
+                container = task.add_container(
+                    f"{construct_prefix}Gateway",
+                    container_name="gateway",
+                    image=self._image("gateway", "deploy/docker/Dockerfile.gateway"),
+                    environment={
+                        **gateway_env,
+                        "OSTIARI_GATEWAY_ID": gateway_id,
+                        "OSTIARI_ADVERTISE_HOST": (
+                            f"{gateway_id}.{self.config.namespace}"
+                        ),
+                    },
+                    secrets=gateway_secrets,
+                    port_mappings=[
+                        ecs.PortMapping(container_port=8421, name="http")
+                    ],
+                    logging=ecs.LogDrivers.aws_logs(
+                        stream_prefix=gateway_id,
+                        log_retention=retention,
+                    ),
+                    health_check=ecs.HealthCheck(
+                        command=[
+                            "CMD-SHELL",
+                            'python -c "import urllib.request; '
+                            "urllib.request.urlopen('http://localhost:8421/health', "
+                            'timeout=4).read()" || exit 1',
+                        ],
+                        interval=Duration.seconds(30),
+                        timeout=Duration.seconds(5),
+                        retries=3,
+                        start_period=Duration.minutes(2),
+                    ),
+                    readonly_root_filesystem=True,
+                    user="10001",
+                )
+                service = self._service(
+                    f"{construct_prefix}GatewayService",
+                    task=task,
+                    security_group=self.gateway_sg,
+                    discovery_name=gateway_id,
+                    container=container,
+                    port=8421,
+                    desired_count=1,
+                )
+                service.node.add_dependency(
+                    self.backend_service,
+                    self.cache,
+                    self.demo_service,
+                )
+                self.demo_gateway_services.append(service)
+
         if self.config.production:
             for service, maximum in (
                 (self.backend_service, 6),
@@ -664,6 +761,18 @@ class OstiariStack(Stack):
                 scaling.scale_on_cpu_utilization("CpuScaling", target_utilization_percent=60)
 
     def _load_balancer(self) -> None:
+        origin_header_name = "X-Ostiari-CloudFront-Origin"
+        origin_header_value = (
+            self.cloudfront_origin_secret.secret_value.unsafe_unwrap()
+        )
+        self.cloudfront_origin_header = {
+            "name": origin_header_name,
+            "value": origin_header_value,
+        }
+        origin_condition = elbv2.ListenerCondition.http_header(
+            origin_header_name,
+            [origin_header_value],
+        )
         self.alb = elbv2.ApplicationLoadBalancer(
             self,
             "LoadBalancer",
@@ -696,6 +805,11 @@ class OstiariStack(Stack):
                 certificates=[certificate],
                 ssl_policy=elbv2.SslPolicy.RECOMMENDED_TLS,
                 open=False,
+                default_action=elbv2.ListenerAction.fixed_response(
+                    status_code=403,
+                    content_type="text/plain",
+                    message_body="CloudFront origin header required",
+                ),
             )
             redirect = self.alb.add_listener(
                 "HttpRedirect",
@@ -716,6 +830,13 @@ class OstiariStack(Stack):
                         container_name="frontend", container_port=9000
                     )
                 ],
+                priority=15,
+                conditions=[
+                    elbv2.ListenerCondition.host_headers(
+                        [self.config.domains["dashboard"]]
+                    ),
+                    origin_condition,
+                ],
                 health_check=elbv2.HealthCheck(path="/", healthy_http_codes="200"),
             )
             listener.add_targets(
@@ -733,6 +854,7 @@ class OstiariStack(Stack):
                     elbv2.ListenerCondition.path_patterns(
                         ["/api/*", "/docs*", "/openapi.json", "/ws/*"]
                     ),
+                    origin_condition,
                 ],
                 health_check=elbv2.HealthCheck(path="/api/ready", healthy_http_codes="200"),
             )
@@ -749,15 +871,18 @@ class OstiariStack(Stack):
                 conditions=[elbv2.ListenerCondition.host_headers([self.config.domains["gateway"]])],
                 health_check=elbv2.HealthCheck(path="/ready", healthy_http_codes="200"),
             )
-            self.dashboard_url = f"https://{self.config.domains['dashboard']}"
             self.gateway_url = f"https://{self.config.domains['gateway']}"
-            self._dns()
         else:
             listener = self.alb.add_listener(
                 "Http",
                 port=80,
                 protocol=elbv2.ApplicationProtocol.HTTP,
                 open=False,
+                default_action=elbv2.ListenerAction.fixed_response(
+                    status_code=403,
+                    content_type="text/plain",
+                    message_body="CloudFront origin header required",
+                ),
             )
             listener.add_targets(
                 "FrontendTargets",
@@ -768,6 +893,8 @@ class OstiariStack(Stack):
                         container_name="frontend", container_port=9000
                     )
                 ],
+                priority=20,
+                conditions=[origin_condition],
                 health_check=elbv2.HealthCheck(path="/", healthy_http_codes="200"),
             )
             listener.add_targets(
@@ -783,7 +910,8 @@ class OstiariStack(Stack):
                 conditions=[
                     elbv2.ListenerCondition.path_patterns(
                         ["/api/*", "/docs*", "/openapi.json", "/ws/*"]
-                    )
+                    ),
+                    origin_condition,
                 ],
                 health_check=elbv2.HealthCheck(path="/api/ready", healthy_http_codes="200"),
             )
@@ -804,8 +932,239 @@ class OstiariStack(Stack):
                 ],
                 health_check=elbv2.HealthCheck(path="/ready", healthy_http_codes="200"),
             )
-            self.dashboard_url = f"http://{self.alb.load_balancer_dns_name}"
             self.gateway_url = f"http://{self.alb.load_balancer_dns_name}:8421"
+
+    def _cloudfront_web_acl(self) -> str:
+        """Restrict the dashboard edge to the deployment's viewer CIDRs."""
+        if self.config.region != "us-east-1":
+            raise ValueError(
+                "CloudFront dashboard access controls require deploying the "
+                "official stack in us-east-1"
+            )
+
+        ip_statements: list[wafv2.CfnWebACL.StatementProperty] = []
+        for version, addresses in (
+            (
+                "IPV4",
+                [cidr for cidr in self.config.allowed_cidrs if ":" not in cidr],
+            ),
+            (
+                "IPV6",
+                [cidr for cidr in self.config.allowed_cidrs if ":" in cidr],
+            ),
+        ):
+            if not addresses:
+                continue
+            ip_set = wafv2.CfnIPSet(
+                self,
+                f"CloudFrontAllowed{version}",
+                addresses=addresses,
+                ip_address_version=version,
+                scope="CLOUDFRONT",
+                description="Viewer networks allowed to reach the Ostiari dashboard",
+            )
+            ip_statements.append(
+                wafv2.CfnWebACL.StatementProperty(
+                    ip_set_reference_statement=(
+                        wafv2.CfnWebACL.IPSetReferenceStatementProperty(
+                            arn=ip_set.attr_arn
+                        )
+                    )
+                )
+            )
+
+        if len(ip_statements) == 1:
+            allowed_statement = ip_statements[0]
+        else:
+            allowed_statement = wafv2.CfnWebACL.StatementProperty(
+                or_statement=wafv2.CfnWebACL.OrStatementProperty(
+                    statements=ip_statements
+                )
+            )
+
+        visibility = wafv2.CfnWebACL.VisibilityConfigProperty(
+            cloud_watch_metrics_enabled=True,
+            metric_name=f"Ostiari{self.config.name}CloudFrontWebAcl",
+            sampled_requests_enabled=True,
+        )
+        web_acl = wafv2.CfnWebACL(
+            self,
+            "CloudFrontWebAcl",
+            scope="CLOUDFRONT",
+            default_action=wafv2.CfnWebACL.DefaultActionProperty(block={}),
+            visibility_config=visibility,
+            rules=[
+                wafv2.CfnWebACL.RuleProperty(
+                    name="ViewerIpRateLimit",
+                    priority=0,
+                    action=wafv2.CfnWebACL.RuleActionProperty(block={}),
+                    statement=wafv2.CfnWebACL.StatementProperty(
+                        rate_based_statement=(
+                            wafv2.CfnWebACL.RateBasedStatementProperty(
+                                aggregate_key_type="IP",
+                                limit=2_000,
+                                scope_down_statement=allowed_statement,
+                            )
+                        )
+                    ),
+                    visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
+                        cloud_watch_metrics_enabled=True,
+                        metric_name="OstiariCloudFrontIpRateLimit",
+                        sampled_requests_enabled=True,
+                    ),
+                ),
+                wafv2.CfnWebACL.RuleProperty(
+                    name="AllowedViewerCidrs",
+                    priority=1,
+                    action=wafv2.CfnWebACL.RuleActionProperty(allow={}),
+                    statement=allowed_statement,
+                    visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
+                        cloud_watch_metrics_enabled=True,
+                        metric_name="OstiariCloudFrontAllowedViewerCidrs",
+                        sampled_requests_enabled=True,
+                    ),
+                ),
+            ],
+        )
+        return web_acl.attr_arn
+
+    def _cloudfront(self) -> None:
+        """Put the public dashboard edge in front of the ALB origin."""
+        prefix_list = custom_resources.AwsCustomResource(
+            self,
+            "CloudFrontOriginPrefixList",
+            on_update=custom_resources.AwsSdkCall(
+                service="EC2",
+                action="describeManagedPrefixLists",
+                parameters={
+                    "Filters": [
+                        {
+                            "Name": "prefix-list-name",
+                            "Values": [
+                                "com.amazonaws.global.cloudfront.origin-facing"
+                            ],
+                        }
+                    ]
+                },
+                output_paths=["PrefixLists.0.PrefixListId"],
+                physical_resource_id=custom_resources.PhysicalResourceId.of(
+                    "cloudfront-origin-facing-prefix-list"
+                ),
+            ),
+            policy=custom_resources.AwsCustomResourcePolicy.from_sdk_calls(
+                resources=custom_resources.AwsCustomResourcePolicy.ANY_RESOURCE
+            ),
+            install_latest_aws_sdk=False,
+        )
+        origin_port = 443 if self.config.production else 80
+        origin_ingress = ec2.CfnSecurityGroupIngress(
+            self,
+            "CloudFrontOriginIngress",
+            group_id=self.alb_sg.security_group_id,
+            ip_protocol="tcp",
+            from_port=origin_port,
+            to_port=origin_port,
+            source_prefix_list_id=prefix_list.get_response_field(
+                "PrefixLists.0.PrefixListId"
+            ),
+            description="CloudFront origin-facing network",
+        )
+        origin_ingress.node.add_dependency(prefix_list)
+
+        origin = cloudfront_origins.LoadBalancerV2Origin(
+            self.alb,
+            protocol_policy=(
+                cloudfront.OriginProtocolPolicy.HTTPS_ONLY
+                if self.config.production
+                else cloudfront.OriginProtocolPolicy.HTTP_ONLY
+            ),
+            http_port=80,
+            https_port=443,
+            origin_ssl_protocols=[cloudfront.OriginSslPolicy.TLS_V1_2],
+            read_timeout=Duration.seconds(60),
+            keepalive_timeout=Duration.seconds(60),
+            connection_attempts=3,
+            custom_headers={
+                self.cloudfront_origin_header["name"]: (
+                    self.cloudfront_origin_header["value"]
+                )
+            },
+        )
+        origin_request_policy = (
+            cloudfront.OriginRequestPolicy.ALL_VIEWER
+            if self.config.production
+            else cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER
+        )
+        api_behavior = cloudfront.BehaviorOptions(
+            origin=origin,
+            allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
+            cached_methods=cloudfront.CachedMethods.CACHE_GET_HEAD_OPTIONS,
+            cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
+            origin_request_policy=origin_request_policy,
+            viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+            compress=True,
+        )
+
+        distribution_args: dict = {}
+        if self.config.production:
+            cloudfront_certificate_arn = self.config.domains.get(
+                "cloudfront_certificate_arn",
+                self.config.domains["certificate_arn"],
+            )
+            distribution_args.update(
+                {
+                    "certificate": acm.Certificate.from_certificate_arn(
+                        self,
+                        "CloudFrontCertificate",
+                        cloudfront_certificate_arn,
+                    ),
+                    "domain_names": [self.config.domains["dashboard"]],
+                    "minimum_protocol_version": (
+                        cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021
+                    ),
+                }
+            )
+
+        self.distribution = cloudfront.Distribution(
+            self,
+            "DashboardDistribution",
+            default_root_object="index.html",
+            default_behavior=cloudfront.BehaviorOptions(
+                origin=origin,
+                allowed_methods=(
+                    cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS
+                ),
+                cached_methods=(
+                    cloudfront.CachedMethods.CACHE_GET_HEAD_OPTIONS
+                ),
+                cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
+                origin_request_policy=origin_request_policy,
+                viewer_protocol_policy=(
+                    cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS
+                ),
+                response_headers_policy=(
+                    cloudfront.ResponseHeadersPolicy.SECURITY_HEADERS
+                ),
+                compress=True,
+            ),
+            additional_behaviors={
+                "api/*": api_behavior,
+                "docs*": api_behavior,
+                "openapi.json": api_behavior,
+                "ws/*": api_behavior,
+            },
+            http_version=cloudfront.HttpVersion.HTTP2_AND_3,
+            price_class=cloudfront.PriceClass.PRICE_CLASS_100,
+            web_acl_id=self._cloudfront_web_acl(),
+            **distribution_args,
+        )
+        self.distribution.node.add_dependency(origin_ingress)
+        self.dashboard_url = (
+            f"https://{self.config.domains['dashboard']}"
+            if self.config.production
+            else f"https://{self.distribution.distribution_domain_name}"
+        )
+        self._dns()
 
     def _dns(self) -> None:
         zone_id = self.config.domains.get("hosted_zone_id")
@@ -820,19 +1179,24 @@ class OstiariStack(Stack):
             hosted_zone_id=zone_id,
             zone_name=zone_name,
         )
-        for construct_id, hostname in (
-            ("DashboardRecord", self.config.domains["dashboard"]),
-            ("GatewayRecord", self.config.domains["gateway"]),
-        ):
-            route53.ARecord(
-                self,
-                construct_id,
-                zone=zone,
-                record_name=hostname,
-                target=route53.RecordTarget.from_alias(
-                    route53_targets.LoadBalancerTarget(self.alb)
-                ),
-            )
+        route53.ARecord(
+            self,
+            "DashboardRecord",
+            zone=zone,
+            record_name=self.config.domains["dashboard"],
+            target=route53.RecordTarget.from_alias(
+                route53_targets.CloudFrontTarget(self.distribution)
+            ),
+        )
+        route53.ARecord(
+            self,
+            "GatewayRecord",
+            zone=zone,
+            record_name=self.config.domains["gateway"],
+            target=route53.RecordTarget.from_alias(
+                route53_targets.LoadBalancerTarget(self.alb)
+            ),
+        )
 
     def _agentcore(self) -> None:
         self.agentcore_sg = ec2.SecurityGroup(
@@ -1006,43 +1370,6 @@ class OstiariStack(Stack):
         self.agentcore_runtime.node.add_dependency(self.gateway_service)
 
     def _production_controls(self) -> None:
-        visibility = wafv2.CfnWebACL.VisibilityConfigProperty(
-            cloud_watch_metrics_enabled=True,
-            metric_name=f"Ostiari{self.config.name}WebAcl",
-            sampled_requests_enabled=True,
-        )
-        web_acl = wafv2.CfnWebACL(
-            self,
-            "WebAcl",
-            scope="REGIONAL",
-            default_action=wafv2.CfnWebACL.DefaultActionProperty(allow={}),
-            visibility_config=visibility,
-            rules=[
-                wafv2.CfnWebACL.RuleProperty(
-                    name="IpRateLimit",
-                    priority=0,
-                    action=wafv2.CfnWebACL.RuleActionProperty(block={}),
-                    statement=wafv2.CfnWebACL.StatementProperty(
-                        rate_based_statement=wafv2.CfnWebACL.RateBasedStatementProperty(
-                            aggregate_key_type="IP",
-                            limit=2_000,
-                        )
-                    ),
-                    visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
-                        cloud_watch_metrics_enabled=True,
-                        metric_name="OstiariIpRateLimit",
-                        sampled_requests_enabled=True,
-                    ),
-                )
-            ],
-        )
-        wafv2.CfnWebACLAssociation(
-            self,
-            "WebAclAssociation",
-            resource_arn=self.alb.load_balancer_arn,
-            web_acl_arn=web_acl.attr_arn,
-        )
-
         topic = (
             sns.Topic.from_topic_arn(self, "AlarmTopic", self.config.alarm_topic_arn)
             if self.config.alarm_topic_arn
@@ -1079,14 +1406,27 @@ class OstiariStack(Stack):
 
     def _outputs(self) -> None:
         CfnOutput(self, "DashboardUrl", value=self.dashboard_url)
-        CfnOutput(self, "GatewayUrl", value=self.gateway_url)
         CfnOutput(
             self,
-            "AdminSecretArn",
-            value=self.admin_password.secret_arn,
-            description="Retrieve directly from Secrets Manager; never place it in logs",
+            "CloudFrontDistributionId",
+            value=self.distribution.distribution_id,
         )
+        CfnOutput(
+            self,
+            "CloudFrontDomainName",
+            value=self.distribution.distribution_domain_name,
+        )
+        CfnOutput(self, "GatewayUrl", value=self.gateway_url)
         CfnOutput(self, "AdminEmail", value="admin@ostiari.ai")
+        if self.config.demo:
+            CfnOutput(self, "DemoLoginEnabled", value="true")
+        else:
+            CfnOutput(
+                self,
+                "AdminSecretArn",
+                value=self.admin_password.secret_arn,
+                description="Retrieve directly from Secrets Manager; never place it in logs",
+            )
         CfnOutput(
             self,
             "DatabaseSecretArn",

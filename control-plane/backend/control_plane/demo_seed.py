@@ -19,14 +19,17 @@ import random
 import shutil
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from control_plane.models.database import (
+    A2AAgentRecord,
+    AuditLog,
     Gateway,
     McpServer,
     PaymentRecord,
     Policy,
+    ProviderRouteRecord,
     Tool,
     UsageRecord,
     Wallet,
@@ -78,6 +81,12 @@ _DEMO_TOOL_DEFINITIONS = (
     ("premium_search", "premium_search", "Run a paid premium search.", _tool_schema("query")),
     ("market_data.fetch", "premium_search", "Fetch paid market data.", _tool_schema("query")),
 )
+_REMOTE_MCP_TOOL_NAMES = {
+    "drawio.list_diagrams",
+    "drawio.create_diagram",
+    "drawio.add_shape",
+    "drawio.delete_diagram",
+}
 
 
 async def seed_demo_gateways_and_tools(db: AsyncSession) -> None:
@@ -90,39 +99,83 @@ async def seed_demo_gateways_and_tools(db: AsyncSession) -> None:
     tools_url = os.environ.get(
         "OSTIARI_DEMO_TOOLS_URL", "http://localhost:9300"
     ).rstrip("/")
+    remote_mcp = bool(
+        os.environ.get("OSTIARI_DEMO_MCP_BASE_URL", "").strip()
+    )
+    gateway_domain = os.environ.get(
+        "OSTIARI_DEMO_GATEWAY_DOMAIN", ""
+    ).strip().strip(".")
 
     for gateway_id, name in _DEMO_GATEWAYS:
         if await db.get(Gateway, (DEFAULT_ORG, gateway_id)) is None:
-            endpoint = gateway_url if gateway_id == "crm-agent" else f"http://{gateway_id}:8421"
+            endpoint = gateway_url
+            if gateway_id != "crm-agent":
+                hostname = (
+                    f"{gateway_id}.{gateway_domain}"
+                    if gateway_domain
+                    else gateway_id
+                )
+                endpoint = f"http://{hostname}:8421"
             db.add(Gateway(
                 id=gateway_id, org_id=DEFAULT_ORG, name=name, endpoint=endpoint,
                 description="Seeded Ostiari demo gateway", status="registered",
             ))
     await db.flush()
 
-    existing_tools = set((await db.execute(
-        select(Tool.name).where(
-            Tool.org_id == DEFAULT_ORG, Tool.gateway_id == "crm-agent",
+    if remote_mcp:
+        # These names must resolve through the live MCP client, not an older
+        # HTTP fallback row left by a previous demo revision.
+        await db.execute(
+            delete(Tool).where(
+                Tool.org_id == DEFAULT_ORG,
+                Tool.gateway_id.in_([gateway_id for gateway_id, _ in _DEMO_GATEWAYS]),
+                Tool.name.in_(_REMOTE_MCP_TOOL_NAMES),
+            )
         )
-    )).scalars())
-    for name, path, description, schema in _DEMO_TOOL_DEFINITIONS:
-        if name not in existing_tools:
-            db.add(Tool(
-                org_id=DEFAULT_ORG, gateway_id="crm-agent", name=name,
-                endpoint=f"{tools_url}/{path}", method="POST",
-                description=description, schema_json=schema,
-            ))
+        await db.flush()
 
-    policy = (await db.execute(select(Policy).where(
-        Policy.org_id == DEFAULT_ORG, Policy.name == "block-destructive",
-    ))).scalar_one_or_none()
-    if policy is None:
-        db.add(Policy(
-            org_id=DEFAULT_ORG, name="block-destructive",
-            description="Block destructive calls in the demo gateway",
-            content={"block": ["*delete*", "*.drop", "*.destroy", "db_delete"]},
-            gateway_id="crm-agent", is_active=True,
-        ))
+    for gateway_id, _name in _DEMO_GATEWAYS:
+        existing_tools = set((await db.execute(
+            select(Tool.name).where(
+                Tool.org_id == DEFAULT_ORG,
+                Tool.gateway_id == gateway_id,
+            )
+        )).scalars())
+        for name, path, description, schema in _DEMO_TOOL_DEFINITIONS:
+            if remote_mcp and name in _REMOTE_MCP_TOOL_NAMES:
+                continue
+            if name not in existing_tools:
+                db.add(Tool(
+                    org_id=DEFAULT_ORG, gateway_id=gateway_id, name=name,
+                    endpoint=f"{tools_url}/{path}", method="POST",
+                    description=description, schema_json=schema,
+                ))
+
+        policy_name = (
+            "block-destructive"
+            if gateway_id == "crm-agent"
+            else f"block-destructive-{gateway_id}"
+        )
+        policy = (await db.execute(select(Policy).where(
+            Policy.org_id == DEFAULT_ORG,
+            Policy.name == policy_name,
+        ))).scalar_one_or_none()
+        if policy is None:
+            db.add(Policy(
+                org_id=DEFAULT_ORG,
+                name=policy_name,
+                description=f"Block destructive calls on {gateway_id}",
+                content={
+                    "block": [
+                        "*delete*",
+                        "*.drop",
+                        "*.destroy",
+                        "db_delete",
+                    ]
+                },
+                gateway_id=gateway_id,
+                is_active=True,
+            ))
     await db.commit()
     log.info("Seeded demo gateways and HTTP tools")
 
@@ -148,8 +201,26 @@ def demo_mcp_specs() -> list[dict]:
     """Real MCP server configs for the demo, or [] if npx isn't available.
 
     Shared by the DB seeder and register_demo_mcp.py so both agree on the
-    exact command. Returns stdio configs with an absolute npx path.
+    exact transport. AWS uses the remote demo-tools endpoints; local installs
+    retain the real stdio packages when npx is available.
     """
+    remote_base = os.environ.get("OSTIARI_DEMO_MCP_BASE_URL", "").rstrip("/")
+    if remote_base:
+        return [
+            {
+                "name": "drawio",
+                "mode": "remote",
+                "prefix": "drawio",
+                "url": f"{remote_base}/drawio",
+            },
+            {
+                "name": "filesystem",
+                "mode": "remote",
+                "prefix": "fs",
+                "url": f"{remote_base}/filesystem",
+            },
+        ]
+
     npx = shutil.which("npx")
     if not npx:
         return []
@@ -162,25 +233,151 @@ def demo_mcp_specs() -> list[dict]:
     ]
 
 
-async def seed_demo_mcp(db: AsyncSession, gateway_id: str = "crm-agent") -> None:
-    """Seed real MCP server records (idempotent; skips if any already exist)."""
-    existing = (await db.execute(select(func.count()).select_from(McpServer))).scalar_one()
-    if existing:
-        return
-
+async def seed_demo_mcp(db: AsyncSession) -> None:
+    """Seed or repair real MCP server records for every demo gateway."""
     specs = demo_mcp_specs()
     if not specs:
         log.info("npx not found — skipping MCP server seed (install Node.js for the MCP demo)")
         return
 
-    for spec in specs:
-        db.add(McpServer(
-            name=spec["name"], mode="stdio", prefix=spec["prefix"],
-            command=spec["command"], gateway_id=gateway_id,
+    for gateway_id, _name in _DEMO_GATEWAYS:
+        for spec in specs:
+            record = (await db.execute(
+                select(McpServer).where(
+                    McpServer.org_id == "default",
+                    McpServer.gateway_id == gateway_id,
+                    McpServer.name == spec["name"],
+                )
+            )).scalar_one_or_none()
+            if record is None:
+                record = McpServer(
+                    name=spec["name"],
+                    gateway_id=gateway_id,
+                )
+                db.add(record)
+            record.mode = spec["mode"]
+            record.prefix = spec["prefix"]
+            record.url = spec.get("url", "")
+            record.command = spec.get("command", [])
+    await db.commit()
+    log.info("Seeded %d real MCP server records (%s)",
+             len(specs) * len(_DEMO_GATEWAYS),
+             ", ".join(s["name"] for s in specs))
+
+
+async def seed_demo_a2a(db: AsyncSession) -> None:
+    """Persist a live demo A2A agent for every demo gateway."""
+    from control_plane.models.database import DEFAULT_ORG
+
+    base_url = os.environ.get(
+        "OSTIARI_DEMO_A2A_BASE_URL", "http://localhost:9200"
+    ).rstrip("/")
+    for gateway_id, _name in _DEMO_GATEWAYS:
+        existing = (await db.execute(
+            select(A2AAgentRecord).where(
+                A2AAgentRecord.org_id == DEFAULT_ORG,
+                A2AAgentRecord.gateway_id == gateway_id,
+                A2AAgentRecord.agent_key == "devops_assistant",
+            )
+        )).scalar_one_or_none()
+        if existing is None:
+            db.add(A2AAgentRecord(
+                org_id=DEFAULT_ORG,
+                name="DevOps Assistant",
+                agent_key="devops_assistant",
+                url=base_url,
+                gateway_id=gateway_id,
+            ))
+        else:
+            existing.url = base_url
+    await db.commit()
+
+
+async def seed_demo_provider(db: AsyncSession) -> None:
+    """Show the deployment's Bedrock task-role route without fake credentials."""
+    from control_plane.models.database import DEFAULT_ORG
+    from control_plane.persistence import put_runtime_state
+    from control_plane.routers.providers import (
+        _KNOWN_MODELS,
+        _ProviderRecord,
+        _providers,
+    )
+
+    region = os.environ.get(
+        "OSTIARI_DEMO_AWS_REGION",
+        os.environ.get("AWS_REGION", "us-east-1"),
+    )
+    if "bedrock" not in _providers[DEFAULT_ORG]:
+        provider = _ProviderRecord(
+            name="bedrock",
+            region=region,
+            status="unchecked",
+            models_available=_KNOWN_MODELS["bedrock"],
+        )
+        _providers[DEFAULT_ORG]["bedrock"] = provider
+        await put_runtime_state(
+            db,
+            DEFAULT_ORG,
+            "providers",
+            "bedrock",
+            provider.model_dump(mode="json"),
+        )
+
+    route = (await db.execute(
+        select(ProviderRouteRecord).where(
+            ProviderRouteRecord.org_id == DEFAULT_ORG,
+            ProviderRouteRecord.route_id == "bedrock:task-role",
+        )
+    )).scalar_one_or_none()
+    if route is None:
+        db.add(ProviderRouteRecord(
+            org_id=DEFAULT_ORG,
+            route_id="bedrock:task-role",
+            provider="bedrock",
+            auth_type="aws_credentials",
+            region=region,
+            allowed_models=_KNOWN_MODELS["bedrock"],
+            capacity_group="aws-demo",
         ))
     await db.commit()
-    log.info("Seeded %d real MCP server records (%s)", len(specs),
-             ", ".join(s["name"] for s in specs))
+
+
+async def seed_demo_audit(db: AsyncSession) -> None:
+    """Add a small, tamper-evident bootstrap trail for the Audit page."""
+    from control_plane.models.database import DEFAULT_ORG
+    from control_plane.services.audit_service import audit
+
+    existing = (await db.execute(
+        select(AuditLog.id).where(
+            AuditLog.org_id == DEFAULT_ORG,
+            AuditLog.resource_id == "demo-bootstrap",
+        ).limit(1)
+    )).scalar()
+    if existing is not None:
+        return
+
+    entries = (
+        ("seed", "deployment", {"profile": "aws-agentcore-demo"}),
+        ("register", "gateway_fleet", {"gateways": len(_DEMO_GATEWAYS)}),
+        (
+            "connect",
+            "mcp_fleet",
+            {"servers": len(_MCP_SERVERS) * len(_DEMO_GATEWAYS)},
+        ),
+        ("configure", "policy_fleet", {"mode": "enforce"}),
+        ("configure", "provider_route", {"provider": "bedrock"}),
+    )
+    for action, resource_type, details in entries:
+        await audit.log(
+            db,
+            "system:demo-seeder",
+            action,
+            resource_type,
+            "demo-bootstrap",
+            details,
+            org=DEFAULT_ORG,
+        )
+    await db.commit()
 
 
 async def seed_demo_db(db: AsyncSession) -> None:
@@ -194,7 +391,10 @@ async def seed_demo_db(db: AsyncSession) -> None:
 
     await seed_demo_gateways_and_tools(db)
     await seed_demo_mcp(db)
+    await seed_demo_a2a(db)
+    await seed_demo_provider(db)
     await seed_demo_payments(db)
+    await seed_demo_audit(db)
 
     existing = (await db.execute(select(func.count()).select_from(UsageRecord))).scalar_one()
     if existing:

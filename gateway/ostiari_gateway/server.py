@@ -4,6 +4,7 @@ import asyncio as _asyncio
 import logging
 import os as _os
 import re as _re
+import time as _time
 import uuid as _uuid
 from contextlib import asynccontextmanager, suppress
 from typing import Any
@@ -1540,15 +1541,35 @@ def create_app(
 
         agent_id = request_agent_id(request)
         framework = request.headers.get("X-Framework", "unknown")
+        session_id = request.headers.get("X-Session-Id", "")
+        plan = request.headers.get("X-Plan", "")
+        step = request.headers.get("X-Step", "")
 
         if not action:
             return JSONResponse(status_code=400, content={"error": "action is required"})
 
+        started = _time.monotonic()
+        is_mcp_tool = mcp_manager.has_tool(action)
+        endpoint = f"validation://{action}"
         try:
             result = manager.guard.validate(
                 action=action,
                 params=params,
                 context={"agent_id": agent_id, "framework": framework},
+            )
+            await trace_reporter.report(
+                action=action,
+                tier=result.tier,
+                score=result.score,
+                duration_ms=(_time.monotonic() - started) * 1000,
+                agent_id=agent_id,
+                framework=framework,
+                is_mcp=is_mcp_tool,
+                endpoint=endpoint,
+                session_id=session_id,
+                plan=plan,
+                step=step,
+                params=params,
             )
             return {
                 "allowed": True,
@@ -1558,6 +1579,22 @@ def create_app(
                 "original_tier": result.original_tier,
             }
         except ActionBlockedError as e:
+            await trace_reporter.report(
+                action=action,
+                tier="block",
+                score=e.score,
+                duration_ms=(_time.monotonic() - started) * 1000,
+                agent_id=agent_id,
+                framework=framework,
+                is_mcp=is_mcp_tool,
+                blocked_reason=e.reason,
+                endpoint=endpoint,
+                session_id=session_id,
+                plan=plan,
+                step=step,
+                params=params,
+                limit_type="policy",
+            )
             # `tier` is the enforced decision (not allowed, whatever the reason);
             # `original_tier` is what it scored. They differ for a fail-closed
             # intervene, and a caller deciding whether to route this to a human
