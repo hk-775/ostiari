@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -149,6 +150,91 @@ def test_cli_validates_config_before_persisting(monkeypatch, tmp_path: Path) -> 
     assert not (tmp_path / "invalid" / "config.json").exists()
 
 
+def test_agentcore_zone_resolution_uses_supported_zone_ids(monkeypatch) -> None:
+    monkeypatch.setattr(
+        deploy,
+        "_aws_capture",
+        lambda arguments: json.dumps(
+            {
+                "AvailabilityZones": [
+                    {
+                        "ZoneName": "us-east-1b",
+                        "ZoneId": "use1-az6",
+                        "State": "available",
+                        "ZoneType": "availability-zone",
+                        "OptInStatus": "opt-in-not-required",
+                    },
+                    {
+                        "ZoneName": "us-east-1d",
+                        "ZoneId": "use1-az2",
+                        "State": "available",
+                        "ZoneType": "availability-zone",
+                        "OptInStatus": "opt-in-not-required",
+                    },
+                    {
+                        "ZoneName": "us-east-1c",
+                        "ZoneId": "use1-az1",
+                        "State": "available",
+                        "ZoneType": "availability-zone",
+                        "OptInStatus": "opt-in-not-required",
+                    },
+                ]
+            }
+        ),
+    )
+
+    assert deploy._agentcore_availability_zone_config("us-east-1") == {
+        "availability_zone_ids": ["use1-az1", "use1-az2"],
+        "availability_zones": ["us-east-1c", "us-east-1d"],
+    }
+
+
+def test_agentcore_configuration_requires_two_explicit_zones() -> None:
+    raw = {
+        "name": "agentcore",
+        "profile": "aws-agentcore-empty",
+        "account": "123456789012",
+        "region": "us-east-1",
+        "allowed_cidr": "203.0.113.10/32",
+        "demo": False,
+        "agentcore": True,
+        "production": False,
+    }
+
+    with pytest.raises(aws_config.ConfigurationError, match="exactly two"):
+        aws_config.DeploymentConfig.from_dict(raw)
+
+    raw.update(
+        {
+            "availability_zone_ids": ["use1-az1", "use1-az2"],
+            "availability_zones": ["us-east-1c", "us-east-1d"],
+        }
+    )
+    config = aws_config.DeploymentConfig.from_dict(raw)
+    assert config.availability_zone_ids == ("use1-az1", "use1-az2")
+    assert config.availability_zones == ("us-east-1c", "us-east-1d")
+
+
+def test_non_agentcore_configuration_can_pin_vpc_zones() -> None:
+    config = aws_config.DeploymentConfig.from_dict(
+        {
+            "name": "evaluation",
+            "profile": "aws-empty",
+            "account": "123456789012",
+            "region": "us-east-1",
+            "allowed_cidr": "203.0.113.10/32",
+            "availability_zone_ids": ["use1-az1", "use1-az2"],
+            "availability_zones": ["us-east-1c", "us-east-1d"],
+            "demo": False,
+            "agentcore": False,
+            "production": False,
+        }
+    )
+
+    assert config.availability_zone_ids == ("use1-az1", "use1-az2")
+    assert config.availability_zones == ("us-east-1c", "us-east-1d")
+
+
 def test_preflight_rejects_failed_stack_before_other_checks(monkeypatch) -> None:
     result = deploy.subprocess.CompletedProcess(
         args=["aws"],
@@ -162,6 +248,147 @@ def test_preflight_rejects_failed_stack_before_other_checks(monkeypatch) -> None
             deploy.PROFILES["aws-empty"],
             {"name": "failed", "region": "us-east-1"},
         )
+
+
+def test_preflight_rejects_full_vpc_quota_before_docker(monkeypatch) -> None:
+    missing = deploy.subprocess.CompletedProcess(
+        args=["aws"],
+        returncode=255,
+        stdout="",
+        stderr="Stack with id Ostiari-new does not exist",
+    )
+    monkeypatch.setattr(deploy.subprocess, "run", lambda *args, **kwargs: missing)
+
+    def capture(arguments, *, check=True):
+        del check
+        if arguments[:3] == [
+            "service-quotas",
+            "get-service-quota",
+            "--service-code",
+        ]:
+            return "5.0"
+        if arguments[:2] == ["ec2", "describe-vpcs"]:
+            return json.dumps({"Vpcs": [{"VpcId": f"vpc-{index}"} for index in range(5)]})
+        raise AssertionError(arguments)
+
+    monkeypatch.setattr(deploy, "_aws_capture", capture)
+    with pytest.raises(deploy.DeployError, match=r"quota is full \(5/5 used\)"):
+        deploy._preflight(
+            deploy.PROFILES["aws-empty"],
+            {"name": "new", "region": "us-east-1"},
+        )
+
+
+def test_preflight_reuses_existing_vpc_and_elastic_ip_quota(monkeypatch) -> None:
+    existing = deploy.subprocess.CompletedProcess(
+        args=["aws"],
+        returncode=0,
+        stdout='{"Stacks":[{"StackStatus":"CREATE_COMPLETE"}]}',
+        stderr="",
+    )
+    monkeypatch.setattr(deploy.subprocess, "run", lambda *args, **kwargs: existing)
+    calls: list[list[str]] = []
+
+    def capture(arguments, *, check=True):
+        del check
+        calls.append(arguments)
+        if arguments[:2] == ["cloudformation", "list-stack-resources"]:
+            return json.dumps(
+                {
+                    "StackResourceSummaries": [
+                        {"ResourceType": "AWS::EC2::VPC"},
+                        {"ResourceType": "AWS::EC2::EIP"},
+                    ]
+                }
+            )
+        raise AssertionError(arguments)
+
+    monkeypatch.setattr(deploy, "_aws_capture", capture)
+    deploy._preflight(
+        deploy.PROFILES["aws-agentcore-empty"],
+        {"name": "existing", "region": "us-east-1"},
+    )
+
+    assert len(calls) == 1
+
+
+def test_agentcore_network_interfaces_are_resolved_from_stack(monkeypatch) -> None:
+    responses = iter(
+        [
+            json.dumps(
+                {
+                    "StackResourceSummaries": [
+                        {
+                            "LogicalResourceId": "AgentCoreSecurityGroup922A1612",
+                            "PhysicalResourceId": "sg-0123456789abcdef0",
+                            "ResourceType": "AWS::EC2::SecurityGroup",
+                        }
+                    ]
+                }
+            ),
+            json.dumps(
+                {
+                    "NetworkInterfaces": [
+                        {
+                            "NetworkInterfaceId": "eni-agentcore",
+                            "InterfaceType": "agentic_ai",
+                            "Status": "in-use",
+                        },
+                        {
+                            "NetworkInterfaceId": "eni-other",
+                            "InterfaceType": "interface",
+                            "Status": "in-use",
+                        },
+                    ]
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr(deploy, "_aws_capture", lambda arguments: next(responses))
+
+    assert deploy._agentcore_network_interfaces("Ostiari-test", "us-east-1") == [
+        {
+            "NetworkInterfaceId": "eni-agentcore",
+            "InterfaceType": "agentic_ai",
+            "Status": "in-use",
+        }
+    ]
+
+
+def test_publisher_provisions_attestation_capable_buildx_builder(monkeypatch) -> None:
+    inspected = deploy.subprocess.CompletedProcess(
+        args=["docker"],
+        returncode=1,
+        stdout="",
+        stderr="no builder",
+    )
+    monkeypatch.setattr(deploy.subprocess, "run", lambda *args, **kwargs: inspected)
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        deploy,
+        "_run",
+        lambda command, **kwargs: commands.append(list(command)),
+    )
+
+    assert deploy._ensure_buildx_publisher() == "ostiari-publisher"
+    assert commands == [
+        [
+            "docker",
+            "buildx",
+            "create",
+            "--name",
+            "ostiari-publisher",
+            "--driver",
+            "docker-container",
+        ],
+        [
+            "docker",
+            "buildx",
+            "inspect",
+            "ostiari-publisher",
+            "--bootstrap",
+        ],
+    ]
 
 
 def test_change_set_summary_counts_conditional_replacements() -> None:
@@ -192,9 +419,7 @@ def test_aws_frontend_uses_explicit_same_origin_build_contract() -> None:
 def test_gateway_uses_runtime_tmpfs_without_platform_volumes() -> None:
     stack = (ROOT / "deploy/aws/stack.py").read_text()
     dockerfile = (ROOT / "deploy/docker/Dockerfile.gateway").read_text()
-    compose = yaml.safe_load(
-        (ROOT / "deploy/docker/docker-compose.yml").read_text()
-    )
+    compose = yaml.safe_load((ROOT / "deploy/docker/docker-compose.yml").read_text())
     ecs = yaml.safe_load((ROOT / "deploy/ecs/task-definition.json").read_text())
 
     assert "ENV TMPDIR=/dev/shm" in dockerfile

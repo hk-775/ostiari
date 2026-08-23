@@ -29,6 +29,9 @@ from aws_cdk import (
     aws_ec2 as ec2,
 )
 from aws_cdk import (
+    aws_ecr as ecr,
+)
+from aws_cdk import (
     aws_ecr_assets as ecr_assets,
 )
 from aws_cdk import (
@@ -127,13 +130,18 @@ class OstiariStack(Stack):
                     cidr_mask=24,
                 ),
             )
+        placement = (
+            {"availability_zones": list(self.config.availability_zones)}
+            if self.config.availability_zones
+            else {"max_azs": 2}
+        )
         self.vpc = ec2.Vpc(
             self,
             "Vpc",
-            max_azs=2,
             nat_gateways=2 if self.config.production else (1 if needs_egress_subnets else 0),
             subnet_configuration=subnets,
             restrict_default_security_group=True,
+            **placement,
         )
         self.app_subnets = ec2.SubnetSelection(
             subnet_type=(
@@ -319,7 +327,14 @@ class OstiariStack(Stack):
         build_args: dict[str, str] | None = None,
     ) -> ecs.ContainerImage:
         if self.config.production:
-            return ecs.ContainerImage.from_registry(self.config.images[key])
+            image = self.config.images[key]
+            repository_name, digest = image.split("/", 1)[1].rsplit("@", 1)
+            repository = ecr.Repository.from_repository_name(
+                self,
+                f"{key}Repository",
+                repository_name,
+            )
+            return ecs.ContainerImage.from_ecr_repository(repository, digest)
         return ecs.ContainerImage.from_asset(
             str(ROOT),
             file=dockerfile,
@@ -824,11 +839,94 @@ class OstiariStack(Stack):
             self, "AgentCoreSecurityGroup", vpc=self.vpc, allow_all_outbound=True
         )
         self.gateway_sg.add_ingress_rule(self.agentcore_sg, ec2.Port.tcp(8421), "AgentCore bridge")
+        runtime_name = re.sub(r"[^A-Za-z0-9_]", "_", f"Ostiari_{self.config.name}")[:48]
         role = iam.Role(
             self,
             "AgentCoreExecutionRole",
-            assumed_by=iam.ServicePrincipal("bedrock-agentcore.amazonaws.com"),
+            assumed_by=iam.ServicePrincipal(
+                "bedrock-agentcore.amazonaws.com",
+                conditions={
+                    "StringEquals": {"aws:SourceAccount": self.account},
+                    "ArnLike": {
+                        "aws:SourceArn": self.format_arn(
+                            service="bedrock-agentcore",
+                            resource="runtime",
+                            resource_name=f"{runtime_name}*",
+                            arn_format=ArnFormat.SLASH_RESOURCE_NAME,
+                        )
+                    },
+                },
+            ),
             description="Runs the Ostiari AgentCore governance bridge",
+        )
+        runtime_log_group_arn = self.format_arn(
+            service="logs",
+            resource="log-group",
+            resource_name=f"/aws/bedrock-agentcore/runtimes/{runtime_name}-*",
+            arn_format=ArnFormat.COLON_RESOURCE_NAME,
+        )
+        role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["logs:DescribeLogStreams", "logs:CreateLogGroup"],
+                resources=[
+                    self.format_arn(
+                        service="logs",
+                        resource="log-group",
+                        resource_name="/aws/bedrock-agentcore/runtimes/*",
+                        arn_format=ArnFormat.COLON_RESOURCE_NAME,
+                    )
+                ],
+            )
+        )
+        role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["logs:PutResourcePolicy"],
+                resources=[runtime_log_group_arn],
+            )
+        )
+        role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["logs:DescribeLogGroups"],
+                resources=[
+                    self.format_arn(
+                        service="logs",
+                        resource="log-group",
+                        resource_name="*",
+                        arn_format=ArnFormat.COLON_RESOURCE_NAME,
+                    )
+                ],
+            )
+        )
+        role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["logs:CreateLogStream", "logs:PutLogEvents"],
+                resources=[
+                    self.format_arn(
+                        service="logs",
+                        resource="log-group",
+                        resource_name="/aws/bedrock-agentcore/runtimes/*:log-stream:*",
+                        arn_format=ArnFormat.COLON_RESOURCE_NAME,
+                    )
+                ],
+            )
+        )
+        role.add_to_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "xray:PutTraceSegments",
+                    "xray:PutTelemetryRecords",
+                    "xray:GetSamplingRules",
+                    "xray:GetSamplingTargets",
+                ],
+                resources=["*"],
+            )
+        )
+        role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["cloudwatch:PutMetricData"],
+                resources=["*"],
+                conditions={"StringEquals": {"cloudwatch:namespace": "bedrock-agentcore"}},
+            )
         )
         environment = {
             "OSTIARI_GATEWAY_URL": (f"http://gateway.{self.config.namespace}:8421"),
@@ -887,7 +985,6 @@ class OstiariStack(Stack):
                     resources=["*"],
                 )
             )
-        runtime_name = re.sub(r"[^A-Za-z0-9_]", "_", f"Ostiari_{self.config.name}")[:48]
         self.agentcore_runtime = agentcore.Runtime(
             self,
             "AgentCoreRuntime",
