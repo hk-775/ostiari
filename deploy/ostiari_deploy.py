@@ -27,6 +27,16 @@ ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / "deploy"
 AWS_DIR = DEPLOY / "aws"
 STATE_DIR = ROOT / ".ostiari" / "deployments"
+AGENTCORE_AZS = (
+    ROOT
+    / "vendor"
+    / "axonllm"
+    / "src"
+    / "gateway"
+    / "deployment"
+    / "infra"
+    / "agentcore-supported-availability-zones-v1.json"
+)
 
 
 @dataclass(frozen=True)
@@ -304,6 +314,71 @@ def _aws_capture(arguments: Sequence[str], *, check: bool = True) -> str:
     return result.stdout.strip()
 
 
+def _agentcore_availability_zone_config(region: str) -> dict[str, list[str]]:
+    try:
+        registry = json.loads(AGENTCORE_AZS.read_text())
+        supported = registry["regions"][region]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise DeployError(
+            f"AgentCore VPC availability-zone metadata is unavailable for {region}."
+        ) from exc
+    if (
+        not isinstance(supported, list)
+        or len(supported) < 2
+        or not all(isinstance(zone_id, str) and zone_id for zone_id in supported)
+    ):
+        raise DeployError(f"AgentCore VPC availability-zone metadata is invalid for {region}.")
+
+    try:
+        response = json.loads(
+            _aws_capture(
+                [
+                    "ec2",
+                    "describe-availability-zones",
+                    "--region",
+                    region,
+                    "--output",
+                    "json",
+                ]
+            )
+        )
+        zones = response["AvailabilityZones"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise DeployError("Could not parse AWS availability-zone metadata.") from exc
+    if not isinstance(zones, list):
+        raise DeployError("AWS returned malformed availability-zone metadata.")
+
+    names_by_id = {
+        zone["ZoneId"]: zone["ZoneName"]
+        for zone in zones
+        if isinstance(zone, dict)
+        and zone.get("State") == "available"
+        and zone.get("ZoneType") == "availability-zone"
+        and zone.get("OptInStatus") in {"opt-in-not-required", "opted-in"}
+        and isinstance(zone.get("ZoneId"), str)
+        and isinstance(zone.get("ZoneName"), str)
+    }
+    selected_ids = [zone_id for zone_id in supported if zone_id in names_by_id][:2]
+    if len(selected_ids) < 2:
+        missing = ", ".join(supported)
+        raise DeployError(
+            f"AgentCore requires two supported availability zones in {region}; "
+            f"this account does not expose two of: {missing}."
+        )
+    selected_names = [names_by_id[zone_id] for zone_id in selected_ids]
+    print(
+        "  AgentCore availability zones: "
+        + ", ".join(
+            f"{zone_name} ({zone_id})"
+            for zone_name, zone_id in zip(selected_names, selected_ids, strict=True)
+        )
+    )
+    return {
+        "availability_zone_ids": selected_ids,
+        "availability_zones": selected_names,
+    }
+
+
 def _determine_cidr(value: str) -> str:
     if value != "auto":
         return value
@@ -370,6 +445,8 @@ def _aws_config(args: argparse.Namespace) -> tuple[Profile, Path, dict[str, Any]
             "production": profile.production,
         }
     )
+    if profile.agentcore:
+        config.update(_agentcore_availability_zone_config(args.region))
     if args.allowed_cidr != "auto":
         config.pop("allowed_cidrs", None)
         config["allowed_cidr"] = args.allowed_cidr
@@ -471,6 +548,7 @@ def _preflight(profile: Profile, config: dict[str, Any]) -> None:
         text=True,
         capture_output=True,
     )
+    stack_exists = stack_result.returncode == 0
     if stack_result.returncode == 0:
         try:
             status = str(json.loads(stack_result.stdout)["Stacks"][0]["StackStatus"])
@@ -497,8 +575,80 @@ def _preflight(profile: Profile, config: dict[str, Any]) -> None:
             stderr=stack_result.stderr,
         )
 
+    stack_resources: list[dict[str, Any]] = []
+    if stack_exists:
+        try:
+            stack_resources = json.loads(
+                _aws_capture(
+                    [
+                        "cloudformation",
+                        "list-stack-resources",
+                        "--region",
+                        region,
+                        "--stack-name",
+                        stack,
+                        "--output",
+                        "json",
+                    ]
+                )
+            ).get("StackResourceSummaries", [])
+        except (AttributeError, json.JSONDecodeError) as exc:
+            raise DeployError(f"Could not inspect existing resources for {stack}.") from exc
+
+    existing_vpcs = sum(
+        resource.get("ResourceType") == "AWS::EC2::VPC" for resource in stack_resources
+    )
+    if not existing_vpcs:
+        try:
+            quota = float(
+                _aws_capture(
+                    [
+                        "service-quotas",
+                        "get-service-quota",
+                        "--service-code",
+                        "vpc",
+                        "--quota-code",
+                        "L-F678F1CE",
+                        "--region",
+                        region,
+                        "--query",
+                        "Quota.Value",
+                        "--output",
+                        "text",
+                    ]
+                )
+            )
+            used = len(
+                json.loads(
+                    _aws_capture(
+                        [
+                            "ec2",
+                            "describe-vpcs",
+                            "--region",
+                            region,
+                            "--output",
+                            "json",
+                        ]
+                    )
+                ).get("Vpcs", [])
+            )
+            available = int(quota) - used
+            if available < 1:
+                raise DeployError(
+                    f"{profile.name} needs one VPC, but the {region} quota is full "
+                    f"({used}/{int(quota)} used). Request a quota increase or remove "
+                    "an owned VPC before deploying."
+                )
+            print(f"  VPC quota: {available} available; 1 required by this profile")
+        except (subprocess.CalledProcessError, ValueError) as exc:
+            print(f"warning: could not verify VPC quota with current credentials ({exc})")
+
     required_eips = 2 if profile.production else (1 if profile.agentcore else 0)
-    if required_eips:
+    existing_eips = sum(
+        resource.get("ResourceType") == "AWS::EC2::EIP" for resource in stack_resources
+    )
+    additional_eips = max(0, required_eips - existing_eips)
+    if additional_eips:
         try:
             quota = float(
                 _aws_capture(
@@ -533,18 +683,22 @@ def _preflight(profile: Profile, config: dict[str, Any]) -> None:
                 ).get("Addresses", [])
             )
             available = int(quota) - used
-            if available < required_eips:
+            if available < additional_eips:
                 raise DeployError(
-                    f"{profile.name} needs {required_eips} Elastic IPs for NAT "
+                    f"{profile.name} needs {additional_eips} additional Elastic IPs for NAT "
                     f"gateways, but only {available} are available "
                     f"({used}/{int(quota)} already used)."
                 )
             print(
                 f"  Elastic IP quota: {available} available; "
-                f"{required_eips} required by this profile"
+                f"{additional_eips} additional required by this profile"
             )
         except (subprocess.CalledProcessError, ValueError) as exc:
             print(f"warning: could not verify Elastic IP quota with current credentials ({exc})")
+    elif required_eips:
+        print(
+            f"  existing stack provides {existing_eips} Elastic IPs; no additional quota required"
+        )
 
     if not profile.production:
         _require("docker", "Install Docker for CDK image assets.")
@@ -899,6 +1053,60 @@ def aws_status(args: argparse.Namespace) -> None:
     )
 
 
+def _agentcore_network_interfaces(stack: str, region: str) -> list[dict[str, Any]]:
+    try:
+        resources = json.loads(
+            _aws_capture(
+                [
+                    "cloudformation",
+                    "list-stack-resources",
+                    "--region",
+                    region,
+                    "--stack-name",
+                    stack,
+                    "--output",
+                    "json",
+                ]
+            )
+        ).get("StackResourceSummaries", [])
+    except (json.JSONDecodeError, AttributeError):
+        return []
+    security_groups = [
+        str(resource.get("PhysicalResourceId", ""))
+        for resource in resources
+        if isinstance(resource, dict)
+        and resource.get("ResourceType") == "AWS::EC2::SecurityGroup"
+        and str(resource.get("LogicalResourceId", "")).startswith("AgentCoreSecurityGroup")
+        and str(resource.get("PhysicalResourceId", "")).startswith("sg-")
+    ]
+    if not security_groups:
+        return []
+    try:
+        interfaces = json.loads(
+            _aws_capture(
+                [
+                    "ec2",
+                    "describe-network-interfaces",
+                    "--region",
+                    region,
+                    "--filters",
+                    f"Name=group-id,Values={','.join(security_groups)}",
+                    "--output",
+                    "json",
+                ]
+            )
+        ).get("NetworkInterfaces", [])
+    except (json.JSONDecodeError, AttributeError):
+        return []
+    return [
+        interface
+        for interface in interfaces
+        if isinstance(interface, dict)
+        and interface.get("InterfaceType") == "agentic_ai"
+        and interface.get("Status") in {"available", "in-use"}
+    ]
+
+
 def aws_destroy(args: argparse.Namespace) -> None:
     profile = _profile(args.profile, "aws")
     if profile.production:
@@ -910,18 +1118,31 @@ def aws_destroy(args: argparse.Namespace) -> None:
         raise DeployError("Destruction requires --yes.")
     _, config_path, config = _aws_config(args)
     _, cdk = _ensure_aws_tools()
-    _run(
-        [
-            str(cdk),
-            "destroy",
-            _stack_name(config),
-            "--app",
-            _cdk_app(),
-            "--exclusively",
-            "--force",
-        ],
-        env=_cdk_environment(config_path),
-    )
+    command = [
+        str(cdk),
+        "destroy",
+        _stack_name(config),
+        "--app",
+        _cdk_app(),
+        "--exclusively",
+        "--force",
+    ]
+    try:
+        _run(command, env=_cdk_environment(config_path))
+    except subprocess.CalledProcessError as exc:
+        if profile.agentcore:
+            blockers = _agentcore_network_interfaces(_stack_name(config), args.region)
+            if blockers:
+                interface_ids = ", ".join(
+                    str(interface["NetworkInterfaceId"]) for interface in blockers
+                )
+                raise DeployError(
+                    "AgentCore runtime deletion is complete, but its VPC network "
+                    f"interfaces are still being released: {interface_ids}. AWS can "
+                    "retain these interfaces after runtime deletion; rerun this destroy "
+                    "command after they disappear."
+                ) from exc
+        raise
 
 
 def aws_bootstrap(args: argparse.Namespace) -> None:
@@ -1086,6 +1307,37 @@ def _published_digest(repository: str, tag: str, region: str) -> str:
     )
 
 
+def _ensure_buildx_publisher() -> str:
+    name = "ostiari-publisher"
+    inspected = subprocess.run(
+        ["docker", "buildx", "inspect", name],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if inspected.returncode:
+        _run(
+            [
+                "docker",
+                "buildx",
+                "create",
+                "--name",
+                name,
+                "--driver",
+                "docker-container",
+            ]
+        )
+    else:
+        driver = re.search(r"^Driver:\s+(\S+)", inspected.stdout, re.MULTILINE)
+        if driver is None or driver.group(1) != "docker-container":
+            raise DeployError(
+                f"Buildx builder {name!r} exists but does not use the "
+                "docker-container driver required for SBOM and provenance attestations."
+            )
+    _run(["docker", "buildx", "inspect", name, "--bootstrap"])
+    return name
+
+
 def aws_publish_images(args: argparse.Namespace) -> None:
     _require("aws", "Install AWS CLI v2 and authenticate.")
     _require("docker", "Install Docker with Buildx.")
@@ -1103,6 +1355,7 @@ def aws_publish_images(args: argparse.Namespace) -> None:
         stderr=subprocess.DEVNULL,
     ).returncode:
         raise DeployError("Docker is installed but the Docker daemon is not running.")
+    builder = _ensure_buildx_publisher()
     dirty = subprocess.run(
         ["git", "status", "--porcelain"],
         cwd=ROOT,
@@ -1224,6 +1477,8 @@ def aws_publish_images(args: argparse.Namespace) -> None:
                     "docker",
                     "buildx",
                     "build",
+                    "--builder",
+                    builder,
                     "--platform",
                     platform,
                     "--file",
