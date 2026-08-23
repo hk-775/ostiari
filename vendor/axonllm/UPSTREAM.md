@@ -3,7 +3,7 @@
 Ostiari bundles AxonLLM so the routing engine used by the gateway is available
 from a clean source checkout, in CI, and in the production gateway image.
 
-- Upstream: https://github.com/AxonLLM/axonllm
+- Upstream: https://github.com/hk-775/axonllm
 - Release tag: `v0.3.1`
 - Commit: `a7730a516928272c570da53845248f1f61c31f7c`
 - Package: `axon-llm==0.3.1`
@@ -11,6 +11,11 @@ from a clean source checkout, in CI, and in the production gateway image.
 
 The upstream `LICENSE` and `THIRD_PARTY_NOTICES.md` files are retained beside
 this document.
+
+GitHub transferred the repository from `AxonLLM/axonllm` to
+`hk-775/axonllm` on 2026-08-23. Ostiari updates repository hyperlinks from the
+immutable `v0.3.1` release metadata; the bundled implementation remains the
+exact tag and commit recorded above.
 
 ## Updating the bundled source
 

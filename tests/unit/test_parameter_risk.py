@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import pytest
+
+from ostiari import Guard
+from ostiari.exceptions import ActionBlockedError
 from ostiari.gateway import ActionGateway
-from ostiari.models import EvalContext, PolicyResult
+from ostiari.models import EvalContext, OstiariConfig, PolicyResult, ThresholdConfig
 from ostiari.signals.parameter_risk import ParameterRiskSignal
+from ostiari.testing import MockStorage
 
 
 def _ctx() -> EvalContext:
@@ -47,6 +52,48 @@ class TestParameterRiskSignal:
     def test_privileged_target_scores(self):
         s = _sig("read", {"path": "/etc/secret/private_key"})
         assert s is not None and s.score_contribution >= 30
+
+    def test_process_boundary_escape_scores_at_block_tier(self):
+        s = _sig(
+            "process.exec",
+            {
+                "resource": "/workspace/package-probe",
+                "boundary": "range",
+                "escape_sequence": "synthetic-boundary-confusion",
+            },
+        )
+        assert s is not None and s.score_contribution >= 80
+        assert "outside the assigned boundary" in s.description
+
+    def test_explicit_host_boundary_scores_at_block_tier(self):
+        s = _sig("command.run", {"boundary": "host", "command": "synthetic"})
+        assert s is not None and s.score_contribution >= 80
+
+    def test_bounded_process_call_has_no_boundary_signal(self):
+        assert _sig(
+            "process.exec",
+            {"boundary": "range", "command": "synthetic-helper"},
+        ) is None
+
+    def test_control_plane_service_target_requires_intervention(self):
+        s = _sig(
+            "service.call",
+            {
+                "destination": "artifact-proxy.mock",
+                "target": "package-control.mock",
+            },
+        )
+        assert s is not None and s.score_contribution >= 45
+        assert "control-plane" in s.description
+
+    def test_regular_service_target_has_no_control_plane_signal(self):
+        assert _sig(
+            "service.call",
+            {
+                "destination": "service-proxy.mock",
+                "target": "catalog.mock",
+            },
+        ) is None
 
     def test_high_count_scores(self):
         s = _sig("send_email", {"count": 50000, "subject": "blast"})
@@ -100,3 +147,50 @@ class TestThroughGateway:
         pr = PolicyResult(decision="evaluate", risk_adjustments=[])
         d = gw.evaluate("send_email", {"to": "x@evil.com"}, EvalContext(), pr, [])
         assert any(sig.source == "parameter-risk" for sig in d.signals)
+
+
+class TestFailClosedIncidentRegression:
+    def _guard(self) -> Guard:
+        guard = Guard(
+            config=OstiariConfig(
+                fail_open=False,
+                thresholds=ThresholdConfig(allow_max=30, intervene_max=70),
+            ),
+            storage=MockStorage(),
+            parameter_risk=True,
+        )
+        guard.start()
+        return guard
+
+    def test_boundary_crossing_is_blocked(self):
+        guard = self._guard()
+        try:
+            with pytest.raises(ActionBlockedError) as raised:
+                guard.validate(
+                    "process.exec",
+                    {
+                        "resource": "/workspace/package-probe",
+                        "boundary": "range",
+                        "escape_sequence": "synthetic-boundary-confusion",
+                    },
+                )
+            assert raised.value.original_tier == "block"
+            assert raised.value.score == 80
+        finally:
+            guard.shutdown()
+
+    def test_control_plane_pivot_requires_approval_and_fails_closed(self):
+        guard = self._guard()
+        try:
+            with pytest.raises(ActionBlockedError) as raised:
+                guard.validate(
+                    "service.call",
+                    {
+                        "destination": "artifact-proxy.mock",
+                        "target": "package-control.mock",
+                    },
+                )
+            assert raised.value.original_tier == "intervene"
+            assert raised.value.score == 45
+        finally:
+            guard.shutdown()

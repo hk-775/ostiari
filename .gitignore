@@ -64,6 +64,8 @@ ai-dlc-rules-*.zip
 *.log
 
 # CDK artifacts
+/cdk.out/
+/cdk.context.json
 site/infra/cdk.out/
 site/infra/.venv/
 deploy/aws/cdk.out/

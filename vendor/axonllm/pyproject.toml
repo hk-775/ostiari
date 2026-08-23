@@ -24,12 +24,12 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/AxonLLM/axonllm"
-Repository = "https://github.com/AxonLLM/axonllm"
-Issues = "https://github.com/AxonLLM/axonllm/issues"
-Documentation = "https://github.com/AxonLLM/axonllm/tree/main/docs"
-Changelog = "https://github.com/AxonLLM/axonllm/blob/main/CHANGELOG.md"
-Security = "https://github.com/AxonLLM/axonllm/security/policy"
+Homepage = "https://github.com/hk-775/axonllm"
+Repository = "https://github.com/hk-775/axonllm"
+Issues = "https://github.com/hk-775/axonllm/issues"
+Documentation = "https://github.com/hk-775/axonllm/tree/main/docs"
+Changelog = "https://github.com/hk-775/axonllm/blob/main/CHANGELOG.md"
+Security = "https://github.com/hk-775/axonllm/security/policy"
 
 [project.optional-dependencies]
 # Provider and host dependencies are explicit so embedded users do not install

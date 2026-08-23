@@ -7,6 +7,8 @@ the params and contributes risk based on what the call actually does:
 
   - blast radius   — unbounded scope, wildcards, "all", huge counts
   - target sensitivity — production, external recipients, privileged targets
+  - boundary crossing  — process calls that request host/sandbox escape semantics
+  - control-plane pivot — service calls aimed at management/control infrastructure
   - destructiveness    — verbs that destroy/exfiltrate
 
 It returns a single RiskSignal whose contribution is the sum of matched
@@ -32,6 +34,35 @@ _MASS_WORDS = re.compile(r"\ball\b|\beverything\b|\bevery\b|\bentire\b|\b\*\b", 
 # Sensitive targets.
 _PROD = re.compile(r"\bprod(uction)?\b|\blive\b", re.I)
 _PRIVILEGED = re.compile(r"\broot\b|\badmin\b|\bsuperuser\b|\bsecret\b|\bcredential\b|\bpassword\b|\bprivate[_-]?key\b", re.I)
+_CONTROL_PLANE = re.compile(
+    r"\b(?:control[-_\s]?plane|management[-_\s]?plane|orchestrator|"
+    r"package[-_\s]?control|admin(?:istration)?[-_\s]?service)\b",
+    re.I,
+)
+
+# Strong semantic markers for process and service boundary changes. These
+# inspect declared fields only; Ostiari never executes or probes the target.
+_PROCESS_ACTION = re.compile(
+    r"(?:^|[._-])(?:exec(?:ute)?|run|shell|process|command)(?:$|[._-])",
+    re.I,
+)
+_SERVICE_ACTION = re.compile(
+    r"(?:^|[._-])(?:service|api|http|request|invoke|call)(?:$|[._-])",
+    re.I,
+)
+_BOUNDARY_OVERRIDE_FIELDS = {
+    "escape_sequence",
+    "sandbox_escape",
+    "container_escape",
+    "namespace_escape",
+    "host_boundary",
+    "host_mount",
+    "host_path",
+}
+_OUTSIDE_BOUNDARY = re.compile(
+    r"\b(?:host|outside|parent|privileged|unconfined)\b",
+    re.I,
+)
 
 # Destructive verbs (belt-and-suspenders with policy; params may carry the verb).
 _DESTRUCTIVE = re.compile(r"\bdelete\b|\bdrop\b|\bdestroy\b|\bpurge\b|\bwipe\b|\bterminate\b|\brm\s+-rf\b", re.I)
@@ -49,6 +80,8 @@ P_MASS_WORD = 20
 P_WILDCARD = 20
 P_PROD = 25
 P_PRIVILEGED = 30
+P_CONTROL_PLANE = 45
+P_BOUNDARY_ESCAPE = 80
 P_DESTRUCTIVE = 15
 P_HIGH_COUNT = 25          # count above _HIGH_COUNT_THRESHOLD
 P_EXTERNAL_RECIPIENT = 20
@@ -122,6 +155,20 @@ class ParameterRiskSignal:
         if _PRIVILEGED.search(blob):
             points += P_PRIVILEGED
             reasons.append("touches privileged/secret target")
+        if _SERVICE_ACTION.search(action) and _CONTROL_PLANE.search(target_blob):
+            points += P_CONTROL_PLANE
+            reasons.append("targets infrastructure control-plane service")
+
+        boundary_override = any(
+            field in params and params[field] not in (None, False, "")
+            for field in _BOUNDARY_OVERRIDE_FIELDS
+        )
+        boundary_value = str(params.get("boundary", ""))
+        if _PROCESS_ACTION.search(action) and (
+            boundary_override or _OUTSIDE_BOUNDARY.search(boundary_value)
+        ):
+            points += P_BOUNDARY_ESCAPE
+            reasons.append("requests execution outside the assigned boundary")
 
         # external recipients (email/exfil risk)
         for field in _RECIPIENT_FIELDS:

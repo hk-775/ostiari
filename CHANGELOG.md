@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Boundary-crossing and control-plane target parameter signals.** Process
+  calls carrying explicit host/sandbox escape semantics now score at block
+  tier, while service calls targeting management/control infrastructure enter
+  intervention. The July 2026 OpenAI/Hugging Face synthetic incident replay
+  verifies fail-closed denial of both transitions.
 - **AxonLLM is now a real embedded distribution.** Ostiari bundles the reviewed
   MIT-0 `axon-llm==0.3.1` source, records its upstream tag/commit, installs it
   in clean checkouts and the production gateway image, and exercises the public

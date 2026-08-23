@@ -198,7 +198,6 @@ class TestAdminSeed:
         monkeypatch.setenv("OSTIARI_ENV", "production")
         monkeypatch.delenv("OSTIARI_ADMIN_PASSWORD", raising=False)
         from control_plane.auth import router as auth_router
-        monkeypatch.setattr(auth_router, "_seeded", False)
         with pytest.raises(RuntimeError, match="OSTIARI_ADMIN_PASSWORD"):
             from control_plane.database import get_db
             gen = get_db()
@@ -220,6 +219,27 @@ class TestAdminSeed:
                               })
         assert r.status_code == 200
         assert "access_token" in r.json()
+
+    async def test_demo_restores_documented_admin_password(self, client, monkeypatch):
+        monkeypatch.delenv("OSTIARI_ENV", raising=False)
+        monkeypatch.setenv("OSTIARI_NO_DEMO", "0")
+        monkeypatch.setenv("OSTIARI_ADMIN_PASSWORD", "generated-evaluation-password")
+
+        seeded = await client.post(
+            "/api/auth/login",
+            json={
+                "email": "admin@ostiari.ai",
+                "password": "generated-evaluation-password",
+            },
+        )
+        assert seeded.status_code == 200
+
+        monkeypatch.delenv("OSTIARI_ADMIN_PASSWORD")
+        restored = await client.post(
+            "/api/auth/login",
+            json={"email": "admin@ostiari.ai", "password": "admin"},
+        )
+        assert restored.status_code == 200
 
 
 # ── trace ingest ────────────────────────────────────────────────────────────

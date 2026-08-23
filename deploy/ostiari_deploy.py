@@ -161,6 +161,7 @@ def _local_env(profile: Profile, args: argparse.Namespace) -> dict[str, str]:
             "OSTIARI_REDIS_PORT": str(args.redis_port),
             "OSTIARI_BROWSER_API_URL": f"http://localhost:{control_port}",
             "OSTIARI_NO_DEMO": "0" if profile.demo else "1",
+            "OSTIARI_DEMO_LOGIN": "true" if profile.demo else "false",
             "OSTIARI_GATEWAY_ID": "crm-agent" if profile.demo else "my-gateway",
         }
     )
@@ -887,7 +888,10 @@ def _print_aws_outputs(path: Path) -> dict[str, str]:
         for key in ("DashboardUrl", "GatewayUrl", "AgentCoreRuntimeArn"):
             if key in outputs:
                 print(f"  {key}: {outputs[key]}")
-    if "AdminSecretArn" in values:
+    if values.get("DemoLoginEnabled", "").lower() == "true":
+        print(f"  Admin user: {values.get('AdminEmail', 'admin@ostiari.ai')}")
+        print("  Admin password: admin (demo only; already prefilled)")
+    elif "AdminSecretArn" in values:
         print(f"  Admin user: {values.get('AdminEmail', 'admin@ostiari.ai')}")
         print(
             "  Admin password: aws secretsmanager get-secret-value "
@@ -1414,7 +1418,12 @@ def aws_publish_images(args: argparse.Namespace) -> None:
             f"{prefix}/frontend",
             "deploy/docker/Dockerfile.frontend",
             "linux/amd64",
-            ["--build-arg", "VITE_API_URL="],
+            [
+                "--build-arg",
+                "VITE_API_URL=",
+                "--build-arg",
+                "VITE_DEMO_LOGIN=false",
+            ],
         ),
     ]
     if args.include_agentcore:

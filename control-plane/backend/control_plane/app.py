@@ -95,7 +95,7 @@ async def lifespan(app: FastAPI):
             seed_demo_pricing,
             seed_demo_quotas,
         )
-        from control_plane.routers.traces import seed_traces
+        from control_plane.routers.traces import persist_demo_traces, seed_traces
         seed_traces()
         seed_demo_agents()
         seed_demo_approvals()
@@ -103,6 +103,7 @@ async def lifespan(app: FastAPI):
         seed_demo_pricing()
         async with async_session() as db:
             await seed_demo_db(db)
+            await persist_demo_traces(db)
             # Both of these read the usage records seed_demo_db writes — quota
             # spend and broker pool draw-down are aggregates over them — so on a
             # first run they have to exist first.

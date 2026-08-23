@@ -17,11 +17,12 @@ outside world.** Every tool call runs through a chain of gates — authorization
 quota, risk-scoring, payment — before it executes, and you configure and watch
 all of it from one dashboard.
 
-```
-   Agent ──▶ Gateway (enforces) ──▶ Tool / MCP server / another agent
-                  │
-                  └──▶ Control Plane (configure once, watch everything)
-```
+## Architecture
+
+![Ostiari runtime architecture](control-plane/docs/ostiari-birds-eye.drawio.png)
+
+The PNG is exported from the
+[editable draw.io source](control-plane/docs/ostiari-birds-eye.drawio).
 
 ## See it in 90 seconds
 
