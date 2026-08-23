@@ -57,7 +57,6 @@ def multi_tenant_mode(monkeypatch):
 def _reset_in_memory_state() -> None:
     """Clear module-level state used by in-memory routers between tests."""
     from control_plane import persistence
-    from control_plane.auth import router as auth_router
     from control_plane.auth import sso, sso_router
     from control_plane.routers import (
         agent_routing,
@@ -98,7 +97,6 @@ def _reset_in_memory_state() -> None:
         obj = getattr(mod, attr, None)
         if obj is not None and hasattr(obj, "clear"):
             obj.clear()
-    auth_router._seeded = False
     persistence._loaded_runtime_revisions.clear()
     persistence._runtime_sync_error = ""
     for operation in traces._trace_bus_errors:

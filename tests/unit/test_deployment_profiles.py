@@ -409,7 +409,8 @@ def test_aws_frontend_uses_explicit_same_origin_build_contract() -> None:
     stack = (ROOT / "deploy/aws/stack.py").read_text()
     dockerfile = (ROOT / "deploy/docker/Dockerfile.frontend").read_text()
     assert "configuredApiBase === undefined" in api
-    assert 'build_args={"VITE_API_URL": ""}' in stack
+    assert '"VITE_API_URL": ""' in stack
+    assert '"VITE_DEMO_LOGIN": "true" if self.config.demo else "false"' in stack
     assert '["/api/*", "/docs*", "/openapi.json", "/ws/*"]' in stack
     assert "frontend-tmp" not in stack
     assert "pid /dev/shm/nginx.pid;" in dockerfile

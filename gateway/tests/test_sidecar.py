@@ -171,6 +171,68 @@ class TestToolProxy:
         assert data["allowed"] is True
         assert data["tier"] == "allow"
 
+    def test_validate_only_reports_live_trace(self, configured_client, monkeypatch):
+        from ostiari_gateway.trace_reporter import TraceReporter
+
+        reports = []
+
+        async def capture_report(_reporter, **event):
+            reports.append(event)
+
+        monkeypatch.setattr(TraceReporter, "report", capture_report)
+        resp = configured_client.post(
+            "/validate",
+            json={"action": "db_query", "params": {"sql": "SELECT 1"}},
+            headers={
+                "X-Agent-Id": "agentcore-runtime",
+                "X-Framework": "bedrock-agentcore",
+                "X-Session-Id": "agentcore-session",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert reports == [
+            {
+                "action": "db_query",
+                "tier": "allow",
+                "score": 0,
+                "duration_ms": reports[0]["duration_ms"],
+                "agent_id": "agentcore-runtime",
+                "framework": "bedrock-agentcore",
+                "is_mcp": False,
+                "endpoint": "validation://db_query",
+                "session_id": "agentcore-session",
+                "plan": "",
+                "step": "",
+                "params": {"sql": "SELECT 1"},
+            }
+        ]
+        assert reports[0]["duration_ms"] >= 0
+
+    def test_validate_only_reports_blocked_trace(self, configured_client, monkeypatch):
+        from ostiari_gateway.trace_reporter import TraceReporter
+
+        reports = []
+
+        async def capture_report(_reporter, **event):
+            reports.append(event)
+
+        monkeypatch.setattr(TraceReporter, "report", capture_report)
+        resp = configured_client.post(
+            "/validate",
+            json={"action": "dangerous_action", "params": {"target": "all"}},
+            headers={
+                "X-Agent-Id": "agentcore-runtime",
+                "X-Framework": "bedrock-agentcore",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["allowed"] is False
+        assert reports[0]["tier"] == "block"
+        assert reports[0]["blocked_reason"]
+        assert reports[0]["limit_type"] == "policy"
+
     def test_otel_context_propagated_to_tool(self, httpserver):
         """Verify that traceparent header is forwarded to tool endpoints."""
         from opentelemetry import trace as otel_trace

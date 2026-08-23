@@ -44,7 +44,13 @@ def hash_password(password: str) -> str:
 
 def verify_password(password: str, hashed: str) -> bool:
     """Verify a password against its bcrypt hash."""
-    return bcrypt.checkpw(password.encode(), hashed.encode())
+    try:
+        return bcrypt.checkpw(password.encode(), hashed.encode())
+    except ValueError:
+        # bcrypt rejects inputs longer than 72 bytes (and malformed hashes).
+        # Invalid credentials should remain a normal authentication failure,
+        # not escape as a 500 response.
+        return False
 
 
 def validate_local_password(password: str) -> None:

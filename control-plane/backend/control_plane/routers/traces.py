@@ -345,6 +345,7 @@ def _trace(
     """Build one trace event dict in the shape the gateway emits."""
     return {
         "trace_id": uuid.uuid4().hex,
+        "demo_seed": True,
         "sidecar_id": gateway_id,
         "gateway_id": gateway_id,
         "action": action,
@@ -368,12 +369,13 @@ def _trace(
 def seed_traces() -> None:
     """Populate the trace buffer with demo data so Live Traces isn't empty.
 
-    Only seeds when the buffer is empty (real gateway traffic takes precedence).
+    Seeds once per process even when durable live traffic already exists. The
+    marker lets startup distinguish restored demo history from real traces.
     Covers all seeded gateways/agents with a mix of allow/intervene/block/error
     tiers, HTTP and MCP tools, and one multi-step planner session.
     """
     buf = _recent_traces[DEFAULT_ORG]
-    if buf:
+    if any(event.get("demo_seed") for event in buf):
         return
 
     now = time.time()
@@ -514,6 +516,7 @@ def seed_traces() -> None:
         for _ in range(count):
             buf.append({
                 "trace_id": uuid.uuid4().hex,
+                "demo_seed": True,
                 "sidecar_id": "crm-agent", "gateway_id": "crm-agent",
                 "action": f"a2a.{callee}", "tier": "block", "score": 0,
                 "agent_id": caller, "framework": "gateway-invoke", "is_mcp": False,
@@ -524,6 +527,20 @@ def seed_traces() -> None:
             })
 
     log.info("Seeded %d demo traces", len(buf))
+
+
+async def persist_demo_traces(db: AsyncSession) -> None:
+    """Persist seeded history so REST and WebSocket clients see the same data."""
+    seed_traces()
+    demo_events = [
+        _sanitize_event(event)
+        for event in _recent_traces[DEFAULT_ORG]
+        if event.get("demo_seed")
+    ]
+    for event in demo_events:
+        await _persist_trace(db, DEFAULT_ORG, event)
+    await db.commit()
+    log.info("Persisted %d demo traces", len(demo_events))
 
 
 @router.post("/api/traces/ingest")
