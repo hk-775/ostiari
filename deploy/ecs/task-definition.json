@@ -24,13 +24,6 @@
         "capabilities": { "drop": ["ALL"] },
         "initProcessEnabled": true
       },
-      "mountPoints": [
-        {
-          "sourceVolume": "tmp",
-          "containerPath": "/tmp",
-          "readOnly": false
-        }
-      ],
       "healthCheck": {
         "command": ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8421/health', timeout=4).read()"],
         "interval": 10,
@@ -98,11 +91,6 @@
           "mode": "blocking"
         }
       }
-    }
-  ],
-  "volumes": [
-    {
-      "name": "tmp"
     }
   ]
 }

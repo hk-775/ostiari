@@ -658,7 +658,7 @@ The image prefers env vars over flags, which is what the compose file and the Ku
 
 **`OSTIARI_ADVERTISE_HOST` matters more than it looks.** The gateway tells the control plane where to push config back to, and it derives that callback URL from its own bind host — which is `0.0.0.0`, not an address anything can reach. It substitutes `localhost` in that case, which is correct on a single box and wrong everywhere else. On a container network or in Kubernetes, set `OSTIARI_ADVERTISE_HOST` to the reachable service name or the gateway registers a callback URL that resolves to the control plane itself, and policy pushes silently never arrive.
 
-The image runs as uid `10001` with a root-owned `site-packages`, so a compromised gateway can't rewrite its own code. It writes exactly one path at runtime — the rendered policy tempfile under `/tmp` — so if you set `read_only: true` you must also mount a `/tmp` tmpfs, or the container starts healthy and then 500s on the first config push. `deploy/docker/docker-compose.yml` does both.
+The image runs as uid `10001` with a root-owned `site-packages`, so a compromised gateway can't rewrite its own code. Its rendered policy tempfile uses `/dev/shm`, the writable tmpfs supplied by the container runtime, so the root filesystem can remain read-only without a platform-specific volume.
 
 The full local stack (`cd deploy/docker && docker compose up --build`) brings up
 the gateway on 8421, the control-plane backend on 8400, the frontend on 9000,

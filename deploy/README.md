@@ -386,24 +386,16 @@ definition environment arrays, or image layers.
 
   All three also run with a **read-only root filesystem**, so a compromised
   container cannot rewrite its own code or install anything:
-  - **gateway** → `/tmp`, where it renders pushed policies to a tempfile
-    (`config_manager._policy_file`);
-  - **frontend** → `/tmp`, where nginx keeps its pid file and all five temp dirs;
+  - **gateway** → `/dev/shm`, the runtime-provided writable tmpfs where it
+    renders pushed policies to a process-lifetime tempfile;
+  - **frontend** → `/dev/shm`, the runtime-provided writable tmpfs where nginx
+    keeps its pid file and all five temp dirs without a platform-specific mount;
   - **control-plane backend** → no writable mount in production; PostgreSQL owns
     all durable runtime and governance state.
-
-  Note that removing a writable mount fails at three different *times*, which
-  mislead differently:
-  - Dropping the gateway's `/tmp` fails **late**: it goes Ready, passes its health
-    check, and then 500s on the first policy push.
 
   The control-plane image still defaults to `/data` with SQLite for local use.
   Production overrides `DATABASE_URL` with PostgreSQL and never calls the legacy
   JSON writer, so `readOnlyRootFilesystem` requires no application data mount.
-
-  On ECS the gateway's writable mount is a plain empty `volumes` entry, **not**
-  `linuxParameters.tmpfs` — tmpfs is unsupported on the Fargate launch type this
-  task family declares, and a task definition using it fails to launch.
 - **Database and migrations:** SQLite is development-only. Production startup
   rejects it. Run `alembic upgrade head` as a release/init job before the API;
   the control-plane image now includes the migration files.
