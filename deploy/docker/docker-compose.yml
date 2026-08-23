@@ -52,13 +52,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    # The image runs as uid 10001; these harden it further. read_only makes the
-    # root filesystem immutable, so the one path the gateway writes — the rendered
-    # policy tempfile — needs the tmpfs below. Without it the container starts
-    # healthy and then 500s on the first config push.
+    # The image runs as uid 10001; these harden it further. Its policy tempfile
+    # uses the runtime-provided /dev/shm tmpfs, so no writable root mount is needed.
     read_only: true
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,size=64m
     cap_drop:
       - ALL
     security_opt:
@@ -129,11 +125,9 @@ services:
     depends_on:
       control-plane-backend:
         condition: service_healthy
-    # Runs as nginx's own uid 101. The image points the pid file and all five
-    # nginx temp dirs at /tmp, so this one tmpfs covers a read-only root.
+    # Runs as nginx's own uid 101. The image keeps all writable nginx state in
+    # /dev/shm, which remains writable while the image root stays read-only.
     read_only: true
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,size=32m
     cap_drop:
       - ALL
     security_opt:

@@ -473,6 +473,34 @@ def test_tenant_key_downgrade_refuses_idempotency_collisions(table):
             _restore_env(prev)
 
 
+def test_upgrade_head_accepts_percent_encoded_database_url(tmp_path, monkeypatch):
+    backend_dir = Path(__file__).resolve().parent.parent
+    db = tmp_path / "percent%2Fencoded.db"
+    cfg = Config(str(backend_dir / "alembic.ini"))
+    cfg.set_main_option("script_location", str(backend_dir / "alembic"))
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{db}")
+
+    command.upgrade(cfg, "head")
+
+    with sqlite3.connect(db) as con:
+        assert con.execute("SELECT version_num FROM alembic_version").fetchone()
+
+
+def test_postgresql_full_migration_chain(monkeypatch):
+    database_url = os.environ.get("OSTIARI_TEST_POSTGRES_URL")
+    if not database_url:
+        pytest.skip("OSTIARI_TEST_POSTGRES_URL is not configured")
+
+    backend_dir = Path(__file__).resolve().parent.parent
+    cfg = Config(str(backend_dir / "alembic.ini"))
+    cfg.set_main_option("script_location", str(backend_dir / "alembic"))
+    monkeypatch.setenv("DATABASE_URL", database_url)
+
+    command.upgrade(cfg, "head")
+    command.downgrade(cfg, "base")
+    command.upgrade(cfg, "head")
+
+
 def test_default_db_path_matches_the_app():
     """alembic and the app must resolve the same default DB.
 

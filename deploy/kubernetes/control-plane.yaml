@@ -207,13 +207,6 @@ spec:
             limits:
               cpu: 500m
               memory: 256Mi
-          volumeMounts:
-            - name: nginx-tmp
-              mountPath: /tmp
-      volumes:
-        - name: nginx-tmp
-          emptyDir:
-            sizeLimit: 64Mi
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget
