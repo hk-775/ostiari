@@ -1,6 +1,6 @@
 # AxonLLM
 
-[![CI](https://github.com/AxonLLM/axonllm/actions/workflows/ci.yml/badge.svg)](https://github.com/AxonLLM/axonllm/actions/workflows/ci.yml)
+[![CI](https://github.com/hk-775/axonllm/actions/workflows/ci.yml/badge.svg)](https://github.com/hk-775/axonllm/actions/workflows/ci.yml)
 [![License: MIT-0](https://img.shields.io/badge/License-MIT--0-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 
@@ -92,7 +92,7 @@ adapter imports no Ostiari, server, or AWS control-plane package. See the
 contract and migration safety rules.
 
 ```bash
-git clone https://github.com/AxonLLM/axonllm.git
+git clone https://github.com/hk-775/axonllm.git
 cd axonllm
 cp -n config/providers.yaml.example config/providers.yaml
 # Add at least one API key (or just use Bedrock with AWS credentials)
