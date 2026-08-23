@@ -216,10 +216,6 @@ def upgrade() -> None:
             existing_type=sa.String(length=64),
             nullable=False,
         )
-        batch.create_unique_constraint(
-            "uq_gateways_org_id_id",
-            ["org_id", "id"],
-        )
 
     for table in _GATEWAY_CHILDREN:
         _align_child_org_with_gateway(table)
@@ -234,12 +230,6 @@ def upgrade() -> None:
                 nullable=False,
             )
             batch.drop_constraint(legacy_fk, type_="foreignkey")
-            batch.create_foreign_key(
-                f"fk_{table}_gateway",
-                "gateways",
-                ["org_id", "gateway_id"],
-                ["org_id", "id"],
-            )
 
     gateway_pk = _primary_key_name("gateways")
     with op.batch_alter_table(
@@ -251,10 +241,18 @@ def upgrade() -> None:
             "pk_gateways",
             ["org_id", "id"],
         )
-        batch.drop_constraint(
-            "uq_gateways_org_id_id",
-            type_="unique",
-        )
+
+    for table in _GATEWAY_CHILDREN:
+        with op.batch_alter_table(
+            table,
+            naming_convention=_NAMING_CONVENTION,
+        ) as batch:
+            batch.create_foreign_key(
+                f"fk_{table}_gateway",
+                "gateways",
+                ["org_id", "gateway_id"],
+                ["org_id", "id"],
+            )
 
     _backfill_org("wallets")
     wallet_pk = _primary_key_name("wallets")
@@ -467,15 +465,6 @@ def downgrade() -> None:
         batch.drop_index("ix_users_email")
         batch.create_index("ix_users_email", ["email"], unique=True)
 
-    with op.batch_alter_table(
-        "gateways",
-        naming_convention=_NAMING_CONVENTION,
-    ) as batch:
-        batch.create_unique_constraint(
-            "uq_gateways_id_legacy",
-            ["id"],
-        )
-
     for table in _GATEWAY_CHILDREN:
         composite_fk = next(
             constraint["name"]
@@ -491,12 +480,6 @@ def downgrade() -> None:
             naming_convention=_NAMING_CONVENTION,
         ) as batch:
             batch.drop_constraint(composite_fk, type_="foreignkey")
-            batch.create_foreign_key(
-                f"fk_{table}_gateway_id_gateways",
-                "gateways",
-                ["gateway_id"],
-                ["id"],
-            )
 
     gateway_pk = _primary_key_name("gateways")
     with op.batch_alter_table(
@@ -505,10 +488,18 @@ def downgrade() -> None:
     ) as batch:
         batch.drop_constraint(gateway_pk, type_="primary")
         batch.create_primary_key("pk_gateways", ["id"])
-        batch.drop_constraint(
-            "uq_gateways_id_legacy",
-            type_="unique",
-        )
+
+    for table in _GATEWAY_CHILDREN:
+        with op.batch_alter_table(
+            table,
+            naming_convention=_NAMING_CONVENTION,
+        ) as batch:
+            batch.create_foreign_key(
+                f"fk_{table}_gateway_id_gateways",
+                "gateways",
+                ["gateway_id"],
+                ["id"],
+            )
 
     wallet_pk = _primary_key_name("wallets")
     with op.batch_alter_table(

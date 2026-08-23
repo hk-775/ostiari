@@ -129,6 +129,12 @@ def main() -> int:
             resource_types = _types(template)
             expected_services = 4 if demo else 3
             assert resource_types.count("AWS::ECS::Service") == expected_services
+            demo_resources = [
+                logical_id
+                for logical_id in template["Resources"]
+                if logical_id.startswith("DemoTools")
+            ]
+            assert bool(demo_resources) is demo
             assert ("AWS::BedrockAgentCore::Runtime" in resource_types) is agentcore
             assert ("AWS::WAFv2::WebACL" in resource_types) is production
             if production:

@@ -31,6 +31,9 @@ FROM python:3.12-alpine@sha256:4b5b91c1040aeb90137a7ed5235e3caf7a1a45da015066c53
 ENV VIRTUAL_ENV=/opt/venv
 ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 ENV OSTIARI_AXON_ROOT=/opt/axonllm
+# OCI runtimes provide /dev/shm as a writable tmpfs even with a read-only root.
+# Config pushes render the active policy to a process-lifetime temporary file.
+ENV TMPDIR=/dev/shm
 
 WORKDIR /app
 

@@ -46,15 +46,13 @@ RUN printf 'server {\n\
 #   3. The `user nginx;` directive, which is meaningless without root and logs a
 #      warning on every boot.
 #
-# All of (1) and (2) are pointed at /tmp, so a read-only root filesystem needs
-# exactly ONE writable mount instead of two. That matters because an emptyDir
-# mounted over /var/cache/nginx would mask anything pre-created here and arrive
-# root-owned — unwritable to uid 101 unless fsGroup happens to match, which it
-# does not in the control-plane pod (fsGroup 10001, nginx gid 101).
+# All of (1) and (2) are pointed at /dev/shm. OCI runtimes provide that tmpfs as
+# writable to non-root users even when the image root is read-only. This avoids a
+# platform-specific writable volume whose root arrives owned by uid 0 on Fargate.
 #
 # The listen port (9000) is already above 1024, so binding needs no capability.
-RUN sed -i -e '/^user /d' -e 's#^pid .*#pid /tmp/nginx.pid;#' /etc/nginx/nginx.conf \
-    && sed -i '/^http {/a\    client_body_temp_path /tmp/client_temp;\n    proxy_temp_path /tmp/proxy_temp;\n    fastcgi_temp_path /tmp/fastcgi_temp;\n    uwsgi_temp_path /tmp/uwsgi_temp;\n    scgi_temp_path /tmp/scgi_temp;' /etc/nginx/nginx.conf \
+RUN sed -i -e '/^user /d' -e 's#^pid .*#pid /dev/shm/nginx.pid;#' /etc/nginx/nginx.conf \
+    && sed -i '/^http {/a\    client_body_temp_path /dev/shm/client_temp;\n    proxy_temp_path /dev/shm/proxy_temp;\n    fastcgi_temp_path /dev/shm/fastcgi_temp;\n    uwsgi_temp_path /dev/shm/uwsgi_temp;\n    scgi_temp_path /dev/shm/scgi_temp;' /etc/nginx/nginx.conf \
     && chown -R 101:101 /etc/nginx/conf.d
 
 USER 101:101

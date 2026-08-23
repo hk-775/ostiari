@@ -68,10 +68,9 @@ podSecurityContext:
   seccompProfile:
     type: RuntimeDefault
 
-# The gateway writes nothing to its image at runtime — the only write is the
-# rendered policy file, which goes to the /tmp emptyDir the deployment mounts.
-# So the root filesystem can be immutable, which is what stops a compromised
-# gateway from rewriting its own code or installing anything.
+# The gateway writes nothing to its image at runtime. Its rendered policy file
+# uses the runtime-provided /dev/shm tmpfs, so the root filesystem can remain
+# immutable without a platform-specific writable volume.
 containerSecurityContext:
   allowPrivilegeEscalation: false
   readOnlyRootFilesystem: true
