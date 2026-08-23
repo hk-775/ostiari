@@ -119,6 +119,20 @@ jobs:
   control-plane:
     name: Control Plane (backend)
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16.13-alpine@sha256:4e6e670bb069649261c9c18031f0aded7bb249a5b6664ddec29c013a89310d50
+        env:
+          POSTGRES_DB: ostiari
+          POSTGRES_USER: ostiari
+          POSTGRES_PASSWORD: ostiari-ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ostiari -d ostiari"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -140,6 +154,8 @@ jobs:
 
       - name: Test (control-plane suite)
         working-directory: control-plane/backend
+        env:
+          OSTIARI_TEST_POSTGRES_URL: postgresql+asyncpg://ostiari:ostiari-ci@localhost:5432/ostiari
         run: PYTHONPATH=. pytest tests/ -v --tb=short
 
   frontend:
@@ -328,3 +344,42 @@ jobs:
             --entrypoint python \
             ostiari-gateway:ci \
             -c "from importlib.metadata import version; from ostiari_gateway.modules.llm_gateway.axon_router import AxonRouter; assert version('axon-llm') == '0.3.1'; r=AxonRouter(); r.require(); assert r.supports_tools(); print('embedded AxonLLM OK')"
+
+      - name: Verify hardened gateway policy writes
+        run: |
+          docker run --rm --network none \
+            --read-only \
+            --user 10001:10001 \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --entrypoint python \
+            ostiari-gateway:ci \
+            -c "import asyncio, tempfile; from ostiari_gateway.config_manager import ConfigManager; from ostiari_gateway.models import PolicyConfig; assert tempfile.gettempdir() == '/dev/shm'; manager = ConfigManager(); manager.apply_policy(PolicyConfig(allow=['health.check'])); assert manager._policy_file and manager._policy_file.parent.as_posix() == '/dev/shm'; asyncio.run(manager.shutdown()); print('read-only policy write OK')"
+
+      - name: Verify hardened frontend image starts
+        run: |
+          docker run --rm --network none \
+            --read-only \
+            --user 101:101 \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --entrypoint sh \
+            ostiari-frontend:ci \
+            -ec '
+              /docker-entrypoint.sh nginx -g "daemon off;" &
+              pid=$!
+              cleanup() {
+                kill "$pid" 2>/dev/null || true
+                wait "$pid" 2>/dev/null || true
+              }
+              trap cleanup EXIT
+              attempt=0
+              while [ "$attempt" -lt 20 ]; do
+                if wget -q -O /dev/null http://localhost:9000/; then
+                  exit 0
+                fi
+                attempt=$((attempt + 1))
+                sleep 1
+              done
+              exit 1
+            '

@@ -180,9 +180,37 @@ def test_change_set_summary_counts_conditional_replacements() -> None:
 def test_aws_frontend_uses_explicit_same_origin_build_contract() -> None:
     api = (ROOT / "control-plane/frontend/src/lib/api.ts").read_text()
     stack = (ROOT / "deploy/aws/stack.py").read_text()
+    dockerfile = (ROOT / "deploy/docker/Dockerfile.frontend").read_text()
     assert "configuredApiBase === undefined" in api
     assert 'build_args={"VITE_API_URL": ""}' in stack
     assert '["/api/*", "/docs*", "/openapi.json", "/ws/*"]' in stack
+    assert "frontend-tmp" not in stack
+    assert "pid /dev/shm/nginx.pid;" in dockerfile
+    assert "client_body_temp_path /dev/shm/client_temp;" in dockerfile
+
+
+def test_gateway_uses_runtime_tmpfs_without_platform_volumes() -> None:
+    stack = (ROOT / "deploy/aws/stack.py").read_text()
+    dockerfile = (ROOT / "deploy/docker/Dockerfile.gateway").read_text()
+    compose = yaml.safe_load(
+        (ROOT / "deploy/docker/docker-compose.yml").read_text()
+    )
+    ecs = yaml.safe_load((ROOT / "deploy/ecs/task-definition.json").read_text())
+
+    assert "ENV TMPDIR=/dev/shm" in dockerfile
+    assert "gateway-tmp" not in stack
+    assert "tmpfs" not in compose["services"]["gateway"]
+    assert "mountPoints" not in ecs["containerDefinitions"][0]
+    assert "volumes" not in ecs
+
+
+def test_empty_aws_profiles_do_not_create_demo_infrastructure() -> None:
+    stack = (ROOT / "deploy/aws/stack.py").read_text()
+    validator = (ROOT / "deploy/aws/validate.py").read_text()
+
+    assert "self.demo_sg: ec2.SecurityGroup | None = None" in stack
+    assert "if self.config.demo:" in stack
+    assert "assert bool(demo_resources) is demo" in validator
 
 
 def test_operational_aws_subcommands_are_exposed() -> None:

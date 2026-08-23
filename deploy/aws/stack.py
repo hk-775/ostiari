@@ -169,16 +169,21 @@ class OstiariStack(Stack):
         self.frontend_sg = ec2.SecurityGroup(
             self, "FrontendSecurityGroup", vpc=self.vpc, allow_all_outbound=True
         )
-        self.demo_sg = ec2.SecurityGroup(
-            self, "DemoToolsSecurityGroup", vpc=self.vpc, allow_all_outbound=True
-        )
+        self.demo_sg: ec2.SecurityGroup | None = None
+        if self.config.demo:
+            self.demo_sg = ec2.SecurityGroup(
+                self, "DemoToolsSecurityGroup", vpc=self.vpc, allow_all_outbound=True
+            )
+            self.demo_sg.add_ingress_rule(
+                self.gateway_sg,
+                ec2.Port.tcp(9300),
+            )
 
         self.backend_sg.add_ingress_rule(self.alb_sg, ec2.Port.tcp(8400))
         self.backend_sg.add_ingress_rule(self.gateway_sg, ec2.Port.tcp(8400))
         self.gateway_sg.add_ingress_rule(self.alb_sg, ec2.Port.tcp(8421))
         self.gateway_sg.add_ingress_rule(self.backend_sg, ec2.Port.tcp(8421))
         self.frontend_sg.add_ingress_rule(self.alb_sg, ec2.Port.tcp(9000))
-        self.demo_sg.add_ingress_rule(self.gateway_sg, ec2.Port.tcp(9300))
 
         self.namespace = servicediscovery.PrivateDnsNamespace(
             self,
@@ -491,7 +496,6 @@ class OstiariStack(Stack):
             cpu=1024 if self.config.production else 512,
             memory=2048 if self.config.production else 1024,
         )
-        gateway_task.add_volume(name="gateway-tmp")
         gateway_env = {
             "OSTIARI_GATEWAY_ID": "crm-agent" if self.config.demo else "ostiari-gateway",
             "OSTIARI_CONTROL_PLANE_URL": f"http://{control_dns}:8400",
@@ -552,13 +556,6 @@ class OstiariStack(Stack):
             readonly_root_filesystem=True,
             user="10001",
         )
-        gateway.add_mount_points(
-            ecs.MountPoint(
-                source_volume="gateway-tmp",
-                container_path="/tmp",
-                read_only=False,
-            )
-        )
         self.gateway_service = self._service(
             "GatewayService",
             task=gateway_task,
@@ -570,7 +567,6 @@ class OstiariStack(Stack):
         self.gateway_service.node.add_dependency(self.backend_service, self.cache)
 
         frontend_task = self._task_definition("FrontendTask", cpu=256, memory=512)
-        frontend_task.add_volume(name="frontend-tmp")
         frontend = frontend_task.add_container(
             "frontend",
             container_name="frontend",
@@ -593,13 +589,6 @@ class OstiariStack(Stack):
             readonly_root_filesystem=True,
             user="101",
         )
-        frontend.add_mount_points(
-            ecs.MountPoint(
-                source_volume="frontend-tmp",
-                container_path="/tmp",
-                read_only=False,
-            )
-        )
         self.frontend_service = self._service(
             "FrontendService",
             task=frontend_task,
@@ -611,6 +600,8 @@ class OstiariStack(Stack):
 
         self.demo_service = None
         if self.config.demo:
+            if self.demo_sg is None:
+                raise ValueError("demo security group is missing")
             demo_task = self._task_definition("DemoToolsTask", cpu=256, memory=512)
             demo = demo_task.add_container(
                 "demo-tools",

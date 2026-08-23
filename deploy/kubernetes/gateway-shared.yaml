@@ -139,14 +139,6 @@ spec:
             limits:
               cpu: "1"
               memory: 512Mi
-          volumeMounts:
-            - name: tmp
-              mountPath: /tmp
-      volumes:
-        - name: tmp
-          emptyDir:
-            medium: Memory
-            sizeLimit: 64Mi
 ---
 apiVersion: v1
 kind: Service

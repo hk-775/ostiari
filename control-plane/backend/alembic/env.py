@@ -9,9 +9,9 @@ import asyncio
 import os
 from logging.config import fileConfig
 
+# Register the auth tables (users/sessions) on Base.metadata, mirroring app.py.
+import control_plane.auth.models  # noqa: F401
 from alembic import context
-from sqlalchemy import pool
-from sqlalchemy.ext.asyncio import async_engine_from_config
 
 # default_sqlite_url is the app's own default, shared rather than duplicated: this
 # file and control_plane.database both call it, so `alembic upgrade head` with no
@@ -21,9 +21,8 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 # engine the app reuses) and performs no import-time filesystem write.
 from control_plane.env import default_sqlite_url
 from control_plane.models.database import Base
-
-# Register the auth tables (users/sessions) on Base.metadata, mirroring app.py.
-import control_plane.auth.models  # noqa: F401,E402
+from sqlalchemy import pool
+from sqlalchemy.ext.asyncio import async_engine_from_config
 
 # Resolve the URL FRESH from the environment on every migration run.
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip() or default_sqlite_url()
@@ -32,7 +31,10 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", DATABASE_URL)
+# ConfigParser treats percent signs in URL-encoded credentials as interpolation
+# markers. Escape only the value stored in Alembic's config; engine construction
+# below continues to use the original URL.
+config.set_main_option("sqlalchemy.url", DATABASE_URL.replace("%", "%%"))
 target_metadata = Base.metadata
 
 
