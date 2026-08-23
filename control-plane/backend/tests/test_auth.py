@@ -10,16 +10,6 @@ from sqlalchemy import select
 pytestmark = pytest.mark.anyio
 
 
-@pytest.fixture(autouse=True)
-def _reset_seed():
-    """The auth router seeds a default admin once per process via a module flag;
-    reset it so each test's fresh DB gets seeded on first /login."""
-    import control_plane.auth.router as auth_router
-
-    auth_router._seeded = False
-    yield
-
-
 # ─── JWT service ──────────────────────────────────────────────────────────
 
 class TestJWTService:
@@ -28,6 +18,7 @@ class TestJWTService:
         assert h != "s3cret"
         assert service.verify_password("s3cret", h)
         assert not service.verify_password("wrong", h)
+        assert not service.verify_password("x" * 73, h)
 
     def test_token_roundtrip(self):
         tok = service.create_access_token(7, "u@x.io", "operator")
@@ -104,6 +95,19 @@ class TestLogin:
     async def test_login_unknown_user_401(self, client):
         r = await client.post("/api/auth/login", json={"email": "ghost@x.io", "password": "x"})
         assert r.status_code == 401
+
+    async def test_overlong_first_password_does_not_poison_admin_seed(self, client):
+        first = await client.post(
+            "/api/auth/login",
+            json={"email": "admin@ostiari.ai", "password": "x" * 73},
+        )
+        assert first.status_code == 401
+
+        second = await client.post(
+            "/api/auth/login",
+            json={"email": "admin@ostiari.ai", "password": "admin"},
+        )
+        assert second.status_code == 200
 
     async def test_login_is_durably_rate_limited_without_storing_email(
         self,

@@ -120,6 +120,7 @@ services:
         # Baked into the bundle; called from the browser, so it points at the
         # backend's published host port (localhost:8400), not the service name.
         VITE_API_URL: "${OSTIARI_BROWSER_API_URL:-http://localhost:8400}"
+        VITE_DEMO_LOGIN: "${OSTIARI_DEMO_LOGIN:-true}"
     ports:
       - "${OSTIARI_FRONTEND_PORT:-9000}:9000"
     depends_on:
