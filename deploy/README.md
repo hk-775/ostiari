@@ -65,6 +65,10 @@ routes validation through the private gateway. The gateway is not replaced by
 AgentCore because registration, heartbeat, config push, and durable reporting
 are gateway lifecycle contracts.
 
+AWS demo profiles prefill the documented demo login
+(`admin@ostiari.ai` / `admin`) in the dashboard. Empty and production profiles
+continue to use a generated or operator-supplied Secrets Manager credential.
+
 The AWS stack creates:
 
 - a two-AZ VPC and private service discovery;
@@ -152,9 +156,10 @@ before profiles create NAT gateways. Production preflight also verifies every
 Secrets Manager ARN, ACM certificate, and ECR image digest without retrieving
 secret values.
 
-After an AWS deployment, the launcher prints the dashboard URL, the admin email,
-and an exact Secrets Manager command for retrieving the generated password. It
-never retrieves or writes that password itself.
+After an AWS deployment, the launcher prints the dashboard URL and login
+instructions. Demo profiles use the prefilled demo credential; empty and
+production profiles print the admin email and Secrets Manager location without
+retrieving or writing the password itself.
 
 ## Still external by design
 

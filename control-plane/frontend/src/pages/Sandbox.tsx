@@ -81,7 +81,12 @@ export function Sandbox() {
       setGatewayId((current) => (
         gateways.some((gateway) => gateway.id === current)
           ? current
-          : gateways[0]?.id ?? ""
+          : gateways.find((gateway) => (
+              gateway.id === "crm-agent" && gateway.status === "healthy"
+            ))?.id
+            ?? gateways.find((gateway) => gateway.status === "healthy")?.id
+            ?? gateways[0]?.id
+            ?? ""
       ));
     }).catch(() => {
       if (active) {

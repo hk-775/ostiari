@@ -27,42 +27,61 @@ from control_plane.auth.service import (
     verify_password,
 )
 from control_plane.database import get_db
-from control_plane.env import configured_org_id, is_production, tenancy_mode
+from control_plane.env import (
+    configured_org_id,
+    env_flag,
+    is_production,
+    tenancy_mode,
+)
 from control_plane.models.database import Organization
 
 log = logging.getLogger("control_plane.auth")
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-_seeded = False
-
 
 async def _seed_admin(db: AsyncSession) -> None:
     """Create default admin user if no users exist."""
-    global _seeded
-    if _seeded:
-        return
     org_id = configured_org_id()
     if await db.get(Organization, org_id) is None:
         db.add(Organization(id=org_id, name=org_id))
         await db.flush()
-    result = await db.execute(
-        select(User).where(User.org_id == org_id).limit(1)
+
+    admin_email = os.environ.get("OSTIARI_ADMIN_EMAIL", "admin@ostiari.ai")
+    configured_password = os.environ.get("OSTIARI_ADMIN_PASSWORD", "").strip()
+    production = is_production()
+    demo_login = (
+        not production
+        and not configured_password
+        and not env_flag("OSTIARI_NO_DEMO")
     )
-    if result.scalar_one_or_none() is None:
+    admin_password = configured_password or ("" if production else "admin")
+
+    result = await db.execute(
+        select(User).where(
+            User.org_id == org_id,
+            User.email == admin_email,
+        )
+    )
+    admin = result.scalar_one_or_none()
+    if admin is None:
+        # Outside a demo, preserve the existing contract: only bootstrap a
+        # local admin when the organization has no users at all.
+        if not demo_login:
+            existing = await db.execute(
+                select(User).where(User.org_id == org_id).limit(1)
+            )
+            if existing.scalar_one_or_none() is not None:
+                return
+
         # In production the initial admin password must be supplied explicitly —
         # never silently seed the well-known admin/admin credential. In dev/demo
         # we keep 'admin' for convenience.
-        admin_email = os.environ.get("OSTIARI_ADMIN_EMAIL", "admin@ostiari.ai")
-        admin_password = os.environ.get("OSTIARI_ADMIN_PASSWORD", "").strip()
-        if is_production():
-            if not admin_password:
-                raise RuntimeError(
-                    "OSTIARI_ADMIN_PASSWORD must be set in production "
-                    "(OSTIARI_ENV=production) — refusing to seed the default admin/admin."
-                )
-        else:
-            admin_password = admin_password or "admin"
+        if production and not admin_password:
+            raise RuntimeError(
+                "OSTIARI_ADMIN_PASSWORD must be set in production "
+                "(OSTIARI_ENV=production) — refusing to seed the default admin/admin."
+            )
         admin = User(
             email=admin_email,
             name="Admin",
@@ -74,7 +93,16 @@ async def _seed_admin(db: AsyncSession) -> None:
         db.add(admin)
         await db.flush()
         log.info("Seeded initial admin user %s", admin_email)
-    _seeded = True
+    elif demo_login and (
+        not admin.hashed_password
+        or not verify_password(admin_password, admin.hashed_password)
+    ):
+        # Demo deployments deliberately advertise admin/admin. Keep an existing
+        # evaluation database aligned with that documented credential when a
+        # stack moves from a generated password to demo-prefill behavior.
+        admin.hashed_password = hash_password(admin_password)
+        await db.flush()
+        log.info("Restored demo admin credential for %s", admin_email)
 
 
 @router.post("/login", response_model=LoginResponse)
