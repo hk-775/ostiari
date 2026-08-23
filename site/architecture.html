@@ -3,176 +3,670 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ostiari — Architecture</title>
+    <meta name="description" content="Current Ostiari runtime, demo, AWS, AgentCore, and production architecture.">
+    <title>Ostiari Architecture</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg: #0a0a0f;
-            --surface: #12121a;
-            --border: #1e1e2e;
-            --text: #e4e4e7;
-            --text-dim: #71717a;
-            --accent: #f59e0b;
-            --accent-glow: rgba(245, 158, 11, 0.15);
-            --green: #22c55e;
-            --red: #ef4444;
-            --blue: #3b82f6;
-            --radius: 12px;
+            --bg: #f7f7f5;
+            --surface: #ffffff;
+            --surface-muted: #f1f1ee;
+            --border: #d9d8d3;
+            --text: #1c1917;
+            --text-muted: #68635d;
+            --ink: #292524;
+            --violet: #6d28d9;
+            --violet-soft: #f3e8ff;
+            --sky: #0369a1;
+            --sky-soft: #e0f2fe;
+            --amber: #a16207;
+            --amber-soft: #fef3c7;
+            --green: #047857;
+            --green-soft: #d1fae5;
+            --rose: #be123c;
+            --rose-soft: #ffe4e6;
+            --radius: 8px;
         }
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
-        .container { max-width: 1400px; margin: 0 auto; padding: 0 24px; }
+
+        * { box-sizing: border-box; }
+        html { scroll-behavior: smooth; }
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--text);
+            font-family: Inter, system-ui, sans-serif;
+            line-height: 1.6;
+        }
+        button, a { font: inherit; }
+        button { cursor: pointer; }
+        code { font-family: "JetBrains Mono", monospace; }
+        .container { width: min(1180px, calc(100% - 32px)); margin: 0 auto; }
 
         nav {
-            position: fixed; top: 0; left: 0; right: 0; z-index: 100;
-            padding: 16px 0; background: rgba(10,10,15,0.8); backdrop-filter: blur(20px);
+            position: sticky;
+            top: 0;
+            z-index: 20;
             border-bottom: 1px solid var(--border);
+            background: rgba(247, 247, 245, 0.94);
+            backdrop-filter: blur(14px);
         }
-        nav .container { display: flex; align-items: center; justify-content: space-between; }
-        .logo { font-size: 1.25rem; font-weight: 800; color: var(--accent); text-decoration: none; letter-spacing: -0.5px; }
-        .logo span { color: var(--text); }
-        .nav-links { display: flex; gap: 32px; list-style: none; }
-        .nav-links a { color: var(--text-dim); text-decoration: none; font-size: 0.9rem; font-weight: 500; transition: color 0.2s; }
-        .nav-links a:hover { color: var(--text); }
-        .nav-links a.active { color: var(--accent); }
-        .nav-cta { display: inline-flex; align-items: center; gap: 8px; padding: 8px 18px; background: var(--accent); color: #000; border-radius: 8px; text-decoration: none; font-size: 0.85rem; font-weight: 600; }
+        .nav-inner {
+            min-height: 64px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 24px;
+        }
+        .brand {
+            color: var(--text);
+            font-weight: 800;
+            text-decoration: none;
+        }
+        .brand span { color: var(--violet); }
+        .nav-links { display: flex; align-items: center; gap: 22px; }
+        .nav-links a { color: var(--text-muted); font-size: 14px; font-weight: 600; text-decoration: none; }
+        .nav-links a:hover, .nav-links a[aria-current="page"] { color: var(--text); }
+        .nav-cta {
+            border-radius: 6px;
+            background: var(--ink);
+            color: white !important;
+            padding: 8px 13px;
+        }
 
-        .page { padding: 120px 0 80px; }
-        .page h1 { font-size: 2.5rem; font-weight: 800; letter-spacing: -1.5px; margin-bottom: 8px; }
-        .page .subtitle { color: var(--text-dim); font-size: 1.1rem; margin-bottom: 32px; }
+        .hero { padding: 72px 0 42px; border-bottom: 1px solid var(--border); }
+        .eyebrow { margin: 0; color: var(--violet); font-size: 12px; font-weight: 800; text-transform: uppercase; }
+        h1 { margin: 8px 0 0; max-width: 820px; font-size: clamp(40px, 7vw, 72px); line-height: 1.03; letter-spacing: 0; }
+        .hero-copy { max-width: 760px; margin: 20px 0 0; color: var(--text-muted); font-size: 18px; }
+        .hero-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 26px; }
+        .button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 42px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: var(--surface);
+            color: var(--text);
+            padding: 9px 14px;
+            font-size: 13px;
+            font-weight: 700;
+            text-decoration: none;
+        }
+        .button.primary { border-color: var(--ink); background: var(--ink); color: #fff; }
 
-        .download-link { display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--text); text-decoration: none; font-size: 0.85rem; font-weight: 500; margin-bottom: 32px; transition: border-color 0.2s; }
-        .download-link:hover { border-color: var(--accent); }
+        main { padding: 34px 0 72px; }
+        .view-switch {
+            display: inline-flex;
+            gap: 4px;
+            padding: 4px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            background: var(--surface);
+        }
+        .view-switch button {
+            border: 0;
+            border-radius: 5px;
+            background: transparent;
+            color: var(--text-muted);
+            padding: 9px 14px;
+            font-size: 13px;
+            font-weight: 700;
+        }
+        .view-switch button.active { background: var(--ink); color: white; }
+        .panel { display: none; margin-top: 20px; }
+        .panel.active { display: block; }
 
-        .diagram-embed { background: #fff; border-radius: var(--radius); overflow: hidden; border: 1px solid var(--border); margin-bottom: 48px; }
-        .diagram-embed iframe { width: 100%; height: 700px; border: none; }
+        .workbench {
+            overflow: hidden;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            background: var(--surface);
+        }
+        .workbench-head { border-bottom: 1px solid var(--border); padding: 16px; }
+        .selector-row { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+        .selector {
+            flex: 0 0 auto;
+            min-width: 150px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: var(--surface);
+            color: var(--text-muted);
+            padding: 9px 11px;
+            text-align: left;
+        }
+        .selector strong, .selector code { display: block; }
+        .selector strong { color: inherit; font-size: 12px; }
+        .selector code { margin-top: 2px; color: #8a847c; font-size: 10px; }
+        .selector.active { border-color: var(--ink); background: var(--ink); color: white; }
+        .selector.active code { color: #d6d3d1; }
+        .workbench-body { padding: 20px; }
+        .section-heading { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 14px; }
+        h2 { margin: 0; font-size: 22px; letter-spacing: 0; }
+        h3 { margin: 0; letter-spacing: 0; }
+        .summary { max-width: 760px; margin: 6px 0 0; color: var(--text-muted); font-size: 14px; }
+        .play-controls { display: flex; gap: 5px; padding: 4px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-muted); }
+        .icon-button {
+            width: 34px;
+            height: 34px;
+            border: 0;
+            border-radius: 5px;
+            background: transparent;
+            color: var(--text);
+            font-weight: 800;
+        }
+        .icon-button:hover { background: white; }
+        .icon-button.primary { background: var(--ink); color: white; }
+        .icon-button:disabled { cursor: default; opacity: .3; }
 
-        .arch-section { margin-bottom: 48px; }
-        .arch-section h2 { font-size: 1.5rem; font-weight: 700; margin-bottom: 12px; letter-spacing: -0.5px; }
-        .arch-section p { color: var(--text-dim); font-size: 0.95rem; max-width: 800px; line-height: 1.7; margin-bottom: 16px; }
+        .flow-scroll { margin-top: 22px; overflow-x: auto; padding: 3px 3px 12px; }
+        .flow { display: flex; align-items: stretch; gap: 8px; min-width: max-content; }
+        .flow-step {
+            width: 156px;
+            min-height: 92px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            background: var(--surface);
+            color: var(--text-muted);
+            padding: 12px;
+            text-align: left;
+        }
+        .flow-step span { display: block; font-size: 9px; font-weight: 800; text-transform: uppercase; }
+        .flow-step strong { display: block; margin-top: 5px; color: inherit; font-size: 12px; line-height: 1.4; }
+        .flow-step.complete { background: var(--surface-muted); color: var(--text); }
+        .flow-step.active { border-color: var(--ink); box-shadow: 0 0 0 2px var(--ink); }
+        .flow-arrow { align-self: center; color: #aaa49c; font-weight: 800; }
+        .lane-client { background: var(--sky-soft); color: var(--sky); }
+        .lane-gateway { background: var(--amber-soft); color: var(--amber); }
+        .lane-control { background: var(--violet-soft); color: var(--violet); }
+        .lane-target { background: var(--green-soft); color: var(--green); }
 
-        .component-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-top: 24px; }
-        .component-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; }
-        .component-card h3 { font-size: 1rem; font-weight: 700; margin-bottom: 6px; color: var(--accent); }
-        .component-card p { color: var(--text-dim); font-size: 0.85rem; line-height: 1.6; }
+        .step-detail { margin-top: 12px; border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; }
+        .step-detail p { margin: 7px 0 0; color: inherit; font-size: 14px; }
+        .step-detail .meta { margin: 0; font-size: 10px; font-weight: 800; text-transform: uppercase; }
 
-        .flow-list { list-style: none; counter-reset: step; }
-        .flow-list li { position: relative; padding-left: 40px; margin-bottom: 16px; color: var(--text-dim); font-size: 0.9rem; }
-        .flow-list li::before { counter-increment: step; content: counter(step); position: absolute; left: 0; width: 28px; height: 28px; background: var(--surface); border: 1px solid var(--border); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: 700; color: var(--accent); }
+        .gate-section, .profile-section { margin-top: 34px; }
+        .gate-section > p, .profile-section > p { margin: 5px 0 0; color: var(--text-muted); font-size: 14px; }
+        .gate-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 16px; }
+        .gate-card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 14px; }
+        .gate-card div { display: flex; align-items: center; gap: 8px; }
+        .gate-number { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--ink); color: white; font-size: 11px; font-weight: 800; }
+        .gate-card h3 { font-size: 13px; }
+        .gate-card p { margin: 8px 0 0; color: var(--text-muted); font-size: 11px; line-height: 1.55; }
 
-        @media (max-width: 768px) {
-            .nav-links { display: none; }
-            .diagram-embed iframe { height: 400px; }
+        .profile-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+        .profile-tag { border: 1px solid var(--border); border-radius: 5px; background: var(--surface-muted); padding: 5px 8px; font-size: 10px; }
+        .topology-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 20px; }
+        .topology-column { min-height: 215px; border: 1px solid var(--border); border-radius: var(--radius); padding: 15px; }
+        .topology-column:nth-child(1) { border-color: #bae6fd; background: var(--sky-soft); color: var(--sky); }
+        .topology-column:nth-child(2) { border-color: #fde68a; background: var(--amber-soft); color: var(--amber); }
+        .topology-column:nth-child(3) { border-color: #a7f3d0; background: var(--green-soft); color: var(--green); }
+        .topology-column:nth-child(4) { border-color: #e9d5ff; background: var(--violet-soft); color: var(--violet); }
+        .topology-column h3 { font-size: 13px; }
+        .topology-column ul { margin: 10px 0 0; padding-left: 18px; }
+        .topology-column li { margin: 6px 0; font-size: 11px; line-height: 1.55; }
+        .agentcore-note { display: none; margin-top: 10px; border: 1px solid #bae6fd; border-radius: var(--radius); background: var(--sky-soft); color: var(--sky); padding: 14px; font-size: 12px; }
+        .agentcore-note.visible { display: block; }
+
+        .profile-matrix { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 15px; }
+        .matrix-item { border: 1px solid var(--border); border-radius: 6px; background: var(--surface); padding: 10px; }
+        .matrix-item code { font-size: 11px; font-weight: 600; }
+        .matrix-item span { display: block; margin-top: 3px; color: var(--text-muted); font-size: 10px; }
+
+        .truth-band { margin-top: 34px; border-top: 1px solid var(--border); padding-top: 28px; }
+        .truth-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top: 15px; }
+        .truth-item { border-left: 3px solid var(--violet); padding: 3px 0 3px 14px; }
+        .truth-item h3 { font-size: 14px; }
+        .truth-item p { margin: 5px 0 0; color: var(--text-muted); font-size: 12px; }
+
+        footer { border-top: 1px solid var(--border); padding: 28px 0; color: var(--text-muted); font-size: 12px; }
+        footer a { color: var(--text); }
+
+        @media (max-width: 920px) {
+            .gate-grid, .topology-grid, .profile-matrix { grid-template-columns: repeat(2, 1fr); }
+            .nav-links a:not(.nav-cta) { display: none; }
+        }
+        @media (max-width: 580px) {
+            .container { width: min(100% - 22px, 1180px); }
+            .hero { padding-top: 48px; }
+            h1 { font-size: 42px; }
+            .workbench-body { padding: 15px; }
+            .gate-grid, .topology-grid, .profile-matrix, .truth-grid { grid-template-columns: 1fr; }
+            .topology-column { min-height: 0; }
+            .selector { min-width: 138px; }
         }
     </style>
 </head>
 <body>
-
 <nav>
-    <div class="container">
-        <a href="/" class="logo">Agent<span>Lasso</span></a>
-        <ul class="nav-links">
-            <li><a href="/#features">Features</a></li>
-            <li><a href="/#how-it-works">How It Works</a></li>
-            <li><a href="/#frameworks">Frameworks</a></li>
-            <li><a href="architecture.html" class="active">Architecture</a></li>
-            <li><a href="https://github.com/aws/ostiari">Docs</a></li>
-        </ul>
-        <a href="https://github.com/aws/ostiari" class="nav-cta">GitHub</a>
+    <div class="container nav-inner">
+        <a class="brand" href="index.html"><span>O</span>stiari</a>
+        <div class="nav-links">
+            <a href="index.html#features">Capabilities</a>
+            <a href="architecture.html" aria-current="page">Architecture</a>
+            <a href="https://github.com/hk-775/ostiari/blob/main/docs/architecture.md">Documentation</a>
+            <a class="nav-cta" href="https://github.com/hk-775/ostiari">GitHub</a>
+        </div>
     </div>
 </nav>
 
-<section class="page">
+<header class="hero">
     <div class="container">
-        <h1>Technical Architecture</h1>
-        <p class="subtitle">How Ostiari integrates with your agent infrastructure on AWS.</p>
-
-        <a href="architecture.drawio" download class="download-link">
-            <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
-            Download .drawio file (open in draw.io / diagrams.net)
-        </a>
-
-        <div class="diagram-embed">
-            <iframe src="https://viewer.diagrams.net/?lightbox=1&highlight=0000ff&edit=_blank&layers=1&nav=1#Uhttps%3A%2F%2Fd1gpo95wusv6o2.cloudfront.net%2Farchitecture.drawio"></iframe>
-        </div>
-
-        <div class="arch-section">
-            <h2>Request Flow</h2>
-            <p>Every agent tool call passes through the Ostiari pipeline before reaching the outside world.</p>
-            <ol class="flow-list">
-                <li><strong>Agent invokes a tool</strong> — any framework (OpenAI, Strands, Anthropic, Bedrock, CrewAI, LangGraph, AgentCore)</li>
-                <li><strong>Ostiari intercepts</strong> via the framework adapter or Agent Harness middleware</li>
-                <li><strong>Policy Engine evaluates</strong> — matches YAML rules, applies risk adjustments</li>
-                <li><strong>Anomaly Detector checks</strong> — loops, drift, hallucination, contradiction</li>
-                <li><strong>Gateway scores</strong> — combines signals into a 0-100 risk score and assigns a tier</li>
-                <li><strong>Decision: Allow / Intervene / Block</strong> — tier determines outcome</li>
-                <li><strong>Trace stored</strong> — full evaluation result persisted for observability</li>
-            </ol>
-        </div>
-
-        <div class="arch-section">
-            <h2>AWS Services</h2>
-            <div class="component-grid">
-                <div class="component-card">
-                    <h3>Amazon CloudFront</h3>
-                    <p>Global CDN serving the landing page and dashboard static assets. Routes /api/* requests to API Gateway origin.</p>
-                </div>
-                <div class="component-card">
-                    <h3>Amazon S3</h3>
-                    <p>Stores the landing page HTML, dashboard UI, and architecture diagrams. Private bucket accessible only via CloudFront OAI.</p>
-                </div>
-                <div class="component-card">
-                    <h3>API Gateway (HTTP API)</h3>
-                    <p>Serverless HTTP endpoint fronting the Lambda function. Handles /api/traces, /api/policy, /api/harness, /api/registry routes.</p>
-                </div>
-                <div class="component-card">
-                    <h3>AWS Lambda</h3>
-                    <p>Runs the FastAPI dashboard backend via Mangum adapter. Handles trace queries, policy CRUD, harness invocations, and registry operations.</p>
-                </div>
-                <div class="component-card">
-                    <h3>Amazon Bedrock</h3>
-                    <p>Provides LLM inference via the Converse API. All 7 agents use Bedrock models (configurable model ID via environment variable).</p>
-                </div>
-                <div class="component-card">
-                    <h3>Bedrock AgentCore</h3>
-                    <p>Agent Registry for semantic search across registered agents. Stores agent metadata, tools, risk profiles, and policy associations.</p>
-                </div>
-            </div>
-        </div>
-
-        <div class="arch-section">
-            <h2>Ostiari Core Components</h2>
-            <div class="component-grid">
-                <div class="component-card">
-                    <h3>Policy Engine</h3>
-                    <p>Evaluates YAML-based rules with pattern matching, wildcards, and risk adjustments. Supports hot-reload via polling.</p>
-                </div>
-                <div class="component-card">
-                    <h3>Anomaly Detector</h3>
-                    <p>Four detectors: loop detection (repeated actions), drift (deviation from patterns), hallucination (non-existent resources), contradiction (conflicting actions).</p>
-                </div>
-                <div class="component-card">
-                    <h3>Gateway (Risk Scorer)</h3>
-                    <p>Combines policy score + anomaly signals into a final 0-100 risk score. Maps to tier: allow (0-30), intervene (31-70), block (71-100).</p>
-                </div>
-                <div class="component-card">
-                    <h3>Circuit Breaker</h3>
-                    <p>Trips when error/block rates exceed thresholds. States: closed (normal) → open (all blocked) → half-open (test calls).</p>
-                </div>
-                <div class="component-card">
-                    <h3>Agent Harness</h3>
-                    <p>Managed runtime wrapping agents with session management, rate limiting, memory, and guardrail middleware on the tool invocation path.</p>
-                </div>
-                <div class="component-card">
-                    <h3>Trace Storage</h3>
-                    <p>Records every evaluation: action, params, score, tier, anomalies, latency. SQLite locally, DynamoDB in production. Includes redaction filter.</p>
-                </div>
-            </div>
+        <p class="eyebrow">Current implementation</p>
+        <h1>Ostiari Architecture</h1>
+        <p class="hero-copy">
+            Inspect the governed request path and compare the local, AWS evaluation,
+            AgentCore, and production topologies implemented in the repository.
+        </p>
+        <div class="hero-actions">
+            <a class="button primary" href="#interactive">Explore architecture</a>
+            <a class="button" href="architecture.drawio" download>Download draw.io source</a>
+            <a class="button" href="https://github.com/hk-775/ostiari/blob/main/docs/architecture.md">Read long-form reference</a>
         </div>
     </div>
-</section>
+</header>
 
+<main id="interactive">
+    <div class="container">
+        <div class="view-switch" role="tablist" aria-label="Architecture mode">
+            <button class="active" data-view="runtime" role="tab" aria-selected="true">Runtime flow</button>
+            <button data-view="deployment" role="tab" aria-selected="false">Deployment topology</button>
+        </div>
+
+        <section id="runtime-panel" class="panel active">
+            <div class="workbench">
+                <div class="workbench-head"><div id="runtime-selectors" class="selector-row"></div></div>
+                <div class="workbench-body">
+                    <div class="section-heading">
+                        <div>
+                            <h2 id="runtime-title"></h2>
+                            <p id="runtime-summary" class="summary"></p>
+                        </div>
+                        <div class="play-controls">
+                            <button id="previous-step" class="icon-button" title="Previous step" aria-label="Previous step">←</button>
+                            <button id="toggle-play" class="icon-button primary" title="Play flow" aria-label="Play flow">▶</button>
+                            <button id="reset-flow" class="icon-button" title="Reset flow" aria-label="Reset flow">↺</button>
+                            <button id="next-step" class="icon-button" title="Next step" aria-label="Next step">→</button>
+                        </div>
+                    </div>
+                    <div class="flow-scroll"><div id="runtime-flow" class="flow"></div></div>
+                    <div id="step-detail" class="step-detail"></div>
+                </div>
+            </div>
+
+            <div class="gate-section">
+                <h2>Canonical direct-tool gate chain</h2>
+                <p>A2A adds delegation policy before authorization. Intervene-tier calls add human approval before payment and execution.</p>
+                <div id="gate-grid" class="gate-grid"></div>
+            </div>
+        </section>
+
+        <section id="deployment-panel" class="panel">
+            <div class="workbench">
+                <div class="workbench-head"><div id="deployment-selectors" class="selector-row"></div></div>
+                <div class="workbench-body">
+                    <div class="section-heading">
+                        <div>
+                            <h2 id="deployment-title"></h2>
+                            <p id="deployment-summary" class="summary"></p>
+                        </div>
+                        <div id="deployment-profiles" class="profile-tags"></div>
+                    </div>
+                    <div id="topology-grid" class="topology-grid"></div>
+                    <div id="agentcore-note" class="agentcore-note"></div>
+                </div>
+            </div>
+
+            <div class="profile-section">
+                <h2>Supported launcher profiles</h2>
+                <p>Every profile maps to one of the implemented topologies above.</p>
+                <div id="profile-matrix" class="profile-matrix"></div>
+            </div>
+        </section>
+
+        <section class="truth-band">
+            <h2>Architecture boundaries</h2>
+            <div class="truth-grid">
+                <div class="truth-item">
+                    <h3>Launcher demo</h3>
+                    <p>One gateway, functional HTTP demo tools, seeded dashboard, Valkey, and simulated external payments.</p>
+                </div>
+                <div class="truth-item">
+                    <h3>Source demo</h3>
+                    <p>Four gateways, nine agent records, a real A2A peer, and real filesystem/draw.io stdio MCP subprocesses.</p>
+                </div>
+                <div class="truth-item">
+                    <h3>Main AWS platform</h3>
+                    <p>ECS/Fargate, ALB, RDS PostgreSQL, serverless Valkey, Cloud Map, and optional AgentCore.</p>
+                </div>
+                <div class="truth-item">
+                    <h3>Standalone landing site</h3>
+                    <p>This static site may be hosted through S3 and CloudFront; those services are not the main Ostiari platform architecture.</p>
+                </div>
+            </div>
+        </section>
+    </div>
+</main>
+
+<footer>
+    <div class="container">
+        Architecture synchronized with the repository implementation. <a href="https://github.com/hk-775/ostiari">Ostiari on GitHub</a>.
+    </div>
+</footer>
+
+<script>
+const lanes = {
+    client: { label: "Agent / SDK", className: "lane-client" },
+    gateway: { label: "Gateway", className: "lane-gateway" },
+    control: { label: "Control plane", className: "lane-control" },
+    target: { label: "Target", className: "lane-target" },
+};
+
+const runtimeScenarios = [
+    {
+        name: "Direct tool",
+        endpoint: "POST /tool/{action}",
+        summary: "A deterministic agent names the action. The gateway resolves and governs it before any side effect.",
+        steps: [
+            ["client", "Request an action", "The caller sends a tool name, JSON parameters, and verified agent identity."],
+            ["gateway", "Resolve target", "The registry resolves HTTP, MCP, or A2A. Unknown actions return 404."],
+            ["gateway", "Authorize agent", "Per-agent grants are checked before quota, policy, or execution."],
+            ["gateway", "Enforce quota", "Rate, token, spend, and budget limits can stop the call."],
+            ["gateway", "Score risk", "Guard policy, parameter signals, and anomaly scoring decide allow, intervene, or block."],
+            ["gateway", "Settle payment", "Metered pricing or downstream x402 settlement runs after safety checks."],
+            ["target", "Execute target", "The gateway dispatches HTTP, MCP, or A2A and returns the governed result."],
+            ["control", "Persist telemetry", "Decision, score, duration, usage, cost, and payment events are delivered durably."],
+        ],
+    },
+    {
+        name: "Human approval",
+        endpoint: "202 + X-Approval-Id",
+        summary: "An intervene-tier call pauses, is decided in the control plane, and executes only after an approved retry.",
+        steps: [
+            ["client", "Request risky action", "The call enters the normal direct-tool path."],
+            ["gateway", "Pass auth and quota", "Least privilege and budget checks run first."],
+            ["gateway", "Return intervene", "The Guard score lands between the allow and block thresholds."],
+            ["control", "Create approval", "With HITL enabled, the gateway records a pending approval and returns HTTP 202."],
+            ["control", "Operator decides", "An authenticated operator approves or denies the exact redacted request."],
+            ["client", "Retry with approval", "The caller resubmits the same action with X-Approval-Id."],
+            ["gateway", "Verify and settle", "A denial returns 403; an approval continues through payment."],
+            ["target", "Execute once", "The side effect occurs only after a valid approval."],
+            ["control", "Link audit trail", "Pending, decision, retry, and execution events remain linked."],
+        ],
+    },
+    {
+        name: "Stdio MCP",
+        endpoint: "POST /tool/fs.*",
+        summary: "The source demo starts real npx MCP subprocesses and governs discovered tools through the same gateway.",
+        steps: [
+            ["client", "Call discovered tool", "The action uses a configured prefix such as fs.list_directory."],
+            ["gateway", "Resolve MCP registration", "The MCP manager maps the qualified name to a connected server and schema."],
+            ["gateway", "Run common gates", "Authorization, quota, and Guard policy apply exactly as they do for HTTP tools."],
+            ["gateway", "Dispatch JSON-RPC", "The gateway sends tools/call to the child process over stdio."],
+            ["target", "Execute filesystem call", "The demo server is sandboxed to /tmp/ostiari-mcp-sandbox."],
+            ["gateway", "Normalize result", "MCP content and errors are converted into the gateway response."],
+            ["control", "Report MCP trace", "Telemetry records the mcp:// endpoint and connected server."],
+        ],
+    },
+    {
+        name: "A2A delegation",
+        endpoint: "POST /tool/a2a.{agent}",
+        summary: "A governed agent delegates to a discovered peer without losing caller identity or chain provenance.",
+        steps: [
+            ["client", "Call peer agent", "A discovered agent card exposes an a2a.* tool."],
+            ["gateway", "Resolve agent card", "The gateway confirms that the peer is registered and connected."],
+            ["gateway", "Check delegation", "Allowed edges, trust, and maximum chain depth run before normal gates."],
+            ["gateway", "Authorize and score", "The caller must be granted the A2A action and pass quota and Guard policy."],
+            ["target", "Forward task", "Agent identity, delegation chain, and session are preserved downstream."],
+            ["target", "Peer responds", "Task state, messages, and artifacts return through the caller's gateway."],
+            ["control", "Trace chain", "Telemetry records caller, callee, chain, trust decision, and outcome."],
+        ],
+    },
+    {
+        name: "LLM intent",
+        endpoint: "POST /invoke",
+        summary: "Embedded AxonLLM selects a provider route, then each generated HTTP or MCP tool is governed before execution.",
+        steps: [
+            ["client", "Send intent", "The request includes messages plus verified agent and session context."],
+            ["gateway", "Authorize model access", "Endpoint, model, provider, and agent token limits are checked."],
+            ["gateway", "Apply input controls", "Prompt security and projected-cost quota run before provider dispatch."],
+            ["gateway", "Route with AxonLLM", "Policy, experiments, health, and fallback select the concrete model route."],
+            ["target", "Provider returns tools", "The selected provider returns a plan or final response."],
+            ["gateway", "Govern generated tools", "Per-tool authorization, quota, and Guard policy run before HTTP or MCP execution."],
+            ["gateway", "Continue rounds", "Results return to the provider until a final answer or the configured limit."],
+            ["control", "Report model usage", "Tokens, cost, route, experiment, tools, and blocks are reported together."],
+        ],
+    },
+];
+
+const gates = [
+    ["Delegation", "A2A edge, trust, and chain depth when the target is a peer."],
+    ["Authorization", "Endpoint, tool, model, and provider grants for the verified agent."],
+    ["Quota", "Request rate, token ceiling, projected spend, and agent budget."],
+    ["Risk", "Policy rules, parameter signals, and anomaly scoring."],
+    ["Approval", "Intervene-tier calls pause with HTTP 202 when HITL is enabled."],
+    ["Payment", "Metered pricing or downstream x402 settlement before side effects."],
+    ["Execute", "HTTP, MCP, A2A, or LLM provider dispatch."],
+    ["Trace", "Durable decisions, usage, cost, payment, and audit events."],
+];
+
+const deployments = [
+    {
+        name: "Local launcher",
+        profiles: ["local-demo", "local-empty"],
+        summary: "Docker Compose on one machine with a single governed gateway.",
+        columns: {
+            Ingress: ["Browser on :9000", "Agents on :8421", "Operator API on :8400"],
+            Compute: ["React frontend", "FastAPI control plane", "Gateway with embedded AxonLLM"],
+            State: ["SQLite named volume", "Valkey shared runtime state"],
+            Controls: ["Read-only containers", "Health-gated startup", "Optional HTTP demo tools and seed job"],
+        },
+    },
+    {
+        name: "Source demo",
+        profiles: ["make demo-full"],
+        summary: "The broadest local walkthrough for maintainers and evaluators.",
+        columns: {
+            Ingress: ["Vite UI on :9000", "Four gateway ports", "A2A peer on :9200"],
+            Compute: ["Four role gateways", "Demo HTTP service", "Real npx MCP subprocesses"],
+            State: ["SQLite control-plane database", "Nine seeded agent records"],
+            Controls: ["Destructive-tool blocks", "A2A delegation", "Simulated payments", "Live traces and Sandbox"],
+        },
+    },
+    {
+        name: "AWS evaluation",
+        profiles: ["aws-demo", "aws-empty"],
+        summary: "A cost-aware two-AZ CDK stack without an AgentCore runtime.",
+        columns: {
+            Ingress: ["CIDR-restricted ALB", "Dashboard and API", "Gateway listener on :8421"],
+            Compute: ["Fargate frontend", "Fargate control plane", "Fargate gateway", "Optional demo tools"],
+            State: ["Encrypted RDS PostgreSQL", "Serverless Valkey", "Cloud Map discovery"],
+            Controls: ["No NAT gateway", "Public task IPs", "CloudWatch logs", "Deployment circuit breakers"],
+        },
+    },
+    {
+        name: "AWS with AgentCore",
+        profiles: ["aws-agentcore-demo", "aws-agentcore-empty"],
+        summary: "The AWS evaluation stack plus an IAM-authorized AgentCore validation bridge.",
+        columns: {
+            Ingress: ["CIDR-restricted ALB", "IAM-authorized /invocations"],
+            Compute: ["Fargate platform services", "ARM64 AgentCore runtime", "Private validation bridge"],
+            State: ["RDS PostgreSQL", "Serverless Valkey", "Cloud Map", "Runtime logs"],
+            Controls: ["Two supported AgentCore AZs", "Private app subnets", "One NAT", "X-Ray and metrics"],
+        },
+        note: "The runtime calls the private gateway /validate endpoint. AWS-managed agentic_ai ENIs can briefly outlive runtime deletion and delay final VPC teardown.",
+    },
+    {
+        name: "Production",
+        profiles: ["production", "production-agentcore"],
+        summary: "A reviewed, fail-closed deployment from immutable, digest-pinned artifacts.",
+        columns: {
+            Ingress: ["TLS-only ALB", "Optional Route 53 aliases", "Explicit operator or VPN CIDRs"],
+            Compute: ["Private Fargate services", "At least two core tasks", "CPU autoscaling", "Optional AgentCore"],
+            State: ["Multi-AZ protected RDS", "Retained serverless Valkey", "Retained ALB logs"],
+            Controls: ["Two NAT gateways", "WAF rate limits", "OIDC and Secrets Manager", "CloudWatch alarms"],
+        },
+        note: "AgentCore production uses a separate digest-pinned ARM64 image and OAuth client for the private validation bridge.",
+    },
+];
+
+const profileOwner = {
+    "local-demo": "Local launcher",
+    "local-empty": "Local launcher",
+    "aws-demo": "AWS evaluation",
+    "aws-empty": "AWS evaluation",
+    "aws-agentcore-demo": "AWS with AgentCore",
+    "aws-agentcore-empty": "AWS with AgentCore",
+    "production": "Production",
+    "production-agentcore": "Production",
+};
+
+let runtimeIndex = 0;
+let stepIndex = 0;
+let deploymentIndex = 0;
+let playTimer = null;
+
+function stopPlayback() {
+    if (playTimer) window.clearInterval(playTimer);
+    playTimer = null;
+    document.getElementById("toggle-play").textContent = "▶";
+    document.getElementById("toggle-play").title = "Play flow";
+    document.getElementById("toggle-play").setAttribute("aria-label", "Play flow");
+}
+
+function renderRuntimeSelectors() {
+    const container = document.getElementById("runtime-selectors");
+    container.innerHTML = runtimeScenarios.map((scenario, index) => `
+        <button class="selector ${index === runtimeIndex ? "active" : ""}" data-runtime="${index}" role="tab" aria-selected="${index === runtimeIndex}">
+            <strong>${scenario.name}</strong><code>${scenario.endpoint}</code>
+        </button>
+    `).join("");
+    container.querySelectorAll("[data-runtime]").forEach((button) => {
+        button.addEventListener("click", () => {
+            runtimeIndex = Number(button.dataset.runtime);
+            stepIndex = 0;
+            stopPlayback();
+            renderRuntime();
+        });
+    });
+}
+
+function renderRuntime() {
+    const scenario = runtimeScenarios[runtimeIndex];
+    document.getElementById("runtime-title").textContent = scenario.name;
+    document.getElementById("runtime-summary").textContent = scenario.summary;
+    document.getElementById("runtime-flow").innerHTML = scenario.steps.map((step, index) => `
+        ${index ? '<span class="flow-arrow">→</span>' : ""}
+        <button class="flow-step ${index < stepIndex ? "complete" : ""} ${index === stepIndex ? `active ${lanes[step[0]].className}` : ""}" data-step="${index}">
+            <span>${index + 1} · ${lanes[step[0]].label}</span><strong>${step[1]}</strong>
+        </button>
+    `).join("");
+    const active = scenario.steps[stepIndex];
+    const detail = document.getElementById("step-detail");
+    detail.className = `step-detail ${lanes[active[0]].className}`;
+    detail.innerHTML = `<p class="meta">Step ${stepIndex + 1} of ${scenario.steps.length} · ${lanes[active[0]].label}</p><h3>${active[1]}</h3><p>${active[2]}</p>`;
+    document.getElementById("previous-step").disabled = stepIndex === 0;
+    document.getElementById("next-step").disabled = stepIndex === scenario.steps.length - 1;
+    document.querySelectorAll("[data-step]").forEach((button) => {
+        button.addEventListener("click", () => {
+            stepIndex = Number(button.dataset.step);
+            stopPlayback();
+            renderRuntime();
+        });
+    });
+    renderRuntimeSelectors();
+}
+
+function renderDeploymentSelectors() {
+    const container = document.getElementById("deployment-selectors");
+    container.innerHTML = deployments.map((deployment, index) => `
+        <button class="selector ${index === deploymentIndex ? "active" : ""}" data-deployment="${index}" role="tab" aria-selected="${index === deploymentIndex}">
+            <strong>${deployment.name}</strong><code>${deployment.profiles.join(" · ")}</code>
+        </button>
+    `).join("");
+    container.querySelectorAll("[data-deployment]").forEach((button) => {
+        button.addEventListener("click", () => {
+            deploymentIndex = Number(button.dataset.deployment);
+            renderDeployment();
+        });
+    });
+}
+
+function renderDeployment() {
+    const deployment = deployments[deploymentIndex];
+    document.getElementById("deployment-title").textContent = deployment.name;
+    document.getElementById("deployment-summary").textContent = deployment.summary;
+    document.getElementById("deployment-profiles").innerHTML = deployment.profiles.map((profile) => `<code class="profile-tag">${profile}</code>`).join("");
+    document.getElementById("topology-grid").innerHTML = Object.entries(deployment.columns).map(([name, values]) => `
+        <div class="topology-column"><h3>${name}</h3><ul>${values.map((value) => `<li>${value}</li>`).join("")}</ul></div>
+    `).join("");
+    const note = document.getElementById("agentcore-note");
+    note.textContent = deployment.note || "";
+    note.classList.toggle("visible", Boolean(deployment.note));
+    renderDeploymentSelectors();
+}
+
+document.querySelectorAll("[data-view]").forEach((button) => {
+    button.addEventListener("click", () => {
+        const view = button.dataset.view;
+        document.querySelectorAll("[data-view]").forEach((item) => {
+            const active = item === button;
+            item.classList.toggle("active", active);
+            item.setAttribute("aria-selected", String(active));
+        });
+        document.querySelectorAll(".panel").forEach((panel) => panel.classList.remove("active"));
+        document.getElementById(`${view}-panel`).classList.add("active");
+        if (view !== "runtime") stopPlayback();
+    });
+});
+
+document.getElementById("previous-step").addEventListener("click", () => {
+    stepIndex = Math.max(0, stepIndex - 1);
+    stopPlayback();
+    renderRuntime();
+});
+document.getElementById("next-step").addEventListener("click", () => {
+    stepIndex = Math.min(runtimeScenarios[runtimeIndex].steps.length - 1, stepIndex + 1);
+    stopPlayback();
+    renderRuntime();
+});
+document.getElementById("reset-flow").addEventListener("click", () => {
+    stepIndex = 0;
+    stopPlayback();
+    renderRuntime();
+});
+document.getElementById("toggle-play").addEventListener("click", () => {
+    if (playTimer) {
+        stopPlayback();
+        return;
+    }
+    if (stepIndex === runtimeScenarios[runtimeIndex].steps.length - 1) stepIndex = 0;
+    const button = document.getElementById("toggle-play");
+    button.textContent = "Ⅱ";
+    button.title = "Pause flow";
+    button.setAttribute("aria-label", "Pause flow");
+    renderRuntime();
+    playTimer = window.setInterval(() => {
+        if (stepIndex >= runtimeScenarios[runtimeIndex].steps.length - 1) {
+            stopPlayback();
+            return;
+        }
+        stepIndex += 1;
+        renderRuntime();
+    }, 1800);
+});
+
+document.getElementById("gate-grid").innerHTML = gates.map((gate, index) => `
+    <div class="gate-card"><div><span class="gate-number">${index + 1}</span><h3>${gate[0]}</h3></div><p>${gate[1]}</p></div>
+`).join("");
+
+document.getElementById("profile-matrix").innerHTML = Object.entries(profileOwner).map(([profile, owner]) => `
+    <div class="matrix-item"><code>${profile}</code><span>${owner}</span></div>
+`).join("");
+
+renderRuntime();
+renderDeployment();
+</script>
 </body>
 </html>

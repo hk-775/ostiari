@@ -1,6 +1,24 @@
 import { useEffect, useRef, useState } from "react";
-import { Play, Send, Beaker, Code2, MessageSquare, Loader2, CheckCircle, XCircle, Wrench, Users2, Plus, Trash2, Square } from "lucide-react";
+import {
+  Beaker,
+  CheckCircle,
+  Code2,
+  ListChecks,
+  Loader2,
+  MessageSquare,
+  Play,
+  PlugZap,
+  Plus,
+  Send,
+  ShieldCheck,
+  Square,
+  Trash2,
+  Users2,
+  Wrench,
+  XCircle,
+} from "lucide-react";
 import { api, apiFetch } from "../lib/api";
+import { selectSafeMcpCall, type GatewayMcpTool } from "../lib/sandboxMcp";
 import {
   sha256Source,
   startSandboxExecution,
@@ -25,10 +43,10 @@ interface ScenarioResult {
 }
 
 const SCENARIOS = [
-  { id: "basic", name: "Basic Tool Calls", description: "Query DB, send email, attempt delete (blocked)", icon: "🔧", color: "bg-sky-50 border-sky-200" },
-  { id: "multistep", name: "Multi-Step Plan", description: "10 steps: research → issue → diagram → notify", icon: "📋", color: "bg-violet-50 border-violet-200" },
-  { id: "blocked", name: "Test Policy Blocks", description: "Attempt dangerous actions, see them blocked", icon: "🛡️", color: "bg-rose-50 border-rose-200" },
-  { id: "mcp", name: "MCP Tool Discovery", description: "Use GitHub + Draw.io MCP tools", icon: "🔌", color: "bg-teal-50 border-teal-200" },
+  { id: "basic", name: "Basic Tool Calls", description: "Query DB, send email, attempt delete (blocked)", icon: Wrench, color: "bg-sky-50 border-sky-200" },
+  { id: "multistep", name: "Multi-Step Plan", description: "Six governed calls grouped into one trace", icon: ListChecks, color: "bg-violet-50 border-violet-200" },
+  { id: "blocked", name: "Test Policy Blocks", description: "Attempt dangerous actions, see them blocked", icon: ShieldCheck, color: "bg-rose-50 border-rose-200" },
+  { id: "mcp", name: "MCP Tool Discovery", description: "Discover connected MCP tools and run a read-only filesystem call", icon: PlugZap, color: "bg-teal-50 border-teal-200" },
 ];
 
 const CODE_TEMPLATE = `const query = await ostiari.tool("db_query", {
@@ -170,19 +188,49 @@ export function Sandbox() {
             body: JSON.stringify({ target: "all" }),
           });
           const data = await resp.json();
-          output.push(`${action}: ${resp.status === 403 ? `✗ BLOCKED (${data.reason || "policy"})` : resp.status === 404 ? "✗ NOT FOUND (filtered at MCP)" : "✓ allowed"}`);
+          const verdict = resp.status === 403
+            ? `✗ BLOCKED (${data.reason || "policy"})`
+            : resp.status === 404
+              ? "✗ NOT FOUND"
+              : resp.ok
+                ? "✓ ALLOWED (unexpected for this scenario)"
+                : `? ${resp.status} ${data.error || data.reason || "request failed"}`;
+          output.push(`${action}: ${verdict}`);
         }
       } else if (id === "mcp") {
-        const mcpTools = ["github.list_repos", "github.search_code", "drawio.list_diagrams", "drawio.create_diagram"];
-        const params: any[] = [{ org: "myorg" }, { query: "config" }, {}, { name: "Sandbox Diagram" }];
-        for (let i = 0; i < mcpTools.length; i++) {
-          const resp = await apiFetch(`${gatewayProxyPath}/tool/${mcpTools[i]}`, {
-            method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Id": "sandbox-mcp" },
-            body: JSON.stringify(params[i]),
-          });
-          const data = await resp.json();
-          const result = resp.ok ? (data.result?.content || JSON.stringify(data.result)).slice(0, 60) : data.error;
-          output.push(`${mcpTools[i]}: ${resp.ok ? "✓" : "✗"} ${result}`);
+        const toolsResponse = await apiFetch(`${gatewayProxyPath}/tools`);
+        const toolsBody = await toolsResponse.json();
+        if (!toolsResponse.ok) {
+          throw new Error(toolsBody.error || `Tool discovery failed with HTTP ${toolsResponse.status}`);
+        }
+
+        const mcpTools: GatewayMcpTool[] = Array.isArray(toolsBody.mcp_tools) ? toolsBody.mcp_tools : [];
+        if (mcpTools.length === 0) {
+          output.push("No MCP tools are connected to this gateway.");
+          output.push("The packaged launcher demo uses HTTP tools; the source demo connects real stdio MCP servers.");
+        } else {
+          const serverNames = [...new Set(mcpTools.map((tool) => tool.server).filter(Boolean))];
+          output.push(`Discovered ${mcpTools.length} MCP tools from ${serverNames.join(", ") || "connected servers"}.`);
+          for (const tool of mcpTools.slice(0, 8)) {
+            output.push(`  ${tool.name}`);
+          }
+          if (mcpTools.length > 8) {
+            output.push(`  ...and ${mcpTools.length - 8} more`);
+          }
+
+          const safeCall = selectSafeMcpCall(mcpTools);
+          if (!safeCall) {
+            output.push("Discovery passed. No supported read-only filesystem tool is connected, so execution was skipped.");
+          } else {
+            const callResponse = await apiFetch(`${gatewayProxyPath}/tool/${encodeURIComponent(safeCall.name)}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "X-Agent-Id": "sandbox-mcp" },
+              body: JSON.stringify(safeCall.params),
+            });
+            const callBody = await callResponse.json();
+            const result = JSON.stringify(callBody.result ?? callBody).slice(0, 180);
+            output.push(`${safeCall.name}: ${callResponse.ok ? "✓ EXECUTED" : `✗ HTTP ${callResponse.status}`} ${result}`);
+          }
         }
       }
       setScenarioResult(prev => ({ ...prev, [id]: { status: "done", output } }));
@@ -423,36 +471,39 @@ export function Sandbox() {
       {/* Scenarios Tab */}
       {tab === "scenarios" && (
         <div className="grid gap-4 sm:grid-cols-2">
-          {SCENARIOS.map(s => (
-            <div key={s.id} className={`card p-5 border ${s.color}`}>
-              <div className="flex items-start justify-between">
-                <div className="flex items-center gap-3">
-                  <span className="text-2xl">{s.icon}</span>
-                  <div>
-                    <p className="text-sm font-semibold text-stone-800">{s.name}</p>
-                    <p className="text-xs text-stone-500">{s.description}</p>
+          {SCENARIOS.map(s => {
+            const ScenarioIcon = s.icon;
+            return (
+              <div key={s.id} className={`card p-5 border ${s.color}`}>
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-3">
+                    <ScenarioIcon className="h-5 w-5 shrink-0 text-stone-700" />
+                    <div>
+                      <p className="text-sm font-semibold text-stone-800">{s.name}</p>
+                      <p className="text-xs text-stone-500">{s.description}</p>
+                    </div>
                   </div>
+                  <button
+                    onClick={() => runScenario(s.id)}
+                    disabled={!gatewayId || scenarioResult[s.id]?.status === "running"}
+                    className="btn-secondary text-xs px-3 py-1.5">
+                    {scenarioResult[s.id]?.status === "running" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+                    Run
+                  </button>
                 </div>
-                <button
-                  onClick={() => runScenario(s.id)}
-                  disabled={!gatewayId || scenarioResult[s.id]?.status === "running"}
-                  className="btn-secondary text-xs px-3 py-1.5">
-                  {scenarioResult[s.id]?.status === "running" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-                  Run
-                </button>
+                {scenarioResult[s.id] && (
+                  <div className="mt-3 rounded-xl bg-stone-50 border border-stone-100 p-3 font-mono text-xs space-y-0.5">
+                    {scenarioResult[s.id].output.map((line, i) => (
+                      <p key={i} className={line.includes("✓") ? "text-emerald-700" : line.includes("✗") ? "text-rose-700" : "text-stone-600"}>{line}</p>
+                    ))}
+                    {scenarioResult[s.id].status === "done" && (
+                      <p className="text-stone-400 mt-2 pt-2 border-t border-stone-100">✓ Complete — check Live Traces</p>
+                    )}
+                  </div>
+                )}
               </div>
-              {scenarioResult[s.id] && (
-                <div className="mt-3 rounded-xl bg-stone-50 border border-stone-100 p-3 font-mono text-xs space-y-0.5">
-                  {scenarioResult[s.id].output.map((line, i) => (
-                    <p key={i} className={line.includes("✓") ? "text-emerald-700" : line.includes("✗") ? "text-rose-700" : "text-stone-600"}>{line}</p>
-                  ))}
-                  {scenarioResult[s.id].status === "done" && (
-                    <p className="text-stone-400 mt-2 pt-2 border-t border-stone-100">✓ Complete — check Live Traces</p>
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 

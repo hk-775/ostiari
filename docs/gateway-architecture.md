@@ -217,7 +217,12 @@ sequenceDiagram
 
 Two things this order encodes. The **quota check precedes validation**, so a rate-limited agent never reaches the Guard. And **payment settles after every safety gate**, so an agent is never charged for a call that would have been refused.
 
-In **shadow mode** (`mode: shadow`) the gates all still evaluate and report with `shadow=true` / `would_block`, but nothing is refused and *no tool actually executes* — a synthetic response comes back instead. That's what makes shadow safe to run against production traffic, and also why a shadow gateway's results tell you nothing about whether the tools themselves work.
+In **shadow mode** (`mode: shadow`) the gateway runs the same ordered
+delegation, authorization, quota, and Guard checks until one would block. It
+reports the outcome with `shadow=true` / `would_block` and returns a synthetic
+response before HITL, payment, or execution. That's what makes shadow safe to run
+against production traffic, and also why a shadow gateway's results tell you
+nothing about whether the tools themselves work.
 
 ### PATH 2: LLM-Driven (POST /invoke)
 
@@ -3047,16 +3052,15 @@ Sends messages to the gateway's `/invoke` endpoint. The gateway routes to the co
 
 ### Scenarios Tab
 
-Four pre-built demos (`SCENARIOS` in `Sandbox.tsx:22`), each a fixed sequence of
-`POST /tool/{action}` calls — **no LLM is involved**; the tool list is hardcoded,
-not chosen by a model:
+Four pre-built demos (`SCENARIOS` in `Sandbox.tsx`), each using direct gateway
+requests — **no LLM is involved**:
 
 | Scenario | What it calls |
 |---|---|
 | **Basic Tool Calls** | `db_query`, `send_email`, `db_delete` (the last expected to be blocked) |
 | **Multi-Step Plan** | 6 steps — `db_query`, `github.search_code`, `github.create_issue`, `drawio.create_diagram`, `drawio.add_shape`, `send_email` — with `X-Session-Id`/`X-Plan`/`X-Step` set so traces group |
 | **Test Policy Blocks** | `db_delete`, `github.delete_repo`, `drawio.delete_diagram` |
-| **MCP Tool Discovery** | `github.list_repos`, `github.search_code`, `drawio.list_diagrams`, `drawio.create_diagram` |
+| **MCP Tool Discovery** | `GET /tools`, then one discovered read-only `fs.*` call when the filesystem MCP server is connected |
 
 Each scenario reports per-call status from the HTTP code, and the mapping differs
 per scenario — worth knowing before reading the output as a verdict:
@@ -3064,14 +3068,13 @@ per scenario — worth knowing before reading the output as a verdict:
 - **Basic / Multi-Step** treat 200 as allowed, 403 as blocked, and print anything
   else verbatim as `? {status}`. A 429 (quota) or 404 (unregistered tool) shows up
   as neither allowed nor blocked.
-- **Test Policy Blocks** treats 403 as the expected outcome and labels 404 as
-  `✗ NOT FOUND (filtered at MCP)` — but **anything else, including a 429, prints
-  `✓ allowed`**. In a gateway that's over budget this scenario reports that
-  `db_delete` was allowed when it never reached the policy engine.
-- **MCP Tool Discovery** branches on `resp.ok`, so every non-2xx is `✗` with no
-  distinction between a policy block and a missing server.
-
-Note the "Multi-Step Plan" card is described in the UI as "10 steps" but runs six.
+- **Test Policy Blocks** distinguishes a policy 403, a missing-tool 404, an
+  unexpected successful call, and other failures such as quota or payment errors.
+- **MCP Tool Discovery** reads the gateway's live `mcp_tools` registry instead of
+  assuming tool names. It lists discovered tools and only auto-executes a known
+  read-only filesystem operation. The packaged launcher demo reports that no MCP
+  server is connected; `make demo-full` connects the real stdio filesystem and
+  draw.io servers.
 
 ### Code Tab
 

@@ -6,16 +6,19 @@
 waits for readiness, verifies deployed endpoints, and keeps generated state under
 `.ostiari/deployments/`.
 
-| Profile | Data | AgentCore | Intended use |
-|---|---:|---:|---|
-| `local-demo` | Seeded | No | First run and evaluation |
-| `local-empty` | Empty | No | Local integration work |
-| `aws-demo` | Seeded | No | AWS evaluation |
-| `aws-empty` | Empty | No | Clean AWS integration |
-| `aws-agentcore-demo` | Seeded | Yes | AgentCore evaluation |
-| `aws-agentcore-empty` | Empty | Yes | Clean AgentCore integration |
-| `production` | Empty | No | Hardened production |
-| `production-agentcore` | Empty | Yes | Hardened production with AgentCore |
+The canonical diagrams and request flows are in
+[`docs/architecture.md`](../docs/architecture.md).
+
+| Profile | Data | AgentCore | Placement and egress | Intended use |
+|---|---:|---:|---|---|
+| `local-demo` | Seeded | No | Docker Compose on one host | First run and evaluation |
+| `local-empty` | Empty | No | Docker Compose on one host | Local integration work |
+| `aws-demo` | Seeded | No | Public Fargate tasks, no NAT | Cost-aware AWS evaluation |
+| `aws-empty` | Empty | No | Public Fargate tasks, no NAT | Clean AWS integration |
+| `aws-agentcore-demo` | Seeded | Yes | Private app subnets, one NAT | AgentCore evaluation |
+| `aws-agentcore-empty` | Empty | Yes | Private app subnets, one NAT | Clean AgentCore integration |
+| `production` | Empty | No | Private Fargate tasks, two NAT gateways | Hardened production |
+| `production-agentcore` | Empty | Yes | Private Fargate and AgentCore, two NAT gateways | Hardened production with AgentCore |
 
 List these at any time:
 
@@ -65,6 +68,13 @@ routes validation through the private gateway. The gateway is not replaced by
 AgentCore because registration, heartbeat, config push, and durable reporting
 are gateway lifecycle contracts.
 
+`aws-demo` and `aws-empty` avoid NAT cost: their application tasks run in public
+subnets with public IPs, while security groups restrict ingress to the ALB and
+internal service relationships. AgentCore profiles resolve two zones from the
+checked-in AgentCore support registry, map the zone IDs to account-specific AZ
+names, and place application workloads in private subnets behind one NAT
+gateway.
+
 The AWS stack creates:
 
 - a two-AZ VPC and private service discovery;
@@ -79,6 +89,11 @@ Remove an evaluation stack with:
 ```bash
 ./deploy/ostiari aws destroy --profile aws-demo --name evaluation --yes
 ```
+
+AgentCore runtime deletion can complete before AWS releases its managed
+`agentic_ai` network interfaces. If those ENIs temporarily block subnet,
+security-group, or VPC deletion, the launcher identifies them and asks you to
+retry the same destroy command after AWS releases them.
 
 ### Production
 
@@ -96,8 +111,9 @@ execution.
    ```
 
    Add `--include-agentcore` for `production-agentcore`. The command creates
-   immutable, scan-on-push ECR repositories, publishes provenance/SBOM
-   attestations, and writes digest-pinned URIs to
+   immutable, scan-on-push ECR repositories, uses an attestation-capable Buildx
+   builder, publishes provenance/SBOM attestations for the architecture-specific
+   images, and writes manifest-digest URIs to
    `.ostiari/deployments/production/images.json`.
 
 2. Provision the external identity contracts: one OAuth client for gateway
@@ -147,10 +163,10 @@ posture.
 ./deploy/ostiari aws preflight --profile aws-demo --name evaluation
 ```
 
-The preflight catches known failed-stack states and checks Elastic IP quota
-before profiles create NAT gateways. Production preflight also verifies every
-Secrets Manager ARN, ACM certificate, and ECR image digest without retrieving
-secret values.
+The preflight catches known failed-stack states, checks VPC quota when a new VPC
+is required, and checks Elastic IP quota before profiles create NAT gateways.
+Production preflight also verifies every Secrets Manager ARN, ACM certificate,
+and ECR image digest without retrieving secret values.
 
 After an AWS deployment, the launcher prints the dashboard URL, the admin email,
 and an exact Secrets Manager command for retrieving the generated password. It

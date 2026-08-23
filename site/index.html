@@ -7,7 +7,7 @@
     <meta name="description" content="Ostiari intercepts every tool call an AI agent makes, scores its risk, and enforces safety policies — regardless of framework.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
     <style>
         :root {
             --bg: #0a0a0f;
@@ -21,7 +21,7 @@
             --red: #ef4444;
             --blue: #3b82f6;
             --purple: #a855f7;
-            --radius: 12px;
+            --radius: 8px;
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -63,7 +63,7 @@
             font-weight: 800;
             color: var(--accent);
             text-decoration: none;
-            letter-spacing: -0.5px;
+            letter-spacing: 0;
         }
 
         .logo span { color: var(--text); }
@@ -109,17 +109,7 @@
             position: relative;
         }
 
-        .hero::before {
-            content: '';
-            position: absolute;
-            top: 80px;
-            left: 50%;
-            transform: translateX(-50%);
-            width: 600px;
-            height: 600px;
-            background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%);
-            pointer-events: none;
-        }
+        .hero::before { display: none; }
 
         .badge {
             display: inline-flex;
@@ -151,18 +141,13 @@
         h1 {
             font-size: clamp(3rem, 7vw, 4.5rem);
             font-weight: 800;
-            letter-spacing: -2px;
+            letter-spacing: 0;
             line-height: 1.1;
             margin-bottom: 24px;
             position: relative;
         }
 
-        h1 .highlight {
-            background: linear-gradient(135deg, var(--accent), #fbbf24);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
+        h1 .highlight { color: var(--accent); }
 
         .hero-sub {
             font-size: 1.25rem;
@@ -237,6 +222,9 @@
             color: var(--text-dim);
             cursor: pointer;
             transition: border-color 0.2s;
+            max-width: 100%;
+            overflow-x: auto;
+            white-space: nowrap;
         }
 
         .install-cmd:hover { border-color: var(--accent); }
@@ -281,7 +269,7 @@
         .section-title {
             font-size: 2.5rem;
             font-weight: 800;
-            letter-spacing: -1.5px;
+            letter-spacing: 0;
             margin-bottom: 16px;
         }
 
@@ -472,6 +460,48 @@
             line-height: 1.6;
         }
 
+        .demo-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 24px;
+        }
+
+        .demo-card {
+            padding: 28px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+        }
+
+        .demo-card h3 {
+            margin-bottom: 8px;
+            font-size: 1.05rem;
+        }
+
+        .demo-card p {
+            color: var(--text-dim);
+            font-size: 0.88rem;
+        }
+
+        .demo-card code {
+            display: block;
+            margin: 18px 0;
+            padding: 12px;
+            overflow-x: auto;
+            border-radius: 6px;
+            background: var(--bg);
+            color: var(--text);
+            font-size: 0.75rem;
+            white-space: nowrap;
+        }
+
+        .demo-card ul {
+            margin: 0;
+            padding-left: 18px;
+            color: var(--text-dim);
+            font-size: 0.82rem;
+        }
+
         .cta-section {
             padding: 100px 0;
             text-align: center;
@@ -487,7 +517,7 @@
         .cta-box h2 {
             font-size: 2.5rem;
             font-weight: 800;
-            letter-spacing: -1px;
+            letter-spacing: 0;
             margin-bottom: 16px;
         }
 
@@ -519,9 +549,11 @@
         @media (max-width: 768px) {
             .nav-links { display: none; }
             .tier-cards { grid-template-columns: 1fr; }
+            .demo-grid { grid-template-columns: 1fr; }
             .feature-grid { grid-template-columns: 1fr; }
             .pipeline-visual { font-size: 0.7rem; padding: 20px; }
             .cta-box { padding: 48px 24px; }
+            .nav-actions a:first-child { display: none; }
         }
     </style>
 </head>
@@ -529,24 +561,21 @@
 
 <nav>
     <div class="container">
-        <a href="/" class="logo">Agent<span>Lasso</span></a>
+        <a href="index.html" class="logo"><span>O</span>stiari</a>
         <ul class="nav-links">
             <li><a href="#features">Features</a></li>
             <li><a href="#how-it-works">How It Works</a></li>
-            <li><a href="#frameworks">Frameworks</a></li>
+            <li><a href="#demos">Demos</a></li>
             <li><a href="architecture.html">Architecture</a></li>
-            <li><a href="https://github.com/aws/ostiari">Docs</a></li>
+            <li><a href="https://github.com/hk-775/ostiari/blob/main/docs/architecture.md">Docs</a></li>
         </ul>
-        <div style="display:flex;gap:10px;align-items:center;">
+        <div class="nav-actions" style="display:flex;gap:10px;align-items:center;">
             <a href="architecture.html" class="nav-cta" style="background:var(--surface);color:var(--text);border:1px solid var(--border);">
                 Architecture
             </a>
-            <a href="https://d3npuiylu655tr.cloudfront.net" class="nav-cta" style="background:var(--surface);color:var(--text);border:1px solid var(--border);">
-                Dashboard
-            </a>
-            <a href="https://github.com/aws/ostiari" class="nav-cta">
+            <a href="https://github.com/hk-775/ostiari#see-it-in-90-seconds" class="nav-cta">
                 <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-                GitHub
+                Quickstart
             </a>
         </div>
     </div>
@@ -558,22 +587,22 @@
             <span class="badge-dot"></span>
             Open Source &middot; MIT-0
         </div>
-        <h1>Lasso your agents<br>before they <span class="highlight">go wild</span></h1>
+        <h1><span class="highlight">Ostiari</span></h1>
         <p class="hero-sub">
-            Ostiari intercepts every tool call an AI agent makes, scores its risk, and enforces safety policies — regardless of which framework the agent runs on.
+            Runtime governance for AI agents: authorize, quota, score, approve, pay, execute, and trace HTTP, MCP, A2A, and LLM traffic from one control plane.
         </p>
         <div class="hero-actions">
-            <a href="https://github.com/aws/ostiari" class="btn-primary">
-                Get Started
+            <a href="https://github.com/hk-775/ostiari#see-it-in-90-seconds" class="btn-primary">
+                Run the demo
                 <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
             </a>
-            <a href="https://github.com/aws/ostiari" class="btn-secondary">
-                View on GitHub
+            <a href="architecture.html" class="btn-secondary">
+                Explore architecture
             </a>
         </div>
         <div class="install-bar">
-            <div class="install-cmd" onclick="navigator.clipboard.writeText('pip install ostiari')">
-                $ <code>pip install ostiari</code>
+            <div class="install-cmd" onclick="navigator.clipboard.writeText('git clone https://github.com/hk-775/ostiari.git && cd ostiari && ./deploy/ostiari local up --profile local-demo')">
+                $ <code>git clone https://github.com/hk-775/ostiari.git &amp;&amp; cd ostiari &amp;&amp; ./deploy/ostiari local up --profile local-demo</code>
                 <svg class="copy-icon" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
             </div>
         </div>
@@ -584,32 +613,16 @@
     <div class="container">
         <div class="pipeline-visual">
 <pre>
-<span class="label">Agent</span>                        <span class="label">Ostiari</span>                              <span class="label">World</span>
+<span class="label">Agent / SDK</span>                  <span class="label">Ostiari gateway</span>                       <span class="label">Governed target</span>
 
-  tool_call("email.send")
-       |
-       |-------------------> <span class="label">Policy Engine</span> ---> <span class="label">Anomaly Detector</span>
-       |                         |                    |
-       |                    score: 45            no anomaly
-       |                         |
-       |                    <span class="label">Gateway</span>
-       |                    +-------------------------------------+
-       |                    |  0 -------- 30 -------- 70 --- 100  |
-       |                    |  <span class="allow">ALLOW</span>      <span class="intervene">INTERVENE</span>    <span class="block">BLOCK</span>    |
-       |                    +-------------------------------------+
-       |                              |
-       |                    tier: <span class="intervene">intervene</span>
-       |                              |
-       |                    +---------+----------+
-       |                    |  Human Approval?   |
-       |                    |    [Approve]       |
-       |                    +---------+----------+
-       |                              |
-       |                         approved
-       |                              |
-       +------------------------------+------------------------------> send_email()
-                                                                          |
-                                      <span class="label">Trace Stored</span> <------------------------------+
+  POST /tool/{action}  ----->  1. Delegation  (A2A edge / trust / depth)
+                              2. Authorization (agent grants)
+                              3. Quota        (rate / tokens / budget)
+                              4. Risk         (<span class="allow">allow</span> / <span class="intervene">intervene</span> / <span class="block">block</span>)
+                              5. Approval     (optional HITL, HTTP 202)
+                              6. Payment      (metered or x402)
+                              7. Execute      -----------------------> HTTP / MCP / A2A / LLM
+                              8. Trace        -----------------------> Control plane
 </pre>
         </div>
     </div>
@@ -619,38 +632,68 @@
     <div class="container">
         <p class="section-label">Capabilities</p>
         <h2 class="section-title">Everything you need to govern AI agents</h2>
-        <p class="section-desc">One library. Every framework. Full control over what your agents can do.</p>
+        <p class="section-desc">A gateway enforcement path, an embeddable Guard, and a fleet control plane.</p>
 
         <div class="feature-grid">
             <div class="feature-card">
                 <div class="feature-icon">&#9881;</div>
-                <h3>Policy Engine</h3>
-                <p>YAML-based rules that allow, score, or block actions by pattern. Hot-reload policies without restarting.</p>
+                <h3>Complete gate chain</h3>
+                <p>Delegation, authorization, quota, risk, approval, payment, execution, and durable trace delivery.</p>
             </div>
             <div class="feature-card">
                 <div class="feature-icon">&#9888;</div>
-                <h3>Risk Scoring</h3>
-                <p>Every tool call gets a 0-100 risk score. Configurable thresholds determine allow, intervene, or block.</p>
+                <h3>Universal tool proxy</h3>
+                <p>Govern HTTP tools, real stdio or remote MCP servers, peer agents, and LLM provider traffic.</p>
             </div>
             <div class="feature-card">
                 <div class="feature-icon">&#128269;</div>
-                <h3>Anomaly Detection</h3>
-                <p>Catches loops, drift, hallucinations, and contradictions before they cause damage.</p>
+                <h3>Human approval</h3>
+                <p>Intervene-tier gateway calls pause with HTTP 202 and execute only after an approved retry.</p>
             </div>
             <div class="feature-card">
                 <div class="feature-icon">&#9889;</div>
-                <h3>Circuit Breaker</h3>
-                <p>Automatically trips when error rates spike. Protects downstream systems from runaway agents.</p>
+                <h3>Fleet control plane</h3>
+                <p>Push policy and quotas, manage approvals, monitor health, and inspect linked traces and audit evidence.</p>
             </div>
             <div class="feature-card">
                 <div class="feature-icon">&#128101;</div>
-                <h3>Human-in-the-Loop</h3>
-                <p>Medium-risk actions pause for approval. Configurable callbacks, webhooks, or dashboard-based review.</p>
+                <h3>Metering and payments</h3>
+                <p>Track model and tool cost, enforce agent budgets, and support metered or downstream x402 settlement.</p>
             </div>
             <div class="feature-card">
                 <div class="feature-icon">&#128200;</div>
-                <h3>Full Observability</h3>
-                <p>Every evaluation is traced and stored. Web dashboard, metrics, real-time WebSocket streaming.</p>
+                <h3>Deployment profiles</h3>
+                <p>Run locally, evaluate on AWS, add an AgentCore validation bridge, or prepare a reviewed production change set.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="tiers" id="demos">
+    <div class="container">
+        <p class="section-label">Project demos</p>
+        <h2 class="section-title">Two demos with explicit scope</h2>
+        <p class="section-desc">The packaged launcher path stays small; the source demo exercises the broader protocol surface.</p>
+        <div class="demo-grid">
+            <div class="demo-card">
+                <h3>Launcher demo</h3>
+                <p>One governed gateway with functional HTTP tools and a seeded operator dashboard.</p>
+                <code>./deploy/ostiari local up --profile local-demo</code>
+                <ul>
+                    <li>Control plane, React UI, gateway, and Valkey</li>
+                    <li>Allowed and blocked calls execute end to end</li>
+                    <li>External payment movement stays simulated</li>
+                </ul>
+            </div>
+            <div class="demo-card">
+                <h3>Source demo</h3>
+                <p>The broadest maintainer walkthrough with real MCP subprocesses and A2A delegation.</p>
+                <code>make install &amp;&amp; make demo-full</code>
+                <ul>
+                    <li>Four role-specific gateways and nine agent records</li>
+                    <li>Real filesystem and draw.io stdio MCP discovery</li>
+                    <li>A real local A2A peer plus live traces</li>
+                </ul>
             </div>
         </div>
     </div>
@@ -659,8 +702,8 @@
 <section class="code-section">
     <div class="container">
         <p class="section-label">Quick Start</p>
-        <h2 class="section-title">Five lines to safety</h2>
-        <p class="section-desc">Drop Ostiari into any agent in minutes. No framework lock-in.</p>
+        <h2 class="section-title">Embed the Guard directly</h2>
+        <p class="section-desc">Use the in-process decision engine when your application owns execution and does not need the gateway or control plane.</p>
 
         <div class="code-block">
             <div class="code-header">
@@ -670,7 +713,7 @@
                 <span>main.py</span>
             </div>
             <div class="code-body">
-<pre><span class="kw">from</span> <span class="fn">ostiari</span> <span class="kw">import</span> Guard
+<pre><span class="kw">from</span> <span class="fn">ostiari</span> <span class="kw">import</span> ActionBlockedError, Guard
 <span class="kw">from</span> <span class="fn">ostiari.models</span> <span class="kw">import</span> OstiariConfig, ThresholdConfig
 
 <span class="cm"># Configure: allow &lt;= 30, intervene 31-70, block &gt; 70</span>
@@ -683,17 +726,18 @@ guard = Guard(config=config)
 guard.configure(<span class="str">"policy.yaml"</span>)
 guard.start()
 
-<span class="cm"># Validate before executing any tool call</span>
-result = guard.validate(
-    action=<span class="str">"email.send"</span>,
-    params={<span class="str">"to"</span>: <span class="str">"user@example.com"</span>, <span class="str">"subject"</span>: <span class="str">"Hello"</span>}
-)
-
-<span class="kw">if</span> result.tier == <span class="str">"allow"</span>:
-    send_email(result.params)  <span class="cm"># Low risk — proceed</span>
-<span class="kw">elif</span> result.tier == <span class="str">"intervene"</span>:
-    <span class="kw">if</span> get_human_approval(result):
-        send_email(result.params)  <span class="cm"># Approved</span>
+<span class="kw">try</span>:
+    result = guard.validate(
+        action=<span class="str">"email.send"</span>,
+        params={<span class="str">"to"</span>: <span class="str">"user@example.com"</span>}
+    )
+    <span class="kw">if</span> result.original_tier == <span class="str">"intervene"</span>:
+        <span class="kw">if</span> get_human_approval(result):
+            send_email(result.params)
+    <span class="kw">elif</span> result.tier == <span class="str">"allow"</span>:
+        send_email(result.params)
+<span class="kw">except</span> ActionBlockedError:
+    record_refusal()
 </pre>
             </div>
         </div>
@@ -704,7 +748,7 @@ result = guard.validate(
     <div class="container">
         <p class="section-label">Integrations</p>
         <h2 class="section-title">One guardrail for every framework</h2>
-        <p class="section-desc" style="margin: 0 auto 0;">Drop-in adapters for the frameworks you already use. Zero coupling — Ostiari never imports your framework's code at runtime.</p>
+        <p class="section-desc" style="margin: 0 auto 0;">Use framework adapters, standard model APIs, or direct gateway calls without moving governance into the agent.</p>
 
         <div class="framework-logos">
             <div class="framework-item">
@@ -754,7 +798,7 @@ result = guard.validate(
             <div class="tier-card intervene">
                 <div class="tier-score">31-70</div>
                 <div class="tier-name">Intervene</div>
-                <p class="tier-desc">Medium risk. Pauses for human approval. Sends email, writes files, external API calls with side effects.</p>
+                <p class="tier-desc">Medium risk. The gateway can pause asynchronously for approval; the embedded Guard resolves the tier synchronously.</p>
             </div>
             <div class="tier-card block">
                 <div class="tier-score">71-100</div>
@@ -768,15 +812,15 @@ result = guard.validate(
 <section class="cta-section">
     <div class="container">
         <div class="cta-box">
-            <h2>Ready to lasso your agents?</h2>
-            <p>Open source. Production ready. Five minutes to integrate.</p>
+            <h2>Run the current Ostiari demo</h2>
+            <p>Open source, code-backed, and explicit about what each deployment profile runs.</p>
             <div class="hero-actions">
-                <a href="https://github.com/aws/ostiari" class="btn-primary">
-                    Get Started
+                <a href="https://github.com/hk-775/ostiari#see-it-in-90-seconds" class="btn-primary">
+                    Open quickstart
                     <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
                 </a>
-                <a href="https://github.com/aws/ostiari" class="btn-secondary">
-                    Read the Docs
+                <a href="architecture.html" class="btn-secondary">
+                    Explore architecture
                 </a>
             </div>
         </div>
@@ -785,7 +829,7 @@ result = guard.validate(
 
 <footer>
     <div class="container">
-        <p>Ostiari is open source under the MIT-0 License &middot; <a href="https://github.com/aws/ostiari">GitHub</a> &middot; <a href="https://pypi.org/project/ostiari/">PyPI</a></p>
+        <p>Ostiari is open source under the MIT-0 License &middot; <a href="https://github.com/hk-775/ostiari">GitHub</a> &middot; <a href="https://github.com/hk-775/ostiari/blob/main/docs/architecture.md">Architecture docs</a></p>
     </div>
 </footer>
 

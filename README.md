@@ -52,9 +52,10 @@ larger four-gateway source-development demo, use `make install && make demo-full
 AWS, AgentCore, and production commands are in
 [`deploy/README.md`](deploy/README.md).
 
-**New here?** Read [`docs/control-plane-guide.md`](docs/control-plane-guide.md)
-— a complete, novice-friendly tour of the control plane with architecture
-diagrams, best practices, and pitfalls.
+**New here?** Start with [`docs/architecture.md`](docs/architecture.md) for the
+current runtime and deployment topology, then use
+[`docs/control-plane-guide.md`](docs/control-plane-guide.md) for the complete
+operator tour.
 
 ## The three layers
 
@@ -86,9 +87,10 @@ Every tool call runs through this pipeline. Each control-plane feature either
   8. TRACE       record it → report to the control plane   → Live Traces / Audit / ROI
 ```
 
-A gateway can run in **shadow** mode — every gate still evaluates and records
-what it *would* have done, but nothing is blocked and no side effect runs. Try
-before you enforce.
+A gateway can run in **shadow** mode. It runs the same ordered delegation,
+authorization, quota, and risk checks until a check would block, records the
+would-block outcome, and returns a synthetic result before approval, payment, or
+execution. Try before you enforce.
 
 Gate 5 is opt-in (`OSTIARI_HITL=on`) and is what makes *intervene* a real tier
 rather than a label: the gateway answers **202** with an approval id, a human
@@ -264,7 +266,7 @@ The root-package extras are `claude`, `openai`, `bedrock`, `strands`, `policy`,
 
 | Target | What it does |
 |---|---|
-| `make demo-full` | Full demo — control plane, 4 gateways, A2A agent, seeded data (→ :9000) |
+| `make demo-full` | Full source demo — control plane, 4 gateways, real stdio MCP, A2A agent, seeded data (→ :9000) |
 | `make dev` | Control plane + frontend + primary gateway |
 | `make demo` | Frontend only — landing page and build check, **no backend, so no dashboard** |
 | `make clean-start` | No demo data (`OSTIARI_NO_DEMO=1`) — empty registry, empty DB |
@@ -282,21 +284,24 @@ The root-package extras are `claude`, `openai`, `bedrock`, `strands`, `policy`,
 
 ## Architecture
 
+```text
+Agents / SDKs
+      |
+      v
+Ostiari gateway -----> HTTP tools / stdio or remote MCP / peer agents
+      |   \
+      |    `---------> LLM providers through embedded AxonLLM
+      |
+      +---- register, heartbeat, traces, usage, cost, payments ----+
+      ^                                                            |
+      +--------------- configuration and approvals ----------------+
+                         Control plane
+                  FastAPI + React + SQL + Redis/Valkey
 ```
-┌──────────────────────── Control Plane (FastAPI + React) ────────────────────┐
-│  Observe · Control · Monetize · Configure · Test · Admin                     │
-│  configure once → push to gateways · collect traces ← from gateways         │
-└──────────────────────────────────────────────────────────────────────────────┘
-        ▲  push config          │ report traces          ▲
-        │                       ▼                         │
-   ┌────┴─────┐          ┌──────────────┐          ┌──────┴─────┐
-   │ Gateway  │  ...     │   Gateway    │   ...    │  Gateway   │   (one per agent)
-   │  gate    │          │  gate chain  │          │  gate      │
-   │  chain   │          │  + MCP + A2A │          │  chain     │
-   └────┬─────┘          └──────┬───────┘          └─────┬──────┘
-        ▼                       ▼                        ▼
-     Agent                    Agent                    Agent
-```
+
+See [`docs/architecture.md`](docs/architecture.md) for the exact gate order,
+demo boundaries, AgentCore validation bridge, AWS subnet placement, and
+production controls.
 
 ## Development
 
@@ -327,6 +332,8 @@ docs/                 # architecture + the control plane guide
 
 ## Documentation
 
+- [`docs/architecture.md`](docs/architecture.md) — current runtime, demo, AWS,
+  AgentCore, and production architecture
 - [`docs/features-and-flows.md`](docs/features-and-flows.md) — canonical feature
   inventory and end-to-end flows, grounded in the current code
 - [`STARTUP.md`](STARTUP.md) — full startup & deployment guide: local (no demo),
