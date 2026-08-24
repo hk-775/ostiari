@@ -414,7 +414,8 @@ def test_aws_frontend_uses_explicit_same_origin_build_contract() -> None:
     assert '"VITE_DEMO_LOGIN": "true" if self.config.demo else "false"' in stack
     assert '["/api/*", "/docs*", "/openapi.json", "/ws/*"]' in stack
     assert "frontend-tmp" not in stack
-    assert "FROM scratch" in dockerfile
+    assert "FROM gcr.io/distroless/static-debian13:nonroot@sha256:" in dockerfile
+    assert "FROM scratch" not in dockerfile
     assert 'ENTRYPOINT ["/frontend-server"]' in dockerfile
     assert '"CMD",\n                    "/frontend-server",' in stack
     assert compose["services"]["control-plane-frontend"]["healthcheck"]["test"] == [
