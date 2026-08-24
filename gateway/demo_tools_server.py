@@ -39,6 +39,9 @@ _FILES = {
         "# Ostiari MCP sandbox\n\n"
         "This in-memory filesystem is served by the deployed demo MCP endpoint.\n"
     ),
+    "/tmp/ostiari-mcp-sandbox/README.txt": (
+        "Ostiari demo sandbox — filesystem MCP server operates here.\n"
+    ),
     "/reports/weekly.txt": "Gateway fleet healthy: 4/4\nMCP servers connected: 8/8\n",
 }
 

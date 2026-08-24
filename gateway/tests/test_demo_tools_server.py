@@ -45,11 +45,14 @@ def test_remote_mcp_lists_and_calls_tools(monkeypatch):
             "method": "tools/call",
             "params": {
                 "name": "read_text_file",
-                "arguments": {"path": "/README.md"},
+                # Keep this aligned with the dashboard's safe MCP demo call.
+                "arguments": {
+                    "path": "/tmp/ostiari-mcp-sandbox/README.txt",
+                },
             },
         },
     ).json()
-    assert "Ostiari MCP sandbox" in called["result"]["content"][0]["text"]
+    assert "Ostiari demo sandbox" in called["result"]["content"][0]["text"]
 
 
 def test_a2a_agent_card_and_task(monkeypatch):
