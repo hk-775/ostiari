@@ -1,0 +1,39 @@
+let signer_roles = Resources.*[
+  Type == "AWS::IAM::Role"
+]
+
+rule OSTIARI_SIGNER_USES_WEB_IDENTITY when %signer_roles !empty {
+  %signer_roles {
+    Properties.MaxSessionDuration == 3600
+    Properties.AssumeRolePolicyDocument.Statement[*] {
+      Effect == "Allow"
+      Action == "sts:AssumeRoleWithWebIdentity"
+      Principal.Federated exists
+      Condition.StringEquals."token.actions.githubusercontent.com:aud" == "sts.amazonaws.com"
+      Condition.StringEquals."token.actions.githubusercontent.com:sub"."Fn::Sub" == "repo:${GitHubRepository}:environment:${GitHubEnvironment}"
+      NotAction not exists
+      NotPrincipal not exists
+    }
+  }
+}
+
+rule OSTIARI_SIGNER_HAS_NO_WILDCARD_ACTIONS when %signer_roles !empty {
+  let violations = %signer_roles[
+    some Properties.Policies[*].PolicyDocument.Statement[*] {
+      some Action[*] in ["*", /^[a-zA-Z0-9]*:\*$/]
+      Effect == "Allow"
+    }
+  ]
+  %violations empty
+}
+
+rule OSTIARI_SIGNER_SCOPES_IMAGE_WRITES when %signer_roles !empty {
+  let violations = %signer_roles[
+    some Properties.Policies[*].PolicyDocument.Statement[*] {
+      Sid != "RegistryLogin"
+      some Resource[*] == "*"
+      Effect == "Allow"
+    }
+  ]
+  %violations empty
+}

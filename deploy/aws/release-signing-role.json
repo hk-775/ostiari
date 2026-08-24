@@ -1,0 +1,132 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Least-privilege GitHub OIDC role for signing official Ostiari ECR images.",
+  "Parameters": {
+    "GitHubOidcProviderArn": {
+      "Type": "String",
+      "Description": "Existing IAM OIDC provider for token.actions.githubusercontent.com.",
+      "AllowedPattern": "^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:oidc-provider/token\\.actions\\.githubusercontent\\.com$"
+    },
+    "GitHubRepository": {
+      "Type": "String",
+      "Default": "hk-775/ostiari",
+      "Description": "GitHub owner/repository allowed to assume the signing role.",
+      "AllowedPattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "GitHubEnvironment": {
+      "Type": "String",
+      "Default": "production-signing",
+      "Description": "GitHub Actions environment encoded in the OIDC subject.",
+      "AllowedPattern": "^[A-Za-z0-9_.-]+$"
+    },
+    "RepositoryPrefix": {
+      "Type": "String",
+      "Default": "ostiari",
+      "Description": "ECR repository prefix containing the official images.",
+      "AllowedPattern": "^[a-z0-9][a-z0-9._/-]{0,254}$"
+    }
+  },
+  "Resources": {
+    "ImageSignerRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "Description": "Keyless Sigstore signer for exact Ostiari release image digests.",
+        "MaxSessionDuration": 3600,
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "GitHubActionsProductionSigning",
+              "Effect": "Allow",
+              "Principal": {
+                "Federated": {
+                  "Ref": "GitHubOidcProviderArn"
+                }
+              },
+              "Action": "sts:AssumeRoleWithWebIdentity",
+              "Condition": {
+                "StringEquals": {
+                  "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+                  "token.actions.githubusercontent.com:sub": {
+                    "Fn::Sub": "repo:${GitHubRepository}:environment:${GitHubEnvironment}"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "OfficialImageSigning",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "RegistryLogin",
+                  "Effect": "Allow",
+                  "Action": "ecr:GetAuthorizationToken",
+                  "Resource": "*"
+                },
+                {
+                  "Sid": "ReadAndWriteSignatures",
+                  "Effect": "Allow",
+                  "Action": [
+                    "ecr:BatchCheckLayerAvailability",
+                    "ecr:BatchGetImage",
+                    "ecr:CompleteLayerUpload",
+                    "ecr:DescribeImages",
+                    "ecr:GetDownloadUrlForLayer",
+                    "ecr:InitiateLayerUpload",
+                    "ecr:PutImage",
+                    "ecr:UploadLayerPart"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::Sub": "arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/${RepositoryPrefix}/control-plane"
+                    },
+                    {
+                      "Fn::Sub": "arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/${RepositoryPrefix}/gateway"
+                    },
+                    {
+                      "Fn::Sub": "arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/${RepositoryPrefix}/frontend"
+                    },
+                    {
+                      "Fn::Sub": "arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/${RepositoryPrefix}/agentcore"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Application",
+            "Value": "Ostiari"
+          },
+          {
+            "Key": "Purpose",
+            "Value": "release-image-signing"
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "RoleArn": {
+      "Description": "Set this as AWS_SIGNING_ROLE_ARN in the production-signing GitHub environment.",
+      "Value": {
+        "Fn::GetAtt": [
+          "ImageSignerRole",
+          "Arn"
+        ]
+      }
+    },
+    "RoleName": {
+      "Description": "CloudFormation-generated IAM role name.",
+      "Value": {
+        "Ref": "ImageSignerRole"
+      }
+    }
+  }
+}

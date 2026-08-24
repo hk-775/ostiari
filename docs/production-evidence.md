@@ -58,9 +58,13 @@ resolve to that commit, rejects evidence older than 24 hours, enforces every
 type-specific threshold, hashes each source file, and retains the resulting
 bundle for 90 days.
 
-The `production-evidence` GitHub environment must require reviewer approval.
-Do not approve a retention run until the rehearsal environment has been
-returned to its approved image and all alarms are healthy.
+The `production-evidence` GitHub environment is restricted to `main` and must
+require reviewer approval. GitHub does not expose required-reviewer environment
+rules for private repositories on every billing tier; if the rule is unavailable
+while the repository is private, enable it immediately when the repository
+becomes public or the plan is upgraded. Do not run the retention workflow before
+that rule is active, and do not approve a retention run until the rehearsal
+environment has been returned to its approved image and all alarms are healthy.
 
 ## Local validation
 

@@ -51,6 +51,66 @@ def test_external_github_actions_are_pinned_to_commit_shas() -> None:
             assert "#" in line, f"{path}:{line_number}: missing readable version comment"
 
 
+def test_official_image_signing_is_keyless_release_bound_and_scoped() -> None:
+    workflow_path = ROOT / ".github/workflows/sign-official-images.yml"
+    workflow = yaml.safe_load(workflow_path.read_text())
+    text = workflow_path.read_text()
+    job = workflow["jobs"]["sign"]
+
+    assert workflow["permissions"] == {"contents": "write", "id-token": "write"}
+    assert job["environment"] == "production-signing"
+    assert "test \"$GITHUB_REF\" = \"refs/heads/main\"" in text
+    assert "imageTag=${RELEASE_SHA}" in text
+    assert "test \"$actual\" = \"$digest\"" in text
+    assert "cosign sign --yes" in text
+    assert "--bundle \"signing-evidence/${name}.sigstore.json\"" in text
+    assert "--certificate-identity \"$certificate_identity\"" in text
+    assert (
+        "--certificate-oidc-issuer "
+        "\"https://token.actions.githubusercontent.com\""
+    ) in text
+    assert "verificationMaterial.tlogEntries" in text
+    assert "retention-days: 90" in text
+    assert "gh release upload \"$RELEASE_TAG\" signing-evidence/*" in text
+
+    template = json.loads(
+        (ROOT / "deploy/aws/release-signing-role.json").read_text()
+    )
+    role = template["Resources"]["ImageSignerRole"]["Properties"]
+    trust = role["AssumeRolePolicyDocument"]["Statement"][0]
+    assert trust["Action"] == "sts:AssumeRoleWithWebIdentity"
+    assert trust["Condition"]["StringEquals"][
+        "token.actions.githubusercontent.com:aud"
+    ] == "sts.amazonaws.com"
+    assert trust["Condition"]["StringEquals"][
+        "token.actions.githubusercontent.com:sub"
+    ] == {
+        "Fn::Sub": (
+            "repo:${GitHubRepository}:environment:${GitHubEnvironment}"
+        )
+    }
+    policy = role["Policies"][0]["PolicyDocument"]["Statement"]
+    assert policy[0] == {
+        "Sid": "RegistryLogin",
+        "Effect": "Allow",
+        "Action": "ecr:GetAuthorizationToken",
+        "Resource": "*",
+    }
+    repository_resources = policy[1]["Resource"]
+    assert len(repository_resources) == 4
+    assert all(
+        resource["Fn::Sub"].startswith(
+            "arn:${AWS::Partition}:ecr:${AWS::Region}:"
+            "${AWS::AccountId}:repository/${RepositoryPrefix}/"
+        )
+        for resource in repository_resources
+    )
+    assert not any(
+        statement.get("Action") == "*"
+        for statement in policy
+    )
+
+
 def test_container_build_and_local_state_images_are_digest_pinned() -> None:
     dockerfiles = sorted((ROOT / "deploy/docker").glob("Dockerfile*"))
     dockerfiles.append(ROOT / "deploy/agentcore/Dockerfile")
