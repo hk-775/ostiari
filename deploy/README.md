@@ -409,8 +409,8 @@ definition environment arrays, or image layers.
   container cannot rewrite its own code or install anything:
   - **gateway** → `/dev/shm`, the runtime-provided writable tmpfs where it
     renders pushed policies to a process-lifetime tempfile;
-  - **frontend** → no writable path; the `scratch` runtime contains only the
-    static server binary and compiled dashboard assets;
+  - **frontend** → no writable path; the distroless runtime has no shell or
+    package manager and serves only the compiled dashboard assets;
   - **control-plane backend** → no writable mount in production; PostgreSQL owns
     all durable runtime and governance state.
 

@@ -60,8 +60,6 @@ def test_container_build_and_local_state_images_are_digest_pinned() -> None:
             if not line.startswith("FROM "):
                 continue
             image = line.split()[1]
-            if image == "scratch":
-                continue
             assert "@sha256:" in image, f"{path}:{line_number}: mutable base image"
             assert SHA256_RE.search(image), f"{path}:{line_number}: malformed digest"
 
@@ -90,7 +88,12 @@ def test_container_build_and_local_state_images_are_digest_pinned() -> None:
         "4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc"
         in frontend
     )
-    assert "FROM scratch" in frontend
+    assert (
+        "FROM gcr.io/distroless/static-debian13:nonroot@sha256:"
+        "1c2c046bc09ed40fad370b599a0b1ae7987f55b01e247cf27a7c27cd97e5bbc7"
+        in frontend
+    )
+    assert "FROM scratch" not in frontend
 
 
 def test_make_install_covers_the_complete_source_platform() -> None:
