@@ -1,0 +1,217 @@
+name: Sign official Ostiari images
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: Exact 40-character release commit
+        required: true
+      release_tag:
+        description: Immutable GitHub release tag
+        required: true
+      control_plane_digest:
+        description: Published control-plane sha256 digest
+        required: true
+      gateway_digest:
+        description: Published gateway sha256 digest
+        required: true
+      frontend_digest:
+        description: Published frontend sha256 digest
+        required: true
+      agentcore_digest:
+        description: Published AgentCore sha256 digest when included
+        required: false
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    environment: production-signing
+    env:
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY_PREFIX: ${{ vars.ECR_REPOSITORY_PREFIX }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ inputs.release_sha }}
+
+      - name: Validate protected signer configuration
+        env:
+          AWS_SIGNING_ROLE_ARN: ${{ vars.AWS_SIGNING_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
+          [[ "$AWS_REGION" =~ ^[a-z]{2}-[a-z]+-[0-9]+$ ]]
+          [[ "$ECR_REPOSITORY_PREFIX" =~ ^[a-z0-9][a-z0-9._/-]*$ ]]
+          [[ "$AWS_SIGNING_ROLE_ARN" =~ ^arn:aws:iam::${AWS_ACCOUNT_ID}:role/.+$ ]]
+
+      - name: Require immutable release identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}" --jq .sha)" = "$RELEASE_SHA"
+          test "$(gh release view "$RELEASE_TAG" --json tagName --jq .tagName)" = "$RELEASE_TAG"
+
+      - name: Assume the official ECR signing role
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+          role-session-name: OstiariSigning-${{ github.run_id }}
+          role-to-assume: ${{ vars.AWS_SIGNING_ROLE_ARN }}
+          unset-current-credentials: true
+
+      - name: Authenticate to the official ECR registry
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+        with:
+          mask-password: true
+          registries: ${{ vars.AWS_ACCOUNT_ID }}
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+
+      - name: Verify release-bound ECR digests
+        env:
+          AGENTCORE_DIGEST: ${{ inputs.agentcore_digest }}
+          CONTROL_PLANE_DIGEST: ${{ inputs.control_plane_digest }}
+          FRONTEND_DIGEST: ${{ inputs.frontend_digest }}
+          GATEWAY_DIGEST: ${{ inputs.gateway_digest }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        run: |
+          set -euo pipefail
+          registry="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          images_file="${RUNNER_TEMP}/ostiari-images.tsv"
+          : > "$images_file"
+
+          append_image() {
+            local name="$1"
+            local repository="$2"
+            local digest="$3"
+            local required="$4"
+            if [[ -z "$digest" && "$required" = "optional" ]]; then
+              return
+            fi
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            local actual
+            actual="$(
+              aws ecr describe-images \
+                --region "$AWS_REGION" \
+                --repository-name "$repository" \
+                --image-ids "imageTag=${RELEASE_SHA}" \
+                --query 'imageDetails[0].imageDigest' \
+                --output text \
+                --no-cli-pager
+            )"
+            test "$actual" = "$digest"
+            printf '%s\t%s/%s@%s\n' \
+              "$name" "$registry" "$repository" "$digest" >> "$images_file"
+          }
+
+          append_image \
+            control-plane "${ECR_REPOSITORY_PREFIX}/control-plane" \
+            "$CONTROL_PLANE_DIGEST" required
+          append_image \
+            gateway "${ECR_REPOSITORY_PREFIX}/gateway" \
+            "$GATEWAY_DIGEST" required
+          append_image \
+            frontend "${ECR_REPOSITORY_PREFIX}/frontend" \
+            "$FRONTEND_DIGEST" required
+          append_image \
+            agentcore "${ECR_REPOSITORY_PREFIX}/agentcore" \
+            "$AGENTCORE_DIGEST" optional
+
+          test "$(wc -l < "$images_file" | tr -d ' ')" -ge 3
+
+      - name: Keylessly sign exact image digests
+        env:
+          RELEASE_SHA: ${{ inputs.release_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p signing-evidence
+          while IFS=$'\t' read -r name image; do
+            cosign sign --yes \
+              --bundle "signing-evidence/${name}.sigstore.json" \
+              --annotations "org.opencontainers.image.revision=${RELEASE_SHA}" \
+              --annotations "org.opencontainers.image.version=${RELEASE_TAG}" \
+              "$image"
+          done < "${RUNNER_TEMP}/ostiari-images.tsv"
+
+      - name: Verify signatures and transparency-log inclusion
+        env:
+          RELEASE_SHA: ${{ inputs.release_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          certificate_identity="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/.github/workflows/sign-official-images.yml@${GITHUB_REF}"
+          while IFS=$'\t' read -r name image; do
+            jq -e \
+              '(.verificationMaterial.tlogEntries // []) | length > 0' \
+              "signing-evidence/${name}.sigstore.json" >/dev/null
+            cosign verify \
+              --certificate-identity "$certificate_identity" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              --annotations "org.opencontainers.image.revision=${RELEASE_SHA}" \
+              --annotations "org.opencontainers.image.version=${RELEASE_TAG}" \
+              "$image" > "signing-evidence/${name}.verification.json"
+            jq -e 'length > 0' \
+              "signing-evidence/${name}.verification.json" >/dev/null
+          done < "${RUNNER_TEMP}/ostiari-images.tsv"
+
+          (
+            cd signing-evidence
+            sha256sum ./*.sigstore.json ./*.verification.json > SHA256SUMS
+          )
+
+          images="$(
+            jq -Rn \
+              '[inputs | split("\t") | {name: .[0], reference: .[1]}]' \
+              < "${RUNNER_TEMP}/ostiari-images.tsv"
+          )"
+          jq -n \
+            --arg release_sha "$RELEASE_SHA" \
+            --arg release_tag "$RELEASE_TAG" \
+            --arg certificate_identity "$certificate_identity" \
+            --arg oidc_issuer "https://token.actions.githubusercontent.com" \
+            --arg run_url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --argjson images "$images" \
+            '{
+              schema_version: 1,
+              release: {sha: $release_sha, tag: $release_tag},
+              signer: {
+                certificate_identity: $certificate_identity,
+                oidc_issuer: $oidc_issuer
+              },
+              run_url: $run_url,
+              images: $images
+            }' > signing-evidence/manifest.json
+
+      - name: Retain signing evidence for 90 days
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ostiari-image-signing-evidence-${{ inputs.release_sha }}
+          path: signing-evidence/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 9
+
+      - name: Attach signing evidence to the immutable GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: gh release upload "$RELEASE_TAG" signing-evidence/*

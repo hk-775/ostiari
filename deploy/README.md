@@ -120,20 +120,32 @@ execution.
    images, and writes manifest-digest URIs to
    `.ostiari/deployments/production/images.json`.
 
-2. Provision the external identity contracts: one OAuth client for gateway
+2. Maintainers sign official release images with the
+   `Sign official Ostiari images` GitHub workflow. The workflow accepts only
+   exact release-tag/commit identities and image digests matching immutable ECR
+   tags, assumes the least-privilege role from
+   `deploy/aws/release-signing-role.json`, and uses GitHub OIDC for keyless
+   Sigstore signing. It verifies the Fulcio workflow identity and Rekor
+   transparency-log inclusion, attaches the bundles to the GitHub release, and
+   retains them as workflow evidence for 90 days. No private signing key or
+   long-lived AWS credential is stored in GitHub. Bootstrap, environment, and
+   consumer-verification instructions are in
+   [`docs/release-signing.md`](../docs/release-signing.md).
+
+3. Provision the external identity contracts: one OAuth client for gateway
    workload identity, an agent-token issuer/audience, and a separate agent
    client for AgentCore when enabled. Create an issued ACM certificate and put
    the required secret values in AWS Secrets Manager. Secret values are never
    stored in deployment JSON.
 
-3. Start from `deploy/aws/examples/production.json` or
+4. Start from `deploy/aws/examples/production.json` or
    `production-agentcore.json`. Replace every placeholder, use the image URIs
    produced in step 1, and pass the resulting file to all production commands.
    Set `allowed_cidrs` to the operator, VPN, or reverse-proxy ranges that should
    reach the ALB. Fernet encryption keys must be URL-safe base64 encodings of
    exactly 32 random bytes.
 
-4. Run preflight, synthesize the plan, and prepare the change set:
+5. Run preflight, synthesize the plan, and prepare the change set:
 
    ```bash
    ./deploy/ostiari aws preflight \

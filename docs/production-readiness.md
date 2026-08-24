@@ -100,23 +100,28 @@ The current deployment contract supports:
   results and archives the hashed bundle for 90 days. The evidence format and
   operator procedure are documented in
   [`production-evidence.md`](production-evidence.md).
+- Official ECR signing uses a main-only GitHub environment, a least-privilege
+  AWS OIDC role scoped to the four Ostiari repositories, and keyless Sigstore
+  certificates. The signing workflow verifies immutable release/tag/image
+  identity, Rekor inclusion, and the expected GitHub workflow identity before
+  attaching the bundles to the release and retaining them for 90 days. The
+  trust boundary and operator procedure are documented in
+  [`release-signing.md`](release-signing.md).
+- Repository copyright, trademark, and third-party-notice authorization for an
+  open-source release was confirmed by the repository owner on 2026-08-24.
 
 ## Remaining Ostiari gates
 
-1. **Official registry authorization and signing.** Adopters can publish
-   digest-pinned images into their own ECR account with the deployment CLI, but
-   maintainers must still configure trusted official registries, sign the public
-   images, and retain their transparency-log evidence before claiming a
-   maintainer-hosted container install path.
+1. **Sign the exact public release.** The official registry authorization,
+   keyless signing workflow, verification policy, and evidence retention are
+   configured. Run it for the immutable public release tag and all published
+   image digests before claiming a maintainer-hosted container install path.
 
 2. **Run the retained production-evidence gate.** The verifier and protected
    90-day retention workflow are complete. Before release approval, execute the
    dedicated rehearsal for the exact release digest and retain passing scan,
    load/failure, PostgreSQL restore, rollback, alarm-delivery, authenticated
    canary, and capped live-payment results.
-
-3. **Legal release approval.** Confirm authorization for repository copyright,
-   trademarks, and third-party notices before the public release.
 
 ## AxonLLM dependency record
 
