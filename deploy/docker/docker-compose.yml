@@ -126,15 +126,15 @@ services:
     depends_on:
       control-plane-backend:
         condition: service_healthy
-    # Runs as nginx's own uid 101. The image keeps all writable nginx state in
-    # /dev/shm, which remains writable while the image root stays read-only.
+    # Runs as a dedicated numeric uid. The scratch image and static server have
+    # no writable runtime state, so the root filesystem stays read-only.
     read_only: true
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9000/ || exit 1"]
+      test: ["CMD", "/frontend-server", "--healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 3

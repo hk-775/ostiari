@@ -627,8 +627,9 @@ class OstiariStack(Stack):
             logging=ecs.LogDrivers.aws_logs(stream_prefix="frontend", log_retention=retention),
             health_check=ecs.HealthCheck(
                 command=[
-                    "CMD-SHELL",
-                    "wget -q -O /dev/null http://localhost:9000/ || exit 1",
+                    "CMD",
+                    "/frontend-server",
+                    "--healthcheck",
                 ],
                 interval=Duration.seconds(30),
                 timeout=Duration.seconds(5),

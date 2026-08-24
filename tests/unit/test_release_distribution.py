@@ -60,6 +60,8 @@ def test_container_build_and_local_state_images_are_digest_pinned() -> None:
             if not line.startswith("FROM "):
                 continue
             image = line.split()[1]
+            if image == "scratch":
+                continue
             assert "@sha256:" in image, f"{path}:{line_number}: mutable base image"
             assert SHA256_RE.search(image), f"{path}:{line_number}: malformed digest"
 
@@ -84,10 +86,11 @@ def test_container_build_and_local_state_images_are_digest_pinned() -> None:
     assert 'node-version: "24.16.0"' in ci
     assert "FROM node:24.16.0-alpine@sha256:" in frontend
     assert (
-        "FROM nginx:1.31.1-alpine@sha256:"
-        "8b1e78743a03dbb2c95171cc58639fef29abc8816598e27fb910ed2e621e589a"
+        "FROM golang:1.27.0-alpine@sha256:"
+        "4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc"
         in frontend
     )
+    assert "FROM scratch" in frontend
 
 
 def test_make_install_covers_the_complete_source_platform() -> None:

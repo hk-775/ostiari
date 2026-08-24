@@ -358,28 +358,29 @@ jobs:
 
       - name: Verify hardened frontend image starts
         run: |
-          docker run --rm --network none \
+          container_id="$(
+            docker run -d --network none \
             --read-only \
             --user 101:101 \
             --cap-drop ALL \
             --security-opt no-new-privileges \
-            --entrypoint sh \
-            ostiari-frontend:ci \
-            -ec '
-              /docker-entrypoint.sh nginx -g "daemon off;" &
-              pid=$!
-              cleanup() {
-                kill "$pid" 2>/dev/null || true
-                wait "$pid" 2>/dev/null || true
-              }
-              trap cleanup EXIT
-              attempt=0
-              while [ "$attempt" -lt 20 ]; do
-                if wget -q -O /dev/null http://localhost:9000/; then
-                  exit 0
-                fi
-                attempt=$((attempt + 1))
-                sleep 1
-              done
+            ostiari-frontend:ci
+          )"
+          cleanup() {
+            docker rm -f "$container_id" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          attempt=0
+          while [ "$attempt" -lt 20 ]; do
+            if docker exec "$container_id" /frontend-server --healthcheck; then
+              exit 0
+            fi
+            if [ "$(docker inspect -f '{{.State.Running}}' "$container_id")" != "true" ]; then
+              docker logs "$container_id"
               exit 1
-            '
+            fi
+            attempt=$((attempt + 1))
+            sleep 1
+          done
+          docker logs "$container_id"
+          exit 1

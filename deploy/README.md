@@ -397,7 +397,7 @@ definition environment arrays, or image layers.
 ## Production Notes
 
 - **Containers run as non-root.** All three images set a `USER` (gateway and
-  control plane `10001`, frontend `101` — nginx's own uid), and every manifest here
+  control plane `10001`, frontend `101`), and every manifest here
   re-asserts it. Both layers matter: a Dockerfile `USER` is only a default that a
   manifest can override, while Kubernetes `runAsNonRoot: true` makes the kubelet
   *refuse* to start a container that would run as uid 0 — so an image rebuilt
@@ -409,8 +409,8 @@ definition environment arrays, or image layers.
   container cannot rewrite its own code or install anything:
   - **gateway** → `/dev/shm`, the runtime-provided writable tmpfs where it
     renders pushed policies to a process-lifetime tempfile;
-  - **frontend** → `/dev/shm`, the runtime-provided writable tmpfs where nginx
-    keeps its pid file and all five temp dirs without a platform-specific mount;
+  - **frontend** → no writable path; the `scratch` runtime contains only the
+    static server binary and compiled dashboard assets;
   - **control-plane backend** → no writable mount in production; PostgreSQL owns
     all durable runtime and governance state.
 
