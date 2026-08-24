@@ -111,9 +111,10 @@ AxonLLM engine. See [gateway-architecture.md](gateway-architecture.md) and
 
 Three cross-cutting ideas that ride on top of this chain:
 
-- **Shadow mode.** A gateway can run in *shadow* instead of *enforce*. In shadow,
-  every gate still evaluates and records what it *would* have done — but nothing
-  is ever blocked and no real side effect runs. It's "try before you enforce."
+- **Shadow mode.** A gateway can run in *shadow* instead of *enforce*. It runs
+  the ordered delegation, authorization, quota, and risk checks until one would
+  block, records that outcome, and returns a synthetic result before approval,
+  payment, or execution. It's "try before you enforce."
 - **Human-in-the-loop is opt-in.** Gate 5 only engages when the gateway runs with
   `OSTIARI_HITL=on`. With it off the tier is advisory in dev — the score is
   recorded and the call proceeds — but in production it is *refused*, because
@@ -817,8 +818,12 @@ Route a percentage of traffic to a challenger model and compare. Cost/quality
 experimentation (e.g. "send 30% to haiku, keep 70% on sonnet, compare").
 
 ### 8.3 Architecture (`/architecture`)
-A visual of the deployed topology — gateways, agents, connections. Good for
-onboarding and for the "how does this fit together?" conversation.
+An interactive view of both runtime and deployment architecture. Runtime mode
+walks direct-tool, HITL, stdio MCP, A2A, and LLM-intent requests step by step,
+including the real gate order. Deployment mode compares the local launcher,
+source demo, AWS evaluation, AgentCore, and production topologies and maps all
+eight launcher profiles to their subnet, state, and security controls. The
+long-form reference is [`architecture.md`](architecture.md).
 
 ---
 

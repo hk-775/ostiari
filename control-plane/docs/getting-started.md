@@ -1588,10 +1588,12 @@ prints the status of each:
 | Basic Tools | `db_query`, `send_email`, `db_delete` | Policy enforcement — the third should come back 403 |
 | Multi-Step | `db_query`, `github.search_code`, `github.create_issue`, `drawio.create_diagram`, `drawio.add_shape`, `send_email` | Span grouping — sends `X-Session-Id`, `X-Plan`, `X-Step` so the six calls nest under one span |
 | Blocked Action | `db_delete`, `github.delete_repo`, `drawio.delete_diagram` | Distinguishes 403 (blocked by policy) from 404 (filtered at the MCP layer) |
-| MCP Tools | `github.list_repos`, `github.search_code`, `drawio.list_diagrams`, `drawio.create_diagram` | MCP server discovery and execution |
+| MCP Tools | `GET /tools`, then a discovered read-only `fs.*` operation when available | Live MCP registry discovery and real stdio execution |
 
-These are direct tool calls, not LLM-driven — no model decides anything, so they
-work without LLM credentials. Only the Chat tab needs keys.
+These are direct gateway requests, not LLM-driven — no model decides anything,
+so they work without LLM credentials. Only the Chat tab needs keys. The packaged
+launcher demo has functional HTTP demo tools but no MCP subprocesses; the source
+demo (`make demo-full`) connects the real filesystem and draw.io stdio servers.
 
 #### A2A Tab
 

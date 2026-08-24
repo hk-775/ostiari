@@ -49,7 +49,7 @@ the gateway or control plane.
 | Fleet operations | Registration, heartbeat, config bundles, immediate push, queued push | Gateway lifecycle, `/api/gateways/*` |
 | Administration | Local login, users, roles, optional OIDC SSO, encrypted provider credentials and concrete route catalogs | Control-plane auth and provider routers |
 | Reporting | Costs, metering export, compliance, audit verification, ROI, token broker | Control-plane reporting routers |
-| Deployment | Local, Docker Compose, Kubernetes, Helm, ECS, and limited Lambda | `deploy/` |
+| Deployment | Launcher profiles for local, AWS evaluation, AgentCore, and production; lower-level Compose, Kubernetes, Helm, ECS, and limited Lambda | `deploy/` |
 
 ## 3. Embedded Guard Flow
 
@@ -130,9 +130,9 @@ Important outcomes:
 
 - Authorization, quota, policy, and payment denials return without calling the
   tool.
-- In `shadow` mode, gates evaluate and produce a would-block trace, but the real
-  tool is not executed. The synthetic response avoids side effects while testing
-  policy.
+- In `shadow` mode, the ordered delegation, authorization, quota, and risk checks
+  run until one would block. The gateway records that outcome and returns a
+  synthetic response before approval, payment, or execution.
 - If HITL is disabled, intervene is advisory in development and refused in
   production.
 - OpenTelemetry context is extracted from inbound headers and propagated to the
@@ -461,17 +461,19 @@ in-memory counters and event buffers remain development-only fallbacks.
 
 | Mode | Shape | Intended use |
 |---|---|---|
-| Local demo | Control plane, React UI, four gateways, demo tools and A2A agent | Evaluation |
-| Clean local | Empty control plane and one gateway | Connecting real agents |
-| Sidecar | Gateway beside one agent | Strong per-agent isolation |
-| Shared gateway | Multiple agents use one gateway with `X-Agent-Id` | Centralized operations |
-| Docker Compose | Control plane, frontend, gateway, and local Valkey state service | Small deployment |
-| Kubernetes/Helm | Sidecar or shared gateway patterns | Production orchestration |
-| ECS | Containerized control plane and gateway services | AWS deployment |
-| Lambda | Limited stateless gateway handler | Narrow serverless use cases |
+| `local-demo` | One gateway, control plane, React UI, Valkey, functional HTTP demo tools, seeded data | Packaged evaluation |
+| `local-empty` | The same local launcher topology without demo tools or seeded data | Connecting real agents |
+| Source demo (`make demo-full`) | Four gateways, nine agent records, real stdio MCP, demo HTTP service, A2A agent | Broad maintainer walkthrough |
+| `aws-demo` / `aws-empty` | Two-AZ VPC, public Fargate tasks, RDS, serverless Valkey, ALB, no NAT | Cost-aware AWS evaluation |
+| `aws-agentcore-*` | AWS evaluation stack plus private application subnets, one NAT, IAM-authorized AgentCore runtime | AgentCore validation |
+| `production` / `production-agentcore` | Private, autoscaled Fargate; two NAT gateways; TLS/WAF; retained multi-AZ state; optional AgentCore | Reviewed production deployment |
+| Kubernetes/Helm | Sidecar or shared gateway patterns | Teams with existing orchestration |
+| Lambda | Limited stateless gateway handler without the production lifecycle | Narrow validation use cases |
 
-See [`STARTUP.md`](../STARTUP.md) for end-to-end deployment instructions and
-[`deploy/README.md`](../deploy/README.md) for manifest-specific configuration.
+See [`architecture.md`](architecture.md) for the current topology,
+[`STARTUP.md`](../STARTUP.md) for end-to-end deployment instructions, and
+[`deploy/README.md`](../deploy/README.md) for launcher and manifest-specific
+configuration.
 
 ## 17. Source-of-Truth Index
 

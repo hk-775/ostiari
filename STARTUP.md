@@ -12,6 +12,8 @@ Parts 1 and 3 include **per-feature configuration** walkthroughs with diagrams. 
 
 > **Related docs:** [`QUICKSTART.md`](QUICKSTART.md) is the condensed cheat-sheet;
 > [`deploy/README.md`](deploy/README.md) is the deployment reference;
+> [`docs/architecture.md`](docs/architecture.md) is the current runtime and
+> deployment topology;
 > [`docs/control-plane-guide.md`](docs/control-plane-guide.md) covers the UI in
 > depth; and [`docs/features-and-flows.md`](docs/features-and-flows.md) is the
 > canonical inventory of implemented features and their end-to-end flows.
@@ -362,7 +364,10 @@ control. Per-agent Ostiari wallets remain policy allowances around that payer.
 
 ### 1.3.9 Enforcement mode (enforce vs shadow)
 
-`shadow` mode evaluates everything and records what *would* have happened, but never blocks and never executes real side effects — ideal for a safe rollout.
+`shadow` mode runs the ordered delegation, authorization, quota, and risk checks
+until a check would block, records the would-block outcome, and returns a
+synthetic result before approval, payment, or execution. It never performs a real
+side effect, which makes it suitable for a safe rollout.
 
 ```bash
 curl -X POST http://localhost:8421/config/mode \
@@ -539,6 +544,13 @@ empty control plane.
 # Part 3 — Enterprise Service
 
 Run Ostiari as shared infrastructure. All enterprise targets drive the gateway through **environment variables** (no CLI flags needed) and are built from three container images.
+
+For new AWS deployments, prefer the supported `./deploy/ostiari` profiles
+documented in [`deploy/README.md`](deploy/README.md): `aws-demo` and `aws-empty`
+use public Fargate tasks without NAT, AgentCore evaluation uses private
+application subnets with one NAT, and production uses private Fargate with two
+NAT gateways. The lower-level targets below remain available to teams that own
+their platform orchestration.
 
 ## 3.1 The images
 

@@ -1,7 +1,24 @@
 import { Link } from "react-router";
 import { useQuery } from "@tanstack/react-query";
-import { Shield, ArrowRight, Brain, Wrench, Radio, Lock, EyeOff, Network, Wallet, Coins, TrendingUp, Gauge, FileCheck } from "lucide-react";
+import {
+  ArrowRight,
+  Brain,
+  CheckCircle2,
+  CircleAlert,
+  Coins,
+  EyeOff,
+  FileCheck,
+  Gauge,
+  Lock,
+  Network,
+  Radio,
+  Shield,
+  TrendingUp,
+  Wallet,
+  Wrench,
+} from "lucide-react";
 import { api } from "../lib/api";
+import { DEMO_MODES, DEPLOYMENT_VIEWS, GATE_CHAIN } from "../lib/architecture";
 
 const FEATURES = [
   { icon: Shield, title: "Policy Engine", desc: "Per-tool allow/block/risk-score. Every call validated before execution.", color: "text-rose-600", bg: "bg-rose-50" },
@@ -16,16 +33,6 @@ const FEATURES = [
   { icon: Brain, title: "Model Access & Routing", desc: "Per-agent model restrictions, smart routing, A/B testing via AxonLLM.", color: "text-indigo-600", bg: "bg-indigo-50" },
   { icon: Lock, title: "Per-Agent Auth", desc: "Least privilege: each agent only gets the tools, models, and providers it's granted.", color: "text-violet-600", bg: "bg-violet-50" },
   { icon: Radio, title: "Real-Time Observability", desc: "Live traces, cost dashboards, audit logs. See every call as it happens.", color: "text-cyan-600", bg: "bg-cyan-50" },
-];
-
-const ARCHITECTURE_FLOW = [
-  { step: "1", label: "Delegation", desc: "May this agent call that agent? (A2A)" },
-  { step: "2", label: "Auth", desc: "May this agent use this tool?" },
-  { step: "3", label: "Quota", desc: "Within rate & budget caps?" },
-  { step: "4", label: "Risk", desc: "Score 0-100 → allow / intervene / block" },
-  { step: "5", label: "Payment", desc: "Does it cost money? Can the wallet pay? (x402)" },
-  { step: "6", label: "Execute", desc: "HTTP, MCP, A2A, or LLM — then meter usage" },
-  { step: "7", label: "Trace", desc: "Record & report to the Control Plane" },
 ];
 
 export function Landing() {
@@ -59,28 +66,47 @@ export function Landing() {
         </p>
       </div>
 
-      {/* Control Plane Overview Diagram */}
+      {/* Current runtime topology */}
       <div className="max-w-5xl mx-auto px-8 py-4">
-        <div className="rounded-2xl border border-violet-100 bg-gradient-to-br from-white to-violet-50/20 p-2 shadow-sm">
-          <img src="/control-plane-overview.svg" alt="How the Control Plane works" className="w-full rounded-xl" />
+        <div className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm">
+          <div className="grid items-stretch gap-3 lg:grid-cols-[1fr_auto_1.25fr_auto_1fr]">
+            <div className="rounded-lg border border-sky-200 bg-sky-50 p-4">
+              <p className="text-xs font-bold text-sky-800">Agents and SDKs</p>
+              <p className="mt-1 text-[11px] leading-5 text-sky-700">Direct tools, LLM intent, and A2A delegation</p>
+            </div>
+            <ArrowRight className="hidden h-5 w-5 self-center text-stone-300 lg:block" />
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+              <p className="text-xs font-bold text-amber-800">Ostiari gateway</p>
+              <p className="mt-1 text-[11px] leading-5 text-amber-700">Identity, authorization, quota, risk, approval, payment, execution, and trace</p>
+            </div>
+            <ArrowRight className="hidden h-5 w-5 self-center text-stone-300 lg:block" />
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
+              <p className="text-xs font-bold text-emerald-800">Governed targets</p>
+              <p className="mt-1 text-[11px] leading-5 text-emerald-700">HTTP tools, stdio MCP, peer agents, and LLM providers</p>
+            </div>
+          </div>
+          <div className="mx-auto mt-3 max-w-xl rounded-lg border border-violet-200 bg-violet-50 p-4 text-center">
+            <p className="text-xs font-bold text-violet-800">Control plane</p>
+            <p className="mt-1 text-[11px] leading-5 text-violet-700">Configuration, approvals, fleet health, traces, cost, payments, and audit evidence</p>
+          </div>
         </div>
       </div>
 
       {/* How it works */}
       <div className="max-w-5xl mx-auto px-8 py-4 border-t border-stone-100/50">
         <h2 className="text-lg font-bold text-stone-900 mb-1">The gate chain</h2>
-        <p className="text-xs text-stone-500 mb-6">Every tool call runs this pipeline. Each gate is configured from the Control Plane; shadow mode evaluates every gate but never blocks.</p>
+        <p className="text-xs text-stone-500 mb-6">Enforced calls follow this pipeline. Shadow mode runs the ordered pre-execution checks and returns a synthetic result before approval, payment, or execution.</p>
         <div className="flex items-center gap-2 overflow-x-auto pb-4">
-          {ARCHITECTURE_FLOW.map((item, i) => (
-            <div key={item.step} className="flex items-center gap-2">
-              <div className="flex-shrink-0 rounded-xl border border-stone-200 bg-white p-4 w-44 shadow-sm">
+          {GATE_CHAIN.map((item, i) => (
+            <div key={item.label} className="flex items-center gap-2">
+              <div className="w-44 flex-shrink-0 rounded-lg border border-stone-200 bg-white p-4 shadow-sm">
                 <div className="flex items-center gap-2 mb-1">
-                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-violet-100 text-violet-700 text-xs font-bold">{item.step}</span>
+                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-violet-100 text-violet-700 text-xs font-bold">{i + 1}</span>
                   <p className="text-xs font-semibold text-stone-800">{item.label}</p>
                 </div>
-                <p className="text-[10px] text-stone-500">{item.desc}</p>
+                <p className="text-[10px] leading-4 text-stone-500">{item.detail}</p>
               </div>
-              {i < ARCHITECTURE_FLOW.length - 1 && <ArrowRight className="h-4 w-4 text-stone-300 flex-shrink-0" />}
+              {i < GATE_CHAIN.length - 1 && <ArrowRight className="h-4 w-4 text-stone-300 flex-shrink-0" />}
             </div>
           ))}
         </div>
@@ -110,14 +136,14 @@ export function Landing() {
             <h3 className="text-sm font-bold text-emerald-800 mb-2">PATH 1: Direct Tool Call</h3>
             <code className="text-xs text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded">POST /tool/&#123;action&#125;</code>
             <p className="text-xs text-stone-600 mt-3 leading-relaxed">
-              Agent already knows which tool to call. Gateway runs the gate chain (delegation → auth → quota → risk → payment) and proxies. No LLM involved inside the gateway.
+              Agent already knows which tool to call. The gateway resolves it, then runs authorization, quota, risk, optional human approval, payment, execution, and trace reporting.
             </p>
           </div>
           <div className="rounded-xl border border-pink-200 bg-pink-50/50 p-6">
             <h3 className="text-sm font-bold text-pink-800 mb-2">PATH 2: LLM-Driven (Intent)</h3>
             <code className="text-xs text-pink-700 bg-pink-100 px-2 py-0.5 rounded">POST /invoke</code>
             <p className="text-xs text-stone-600 mt-3 leading-relaxed">
-              Agent sends intent. Gateway generates tool plan via AxonLLM, validates each tool, executes, synthesizes response. Agent doesn't call LLMs directly.
+              Agent sends intent. AxonLLM selects a provider and model route; generated HTTP and MCP tool calls are authorized, quota-checked, and risk-scored before execution.
             </p>
           </div>
         </div>
@@ -125,20 +151,42 @@ export function Landing() {
 
       {/* Deployment */}
       <div className="max-w-5xl mx-auto px-8 py-4 border-t border-stone-100/50">
-        <h2 className="text-lg font-bold text-stone-900 mb-4">Deployment</h2>
-        <div className="grid gap-3 sm:grid-cols-3">
-          <div className="rounded-xl border border-stone-200 bg-white p-4">
-            <p className="text-xs font-semibold text-stone-800">Standalone Service</p>
-            <p className="text-[10px] text-stone-500 mt-1">One gateway serves multiple agents. Shared infrastructure.</p>
-          </div>
-          <div className="rounded-xl border border-stone-200 bg-white p-4">
-            <p className="text-xs font-semibold text-stone-800">Kubernetes Sidecar</p>
-            <p className="text-[10px] text-stone-500 mt-1">One gateway per pod. Strong isolation, network policy enforcement.</p>
-          </div>
-          <div className="rounded-xl border border-stone-200 bg-white p-4">
-            <p className="text-xs font-semibold text-stone-800">NAT Gateway</p>
-            <p className="text-[10px] text-stone-500 mt-1">Network-level proxy. Zero agent code changes. Enterprise-wide governance.</p>
-          </div>
+        <h2 className="text-lg font-bold text-stone-900 mb-1">Supported deployment topologies</h2>
+        <p className="mb-4 text-xs text-stone-500">The launcher selects a complete topology and validates its prerequisites before deployment.</p>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {DEPLOYMENT_VIEWS.filter((view) => view.id !== "source-demo").map((view) => (
+            <div key={view.id} className="rounded-lg border border-stone-200 bg-white p-4">
+              <p className="text-xs font-semibold text-stone-800">{view.name}</p>
+              <p className="mt-1 text-[10px] leading-4 text-stone-500">{view.summary}</p>
+              <div className="mt-3 flex flex-wrap gap-1">
+                {view.profiles.map((profile) => (
+                  <code key={profile} className="rounded bg-stone-100 px-1.5 py-1 text-[9px] text-stone-600">{profile}</code>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Demo modes */}
+      <div className="max-w-5xl mx-auto px-8 py-4 border-t border-stone-100/50">
+        <h2 className="text-lg font-bold text-stone-900 mb-1">Project demos</h2>
+        <p className="mb-4 text-xs text-stone-500">Use the launcher for the packaged evaluation path or the source demo for the broadest protocol walkthrough.</p>
+        <div className="grid gap-4 sm:grid-cols-2">
+          {DEMO_MODES.map((mode) => (
+            <div key={mode.name} className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm">
+              <p className="text-sm font-bold text-stone-800">{mode.name}</p>
+              <code className="mt-2 block overflow-x-auto rounded-md bg-stone-900 px-3 py-2 text-[10px] text-stone-100">{mode.command}</code>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                {mode.facts.map((fact) => (
+                  <span key={fact} className="flex items-center gap-2 text-[10px] text-stone-600">
+                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+                    {fact}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 
@@ -210,9 +258,9 @@ export function Landing() {
               </div>
             ))}
           </div>
-          <div className="mt-3 flex gap-4 text-[10px] text-stone-500">
-            <span>🟢 Healthy gateway: <strong className="text-stone-700">&lt; 1s</strong> propagation</span>
-            <span>🔴 Offline gateway: <strong className="text-stone-700">queued</strong>, syncs on reconnect (≤ 30s)</span>
+          <div className="mt-3 flex flex-wrap gap-4 text-[10px] text-stone-500">
+            <span className="inline-flex items-center gap-1.5"><CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />Healthy gateway: <strong className="text-stone-700">&lt; 1s</strong> propagation</span>
+            <span className="inline-flex items-center gap-1.5"><CircleAlert className="h-3.5 w-3.5 text-rose-600" />Offline gateway: <strong className="text-stone-700">queued</strong>, syncs on reconnect (≤ 30s)</span>
           </div>
         </div>
 
@@ -258,8 +306,8 @@ Gateway 3 restarts:
                   <div key={g.id} className="contents">
                     <span className="text-stone-700">{g.id}</span>
                     <span className="text-stone-500">{g.tools_count}</span>
-                    <span className={healthy ? "text-emerald-600" : "text-rose-500"}>
-                      {healthy ? "🟢" : "🔴"} {g.status}
+                    <span className={`inline-flex items-center gap-1 ${healthy ? "text-emerald-600" : "text-rose-500"}`}>
+                      {healthy ? <CheckCircle2 className="h-3 w-3" /> : <CircleAlert className="h-3 w-3" />} {g.status}
                     </span>
                   </div>
                 );
@@ -267,7 +315,7 @@ Gateway 3 restarts:
             </div>
           ) : (
             <p className="text-[10px] text-stone-500">
-              No gateways registered yet — start the fleet with <code className="rounded bg-stone-100 px-1">make demo-full</code>.
+              No gateways registered yet. Start the packaged launcher demo or the source demo shown above.
             </p>
           )}
         </div>
