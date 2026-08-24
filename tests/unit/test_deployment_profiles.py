@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import runpy
 import sys
 from pathlib import Path
 
@@ -24,6 +25,16 @@ def _module(name: str, path: Path):
 
 deploy = _module("ostiari_deploy_test", ROOT / "deploy/ostiari_deploy.py")
 aws_config = _module("ostiari_aws_config_test", ROOT / "deploy/aws/config.py")
+
+
+def test_launcher_rejects_unsupported_python(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(sys, "version_info", (3, 9, 6))
+
+    with pytest.raises(SystemExit) as exc:
+        runpy.run_path(str(ROOT / "deploy/ostiari"), run_name="__main__")
+
+    assert exc.value.code == 2
+    assert "Python 3.10 or newer is required" in capsys.readouterr().err
 
 
 def test_all_requested_deployment_profiles_are_exposed() -> None:
