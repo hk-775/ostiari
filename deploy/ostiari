@@ -6,9 +6,16 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+if sys.version_info < (3, 10):  # noqa: UP036 - this guard runs before project metadata
+    print(
+        "error: Python 3.10 or newer is required for the Ostiari launcher.",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from ostiari_deploy import main
+from ostiari_deploy import main  # noqa: E402, I001 - deploy/ is added above
 
 
 if __name__ == "__main__":
