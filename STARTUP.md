@@ -558,7 +558,7 @@ their platform orchestration.
 |-------|-----------|--------|
 | `ostiari-gateway` | `deploy/docker/Dockerfile.gateway` | The gateway (port 8421) |
 | `ostiari-control-plane` | `deploy/docker/Dockerfile.control-plane` | Backend API (port 8400) |
-| `ostiari-frontend` | `deploy/docker/Dockerfile.frontend` | Dashboard via nginx (port 9000) |
+| `ostiari-frontend` | `deploy/docker/Dockerfile.frontend` | Dashboard via a package-free static server (port 9000) |
 
 All build contexts are the **repo root**, because the gateway and control-plane images install the local `ostiari` core package (not published to PyPI):
 
@@ -665,7 +665,7 @@ docker compose up --build
   docker network: docker_default
   ┌──────────────────┐   :8400   ┌──────────────────┐
   │ control-plane-   │◀─────────▶│ control-plane-   │ :9000
-  │ backend (SQLite  │           │ frontend (nginx) │
+  │ backend (SQLite  │           │ frontend (static)│
   │ on named volume) │           └──────────────────┘
   └───────┬──────────┘
    push │  ▲ register/heartbeat  (OSTIARI_ADVERTISE_HOST=gateway)
