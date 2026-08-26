@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
+from ostiari import __version__
 from ostiari.dashboard.cache import QueryCache
 from ostiari.dashboard.dependencies import init_dependencies
 from ostiari.dashboard.intervention import InterventionBroker
@@ -40,7 +41,7 @@ def create_app(
     token: str | None = None,
 ) -> FastAPI:
     """Create and configure the FastAPI dashboard application."""
-    app = FastAPI(title="Ostiari Dashboard", version="0.1.0")
+    app = FastAPI(title="Ostiari Dashboard", version=__version__)
 
     redis_url = redis_url or os.environ.get("AGENTGUARD_REDIS_URL")
     token = token or os.environ.get("AGENTGUARD_TOKEN")

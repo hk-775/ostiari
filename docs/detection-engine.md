@@ -23,7 +23,7 @@ and both were bugs:
    `pii_redaction` or `injection_detection` blocked *every* request, benign ones
    included. The control could only ever say "no", which is not a control.
 
-`ostiari` is a hard dependency of the gateway (`dependencies = ["ostiari>=0.1.0"]`),
+`ostiari` is a hard dependency of the gateway (`dependencies = ["ostiari>=0.3.0b2"]`),
 so `ostiari.detect` cannot fail to import the way the old path did. The fail-closed
 contract is unchanged and still deliberate: an enabled control that is unavailable or
 that raises **blocks**. It just no longer triggers on arrival.

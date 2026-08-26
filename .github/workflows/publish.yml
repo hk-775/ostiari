@@ -25,23 +25,26 @@ jobs:
       - name: Build the complete Python release set
         run: |
           pip install build
-          mkdir -p release-dist
+          python tools/check_release_versions.py
+          mkdir -p release-dist companion-dist
           python -m build --outdir "$GITHUB_WORKSPACE/release-dist" .
-          python -m build --outdir "$GITHUB_WORKSPACE/release-dist" vendor/axonllm
           python -m build --outdir "$GITHUB_WORKSPACE/release-dist" gateway
           python -m build --outdir "$GITHUB_WORKSPACE/release-dist" control-plane/backend
+          python -m build --outdir "$GITHUB_WORKSPACE/companion-dist" vendor/axonllm
 
       - name: Verify release wheels outside the checkout
         run: |
           python -m venv /tmp/ostiari-release-verify
           /tmp/ostiari-release-verify/bin/pip install --upgrade pip
-          /tmp/ostiari-release-verify/bin/pip install release-dist/*.whl
+          /tmp/ostiari-release-verify/bin/pip install \
+            release-dist/*.whl companion-dist/*.whl
           (
             cd /tmp
             PYTHONNOUSERSITE=1 \
             /tmp/ostiari-release-verify/bin/python - <<'PY'
           from importlib.metadata import version
           from pathlib import Path
+          import os
           import sys
 
           import axonllm
@@ -55,6 +58,21 @@ jobs:
               source = Path(module.__file__).resolve()
               assert environment in source.parents, (module.__name__, source)
 
+          tag = os.environ["GITHUB_REF_NAME"]
+          assert tag.startswith("v"), tag
+          expected = tag.removeprefix("v")
+          first_party = {
+              name: version(name)
+              for name in (
+                  "ostiari",
+                  "ostiari-gateway",
+                  "ostiari-control-plane",
+              )
+          }
+          assert set(first_party.values()) == {expected}, first_party
+          assert ostiari.__version__ == expected
+          assert ostiari_gateway.__version__ == expected
+          assert control_plane.__version__ == expected
           assert version("axon-llm") == "0.3.1"
           router = AxonRouter()
           router.require()
@@ -66,10 +84,10 @@ jobs:
 
       - name: Generate release SBOM
         run: |
-          pip install release-dist/*.whl
+          pip install release-dist/*.whl companion-dist/*.whl
           python tools/python_sbom.py python-sbom.cdx.json
 
-      - name: Publish all Python distributions
+      - name: Publish first-party Python distributions
         uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
         with:
           packages-dir: release-dist/
@@ -79,4 +97,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release upload "${GITHUB_REF_NAME}" \
-            release-dist/* python-sbom.cdx.json --clobber
+            release-dist/* companion-dist/* python-sbom.cdx.json --clobber

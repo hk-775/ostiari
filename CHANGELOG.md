@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0b2] - 2026-08-26
+
+### Security
+- MCP configuration and A2A authentication tokens are encrypted at rest,
+  write-only through operator APIs, recursively redacted from human-facing
+  bundles, and restricted to admin-only mutation paths.
+- Local MCP subprocesses receive an allowlisted environment instead of gateway
+  credentials, local code-execution modes are disabled in production by
+  default, and remote MCP/A2A endpoints reject metadata, userinfo, and
+  discovery-card SSRF pivots.
+- Docker Compose and Kubernetes deployments enforce non-root users, read-only
+  root filesystems, dropped capabilities, no privilege escalation, loopback
+  host bindings, internal-only Valkey, and a shared-gateway egress policy.
+- CI scans repository files and reachable history for credentials, audits
+  first-party frontend and dashboard dependencies including development tools,
+  emits SBOMs, and verifies every production image declares a non-root user.
+- High-severity dependency findings in Cryptography, Nano ID, PostCSS, Vite,
+  Babel, and React Router were upgraded to fixed releases.
+
 ### Added
 - **Boundary-crossing and control-plane target parameter signals.** Process
   calls carrying explicit host/sandbox escape semantics now score at block
@@ -405,5 +424,5 @@ broker pilot was the last of them.
 > Entries above describe 0.1.0 as released and are left as written. Two have
 > since changed: the CI matrix was collapsed to a single Python 3.11 on
 > `ubuntu-latest` in exchange for running all three suites on every push, and the
-> coverage gate is `fail_under = 70`. Nothing has been published to PyPI — the
-> workflow exists but fires only on a published GitHub release.
+> coverage gate is `fail_under = 70`. The publish workflow fires only from a
+> published GitHub release; `0.3.0b2` is the first release prepared for that path.

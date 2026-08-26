@@ -33,7 +33,7 @@ from ostiari.bounded_http import (
     timeout_seconds,
 )
 from ostiari.http_limits import BodySizeLimitMiddleware
-from ostiari_gateway import oidc
+from ostiari_gateway import __version__, oidc
 
 log = logging.getLogger("ostiari.sidecar.mcp_bridge")
 
@@ -165,7 +165,7 @@ class MCPBridge:
             return _result(req_id, {
                 "protocolVersion": _PROTOCOL_VERSION,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": self._name, "version": "0.1.0"},
+                "serverInfo": {"name": self._name, "version": __version__},
             })
 
         if method == "notifications/initialized" or req_id is None:

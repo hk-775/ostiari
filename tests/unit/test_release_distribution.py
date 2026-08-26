@@ -16,7 +16,7 @@ def test_publish_workflow_builds_and_verifies_complete_platform_set() -> None:
 
     assert "python -m build --outdir \"$GITHUB_WORKSPACE/release-dist\" ." in workflow
     assert (
-        "python -m build --outdir \"$GITHUB_WORKSPACE/release-dist\" "
+        "python -m build --outdir \"$GITHUB_WORKSPACE/companion-dist\" "
         "vendor/axonllm"
     ) in workflow
     assert (
@@ -26,9 +26,12 @@ def test_publish_workflow_builds_and_verifies_complete_platform_set() -> None:
         "python -m build --outdir \"$GITHUB_WORKSPACE/release-dist\" "
         "control-plane/backend"
     ) in workflow
-    assert "/tmp/ostiari-release-verify/bin/pip install release-dist/*.whl" in workflow
+    assert "release-dist/*.whl companion-dist/*.whl" in workflow
     assert "packages-dir: release-dist/" in workflow
-    assert "release-dist/* python-sbom.cdx.json --clobber" in workflow
+    assert (
+        "release-dist/* companion-dist/* python-sbom.cdx.json --clobber"
+        in workflow
+    )
 
 
 def test_external_github_actions_are_pinned_to_commit_shas() -> None:
