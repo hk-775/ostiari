@@ -136,7 +136,10 @@ async def test_concurrent_quota_ids_are_unique(client):
     assert len(set(ids)) == 20
 
 
-async def test_offline_config_queue_survives_process_memory(client):
+async def test_offline_config_queue_survives_process_memory(
+    client,
+    admin_headers,
+):
     created = await client.post(
         "/api/gateways",
         json={
@@ -149,6 +152,7 @@ async def test_offline_config_queue_survives_process_memory(client):
 
     queued = await client.post(
         "/api/gateways/gw-offline/push-config",
+        headers=admin_headers,
         json={"mode": "shadow"},
     )
     assert queued.status_code == 200

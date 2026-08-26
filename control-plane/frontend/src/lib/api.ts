@@ -160,6 +160,7 @@ export interface McpServer {
   url: string;
   command: string[];
   config: Record<string, unknown>;
+  has_config: boolean;
   allowed_tools: string[] | null;
   blocked_tools: string[];
   prefix: string;

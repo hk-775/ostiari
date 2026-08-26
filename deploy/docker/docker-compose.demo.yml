@@ -6,7 +6,8 @@ services:
       dockerfile: deploy/docker/Dockerfile.demo
     command: ["python", "demo_tools_server.py"]
     ports:
-      - "${OSTIARI_DEMO_TOOLS_PORT:-9300}:9300"
+      - "${OSTIARI_BIND_ADDRESS:-127.0.0.1}:${OSTIARI_DEMO_TOOLS_PORT:-9300}:9300"
+    user: "10001:10001"
     read_only: true
     cap_drop:
       - ALL
@@ -36,6 +37,12 @@ services:
         "-c",
         "python register_demo_tools.py && python register_demo_payments.py",
       ]
+    user: "10001:10001"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     environment:
       OSTIARI_CONTROL_PLANE_URL: "http://control-plane-backend:8400"
       OSTIARI_GATEWAY_URL: "http://gateway:8421"

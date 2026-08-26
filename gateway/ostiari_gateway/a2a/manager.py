@@ -40,6 +40,12 @@ class A2AManager:
                 timeout=config.timeout_seconds,
                 auth_token=config.auth_token,
             )
+            # Keep this check even though the built-in discovery client also
+            # validates the advertised endpoint. It protects callers that
+            # supply a custom discovery implementation in an integration.
+            from ostiari.net_guard import validate_public_url
+
+            validate_public_url(card.url or config.url)
         except Exception as e:
             log.error("Failed to discover A2A agent '%s' at %s: %s", config.name, config.url, e)
             return {"agent": config.name, "status": "error", "error": str(e)}

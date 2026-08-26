@@ -43,6 +43,10 @@ class TestAlwaysBlocked:
         with pytest.raises(SSRFError):
             validate_public_url("http://")
 
+    def test_url_userinfo_blocked(self):
+        with pytest.raises(SSRFError, match="userinfo"):
+            validate_public_url("https://user:password@example.com/api")
+
 
 class TestDevPermissive:
     def test_localhost_allowed_in_dev(self, monkeypatch):

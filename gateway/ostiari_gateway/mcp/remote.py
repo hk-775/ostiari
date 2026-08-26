@@ -20,6 +20,11 @@ class RemoteMCPClient:
     def __init__(self, config: MCPServerConfig) -> None:
         self._config = config
         self._url = config.url.rstrip("/")
+        # Never permit cloud metadata/link-local targets. Production private
+        # endpoints require an explicit OSTIARI_SSRF_ALLOW entry.
+        from ostiari.net_guard import validate_public_url
+
+        validate_public_url(self._url)
         self._client = httpx.AsyncClient(timeout=30.0)
         self._session_id: str | None = None
 

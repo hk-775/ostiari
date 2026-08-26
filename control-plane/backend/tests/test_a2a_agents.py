@@ -12,11 +12,35 @@ async def _make_gateway(client, gid="crm-agent"):
 
 
 class TestA2AAgents:
-    async def test_register_missing_gateway_404(self, client):
-        r = await client.post("/api/a2a-agents/nope", json={"url": "http://localhost:9200"})
+    async def test_register_missing_gateway_404(self, client, admin_headers):
+        r = await client.post(
+            "/api/a2a-agents/nope",
+            headers=admin_headers,
+            json={"url": "http://localhost:9200"},
+        )
         assert r.status_code == 404
 
-    async def test_register_persists_on_gateway_success(self, client, monkeypatch):
+    async def test_register_rejects_credentials_in_url(
+        self,
+        client,
+        admin_headers,
+    ):
+        await _make_gateway(client)
+        response = await client.post(
+            "/api/a2a-agents/crm-agent",
+            headers=admin_headers,
+            json={"url": "https://user:password@peer.example/?token=secret"},
+        )
+        assert response.status_code == 400
+        assert "password@" not in response.text
+        assert "token=secret" not in response.text
+
+    async def test_register_persists_on_gateway_success(
+        self,
+        client,
+        monkeypatch,
+        admin_headers,
+    ):
         await _make_gateway(client)
 
         # Stub the gateway call: pretend the gateway connected the agent.
@@ -34,7 +58,14 @@ class TestA2AAgents:
 
         monkeypatch.setattr("control_plane.routers.a2a_agents.httpx.AsyncClient", _Client)
 
-        r = await client.post("/api/a2a-agents/crm-agent", json={"url": "http://localhost:9200"})
+        r = await client.post(
+            "/api/a2a-agents/crm-agent",
+            headers=admin_headers,
+            json={
+                "url": "http://localhost:9200",
+                "auth_token": "a2a-private-token",
+            },
+        )
         assert r.status_code == 200, r.text
         body = r.json()
         assert body["agent_key"] == "devops_assistant"
@@ -45,8 +76,29 @@ class TestA2AAgents:
         assert len(rows) == 1
         assert rows[0]["agent_key"] == "devops_assistant"
         assert rows[0]["gateway_id"] == "crm-agent"
+        assert "a2a-private-token" not in r.text
 
-    async def test_register_rejected_when_gateway_refuses(self, client, monkeypatch):
+        from control_plane.database import async_session
+        from control_plane.models.database import A2AAgentRecord
+        from control_plane.routers.a2a_agents import build_a2a_config
+        from sqlalchemy import select
+
+        async with async_session() as db:
+            record = (
+                await db.execute(select(A2AAgentRecord))
+            ).scalar_one()
+            assert record.auth_token == ""
+            assert record.auth_token_encrypted
+            assert "a2a-private-token" not in record.auth_token_encrypted
+            config = await build_a2a_config(db, "crm-agent")
+        assert config[0]["auth_token"] == "a2a-private-token"
+
+    async def test_register_rejected_when_gateway_refuses(
+        self,
+        client,
+        monkeypatch,
+        admin_headers,
+    ):
         await _make_gateway(client)
 
         class _Resp:
@@ -61,7 +113,11 @@ class TestA2AAgents:
 
         monkeypatch.setattr("control_plane.routers.a2a_agents.httpx.AsyncClient", _Client)
 
-        r = await client.post("/api/a2a-agents/crm-agent", json={"url": "http://bad"})
+        r = await client.post(
+            "/api/a2a-agents/crm-agent",
+            headers=admin_headers,
+            json={"url": "http://bad"},
+        )
         assert r.status_code == 502
         # Nothing persisted on failure.
         assert (await client.get("/api/a2a-agents")).json() == []
@@ -80,7 +136,13 @@ class TestA2AAgents:
         assert len(cfg) == 1
         assert cfg[0]["url"] == "http://localhost:9200"
 
-    async def test_delete(self, client, monkeypatch, app_and_db):
+    async def test_delete(
+        self,
+        client,
+        monkeypatch,
+        app_and_db,
+        admin_headers,
+    ):
         await _make_gateway(client)
         from control_plane.database import async_session
         from control_plane.models.database import A2AAgentRecord
@@ -101,6 +163,10 @@ class TestA2AAgents:
 
         monkeypatch.setattr("control_plane.routers.a2a_agents.httpx.AsyncClient", _Client)
 
-        r = await client.request("DELETE", f"/api/a2a-agents/{rid}")
+        r = await client.request(
+            "DELETE",
+            f"/api/a2a-agents/{rid}",
+            headers=admin_headers,
+        )
         assert r.status_code == 200
         assert (await client.get("/api/a2a-agents")).json() == []

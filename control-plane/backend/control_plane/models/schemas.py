@@ -176,7 +176,10 @@ class McpServerResponse(BaseModel):
     module: str
     url: str
     command: list[str]
+    # Private config is write-only. Keep an empty object in the response for
+    # wire compatibility and expose only whether configuration is present.
     config: dict
+    has_config: bool = False
     allowed_tools: list[str] | None
     blocked_tools: list[str]
     prefix: str

@@ -10,7 +10,7 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.gateway
     ports:
-      - "${OSTIARI_GATEWAY_PORT:-8421}:8421"
+      - "${OSTIARI_BIND_ADDRESS:-127.0.0.1}:${OSTIARI_GATEWAY_PORT:-8421}:8421"
     environment:
       OSTIARI_GATEWAY_ID: "${OSTIARI_GATEWAY_ID:-crm-agent}"
       OSTIARI_CONTROL_PLANE_URL: "http://control-plane-backend:8400"
@@ -54,6 +54,7 @@ services:
         condition: service_healthy
     # The image runs as uid 10001; these harden it further. Its policy tempfile
     # uses the runtime-provided /dev/shm tmpfs, so no writable root mount is needed.
+    user: "10001:10001"
     read_only: true
     cap_drop:
       - ALL
@@ -73,7 +74,7 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.control-plane
     ports:
-      - "${OSTIARI_CONTROL_PLANE_PORT:-8400}:8400"
+      - "${OSTIARI_BIND_ADDRESS:-127.0.0.1}:${OSTIARI_CONTROL_PLANE_PORT:-8400}:8400"
     environment:
       # SQLite on a persisted volume by default. For production point this at
       # Postgres: postgresql+asyncpg://user:pass@host:5432/ostiari
@@ -98,6 +99,7 @@ services:
     # only writable path it needs — /tmp is not mounted, because nothing in this
     # container writes there. Adding read_only without OSTIARI_DATA_DIR pointing
     # off the root would fail at import, before the app starts.
+    user: "10001:10001"
     read_only: true
     cap_drop:
       - ALL
@@ -122,12 +124,13 @@ services:
         VITE_API_URL: "${OSTIARI_BROWSER_API_URL:-http://localhost:8400}"
         VITE_DEMO_LOGIN: "${OSTIARI_DEMO_LOGIN:-true}"
     ports:
-      - "${OSTIARI_FRONTEND_PORT:-9000}:9000"
+      - "${OSTIARI_BIND_ADDRESS:-127.0.0.1}:${OSTIARI_FRONTEND_PORT:-9000}:9000"
     depends_on:
       control-plane-backend:
         condition: service_healthy
     # Runs as a dedicated numeric uid. The distroless image and static server
     # have no writable runtime state, so the root filesystem stays read-only.
+    user: "101:101"
     read_only: true
     cap_drop:
       - ALL
@@ -143,8 +146,17 @@ services:
   redis:
     # Valkey preserves the open-source BSD-3-Clause Redis protocol/API surface.
     image: valkey/valkey:9.0.5-alpine@sha256:0cb61366757e2bcd26500b4e8bb63cbd7117610e3e4f05aacb3c812511da7632
-    ports:
-      - "${OSTIARI_REDIS_PORT:-6379}:6379"
+    command: ["valkey-server", "--save", "", "--appendonly", "no"]
+    expose:
+      - "6379"
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /data:rw,noexec,nosuid,nodev,uid=10001,gid=10001
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
       interval: 5s

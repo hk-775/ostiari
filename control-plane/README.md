@@ -168,8 +168,8 @@ Authoritative source: `http://localhost:8400/docs` (generated from the app).
 | `/api/gateways/{gateway_id}` | PATCH | Update a gateway |
 | `/api/gateways/{gateway_id}` | DELETE | Remove a gateway |
 | `/api/gateways/{gateway_id}/push` | POST | Push the full config bundle, rebuilt from stored state. **Prefer this** — it's the Gateways page's ↑ button and can't clear anything |
-| `/api/gateways/{gateway_id}/push-config` | POST | Forward a caller-supplied body to the gateway's `POST /config`. **Not persisted**; tools/policy/base fields use replacement semantics while explicitly present runtime gates apply live. `provider_routes` is rejected; use the encrypted route API. Prefer dedicated routes for individual controls |
-| `/api/gateways/{gateway_id}/config-bundle` | GET | Fetch the config a gateway would receive. Signed-in operators receive secret-free provider-route metadata; a valid `X-Ostiari-Service-Key` is required for resolved credentials |
+| `/api/gateways/{gateway_id}/push-config` | POST | Admin-only raw partial push. Healthy gateways receive it immediately; offline updates are queued. `provider_routes`, `mcp_servers`, and `a2a_agents` are rejected; use their credential-safe APIs. Prefer dedicated routes for individual controls |
+| `/api/gateways/{gateway_id}/config-bundle` | GET | Fetch the config a gateway would receive. Signed-in users receive recursively redacted configuration and secret-free provider/MCP metadata; authenticated gateways receive resolved runtime credentials |
 | `/api/gateways/{gateway_id}/register` | POST | Self-registration (called by the gateway on boot; requires `X-Ostiari-Service-Key` when API auth is enabled) |
 | `/api/gateways/{gateway_id}/heartbeat` | POST | Liveness ping (called by the gateway; requires `X-Ostiari-Service-Key` when API auth is enabled) |
 | `/api/gateways/{gateway_id}/health` | GET | Check gateway health |

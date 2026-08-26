@@ -351,11 +351,22 @@ class TestAuditCoverage:
         entry = [e for e in await _audit_entries(client, "tool") if e["action"] == "delete"][0]
         assert entry["details"]["name"] == "send_email"
 
-    async def test_mcp_server_audited(self, client):
+    async def test_mcp_server_audited(self, client, admin_headers):
         await _make_gateway(client)
-        r = await client.post("/api/mcp-servers/gw1", json={
-            "name": "github", "mode": "remote", "url": "http://mcp:9000"})
-        await client.request("DELETE", f"/api/mcp-servers/{r.json()['id']}")
+        r = await client.post(
+            "/api/mcp-servers/gw1",
+            headers=admin_headers,
+            json={
+                "name": "github",
+                "mode": "remote",
+                "url": "http://mcp:9000",
+            },
+        )
+        await client.request(
+            "DELETE",
+            f"/api/mcp-servers/{r.json()['id']}",
+            headers=admin_headers,
+        )
         actions = [e["action"] for e in await _audit_entries(client, "mcp_server")]
         assert actions == ["create", "delete"]
 

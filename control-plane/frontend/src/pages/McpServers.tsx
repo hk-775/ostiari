@@ -110,7 +110,18 @@ export function McpServers() {
             <input placeholder="Blocked tools (comma-separated)" value={form.blocked_tools} onChange={(e) => setForm({ ...form, blocked_tools: e.target.value })} className="input" />
           </div>
 
-          <textarea placeholder='Config JSON (e.g., {"token": "ghp_xxx"})' value={form.config} onChange={(e) => setForm({ ...form, config: e.target.value })} rows={2} className="input w-full font-mono" />
+          <div>
+            <label className="mb-1 block text-xs font-medium text-stone-600">
+              Private config JSON
+            </label>
+            <textarea
+              placeholder='Encrypted at rest and never returned (e.g., {"workspace": "team-a"})'
+              value={form.config}
+              onChange={(e) => setForm({ ...form, config: e.target.value })}
+              rows={2}
+              className="input w-full font-mono"
+            />
+          </div>
 
           <div className="flex gap-2">
             <button type="submit" className="btn-teal">Add Server</button>
@@ -135,6 +146,7 @@ export function McpServers() {
                       <span className={`badge ${MODE_COLORS[m.mode]}`}>{m.mode}</span>
                       <span className="text-xs text-stone-500">{m.gateway_id.replace("-agent","").split("-").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ").replace("Devops","DevOps").replace("Crm","CRM") + " Gateway"}</span>
                       <span className="text-xs text-stone-400">prefix: {m.prefix}</span>
+                      {m.has_config && <span className="text-xs text-stone-400">private config set</span>}
                     </div>
                   </div>
                 </div>

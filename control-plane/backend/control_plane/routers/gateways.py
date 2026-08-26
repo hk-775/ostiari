@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import logging
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -13,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from control_plane.auth.dependencies import get_current_org
+from control_plane.auth.dependencies import get_current_org, require_role
 from control_plane.auth.workload import (
     authorize_gateway,
     bind_gateway_identity,
@@ -196,6 +197,55 @@ def _to_response(gateway: Gateway, tools_count: int = 0) -> GatewayResponse:
         mode=(gateway.config or {}).get("mode", "enforce"),
         created_at=gateway.created_at, updated_at=gateway.updated_at,
     )
+
+
+def _is_private_config_key(key: object) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(key).lower()).strip("_")
+    if normalized in {
+        "access_key",
+        "access_token",
+        "api_key",
+        "auth_token",
+        "authorization",
+        "client_secret",
+        "credentials",
+        "password",
+        "private_key",
+        "secret",
+        "secret_key",
+        "session_token",
+        "token",
+    }:
+        return True
+    return normalized.endswith(
+        (
+            "_access_key",
+            "_access_token",
+            "_api_key",
+            "_auth_token",
+            "_client_secret",
+            "_password",
+            "_private_key",
+            "_secret_key",
+            "_session_token",
+        )
+    )
+
+
+def _redact_private_config(value: Any) -> Any:
+    """Recursively redact credential-shaped fields from a human bundle."""
+    if isinstance(value, dict):
+        return {
+            key: (
+                "<redacted>"
+                if _is_private_config_key(key) and item not in ("", None)
+                else _redact_private_config(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_private_config(item) for item in value]
+    return value
 
 
 @router.get("", response_model=list[GatewayResponse])
@@ -543,10 +593,17 @@ async def get_config_bundle(
     if not gateway:
         raise HTTPException(status_code=404, detail="Gateway not found")
 
-    bundle = await push_service._build_config(db, gateway)
+    machine_authenticated = getattr(
+        request.state, "machine_authenticated", False
+    )
+    bundle = await push_service._build_config(
+        db,
+        gateway,
+        include_private=machine_authenticated,
+    )
     bundle.setdefault("quotas", gateway.config.get("quotas", {}))
     bundle.setdefault("agent_auth", gateway.config.get("agent_auth", {}))
-    if not getattr(request.state, "machine_authenticated", False):
+    if not machine_authenticated:
         from control_plane.routers.provider_routes import (
             public_runtime_route_catalog,
         )
@@ -554,6 +611,7 @@ async def get_config_bundle(
         bundle["provider_routes"] = public_runtime_route_catalog(
             bundle.get("provider_routes", [])
         )
+        bundle = _redact_private_config(bundle)
     return bundle
 
 
@@ -563,8 +621,9 @@ async def push_config_lifecycle(
     request: Request,
     db: AsyncSession = Depends(get_db),
     org: str = Depends(get_current_org),
+    _admin=Depends(require_role("admin")),
 ):
-    """Operator pushes config NOW. If healthy -> forward immediately. If unhealthy -> queue."""
+    """Admin pushes config now, or queues it for an offline gateway."""
     gateway = await get_scoped(db, Gateway, gateway_id, org)
     if not gateway:
         raise HTTPException(status_code=404, detail="Gateway not found")
@@ -581,12 +640,22 @@ async def push_config_lifecycle(
             status_code=422,
             detail="config body must be a JSON object",
         )
-    if "provider_routes" in body:
+    managed_keys = sorted(
+        {"provider_routes", "mcp_servers", "a2a_agents"}.intersection(body)
+    )
+    if managed_keys:
+        if managed_keys == ["provider_routes"]:
+            detail = (
+                "provider_routes is managed by the encrypted provider route API"
+            )
+        else:
+            detail = (
+                f"{', '.join(managed_keys)} must be managed by their "
+                "dedicated credential-safe APIs"
+            )
         raise HTTPException(
             status_code=422,
-            detail=(
-                "provider_routes is managed by the encrypted provider route API"
-            ),
+            detail=detail,
         )
 
     if gateway.status == "healthy":

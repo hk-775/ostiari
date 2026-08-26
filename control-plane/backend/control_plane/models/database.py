@@ -155,8 +155,11 @@ class McpServer(Base):
     url: Mapped[str] = mapped_column(String(512), default="")
     # For stdio mode
     command: Mapped[list] = mapped_column(JSON, default=list)
-    # Shared config
+    # Legacy plaintext config retained only for migration/downgrade
     config: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Runtime config is encrypted as one document so arbitrary MCP credentials
+    # are never persisted in plaintext.
+    config_encrypted: Mapped[str] = mapped_column(Text, default="")
     # Tool filtering
     allowed_tools: Mapped[list | None] = mapped_column(JSON, nullable=True)
     blocked_tools: Mapped[list] = mapped_column(JSON, default=list)
@@ -241,7 +244,9 @@ class A2AAgentRecord(Base):
     name: Mapped[str] = mapped_column(String(128))          # display name
     agent_key: Mapped[str] = mapped_column(String(128))     # a2a.<agent_key>
     url: Mapped[str] = mapped_column(String(512))
+    # Legacy plaintext token retained only for migration/downgrade.
     auth_token: Mapped[str] = mapped_column(String(512), default="")
+    auth_token_encrypted: Mapped[str] = mapped_column(Text, default="")
     gateway_id: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
