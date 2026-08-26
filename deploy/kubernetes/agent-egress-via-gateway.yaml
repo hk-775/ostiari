@@ -1,0 +1,48 @@
+# Apply this policy in the same namespace as a separately deployed agent and
+# the shared Ostiari gateway. Label each governed agent pod with:
+#
+#   ostiari.io/egress-policy: gateway-only
+#
+# The policy prevents those pods from opening direct TCP connections to tools,
+# model providers, cloud metadata, or the public Internet. Their application
+# traffic can reach only the Ostiari gateway Service on port 8421.
+#
+# Do NOT apply this label to gateway-sidecar.yaml: containers in one Pod share
+# a network namespace, so Kubernetes NetworkPolicy cannot distinguish the agent
+# container from its gateway sidecar. Use the shared-gateway deployment (or a
+# runtime that gives containers separate network namespaces) for enforceable
+# per-agent egress isolation.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent-egress-only-via-ostiari
+spec:
+  podSelector:
+    matchLabels:
+      ostiari.io/egress-policy: gateway-only
+  policyTypes:
+    - Egress
+  egress:
+    # Governed application traffic.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: ostiari-gateway
+      ports:
+        - protocol: TCP
+          port: 8421
+    # Service discovery. Restrict this further to your cluster DNS labels and
+    # use a DNS firewall in high-assurance environments to prevent DNS egress
+    # from becoming a covert bypass channel.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

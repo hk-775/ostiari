@@ -44,6 +44,10 @@ async def fetch_agent_card(
 
     if not card.url:
         card.url = base
+    # The discovery document is untrusted and may advertise a different task
+    # endpoint. Validate that second URL too so a public discovery service
+    # cannot pivot the gateway to cloud metadata or an internal service.
+    validate_public_url(card.url)
 
     log.info(
         "Discovered A2A agent '%s' at %s (%d skills)",

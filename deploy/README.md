@@ -31,6 +31,9 @@ List these at any time:
 Docker Compose builds the gateway with embedded AxonLLM, control plane,
 dashboard, and Valkey. The demo profile also starts functional demo tools and an
 idempotent seed job.
+Published application ports bind to `127.0.0.1` by default. Set
+`OSTIARI_BIND_ADDRESS=0.0.0.0` only when you intentionally want other hosts to
+reach the development stack; Valkey remains internal to the Compose network.
 
 ```bash
 ./deploy/ostiari local up --profile local-demo
@@ -250,14 +253,27 @@ kubectl apply -f deploy/kubernetes/gateway-sidecar.yaml
 kubectl apply -f deploy/kubernetes/control-plane.yaml
 ```
 
+Containers in one Pod share a network namespace. A Kubernetes NetworkPolicy
+therefore cannot allow the gateway sidecar's egress while denying only the
+agent container's egress. Use this layout for operational convenience, not as
+proof that direct agent egress is impossible.
+
 ### Kubernetes - Shared Gateway
 
-Deploy a shared gateway cluster that multiple agents route through:
+Deploy a shared gateway cluster that multiple agents route through. Label every
+governed agent Pod with `ostiari.io/egress-policy: gateway-only`, then apply the
+included egress policy so those Pods can open application connections only to
+the gateway:
 
 ```bash
 kubectl apply -f deploy/kubernetes/gateway-shared.yaml
+kubectl apply -f deploy/kubernetes/agent-egress-via-gateway.yaml
 kubectl apply -f deploy/kubernetes/control-plane.yaml
 ```
+
+NetworkPolicy enforcement depends on the cluster CNI. The template also allows
+cluster DNS; high-assurance deployments should pair it with DNS filtering to
+prevent DNS tunneling.
 
 ### Helm Chart
 
@@ -338,6 +354,8 @@ sam deploy --guided
 | `OSTIARI_MAX_TOOL_RESPONSE_BYTES` | `1048576` | Maximum decompressed bytes retained from one downstream tool response (server-capped at 16 MiB). |
 | `OSTIARI_OUTBOUND_TIMEOUT_SECONDS` | `30` | Absolute wall-clock deadline for outbound tool requests (server-capped at 120 seconds). |
 | `OSTIARI_MCP_MAX_RESPONSE_BYTES` / `OSTIARI_MCP_GATEWAY_TIMEOUT_SECONDS` | `1048576` / `30` | Equivalent limits for the standalone MCP bridge. |
+| `OSTIARI_ALLOW_LOCAL_MCP` | _(false in production)_ | Explicitly enables `embedded` and `stdio` MCP modes in production. Both execute code inside the gateway trust boundary; prefer an isolated remote MCP service. |
+| `OSTIARI_MCP_CHILD_ENV_ALLOW` | _(none)_ | Comma-separated environment variable names explicitly passed to stdio MCP children in addition to the minimal safe baseline. Gateway/provider/workload secrets are not inherited automatically. Use separately scoped MCP credentials. |
 | `ANTHROPIC_API_KEY` | _(none)_ | Anthropic API key for LLM routing |
 | `OPENAI_API_KEY` | _(none)_ | OpenAI API key for LLM routing |
 
@@ -363,7 +381,7 @@ sam deploy --guided
 | `OSTIARI_GATEWAY_AGENT_TOKEN` / `OSTIARI_GATEWAY_AGENT_ID` | _(none)_ | Dedicated agent credential used for control-plane initiated execution. Required in production; browser JWTs are never forwarded to gateways. |
 | `OSTIARI_SANDBOX_GATEWAY_TOKEN` | _(caller bearer)_ | Optional dedicated bearer credential for Sandbox Code tool calls to protected gateways. Store it as a secret. |
 | `OSTIARI_SANDBOX_GATEWAY_AGENT_ID` | `sandbox-code` | Gateway agent identity asserted with the dedicated Sandbox bearer token; it must match the token's identity claim. |
-| `OSTIARI_ENCRYPTION_KEY` | _(ephemeral)_ | Encrypts stored provider API keys. Unset, a new key is minted per process — stored keys become unreadable after restart. |
+| `OSTIARI_ENCRYPTION_KEY` | _(ephemeral)_ | Encrypts stored provider API keys, provider routes, MCP configuration, approval parameters, and A2A tokens. Unset, a new key is minted per process — stored values become unreadable after restart. |
 | `OIDC_ISSUER` / `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | _(none)_ | Enable the dashboard's browser SSO authorization-code flow. |
 | `OIDC_REDIRECT_URI` | `http://localhost:8400/api/auth/sso/callback` | Public backend callback URL registered verbatim with the identity provider. |
 | `OSTIARI_FRONTEND_URL` | `http://localhost:9000` | Public dashboard origin used after the backend completes SSO. |

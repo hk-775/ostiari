@@ -60,8 +60,8 @@ graph TB
 
 | Mode | Description | Best for | Manifest |
 |------|-------------|----------|---|
-| **Sidecar** | One gateway per pod, co-located with the agent in K8s | Strong isolation, per-agent network policy | `deploy/kubernetes/gateway-sidecar.yaml` |
-| **Shared gateway** | One gateway serving multiple agents (with per-agent auth) | Cost efficiency, small teams, dev environments | `deploy/kubernetes/gateway-shared.yaml` |
+| **Sidecar** | One gateway per pod, co-located with the agent in K8s | Low latency; containers still share one network namespace | `deploy/kubernetes/gateway-sidecar.yaml` |
+| **Shared gateway** | One gateway serving multiple agents (with per-agent auth) | Enforceable per-agent egress policy and independent scaling | `deploy/kubernetes/gateway-shared.yaml` |
 | **Global NAT gateway** | Network-level proxy that all agents route through | Enterprise-wide governance, zero agent config | none — see below |
 
 The first two modes are the same Docker image and the same APIs; the only difference is how many agents connect to each instance and how the network routes to it. Both ship as Kubernetes manifests.
@@ -474,11 +474,11 @@ UI calls:
 | Gateway registration + heartbeat | `_apply_bundle` (not `/config`) | Works — it configures each gate explicitly and touches only the keys present, including `mode` and `ab_experiments`. |
 
 The remaining trap is the generic `push-config` route for custom partial callers;
-the first-party Policies and Quotas pages avoid it. Provider-route catalogs are
-rejected by this generic path and must use the encrypted route API. Verify
-gateway limits with `GET /config/quota` and agent limits with
-`GET /config/agent-auth`; `GET /config` only shows the stored whole-document
-configuration.
+the first-party Policies and Quotas pages avoid it. This route is admin-only.
+Provider routes, MCP servers, and A2A agents are rejected by the generic path
+and must use their credential-safe dedicated APIs. Verify gateway limits with
+`GET /config/quota` and agent limits with `GET /config/agent-auth`;
+`GET /config` only shows the stored whole-document configuration.
 
 > **Rule of thumb: `/config` is for a full bundle from a system that owns the
 > whole document. Use the `/config/<gate>` endpoints for anything partial.** The
@@ -631,7 +631,15 @@ graph TB
 
 Each agent gets its own gateway instance (same Docker image, different config).
 
-> **The network isolation is yours to build, not something the gateway does.** Nothing in this repo restricts an agent's egress; if the agent process can reach the email service directly, it will, and the gateway never sees the call. The sidecar model only closes that hole when you *also* deny the agent's container everything but the gateway — a Kubernetes `NetworkPolicy`, a security-group rule, or a sidecar-only network namespace. `deploy/kubernetes/gateway-sidecar.yaml` runs the gateway as a same-pod sidecar (so `localhost:8421` reaches it) but ships no `NetworkPolicy`. Treat "policy bypass is impossible at the network level" as the goal of your deployment, not a property you inherit.
+> **The network isolation is yours to enforce.** If the agent process can reach
+> a tool directly, the gateway never sees the call. Kubernetes NetworkPolicy is
+> Pod-scoped, so it cannot distinguish an agent container from a gateway
+> sidecar in the same Pod. For enforceable Kubernetes separation, run the agent
+> and shared gateway in different Pods, label governed agents with
+> `ostiari.io/egress-policy: gateway-only`, and apply
+> `deploy/kubernetes/agent-egress-via-gateway.yaml`. Treat "policy bypass is
+> impossible at the network level" as a deployment property, not one inherited
+> from the proxy.
 
 ### Docker Deployment
 
@@ -667,10 +675,12 @@ The image runs as uid `10001` with a root-owned `site-packages`, so a compromise
 
 The full local stack (`cd deploy/docker && docker compose up --build`) brings up
 the gateway on 8421, the control-plane backend on 8400, the frontend on 9000,
-and a Redis-compatible Valkey service on 6379. It runs in **dev posture** by
-default: `OSTIARI_ENV` is unset, so controls fail *open*, and `OSTIARI_HITL` is
-`off`. Both are deliberate — the demo flows — and both are wrong for
-production. See §7.4 and §9 of
+and an internal Redis-compatible Valkey service. Published application ports
+bind to `127.0.0.1` by default; set `OSTIARI_BIND_ADDRESS` only when deliberate
+LAN exposure is required. Valkey is not published to the host. The stack runs
+in **dev posture** by default: `OSTIARI_ENV` is unset, so controls fail *open*,
+and `OSTIARI_HITL` is `off`. Both are deliberate — the demo flows — and both
+are wrong for production. See §7.4 and §9 of
 [control-plane-guide.md](control-plane-guide.md).
 
 ---
@@ -1246,6 +1256,12 @@ This is the short version; [§MCP Server Integration](#mcp-server-integration) f
 | **`embedded`** (default) | MCP server runs in-process inside the gateway | ~1ms | Local filesystem, internal tools |
 | **`remote`** | Connects to an external MCP server over HTTP | ~50–500ms | GitHub, Jira, shared services |
 | **`stdio`** | Spawns the MCP server as a subprocess, speaks JSON-RPC over stdin/stdout | ~10ms | Legacy tools, custom adapters |
+
+In production, `embedded` and `stdio` are disabled unless
+`OSTIARI_ALLOW_LOCAL_MCP=true`. Both execute administrator-selected code inside
+the gateway trust boundary. Stdio children receive a minimal environment by
+default; separately scoped variables must be named explicitly in
+`OSTIARI_MCP_CHILD_ENV_ALLOW`.
 
 ### How agents call MCP tools
 
@@ -2183,6 +2199,12 @@ graph TB
 | **embedded** | MCP server imported as Python package, runs in the gateway process | MCP server is a Python package. Fastest option. | Zero — function call |
 | **remote** | Gateway connects to external MCP server via HTTP/SSE | MCP server already running elsewhere, or needs its own resources | One network hop |
 | **stdio** | Gateway spawns MCP server as local subprocess, communicates via stdin/stdout | Non-Python MCP servers (Node.js, Go). No network, but process overhead. | Zero network — IPC |
+
+Production disables the two local execution modes by default. Prefer `remote`
+with the MCP service in its own restricted container. If local mode is
+explicitly enabled, stdio children do not inherit gateway provider keys,
+workload credentials, or configuration-admin secrets unless an operator names
+a variable in `OSTIARI_MCP_CHILD_ENV_ALLOW`.
 
 The three mode strings are exact: `embedded`, `remote`, `stdio`. Anything else
 raises `Unknown MCP mode: …` in `_create_client` (`mcp/manager.py:161`) *before*

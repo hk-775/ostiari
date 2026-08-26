@@ -3,11 +3,59 @@
 import asyncio
 import json
 import logging
+import os
+import re
 from typing import Any
 
 from ostiari_gateway.mcp.models import MCPServerConfig
 
 log = logging.getLogger("ostiari.sidecar.mcp.stdio")
+
+_BASE_CHILD_ENV = frozenset(
+    {
+        "HOME",
+        "LANG",
+        "LANGUAGE",
+        "PATH",
+        "SSL_CERT_DIR",
+        "SSL_CERT_FILE",
+        "TMPDIR",
+        "TZ",
+    }
+)
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def child_environment() -> dict[str, str]:
+    """Build a minimal environment for an MCP subprocess.
+
+    Provider keys, workload credentials, config-admin keys, and other gateway
+    secrets are excluded by default. Operators may explicitly add names with
+    ``OSTIARI_MCP_CHILD_ENV_ALLOW`` when a subprocess has a separately scoped
+    credential of its own.
+    """
+    allowed = set(_BASE_CHILD_ENV)
+    allowed.update(
+        name
+        for name in os.environ
+        if name.startswith("LC_")
+    )
+    for name in os.environ.get(
+        "OSTIARI_MCP_CHILD_ENV_ALLOW", ""
+    ).split(","):
+        name = name.strip()
+        if name:
+            if not _ENV_NAME.fullmatch(name):
+                raise ValueError(
+                    "OSTIARI_MCP_CHILD_ENV_ALLOW contains an invalid "
+                    f"environment variable name: {name!r}"
+                )
+            allowed.add(name)
+    return {
+        name: os.environ[name]
+        for name in sorted(allowed)
+        if name in os.environ
+    }
 
 
 class StdioMCPClient:
@@ -32,6 +80,7 @@ class StdioMCPClient:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=child_environment(),
         )
 
         result = await self._send_request("initialize", {

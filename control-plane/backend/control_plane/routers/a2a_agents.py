@@ -9,16 +9,19 @@ A2A analog of how MCP servers are restored.
 
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from control_plane.auth.dependencies import get_current_org
+from control_plane.auth.dependencies import get_current_org, require_role
 from control_plane.database import get_db
 from control_plane.models.database import A2AAgentRecord, Gateway
 from control_plane.models.scoping import get_gateway, get_scoped, scoped, stamp
+from control_plane.routers.providers import _decrypt, _encrypt
 from control_plane.services.push_service import gateway_config_headers
 
 router = APIRouter(prefix="/api/a2a-agents", tags=["a2a-agents"])
@@ -28,6 +31,23 @@ class A2AAgentCreate(BaseModel):
     url: str
     name: str = ""
     auth_token: str = ""
+
+
+def _validate_agent_url(url: str) -> None:
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(
+            status_code=400,
+            detail="A2A agent URL must be an absolute HTTP(S) URL",
+        )
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "A2A agent URL must not contain credentials, a query, "
+                "or a fragment"
+            ),
+        )
 
 
 @router.get("")
@@ -40,7 +60,13 @@ async def list_a2a_agents(gateway_id: str | None = None, db: AsyncSession = Depe
 
 
 @router.post("/{gateway_id}")
-async def register_a2a_agent(gateway_id: str, body: A2AAgentCreate, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+async def register_a2a_agent(
+    gateway_id: str,
+    body: A2AAgentCreate,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+    _admin=Depends(require_role("admin")),
+):
     """Connect an A2A agent on the live gateway, then persist the record.
 
     We connect first (which discovers the agent card and gives us the stable
@@ -50,6 +76,7 @@ async def register_a2a_agent(gateway_id: str, body: A2AAgentCreate, db: AsyncSes
     gateway = await get_scoped(db, Gateway, gateway_id, org)
     if gateway is None:
         raise HTTPException(status_code=404, detail="Gateway not found")
+    _validate_agent_url(body.url)
 
     async with httpx.AsyncClient(
         timeout=15.0, headers=gateway_config_headers()
@@ -79,13 +106,20 @@ async def register_a2a_agent(gateway_id: str, body: A2AAgentCreate, db: AsyncSes
         )
     )).scalar_one_or_none()
     if existing is None:
-        rec = A2AAgentRecord(name=name, agent_key=agent_key, url=body.url,
-                             auth_token=body.auth_token, gateway_id=gateway_id)
+        rec = A2AAgentRecord(
+            name=name,
+            agent_key=agent_key,
+            url=body.url,
+            auth_token="",
+            auth_token_encrypted=_encrypt(body.auth_token),
+            gateway_id=gateway_id,
+        )
         stamp(rec, gateway.org_id)
         db.add(rec)
     else:
         existing.url = body.url
-        existing.auth_token = body.auth_token
+        existing.auth_token = ""
+        existing.auth_token_encrypted = _encrypt(body.auth_token)
         existing.name = name
         rec = existing
     await db.commit()
@@ -94,7 +128,12 @@ async def register_a2a_agent(gateway_id: str, body: A2AAgentCreate, db: AsyncSes
 
 
 @router.delete("/{agent_id}")
-async def delete_a2a_agent(agent_id: int, db: AsyncSession = Depends(get_db), org: str = Depends(get_current_org)):
+async def delete_a2a_agent(
+    agent_id: int,
+    db: AsyncSession = Depends(get_db),
+    org: str = Depends(get_current_org),
+    _admin=Depends(require_role("admin")),
+):
     rec = await get_scoped(db, A2AAgentRecord, agent_id, org)
     if rec is None:
         raise HTTPException(status_code=404, detail="A2A agent not found")
@@ -124,7 +163,22 @@ async def build_a2a_config(db: AsyncSession, gateway_id: str, org: str | None = 
     if org is not None:
         query = scoped(query, A2AAgentRecord, org)
     rows = (await db.execute(query)).scalars().all()
-    return [{"url": r.url, "name": r.name, "auth_token": r.auth_token} for r in rows]
+    return [
+        {
+            "url": r.url,
+            "name": r.name,
+            "auth_token": decrypt_a2a_auth_token(r),
+        }
+        for r in rows
+    ]
+
+
+def decrypt_a2a_auth_token(record: A2AAgentRecord) -> str:
+    """Return the runtime token without exposing it through operator APIs."""
+    if record.auth_token_encrypted:
+        return _decrypt(record.auth_token_encrypted)
+    # Compatibility for a pre-migration row.
+    return record.auth_token
 
 
 def _dict(r: A2AAgentRecord) -> dict:

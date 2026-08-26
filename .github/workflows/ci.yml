@@ -168,7 +168,9 @@ jobs:
         with:
           node-version: "24.16.0"
           cache: npm
-          cache-dependency-path: control-plane/frontend/package-lock.json
+          cache-dependency-path: |
+            control-plane/frontend/package-lock.json
+            dashboard-ui/package-lock.json
 
       - name: Install
         working-directory: control-plane/frontend
@@ -186,11 +188,21 @@ jobs:
         working-directory: control-plane/frontend
         run: npx vite build
 
+      - name: Install embedded dashboard
+        working-directory: dashboard-ui
+        run: npm ci
+
+      - name: Build embedded dashboard
+        working-directory: dashboard-ui
+        run: npm run build
+
   security:
     name: Security and supply chain
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
@@ -200,10 +212,12 @@ jobs:
         with:
           node-version: "24.16.0"
           cache: npm
-          cache-dependency-path: control-plane/frontend/package-lock.json
+          cache-dependency-path: |
+            control-plane/frontend/package-lock.json
+            dashboard-ui/package-lock.json
 
-      - name: Scan tracked files for credentials
-        run: python tools/check_tracked_secrets.py
+      - name: Scan tracked files and reachable history for credentials
+        run: python tools/check_tracked_secrets.py --history
 
       - name: Audit Python dependencies and generate SBOM
         run: |
@@ -218,17 +232,25 @@ jobs:
             axon-llm ostiari ostiari-gateway ostiari-control-plane
           .audit-venv/bin/pip-audit --strict
 
-      - name: Audit frontend production dependencies
+      - name: Audit frontend dependencies
         working-directory: control-plane/frontend
         run: |
           npm ci
-          npm audit --omit=dev --audit-level=high
+          npm audit --audit-level=moderate
           npm sbom --sbom-format cyclonedx > ../../frontend-sbom.cdx.json
+
+      - name: Audit embedded dashboard dependencies
+        working-directory: dashboard-ui
+        run: |
+          npm ci
+          npm audit --audit-level=moderate
+          npm sbom --sbom-format cyclonedx > ../dashboard-sbom.cdx.json
 
       - name: Validate generated SBOMs
         run: |
           python -m json.tool python-sbom.cdx.json >/dev/null
           python -m json.tool frontend-sbom.cdx.json >/dev/null
+          python -m json.tool dashboard-sbom.cdx.json >/dev/null
 
   production-artifacts:
     name: Production artifacts
@@ -300,6 +322,7 @@ jobs:
       - name: Validate deployment templates
         run: |
           pip install pyyaml
+          python tools/check_compose_security.py
           python - <<'PY'
           from pathlib import Path
           import yaml
@@ -337,6 +360,30 @@ jobs:
             -t ostiari-frontend:ci .
           docker build -f deploy/docker/Dockerfile.demo -t ostiari-demo-tools:ci .
           docker build -f deploy/agentcore/Dockerfile -t ostiari-agentcore:ci .
+
+      - name: Verify every production image defaults to a non-root user
+        run: |
+          python - <<'PY'
+          import json
+          import subprocess
+
+          images = (
+              "ostiari-gateway:ci",
+              "ostiari-control-plane:ci",
+              "ostiari-frontend:ci",
+              "ostiari-demo-tools:ci",
+              "ostiari-agentcore:ci",
+          )
+          for image in images:
+              raw = subprocess.check_output(
+                  ["docker", "image", "inspect", image],
+                  text=True,
+              )
+              configured = json.loads(raw)[0]["Config"].get("User", "").strip()
+              user = configured.split(":", 1)[0].lower()
+              assert user not in {"", "0", "root"}, (image, configured)
+              print(f"{image}: USER {configured}")
+          PY
 
       - name: Verify AxonLLM inside the production gateway image
         run: |

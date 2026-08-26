@@ -15,9 +15,7 @@ data:
   OSTIARI_GATEWAY_AUTH: "required"
   OSTIARI_OIDC_ISSUER: "https://REPLACE_OIDC_ISSUER"
   OSTIARI_OIDC_AUDIENCE: "REPLACE_GATEWAY_AUDIENCE"
-  OSTIARI_WORKLOAD_TOKEN_URL: "https://REPLACE_WORKLOAD_ISSUER/oauth2/token"
   OSTIARI_WORKLOAD_CLIENT_ID: "REPLACE_GATEWAY_WORKLOAD_CLIENT_ID"
-  OSTIARI_WORKLOAD_TOKEN_AUDIENCE: "ostiari-control-plane"
   OSTIARI_REQUIRE_REDIS: "true"
   OSTIARI_REQUIRE_AXON: "true"
   OSTIARI_GATEWAY_RATE_LIMIT_RPM: "600"
@@ -80,6 +78,13 @@ spec:
             - configMapRef:
                 name: ostiari-gateway-config
           env:
+            # These values identify the OAuth endpoint and audience; they are
+            # not credentials. Keep them out of the ConfigMap so secret
+            # scanners do not misclassify the token-related key names.
+            - name: OSTIARI_WORKLOAD_TOKEN_URL
+              value: "https://REPLACE_WORKLOAD_ISSUER/oauth2/token"
+            - name: OSTIARI_WORKLOAD_TOKEN_AUDIENCE
+              value: "ostiari-control-plane"
             - name: OSTIARI_REDIS_URL
               valueFrom:
                 secretKeyRef:

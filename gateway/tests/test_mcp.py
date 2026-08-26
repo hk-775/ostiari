@@ -3,7 +3,10 @@
 import pytest
 from ostiari_gateway.mcp.manager import MCPManager
 from ostiari_gateway.mcp.models import MCPServerConfig
+from ostiari_gateway.mcp.stdio_client import child_environment
 from starlette.testclient import TestClient
+
+from ostiari.net_guard import SSRFError
 
 
 class FakeMCPServer:
@@ -172,6 +175,77 @@ class TestMCPManager:
 
         assert "gh.greet" in result["tools"]
         assert manager.has_tool("gh.greet")
+
+    def test_local_mcp_is_disabled_by_default_in_production(
+        self,
+        manager,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("OSTIARI_ENV", "production")
+        monkeypatch.delenv("OSTIARI_ALLOW_LOCAL_MCP", raising=False)
+
+        with pytest.raises(RuntimeError, match="disabled in production"):
+            manager._create_client(
+                MCPServerConfig(
+                    name="unsafe-local",
+                    mode="stdio",
+                    command=["python", "-m", "server"],
+                )
+            )
+
+    def test_local_mcp_requires_explicit_production_opt_in(
+        self,
+        manager,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("OSTIARI_ENV", "production")
+        monkeypatch.setenv("OSTIARI_ALLOW_LOCAL_MCP", "true")
+
+        client = manager._create_client(
+            MCPServerConfig(
+                name="reviewed-local",
+                mode="stdio",
+                command=["python", "-m", "server"],
+            )
+        )
+        assert client.__class__.__name__ == "StdioMCPClient"
+
+    def test_remote_mcp_blocks_cloud_metadata(self, manager):
+        with pytest.raises(SSRFError, match="metadata"):
+            manager._create_client(
+                MCPServerConfig(
+                    name="metadata",
+                    mode="remote",
+                    url="http://169.254.169.254/latest/meta-data/",
+                )
+            )
+
+
+def test_stdio_child_environment_excludes_gateway_secrets(monkeypatch):
+    monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.setenv("LANG", "C.UTF-8")
+    monkeypatch.setenv("OPENAI_API_KEY", "provider-secret")
+    monkeypatch.setenv("OSTIARI_CONFIG_ADMIN_KEY", "config-secret")
+    monkeypatch.setenv("OSTIARI_WORKLOAD_CLIENT_SECRET", "workload-secret")
+    monkeypatch.delenv("OSTIARI_MCP_CHILD_ENV_ALLOW", raising=False)
+
+    env = child_environment()
+
+    assert env["PATH"] == "/usr/bin"
+    assert env["LANG"] == "C.UTF-8"
+    assert "OPENAI_API_KEY" not in env
+    assert "OSTIARI_CONFIG_ADMIN_KEY" not in env
+    assert "OSTIARI_WORKLOAD_CLIENT_SECRET" not in env
+
+
+def test_stdio_child_environment_supports_explicit_scoped_values(monkeypatch):
+    monkeypatch.setenv("MCP_SCOPED_TOKEN", "scoped-secret")
+    monkeypatch.setenv(
+        "OSTIARI_MCP_CHILD_ENV_ALLOW",
+        "MCP_SCOPED_TOKEN",
+    )
+
+    assert child_environment()["MCP_SCOPED_TOKEN"] == "scoped-secret"
 
 
 class TestMCPServerEndpoints:

@@ -8,6 +8,7 @@ to base tears the schema back down.
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import tempfile
@@ -196,6 +197,14 @@ def test_upgrade_head_creates_org_schema():
                 "max_connections_per_host",
                 "keepalive_timeout",
             } <= route_cols
+            mcp_cols = {
+                r[1] for r in con.execute("PRAGMA table_info(mcp_servers)")
+            }
+            a2a_cols = {
+                r[1] for r in con.execute("PRAGMA table_info(a2a_agents)")
+            }
+            assert "config_encrypted" in mcp_cols
+            assert "auth_token_encrypted" in a2a_cols
             approval_cols = {
                 r[1] for r in con.execute("PRAGMA table_info(approval_records)")
             }
@@ -624,6 +633,87 @@ if writes:
         },
     )
     assert r.returncode == 0, r.stderr
+
+
+def test_private_integration_config_is_encrypted_during_migration():
+    from cryptography.fernet import Fernet
+
+    prev_database = os.environ.get("DATABASE_URL")
+    prev_key = os.environ.get("OSTIARI_ENCRYPTION_KEY")
+    key = Fernet.generate_key().decode()
+    os.environ["OSTIARI_ENCRYPTION_KEY"] = key
+    with tempfile.TemporaryDirectory() as d:
+        db = os.path.join(d, "m.db")
+        cfg = _alembic_cfg(db)
+        try:
+            command.upgrade(cfg, "d8f1a3c5e7b9")
+            con = sqlite3.connect(db)
+            now = "2026-08-26 12:00:00"
+            con.execute(
+                "INSERT INTO gateways "
+                "(org_id, id, name, description, endpoint, status, config, "
+                "created_at, updated_at) VALUES "
+                "('default', 'secure-gateway', 'Gateway', '', "
+                "'http://gateway:8421', 'registered', '{}', ?, ?)",
+                (now, now),
+            )
+            con.execute(
+                "INSERT INTO mcp_servers "
+                "(org_id, name, mode, package, module, url, command, config, "
+                "allowed_tools, blocked_tools, prefix, gateway_id, created_at) "
+                "VALUES ('default', 'github', 'remote', '', '', "
+                "'https://mcp.example/mcp', '[]', "
+                "'{\"token\":\"mcp-secret\"}', NULL, '[]', 'github', "
+                "'secure-gateway', ?)",
+                (now,),
+            )
+            con.execute(
+                "INSERT INTO a2a_agents "
+                "(org_id, name, agent_key, url, auth_token, gateway_id, "
+                "created_at) VALUES ('default', 'peer', 'peer', "
+                "'https://peer.example', 'a2a-secret', 'secure-gateway', ?)",
+                (now,),
+            )
+            con.commit()
+            con.close()
+
+            command.upgrade(cfg, "head")
+            con = sqlite3.connect(db)
+            mcp_plain, mcp_encrypted = con.execute(
+                "SELECT config, config_encrypted FROM mcp_servers"
+            ).fetchone()
+            a2a_plain, a2a_encrypted = con.execute(
+                "SELECT auth_token, auth_token_encrypted FROM a2a_agents"
+            ).fetchone()
+            assert mcp_plain == "{}"
+            assert a2a_plain == ""
+            assert "mcp-secret" not in mcp_encrypted
+            assert "a2a-secret" not in a2a_encrypted
+            cipher = Fernet(key.encode())
+            assert json.loads(
+                cipher.decrypt(mcp_encrypted.encode()).decode()
+            ) == {"token": "mcp-secret"}
+            assert (
+                cipher.decrypt(a2a_encrypted.encode()).decode()
+                == "a2a-secret"
+            )
+            con.close()
+
+            command.downgrade(cfg, "d8f1a3c5e7b9")
+            con = sqlite3.connect(db)
+            assert json.loads(
+                con.execute("SELECT config FROM mcp_servers").fetchone()[0]
+            ) == {"token": "mcp-secret"}
+            assert con.execute(
+                "SELECT auth_token FROM a2a_agents"
+            ).fetchone()[0] == "a2a-secret"
+            con.close()
+        finally:
+            _restore_env(prev_database)
+            if prev_key is None:
+                os.environ.pop("OSTIARI_ENCRYPTION_KEY", None)
+            else:
+                os.environ["OSTIARI_ENCRYPTION_KEY"] = prev_key
 
 
 def test_downgrade_base_is_reversible():

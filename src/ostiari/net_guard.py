@@ -111,6 +111,8 @@ def validate_public_url(url: str) -> str:
     parsed = urlparse(url.strip())
     if parsed.scheme.lower() not in _ALLOWED_SCHEMES:
         raise SSRFError(f"scheme '{parsed.scheme}' not allowed (only http/https)")
+    if parsed.username or parsed.password:
+        raise SSRFError("URL userinfo is not allowed; use a credential field")
     host = parsed.hostname
     if not host:
         raise SSRFError("URL has no host")

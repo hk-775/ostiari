@@ -157,8 +157,19 @@ class PushService:
             merged_policy.update(item.content)
         return merged_policy
 
-    async def _build_config(self, db: AsyncSession, gateway: Gateway) -> dict[str, Any]:
-        """Build the full gateway config from database state."""
+    async def _build_config(
+        self,
+        db: AsyncSession,
+        gateway: Gateway,
+        *,
+        include_private: bool = True,
+    ) -> dict[str, Any]:
+        """Build gateway config from database state.
+
+        Runtime callers receive decrypted private fields. Human-facing callers
+        must set ``include_private=False`` so write-only MCP configuration
+        cannot be disclosed through a diagnostic bundle.
+        """
         # Get tools for this gateway
         result = await db.execute(select(Tool).where(
             Tool.gateway_id == gateway.id, Tool.org_id == gateway.org_id
@@ -172,6 +183,7 @@ class PushService:
             McpServer.gateway_id == gateway.id, McpServer.org_id == gateway.org_id
         ))
         mcp_servers = result.scalars().all()
+        from control_plane.routers.mcp_servers import decrypt_mcp_config
 
         config: dict[str, Any] = {
             "gateway_id": gateway.id,
@@ -197,7 +209,9 @@ class PushService:
                     "module": m.module,
                     "url": m.url,
                     "command": m.command,
-                    "config": m.config,
+                    "config": (
+                        decrypt_mcp_config(m) if include_private else {}
+                    ),
                     "allowed_tools": m.allowed_tools,
                     "blocked_tools": m.blocked_tools,
                     "prefix": m.prefix,

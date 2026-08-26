@@ -324,9 +324,9 @@ The generic control-plane `push-config` endpoint forwards a caller-supplied
 partial document to gateway `POST /config`. Feature-specific gateway endpoints,
 such as `/config/quota`, are preferable when changing one subsystem because
 `POST /config` primarily rebuilds `SidecarConfig` and the Guard/tool registry.
-Provider routes cannot be sent through this generic path: the control plane
-rejects `provider_routes` so decrypted credentials never enter its offline
-queue. Route records use the encrypted provider-route API and the authenticated
+The generic route is admin-only. Provider routes, MCP servers, and A2A agents
+cannot be sent through it, so decrypted credentials never enter its offline
+queue. Those records use credential-safe dedicated APIs and the authenticated
 gateway config channel instead.
 
 ## 10. Quota and Budget Flow

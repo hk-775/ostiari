@@ -301,10 +301,12 @@ everything it offers — then governs it identically.
    agent calls "drawio.add-rectangle" ──▶ gate chain ──▶ MCP server executes
 ```
 
-**Best practice:** prefer stdio/embedded for tools you control; use remote only
-for genuinely external services, and set `allowed_tools` / `blocked_tools` to
-whitelist exactly what agents may use — MCP servers often expose more than you
-want.
+**Best practice:** use stdio/embedded only for local development or code you
+are prepared to trust as part of the gateway itself. Production disables both
+local modes unless `OSTIARI_ALLOW_LOCAL_MCP=true`; prefer a separately
+containerized remote MCP server, and set `allowed_tools` / `blocked_tools` to
+whitelist exactly what agents may use. MCP private config is encrypted at rest
+and is never returned through the operator API.
 
 ---
 
@@ -980,8 +982,8 @@ Push button, because they arrive by different routes:
   really does hot-reload this way.
 - **Generic `push-config` callers** post to the gateway's `POST /config`, which
   replaces the whole config document and applies **only tools and policy**.
-  `provider_routes` is reserved for the encrypted provider-route API and is
-  rejected here.
+  The route is admin-only. `provider_routes`, `mcp_servers`, and `a2a_agents`
+  are reserved for credential-safe dedicated APIs and are rejected here.
 - **Quota pages** use `/config/quota` and `/config/agent-auth`, so their limits
   reach the runtime enforcers directly.
 

@@ -226,18 +226,32 @@ class TestModelConfig:
 # ─── MCP servers (DB-backed, needs a gateway) ────────────────────────────────
 
 class TestMcpServers:
-    async def test_add_get_delete(self, client):
+    async def test_add_get_delete(self, client, admin_headers):
         await _make_gateway(client)
-        r = await client.post("/api/mcp-servers/gw1",
+        r = await client.post("/api/mcp-servers/gw1", headers=admin_headers,
                               json={"name": "fs", "mode": "embedded", "module": "fs_server"})
         assert r.status_code == 200, r.text
         mcp_id = r.json()["id"]
         assert (await client.get(f"/api/mcp-servers/{mcp_id}")).status_code == 200
-        assert (await client.request("DELETE", f"/api/mcp-servers/{mcp_id}")).status_code == 200
+        assert (
+            await client.request(
+                "DELETE",
+                f"/api/mcp-servers/{mcp_id}",
+                headers=admin_headers,
+            )
+        ).status_code == 200
 
-    async def test_embedded_requires_package_or_module_400(self, client):
+    async def test_embedded_requires_package_or_module_400(
+        self,
+        client,
+        admin_headers,
+    ):
         await _make_gateway(client)
-        r = await client.post("/api/mcp-servers/gw1", json={"name": "fs", "mode": "embedded"})
+        r = await client.post(
+            "/api/mcp-servers/gw1",
+            headers=admin_headers,
+            json={"name": "fs", "mode": "embedded"},
+        )
         assert r.status_code == 400
 
     async def test_get_missing_404(self, client):

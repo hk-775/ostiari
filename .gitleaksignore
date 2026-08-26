@@ -1,0 +1,7 @@
+# Exact historical false positives: deterministic Fernet test fixtures and
+# Kubernetes/Helm Secret key *names*. No production credential values.
+dd4928a615cd15ddea2f4020c900c125a49ef298:control-plane/backend/tests/test_insecure_defaults.py:generic-api-key:13
+5ddbfb9a31ed3e27dbca3a69c49dafd714f806c1:deploy/kubernetes/gateway-shared.yaml:generic-api-key:90
+5ddbfb9a31ed3e27dbca3a69c49dafd714f806c1:deploy/kubernetes/gateway-sidecar.yaml:generic-api-key:85
+5ddbfb9a31ed3e27dbca3a69c49dafd714f806c1:deploy/helm/ostiari-gateway/templates/deployment.yaml:generic-api-key:64
+cc689d6cef28ec05d205816bd1284fc1de7c4448:control-plane/backend/tests/conftest.py:generic-api-key:25

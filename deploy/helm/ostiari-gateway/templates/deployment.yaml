@@ -44,6 +44,13 @@ spec:
             # gateway Service DNS so it is reachable in-cluster.
             - name: OSTIARI_ADVERTISE_HOST
               value: {{ .Values.gateway.advertiseHost | default (include "ostiari-gateway.fullname" .) | quote }}
+            # OAuth endpoint and audience are public identifiers, not
+            # credentials. Direct env entries avoid ConfigMap secret-scanner
+            # false positives caused solely by their token-related names.
+            - name: OSTIARI_WORKLOAD_TOKEN_URL
+              value: {{ .Values.workloadIdentity.tokenUrl | quote }}
+            - name: OSTIARI_WORKLOAD_TOKEN_AUDIENCE
+              value: {{ .Values.workloadIdentity.audience | quote }}
             {{- if .Values.redis.enabled }}
             - name: OSTIARI_REDIS_URL
               valueFrom:

@@ -1,6 +1,7 @@
 """Tests for cross-agent (A2A) protocol governance:
 delegation policy, trust scoring, chain depth, identity propagation, shadow."""
 
+import pytest
 from ostiari_gateway.cross_agent import CrossAgentPolicy
 from ostiari_gateway.models import SidecarConfig
 from ostiari_gateway.server import create_app
@@ -220,6 +221,41 @@ class TestA2AStartupReconnect:
         with TestClient(app):  # runs lifespan → register → reconnect a2a
             agents = app.state.a2a_manager.list_agents()
             assert any(a["name"] == "devops_assistant" for a in agents)
+
+
+# ─── A2A endpoint validation ─────────────────────────────────────────────────
+
+class TestA2AEndpointValidation:
+    @pytest.mark.asyncio
+    async def test_rejects_internal_endpoint_advertised_by_public_card(
+        self,
+        monkeypatch,
+    ):
+        from unittest.mock import AsyncMock
+
+        from ostiari_gateway.a2a.manager import A2AManager
+        from ostiari_gateway.a2a.models import A2AAgentConfig, AgentCard
+
+        card = AgentCard(
+            name="Untrusted Agent",
+            url="http://169.254.169.254/latest/meta-data",
+        )
+        monkeypatch.setattr(
+            "ostiari_gateway.a2a.manager.fetch_agent_card",
+            AsyncMock(return_value=card),
+        )
+
+        manager = A2AManager()
+        result = await manager.add_agent(
+            A2AAgentConfig(
+                name="untrusted",
+                url="https://public-agent.example",
+            )
+        )
+
+        assert result["status"] == "error"
+        assert "metadata" in result["error"]
+        assert manager.list_agents() == []
 
 
 # ─── Dynamic (behavior-adjusted) trust ───────────────────────────────────────

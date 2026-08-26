@@ -1,12 +1,24 @@
 """MCP Manager — discovers, connects, and manages MCP server lifecycle."""
 
 import logging
+import os
 from typing import Any
 
 from ostiari_gateway.mcp.models import MCPServerConfig, MCPTool
 from ostiari_gateway.mcp.protocol import MCPServerInterface
 
 log = logging.getLogger("ostiari.sidecar.mcp")
+
+
+def _production_local_mcp_allowed() -> bool:
+    production = os.environ.get("OSTIARI_ENV", "").strip().lower() in {
+        "prod",
+        "production",
+    }
+    explicitly_allowed = os.environ.get(
+        "OSTIARI_ALLOW_LOCAL_MCP", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    return not production or explicitly_allowed
 
 
 class MCPManager:
@@ -148,6 +160,16 @@ class MCPManager:
 
     def _create_client(self, config: MCPServerConfig) -> MCPServerInterface:
         """Create the appropriate client based on mode."""
+        if (
+            config.mode in {"embedded", "stdio"}
+            and not _production_local_mcp_allowed()
+        ):
+            raise RuntimeError(
+                f"Local MCP mode {config.mode!r} is disabled in production. "
+                "Use an isolated remote MCP server, or explicitly set "
+                "OSTIARI_ALLOW_LOCAL_MCP=true after accepting the code-"
+                "execution risk."
+            )
         if config.mode == "embedded":
             from ostiari_gateway.mcp.embedded import EmbeddedMCPClient
             return EmbeddedMCPClient(config)

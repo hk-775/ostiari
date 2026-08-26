@@ -11,7 +11,7 @@
   "dependencies": {
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
-    "react-router-dom": "^6.20.0",
+    "react-router": "^7.18.2",
     "recharts": "^2.10.0"
   },
   "devDependencies": {
@@ -19,6 +19,11 @@
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.2.0",
     "typescript": "^5.4.0",
-    "vite": "^5.4.0"
+    "vite": "^6.4.3"
+  },
+  "overrides": {
+    "@babel/core": "7.29.7",
+    "nanoid": "3.3.18",
+    "postcss": "8.5.26"
   }
 }
