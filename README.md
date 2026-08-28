@@ -8,6 +8,10 @@ records everything — across any framework, from one central control plane.
 [![License: MIT-0](https://img.shields.io/badge/License-MIT--0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
+[Website](https://hk-775.github.io/ostiari/) ·
+[Architecture explorer](https://hk-775.github.io/ostiari/architecture.html) ·
+[Documentation](docs/architecture.md)
+
 ---
 
 An AI agent that can send email can leak data; one that can run SQL can drop a
