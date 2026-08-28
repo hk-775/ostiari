@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
-import { createServer as createNetServer } from "node:net";
+import { createServer, request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -52,18 +51,6 @@ function findChrome() {
   throw new Error("Chrome or Chromium is required for the public-site browser test.");
 }
 
-async function unusedPort() {
-  const server = createNetServer();
-  await new Promise((resolveListen, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolveListen);
-  });
-  const address = server.address();
-  const port = typeof address === "object" && address ? address.port : 0;
-  await new Promise((resolveClose) => server.close(resolveClose));
-  return port;
-}
-
 async function startStaticServer() {
   const server = createServer(async (request, response) => {
     try {
@@ -105,6 +92,34 @@ async function startStaticServer() {
   return { server, origin: `http://127.0.0.1:${port}` };
 }
 
+function requestJson(url, method = "GET") {
+  return new Promise((resolveRequest, reject) => {
+    const request = httpRequest(url, { method }, (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        body += chunk;
+      });
+      response.on("end", () => {
+        if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
+          reject(new Error(`HTTP ${response.statusCode || "unknown"}: ${body}`));
+          return;
+        }
+        try {
+          resolveRequest(JSON.parse(body));
+        } catch (error) {
+          reject(new Error(`Invalid JSON from ${url}: ${error}`));
+        }
+      });
+    });
+    request.setTimeout(2_000, () => {
+      request.destroy(new Error(`Timed out requesting ${url}`));
+    });
+    request.once("error", reject);
+    request.end();
+  });
+}
+
 async function pollJson(url, chrome) {
   let lastError;
   for (let attempt = 0; attempt < 120; attempt += 1) {
@@ -112,15 +127,27 @@ async function pollJson(url, chrome) {
       throw new Error(`Chrome exited before DevTools became available (code ${chrome.exitCode}).`);
     }
     try {
-      const response = await fetch(url);
-      if (response.ok) return await response.json();
-      lastError = new Error(`HTTP ${response.status}`);
+      return await requestJson(url);
     } catch (error) {
       lastError = error;
     }
     await delay(100);
   }
   throw new Error(`Timed out waiting for Chrome DevTools: ${lastError}`);
+}
+
+async function waitForDevToolsUrl(chrome, getOutput) {
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    if (chrome.exitCode !== null) {
+      throw new Error(
+        `Chrome exited before DevTools became available (code ${chrome.exitCode}).`,
+      );
+    }
+    const match = getOutput().match(/DevTools listening on (ws:\/\/\S+)/);
+    if (match) return match[1];
+    await delay(100);
+  }
+  throw new Error("Timed out waiting for Chrome to announce its DevTools endpoint.");
 }
 
 class CdpSession {
@@ -333,14 +360,14 @@ const speechHarness = `
 
 const { server, origin } = await startStaticServer();
 const profileDir = await mkdtemp(join(tmpdir(), "ostiari-pages-chrome-"));
-const debugPort = await unusedPort();
 const chromePath = findChrome();
-let chromeStderr = "";
+let chromeOutput = "";
 const chromeArgs = [
-  "--headless=new",
+  "--headless",
   "--disable-background-networking",
   "--disable-component-update",
   "--disable-default-apps",
+  "--disable-dev-shm-usage",
   "--disable-extensions",
   "--disable-gpu",
   "--disable-sync",
@@ -348,7 +375,8 @@ const chromeArgs = [
   "--mute-audio",
   "--no-default-browser-check",
   "--no-first-run",
-  `--remote-debugging-port=${debugPort}`,
+  "--remote-debugging-address=127.0.0.1",
+  "--remote-debugging-port=0",
   `--user-data-dir=${profileDir}`,
   "--window-size=1440,1000",
   "about:blank",
@@ -356,25 +384,27 @@ const chromeArgs = [
 if (process.platform === "linux") chromeArgs.unshift("--no-sandbox");
 
 const chrome = spawn(chromePath, chromeArgs, {
-  stdio: ["ignore", "ignore", "pipe"],
+  stdio: ["ignore", "pipe", "pipe"],
 });
-chrome.stderr.setEncoding("utf8");
-chrome.stderr.on("data", (chunk) => {
-  chromeStderr = `${chromeStderr}${chunk}`.slice(-12_000);
-});
+for (const stream of [chrome.stdout, chrome.stderr]) {
+  stream.setEncoding("utf8");
+  stream.on("data", (chunk) => {
+    chromeOutput = `${chromeOutput}${chunk}`.slice(-12_000);
+  });
+}
 
 let cdp;
 const browserExceptions = [];
 const requestedUrls = [];
 
 try {
-  await pollJson(`http://127.0.0.1:${debugPort}/json/version`, chrome);
-  const targetResponse = await fetch(
-    `http://127.0.0.1:${debugPort}/json/new?${encodeURIComponent("about:blank")}`,
-    { method: "PUT" },
+  const browserWebSocketUrl = await waitForDevToolsUrl(chrome, () => chromeOutput);
+  const devToolsOrigin = `http://${new URL(browserWebSocketUrl).host}`;
+  await pollJson(`${devToolsOrigin}/json/version`, chrome);
+  const target = await requestJson(
+    `${devToolsOrigin}/json/new?${encodeURIComponent("about:blank")}`,
+    "PUT",
   );
-  assert.equal(targetResponse.ok, true, "Chrome did not create a test page.");
-  const target = await targetResponse.json();
   cdp = await CdpSession.connect(target.webSocketDebuggerUrl);
 
   await cdp.send("Page.enable");
@@ -558,8 +588,8 @@ try {
       + "5 scenarios, animations, and 5 deployment views",
   );
 } catch (error) {
-  if (chromeStderr) {
-    console.error("Chrome stderr (tail):\n", chromeStderr);
+  if (chromeOutput) {
+    console.error("Chrome output (tail):\n", chromeOutput);
   }
   throw error;
 } finally {
