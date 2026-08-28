@@ -108,3 +108,82 @@
     @apply nav-item text-stone-500 hover:bg-stone-100 hover:text-stone-800;
   }
 }
+
+@keyframes architecture-flow-pulse {
+  0%, 100% {
+    transform: translateY(0);
+    box-shadow: 0 0 0 rgba(28, 25, 23, 0);
+  }
+  50% {
+    transform: translateY(-3px);
+    box-shadow: 0 12px 24px rgba(28, 25, 23, 0.16);
+  }
+}
+
+@keyframes architecture-flow-transfer {
+  0%, 100% {
+    opacity: 0.35;
+    transform: translateX(-3px);
+  }
+  50% {
+    opacity: 1;
+    transform: translateX(3px);
+  }
+}
+
+@keyframes architecture-detail-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes architecture-topology-enter {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.architecture-flow-active {
+  animation: architecture-flow-pulse 1.25s ease-in-out infinite;
+  will-change: transform, box-shadow;
+}
+
+.architecture-flow-arrow-active {
+  animation: architecture-flow-transfer 0.75s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+.architecture-progress {
+  transition: width 420ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.architecture-detail-enter {
+  animation: architecture-detail-enter 320ms ease-out both;
+}
+
+.architecture-topology-enter {
+  animation: architecture-topology-enter 420ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .architecture-flow-active,
+  .architecture-flow-arrow-active,
+  .architecture-detail-enter,
+  .architecture-topology-enter {
+    animation: none;
+  }
+
+  .architecture-progress {
+    transition: none;
+  }
+}

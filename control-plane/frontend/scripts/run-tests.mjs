@@ -48,8 +48,11 @@ try {
     },
     define: {
       "import.meta.env.DEV": "false",
+      "import.meta.env.BASE_URL": '"/"',
+      "import.meta.env.VITE_ARCHITECTURE_STEP_MS": '"1800"',
       "import.meta.env.VITE_API_URL": '"http://localhost:8400"',
       "import.meta.env.VITE_DEMO_LOGIN": '"false"',
+      "import.meta.env.VITE_PUBLIC_SITE": '"false"',
     },
     logLevel: "warning",
   });

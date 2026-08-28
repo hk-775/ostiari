@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
   ArrowRight,
@@ -13,6 +13,8 @@ import {
   RotateCcw,
   Server,
   ShieldCheck,
+  Volume2,
+  VolumeX,
   Workflow,
 } from "lucide-react";
 import {
@@ -39,38 +41,173 @@ const TOPOLOGY_COLUMNS = [
   { key: "controls", label: "Controls", icon: ShieldCheck, className: "border-violet-200 bg-violet-50/60 text-violet-800" },
 ] as const;
 
+const NARRATION_STORAGE_KEY = "ostiari-architecture-narration";
+const configuredPlaybackDelay = Number(import.meta.env.VITE_ARCHITECTURE_STEP_MS);
+const PLAYBACK_DELAY_MS = Number.isFinite(configuredPlaybackDelay) && configuredPlaybackDelay > 0
+  ? configuredPlaybackDelay
+  : 1800;
+
 export function Architecture() {
   const [viewMode, setViewMode] = useState<ViewMode>("runtime");
   const [scenarioIndex, setScenarioIndex] = useState(0);
   const [stepIndex, setStepIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [deploymentIndex, setDeploymentIndex] = useState(0);
+  const [audioEnabled, setAudioEnabled] = useState(true);
+  const [audioAvailable, setAudioAvailable] = useState(true);
+  const narrationTokenRef = useRef(0);
+  const activeStepRef = useRef<HTMLButtonElement | null>(null);
 
   const scenario = RUNTIME_SCENARIOS[scenarioIndex];
   const activeStep = scenario.steps[stepIndex];
   const deployment = DEPLOYMENT_VIEWS[deploymentIndex];
 
+  const cancelNarration = useCallback(() => {
+    narrationTokenRef.current += 1;
+    if ("speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+  }, []);
+
+  const narrateActiveStep = useCallback((onComplete: () => void) => {
+    let cancelled = false;
+    let fallbackTimer: number | undefined;
+    const finish = () => {
+      if (cancelled) return;
+      cancelled = true;
+      if (fallbackTimer !== undefined) window.clearTimeout(fallbackTimer);
+      onComplete();
+    };
+
+    if (!audioEnabled || !audioAvailable) {
+      fallbackTimer = window.setTimeout(finish, PLAYBACK_DELAY_MS);
+      return () => {
+        cancelled = true;
+        if (fallbackTimer !== undefined) window.clearTimeout(fallbackTimer);
+      };
+    }
+
+    const token = narrationTokenRef.current + 1;
+    narrationTokenRef.current = token;
+    window.speechSynthesis.cancel();
+
+    const utterance = new SpeechSynthesisUtterance(
+      `${activeStep.title}. ${activeStep.detail}`,
+    );
+    utterance.rate = 1.02;
+    utterance.pitch = 1;
+    utterance.volume = 0.9;
+    const preferredVoice = window.speechSynthesis.getVoices().find(
+      (voice) => voice.lang.toLowerCase().startsWith("en") && voice.localService,
+    );
+    if (preferredVoice) utterance.voice = preferredVoice;
+
+    utterance.onend = () => {
+      if (narrationTokenRef.current === token) finish();
+    };
+    utterance.onerror = () => {
+      if (narrationTokenRef.current === token) finish();
+    };
+
+    document.dispatchEvent(new CustomEvent("ostiari:architecture-audio", {
+      detail: {
+        scenario: scenario.id,
+        step: stepIndex,
+        text: utterance.text,
+      },
+    }));
+    window.speechSynthesis.resume();
+    window.speechSynthesis.speak(utterance);
+    fallbackTimer = window.setTimeout(finish, 30_000);
+
+    return () => {
+      cancelled = true;
+      if (fallbackTimer !== undefined) window.clearTimeout(fallbackTimer);
+      if (narrationTokenRef.current === token) cancelNarration();
+    };
+  }, [
+    activeStep.detail,
+    activeStep.title,
+    audioAvailable,
+    audioEnabled,
+    cancelNarration,
+    scenario.id,
+    stepIndex,
+  ]);
+
   useEffect(() => {
-    if (!playing) return;
-    const timer = window.setTimeout(() => {
+    const supported = "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
+    setAudioAvailable(supported);
+    const stored = window.localStorage.getItem(NARRATION_STORAGE_KEY);
+    if (stored === "off") setAudioEnabled(false);
+    return cancelNarration;
+  }, [cancelNarration]);
+
+  useEffect(() => {
+    if (!playing) return undefined;
+    return narrateActiveStep(() => {
       if (stepIndex >= scenario.steps.length - 1) {
         setPlaying(false);
         return;
       }
       setStepIndex((current) => current + 1);
-    }, 1800);
-    return () => window.clearTimeout(timer);
-  }, [playing, scenario.steps.length, stepIndex]);
+    });
+  }, [narrateActiveStep, playing, scenario.steps.length, stepIndex]);
+
+  useEffect(() => {
+    if (!playing) return;
+    activeStepRef.current?.scrollIntoView({
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+        ? "auto"
+        : "smooth",
+      block: "nearest",
+      inline: "center",
+    });
+  }, [playing, stepIndex]);
 
   const selectScenario = (index: number) => {
+    cancelNarration();
     setScenarioIndex(index);
     setStepIndex(0);
     setPlaying(false);
   };
 
   const resetRuntime = () => {
+    cancelNarration();
     setPlaying(false);
     setStepIndex(0);
+  };
+
+  const selectRuntimeStep = (index: number) => {
+    cancelNarration();
+    setPlaying(false);
+    setStepIndex(index);
+  };
+
+  const togglePlayback = () => {
+    if (playing) {
+      cancelNarration();
+      setPlaying(false);
+      return;
+    }
+    if (stepIndex >= scenario.steps.length - 1) setStepIndex(0);
+    if ("speechSynthesis" in window) window.speechSynthesis.resume();
+    setPlaying(true);
+  };
+
+  const toggleAudio = () => {
+    const next = !audioEnabled;
+    setAudioEnabled(next);
+    window.localStorage.setItem(NARRATION_STORAGE_KEY, next ? "on" : "off");
+    if (!next) cancelNarration();
+  };
+
+  const selectViewMode = (mode: ViewMode) => {
+    if (mode !== "runtime") {
+      cancelNarration();
+      setPlaying(false);
+    }
+    setViewMode(mode);
   };
 
   return (
@@ -88,7 +225,8 @@ export function Architecture() {
             type="button"
             role="tab"
             aria-selected={viewMode === "runtime"}
-            onClick={() => setViewMode("runtime")}
+            data-testid="architecture-view-runtime"
+            onClick={() => selectViewMode("runtime")}
             className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition ${
               viewMode === "runtime" ? "bg-stone-900 text-white" : "text-stone-600 hover:bg-stone-50"
             }`}
@@ -100,7 +238,8 @@ export function Architecture() {
             type="button"
             role="tab"
             aria-selected={viewMode === "deployment"}
-            onClick={() => setViewMode("deployment")}
+            data-testid="architecture-view-deployment"
+            onClick={() => selectViewMode("deployment")}
             className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition ${
               viewMode === "deployment" ? "bg-stone-900 text-white" : "text-stone-600 hover:bg-stone-50"
             }`}
@@ -113,7 +252,11 @@ export function Architecture() {
 
       {viewMode === "runtime" ? (
         <>
-          <section className="rounded-lg border border-stone-200 bg-white shadow-sm">
+          <section
+            className="rounded-lg border border-stone-200 bg-white shadow-sm"
+            data-testid="architecture-runtime"
+            data-playing={playing}
+          >
             <div className="border-b border-stone-100 p-4 sm:p-5">
               <div className="flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label="Runtime scenario">
                 {RUNTIME_SCENARIOS.map((item, index) => (
@@ -122,6 +265,7 @@ export function Architecture() {
                     type="button"
                     role="tab"
                     aria-selected={scenarioIndex === index}
+                    data-scenario-id={item.id}
                     onClick={() => selectScenario(index)}
                     className={`shrink-0 rounded-md border px-3 py-2 text-left transition ${
                       scenarioIndex === index
@@ -149,10 +293,31 @@ export function Architecture() {
                   </div>
                   <p className="mt-2 text-sm leading-6 text-stone-600">{scenario.summary}</p>
                 </div>
-                <div className="flex items-center gap-1 rounded-lg border border-stone-200 bg-stone-50 p-1">
+                <div className="flex flex-wrap items-center gap-1 rounded-lg border border-stone-200 bg-stone-50 p-1">
                   <button
                     type="button"
-                    onClick={() => setStepIndex((current) => Math.max(0, current - 1))}
+                    onClick={toggleAudio}
+                    disabled={!audioAvailable}
+                    aria-pressed={audioEnabled}
+                    className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-2 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                      audioEnabled
+                        ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                        : "text-stone-500 hover:bg-white"
+                    }`}
+                    title={
+                      audioAvailable
+                        ? audioEnabled ? "Turn narration off" : "Turn narration on"
+                        : "Narration is unavailable in this browser"
+                    }
+                  >
+                    {audioEnabled ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
+                    <span className="hidden sm:inline">
+                      {audioEnabled ? "Narration on" : "Narration off"}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => selectRuntimeStep(Math.max(0, stepIndex - 1))}
                     disabled={stepIndex === 0}
                     className="rounded-md p-2 text-stone-600 transition hover:bg-white disabled:opacity-30"
                     title="Previous step"
@@ -162,7 +327,7 @@ export function Architecture() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setPlaying((current) => !current)}
+                    onClick={togglePlayback}
                     className="rounded-md bg-stone-900 p-2 text-white transition hover:bg-stone-700"
                     title={playing ? "Pause flow" : "Play flow"}
                     aria-label={playing ? "Pause flow" : "Play flow"}
@@ -180,7 +345,7 @@ export function Architecture() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setStepIndex((current) => Math.min(scenario.steps.length - 1, current + 1))}
+                    onClick={() => selectRuntimeStep(Math.min(scenario.steps.length - 1, stepIndex + 1))}
                     disabled={stepIndex === scenario.steps.length - 1}
                     className="rounded-md p-2 text-stone-600 transition hover:bg-white disabled:opacity-30"
                     title="Next step"
@@ -188,6 +353,22 @@ export function Architecture() {
                   >
                     <ChevronRight className="h-4 w-4" />
                   </button>
+                </div>
+              </div>
+
+              <div className="mt-5" aria-label={`Flow progress: step ${stepIndex + 1} of ${scenario.steps.length}`}>
+                <div className="mb-1.5 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wide text-stone-400">
+                  <span>Flow progress</span>
+                  <span>{stepIndex + 1} / {scenario.steps.length}</span>
+                </div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-stone-100">
+                  <div
+                    className="architecture-progress h-full rounded-full"
+                    style={{
+                      backgroundColor: scenario.accent,
+                      width: `${((stepIndex + 1) / scenario.steps.length) * 100}%`,
+                    }}
+                  />
                 </div>
               </div>
 
@@ -200,14 +381,16 @@ export function Architecture() {
                     return (
                       <div key={`${scenario.id}-${step.title}`} className="flex items-center gap-2">
                         <button
+                          ref={isActive ? activeStepRef : undefined}
                           type="button"
-                          onClick={() => {
-                            setStepIndex(index);
-                            setPlaying(false);
-                          }}
+                          onClick={() => selectRuntimeStep(index)}
+                          aria-current={isActive ? "step" : undefined}
+                          data-step-index={index}
                           className={`w-40 rounded-lg border p-3 text-left transition ${
                             isActive
-                              ? `${lane.className} shadow-sm ring-2 ring-stone-900 ring-offset-2`
+                              ? `${lane.className} shadow-sm ring-2 ring-stone-900 ring-offset-2 ${
+                                  playing ? "architecture-flow-active" : ""
+                                }`
                               : isComplete
                                 ? "border-stone-300 bg-stone-100 text-stone-700"
                                 : "border-stone-200 bg-white text-stone-500 hover:bg-stone-50"
@@ -219,7 +402,13 @@ export function Architecture() {
                           <span className="mt-1 block text-xs font-semibold leading-5">{step.title}</span>
                         </button>
                         {index < scenario.steps.length - 1 && (
-                          <ArrowRight className={`h-4 w-4 shrink-0 ${isComplete ? "text-stone-600" : "text-stone-300"}`} />
+                          <span className={
+                            playing && stepIndex === index + 1
+                              ? "architecture-flow-arrow-active"
+                              : ""
+                          }>
+                            <ArrowRight className={`h-4 w-4 shrink-0 ${isComplete ? "text-stone-600" : "text-stone-300"}`} />
+                          </span>
                         )}
                       </div>
                     );
@@ -228,7 +417,12 @@ export function Architecture() {
               </div>
 
               <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto]">
-                <div className={`rounded-lg border p-5 ${LANE_STYLES[activeStep.lane].className}`}>
+                <div
+                  key={`${scenario.id}-${stepIndex}`}
+                  className={`architecture-detail-enter rounded-lg border p-5 ${LANE_STYLES[activeStep.lane].className}`}
+                  aria-live="polite"
+                  data-testid="architecture-step-detail"
+                >
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="text-xs font-semibold uppercase">
                       Step {stepIndex + 1} of {scenario.steps.length} · {LANE_STYLES[activeStep.lane].label}
@@ -280,7 +474,10 @@ export function Architecture() {
         </>
       ) : (
         <>
-          <section className="rounded-lg border border-stone-200 bg-white shadow-sm">
+          <section
+            className="rounded-lg border border-stone-200 bg-white shadow-sm"
+            data-testid="architecture-deployment"
+          >
             <div className="border-b border-stone-100 p-4 sm:p-5">
               <div className="flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label="Deployment topology">
                 {DEPLOYMENT_VIEWS.map((item, index) => (
@@ -289,6 +486,7 @@ export function Architecture() {
                     type="button"
                     role="tab"
                     aria-selected={deploymentIndex === index}
+                    data-deployment-id={item.id}
                     onClick={() => setDeploymentIndex(index)}
                     className={`shrink-0 rounded-md border px-3 py-2 text-sm font-semibold transition ${
                       deploymentIndex === index
@@ -325,7 +523,11 @@ export function Architecture() {
                   const Icon = column.icon;
                   const values = deployment[column.key];
                   return (
-                    <div key={column.key} className="relative">
+                    <div
+                      key={`${deployment.id}-${column.key}`}
+                      className="architecture-topology-enter relative"
+                      style={{ animationDelay: `${index * 70}ms` }}
+                    >
                       <div className={`h-full rounded-lg border p-4 ${column.className}`}>
                         <div className="flex items-center gap-2">
                           <Icon className="h-4 w-4" />

@@ -1,6 +1,14 @@
 import { useEffect } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router";
+import {
+  BrowserRouter,
+  HashRouter,
+  Link,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+} from "react-router";
 import { Layout } from "./components/Layout";
 import { Dashboard } from "./pages/Dashboard";
 import { Gateways } from "./pages/Gateways";
@@ -33,6 +41,7 @@ import { Providers } from "./pages/Providers";
 import { useAuthStore } from "./stores/authStore";
 import { AgentQuotas } from "./pages/AgentQuotas";
 import { SSOCallbackPage } from "./pages/SSOCallbackPage";
+import { IS_PUBLIC_SITE, publicAsset } from "./lib/publicSite";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchInterval: 10000 } },
@@ -115,23 +124,70 @@ const PROTECTED_ROUTES = [
 
 export const PROTECTED_ROUTE_PATHS = PROTECTED_ROUTES.map((route) => route.path);
 
+function PublicArchitecturePage() {
+  return (
+    <div className="min-h-screen bg-stone-50">
+      <nav className="border-b border-stone-200 bg-white">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-6 px-5 py-4 sm:px-8">
+          <Link to="/" aria-label="Ostiari home">
+            <img src={publicAsset("logo.svg")} alt="Ostiari" className="h-8 w-auto" />
+          </Link>
+          <div className="flex items-center gap-4 text-sm font-medium">
+            <Link to="/" className="text-stone-600 transition hover:text-stone-900">
+              Landing page
+            </Link>
+            <a
+              href="https://github.com/hk-775/ostiari"
+              className="rounded-lg bg-stone-900 px-3 py-2 text-white transition hover:bg-stone-700"
+            >
+              GitHub
+            </a>
+          </div>
+        </div>
+      </nav>
+      <main className="mx-auto max-w-7xl px-4 py-8 sm:px-8">
+        <Architecture />
+      </main>
+    </div>
+  );
+}
+
+function PublicRoutes() {
+  return (
+    <Routes>
+      <Route path="/" element={<Landing />} />
+      <Route path="/architecture-demo" element={<PublicArchitecturePage />} />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
+  );
+}
+
+function ControlPlaneRoutes() {
+  return (
+    <AuthInitializer>
+      <Routes>
+        <Route path="/" element={<Landing />} />
+        <Route path="/architecture-demo" element={<PublicArchitecturePage />} />
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/auth/sso-callback" element={<SSOCallbackPage />} />
+        <Route element={<RequireAuth><Layout /></RequireAuth>}>
+          {PROTECTED_ROUTES.map((route) => (
+            <Route key={route.path} path={route.path} element={route.element} />
+          ))}
+        </Route>
+      </Routes>
+    </AuthInitializer>
+  );
+}
+
 export default function App() {
+  const Router = IS_PUBLIC_SITE ? HashRouter : BrowserRouter;
+
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <AuthInitializer>
-          <Routes>
-            <Route path="/" element={<Landing />} />
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/auth/sso-callback" element={<SSOCallbackPage />} />
-            <Route element={<RequireAuth><Layout /></RequireAuth>}>
-              {PROTECTED_ROUTES.map((route) => (
-                <Route key={route.path} path={route.path} element={route.element} />
-              ))}
-            </Route>
-          </Routes>
-        </AuthInitializer>
-      </BrowserRouter>
+      <Router>
+        {IS_PUBLIC_SITE ? <PublicRoutes /> : <ControlPlaneRoutes />}
+      </Router>
     </QueryClientProvider>
   );
 }
