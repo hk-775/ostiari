@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { api } from "../lib/api";
 import { DEMO_MODES, DEPLOYMENT_VIEWS, GATE_CHAIN } from "../lib/architecture";
+import { IS_PUBLIC_SITE, publicAsset } from "../lib/publicSite";
 
 const FEATURES = [
   { icon: Shield, title: "Policy Engine", desc: "Per-tool allow/block/risk-score. Every call validated before execution.", color: "text-rose-600", bg: "bg-rose-50" },
@@ -41,13 +42,17 @@ export function Landing() {
     queryFn: api.gateways.list,
     refetchInterval: 5000,
     retry: false,
+    enabled: !IS_PUBLIC_SITE,
   });
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-stone-50 via-white to-violet-50/30">
+    <div
+      className="min-h-screen bg-gradient-to-br from-stone-50 via-white to-violet-50/30"
+      data-testid="canonical-landing"
+    >
       {/* Hero */}
       <div className="max-w-5xl mx-auto px-8 pt-10 pb-5">
-        <img src="/logo.svg" alt="Ostiari" className="w-full" />
+        <img src={publicAsset("logo.svg")} alt="Ostiari" className="w-full" />
 
         <div className="flex items-center justify-between gap-8 mt-5">
           <p className="text-2xl font-semibold text-stone-900 leading-snug">AI agents are autonomous.<br /><span className="text-violet-700">Your risk shouldn't be.</span></p>
@@ -55,7 +60,11 @@ export function Landing() {
             <Link to="/dashboard" className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg hover:shadow-xl transition">
               Open Control Plane <ArrowRight className="h-4 w-4" />
             </Link>
-            <Link to="/architecture" className="inline-flex items-center gap-2 rounded-xl border border-stone-200 bg-white px-5 py-2.5 text-sm font-semibold text-stone-700 hover:bg-stone-50 transition">
+            <Link
+              to="/architecture"
+              data-testid="architecture-demo-link"
+              className="inline-flex items-center gap-2 rounded-xl border border-stone-200 bg-white px-5 py-2.5 text-sm font-semibold text-stone-700 hover:bg-stone-50 transition"
+            >
               Watch Architecture Demo
             </Link>
           </div>

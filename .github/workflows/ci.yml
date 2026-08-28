@@ -188,6 +188,16 @@ jobs:
         working-directory: control-plane/frontend
         run: npx vite build
 
+      - name: Build public website
+        working-directory: control-plane/frontend
+        env:
+          VITE_PUBLIC_SITE: "true"
+        run: npm run build -- --base=/ostiari/
+
+      - name: Test public website end to end
+        working-directory: control-plane/frontend
+        run: node scripts/test-public-site.mjs
+
       - name: Install embedded dashboard
         working-directory: dashboard-ui
         run: npm ci

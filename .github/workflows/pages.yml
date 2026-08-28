@@ -5,9 +5,7 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/pages.yml"
-      - "site/index.html"
-      - "site/architecture.html"
-      - "site/architecture.drawio"
+      - "control-plane/frontend/**"
   workflow_dispatch:
 
 permissions:
@@ -30,10 +28,26 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: Prepare public site
-        run: |
-          mkdir -p _site
-          cp site/index.html site/architecture.html site/architecture.drawio _site/
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.16.0"
+          cache: npm
+          cache-dependency-path: control-plane/frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: control-plane/frontend
+        run: npm ci
+
+      - name: Build canonical public site
+        working-directory: control-plane/frontend
+        env:
+          VITE_PUBLIC_SITE: "true"
+        run: npm run build -- --base=/ostiari/
+
+      - name: Test landing and architecture experience in Chrome
+        working-directory: control-plane/frontend
+        run: node scripts/test-public-site.mjs
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
@@ -41,7 +55,7 @@ jobs:
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
-          path: _site
+          path: control-plane/frontend/dist
 
       - name: Deploy GitHub Pages
         id: deployment
