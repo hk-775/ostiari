@@ -445,6 +445,11 @@ try {
     };
   })()`);
   assert.match(landing.copy, /AI agents are autonomous/);
+  assert.match(landing.copy, /Open Control Plane/);
+  assert.match(landing.copy, /Watch Architecture Demo/);
+  assert.match(landing.copy, /Fleet status \(connecting…\)/);
+  assert.match(landing.copy, /Enter Control Plane/);
+  assert.doesNotMatch(landing.copy, /Run the demo|Run Ostiari|available in the running demo/);
   assert.equal(landing.logoComplete, true);
   assert.match(landing.logoUrl, /\/ostiari\/logo\.svg$/);
   assert.equal(
@@ -460,7 +465,7 @@ try {
     `Boolean(document.querySelector('[data-testid="architecture-runtime"]'))`,
     "the public architecture experience",
   );
-  assert.equal(await evaluate(cdp, "window.location.hash"), "#/architecture-demo");
+  assert.equal(await evaluate(cdp, "window.location.hash"), "#/architecture");
   assert.equal(
     await evaluate(cdp, "document.querySelectorAll('[data-scenario-id]').length"),
     5,
@@ -600,5 +605,17 @@ try {
     new Promise((resolveExit) => chrome.once("exit", resolveExit)),
     delay(2_000),
   ]);
-  await rm(profileDir, { recursive: true, force: true });
+  if (chrome.exitCode === null) {
+    chrome.kill("SIGKILL");
+    await Promise.race([
+      new Promise((resolveExit) => chrome.once("exit", resolveExit)),
+      delay(2_000),
+    ]);
+  }
+  await rm(profileDir, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
 }
