@@ -5,6 +5,7 @@ from typing import Any
 
 import httpx
 
+from ostiari_gateway import __version__
 from ostiari_gateway.mcp.models import MCPServerConfig
 
 log = logging.getLogger("ostiari.sidecar.mcp.remote")
@@ -39,7 +40,10 @@ class RemoteMCPClient:
                 "params": {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {},
-                    "clientInfo": {"name": "ostiari-sidecar", "version": "0.1.0"},
+                    "clientInfo": {
+                        "name": "ostiari-sidecar",
+                        "version": __version__,
+                    },
                 },
             },
         )

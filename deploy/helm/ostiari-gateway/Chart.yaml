@@ -2,8 +2,8 @@ apiVersion: v2
 name: ostiari-gateway
 description: Helm chart for the Ostiari Agent Gateway
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.3.0-beta.2
+appVersion: "0.3.0b2"
 keywords:
   - ostiari
   - gateway

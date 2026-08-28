@@ -270,6 +270,7 @@ jobs:
       - name: Build Python distributions
         run: |
           pip install build
+          python tools/check_release_versions.py
           python -m build .
           python -m build vendor/axonllm --outdir dist/axonllm
           python -m build gateway
@@ -303,6 +304,19 @@ jobs:
               source = Path(module.__file__).resolve()
               assert environment in source.parents, (module.__name__, source)
 
+          first_party = {
+              name: version(name)
+              for name in (
+                  "ostiari",
+                  "ostiari-gateway",
+                  "ostiari-control-plane",
+              )
+          }
+          assert len(set(first_party.values())) == 1, first_party
+          expected = first_party["ostiari"]
+          assert ostiari.__version__ == expected
+          assert ostiari_gateway.__version__ == expected
+          assert control_plane.__version__ == expected
           assert version("axon-llm") == "0.3.1"
           router = AxonRouter()
           router.require()

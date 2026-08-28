@@ -191,7 +191,7 @@ export function LoginPage() {
         </div>
 
         <p className="mt-6 text-center text-xs text-stone-400">
-          Ostiari Control Plane v0.1.0
+          Ostiari Control Plane v0.3.0b2
         </p>
       </div>
     </div>

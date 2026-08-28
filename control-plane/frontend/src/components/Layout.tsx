@@ -224,7 +224,7 @@ export function Layout() {
               </button>
             </div>
           ) : (
-            <p className="text-[11px] text-stone-400">v0.1.0</p>
+            <p className="text-[11px] text-stone-400">v0.3.0b2</p>
           )}
         </div>
       </aside>

@@ -7,6 +7,7 @@ import os
 import re
 from typing import Any
 
+from ostiari_gateway import __version__
 from ostiari_gateway.mcp.models import MCPServerConfig
 
 log = logging.getLogger("ostiari.sidecar.mcp.stdio")
@@ -86,7 +87,7 @@ class StdioMCPClient:
         result = await self._send_request("initialize", {
             "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "clientInfo": {"name": "ostiari-sidecar", "version": "0.1.0"},
+            "clientInfo": {"name": "ostiari-sidecar", "version": __version__},
         })
 
         # Send initialized notification

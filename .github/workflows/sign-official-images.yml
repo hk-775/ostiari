@@ -41,9 +41,14 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.release_sha }}
 
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
       - name: Validate protected signer configuration
         env:
           AWS_SIGNING_ROLE_ARN: ${{ vars.AWS_SIGNING_ROLE_ARN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
           test "$GITHUB_REF" = "refs/heads/main"
@@ -51,6 +56,7 @@ jobs:
           [[ "$AWS_REGION" =~ ^[a-z]{2}-[a-z]+-[0-9]+$ ]]
           [[ "$ECR_REPOSITORY_PREFIX" =~ ^[a-z0-9][a-z0-9._/-]*$ ]]
           [[ "$AWS_SIGNING_ROLE_ARN" =~ ^arn:aws:iam::${AWS_ACCOUNT_ID}:role/.+$ ]]
+          python tools/check_release_versions.py --release-tag "$RELEASE_TAG"
 
       - name: Require immutable release identity
         env:
@@ -60,7 +66,6 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]
           test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
           test "$(gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}" --jq .sha)" = "$RELEASE_SHA"
           test "$(gh release view "$RELEASE_TAG" --json tagName --jq .tagName)" = "$RELEASE_TAG"

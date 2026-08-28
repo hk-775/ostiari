@@ -2,9 +2,13 @@
 
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import yaml
+
+from tools.check_release_versions import _module_version, _semver
 
 ROOT = Path(__file__).resolve().parents[2]
 SHA256_RE = re.compile(r"sha256:[0-9a-f]{64}$")
@@ -16,7 +20,7 @@ def test_publish_workflow_builds_and_verifies_complete_platform_set() -> None:
 
     assert "python -m build --outdir \"$GITHUB_WORKSPACE/release-dist\" ." in workflow
     assert (
-        "python -m build --outdir \"$GITHUB_WORKSPACE/release-dist\" "
+        "python -m build --outdir \"$GITHUB_WORKSPACE/companion-dist\" "
         "vendor/axonllm"
     ) in workflow
     assert (
@@ -26,9 +30,56 @@ def test_publish_workflow_builds_and_verifies_complete_platform_set() -> None:
         "python -m build --outdir \"$GITHUB_WORKSPACE/release-dist\" "
         "control-plane/backend"
     ) in workflow
-    assert "/tmp/ostiari-release-verify/bin/pip install release-dist/*.whl" in workflow
+    assert "release-dist/*.whl companion-dist/*.whl" in workflow
+    assert (
+        'python tools/check_release_versions.py \\\n'
+        '            --release-tag "$GITHUB_REF_NAME"'
+    ) in workflow
+    assert "name: Publish bundled AxonLLM distribution" in workflow
+    assert "packages-dir: companion-dist/" in workflow
     assert "packages-dir: release-dist/" in workflow
-    assert "release-dist/* python-sbom.cdx.json --clobber" in workflow
+    assert workflow.count("pypa/gh-action-pypi-publish@") == 2
+    assert workflow.index("packages-dir: companion-dist/") < workflow.index(
+        "packages-dir: release-dist/"
+    )
+    assert (
+        "release-dist/* companion-dist/* python-sbom.cdx.json --clobber"
+        in workflow
+    )
+
+
+def test_release_tag_contract_uses_the_exact_pep440_version() -> None:
+    version = _module_version("src/ostiari/__init__.py")
+    valid = subprocess.run(
+        [
+            sys.executable,
+            "tools/check_release_versions.py",
+            "--release-tag",
+            f"v{version}",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert valid.returncode == 0, valid.stdout + valid.stderr
+
+    semver = _semver(version)
+    invalid_tag = f"v{semver}" if semver != version else f"v{version}-unexpected"
+    invalid = subprocess.run(
+        [
+            sys.executable,
+            "tools/check_release_versions.py",
+            "--release-tag",
+            invalid_tag,
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert invalid.returncode == 1
+    assert f"expected 'v{version}'" in invalid.stdout
 
 
 def test_external_github_actions_are_pinned_to_commit_shas() -> None:
@@ -60,6 +111,10 @@ def test_official_image_signing_is_keyless_release_bound_and_scoped() -> None:
     assert workflow["permissions"] == {"contents": "write", "id-token": "write"}
     assert job["environment"] == "production-signing"
     assert "test \"$GITHUB_REF\" = \"refs/heads/main\"" in text
+    assert (
+        'python tools/check_release_versions.py --release-tag "$RELEASE_TAG"'
+        in text
+    )
     assert "imageTag=${RELEASE_SHA}" in text
     assert "test \"$actual\" = \"$digest\"" in text
     assert "cosign sign --yes" in text

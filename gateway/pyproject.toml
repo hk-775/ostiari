@@ -4,11 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ostiari-gateway"
-version = "0.1.0"
+version = "0.3.0b2"
 description = "Agent Gateway — validates, routes, and proxies agent tool calls"
 requires-python = ">=3.11"
 dependencies = [
-    "ostiari>=0.1.0",
+    "ostiari>=0.3.0b2",
     "axon-llm[server]==0.3.1",
     "fastapi>=0.100",
     "uvicorn[standard]>=0.20",

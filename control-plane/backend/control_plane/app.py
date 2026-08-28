@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
+from control_plane import __version__
 from control_plane.auth.middleware import AuthMiddleware
 from control_plane.auth.router import router as auth_router
 from control_plane.auth.sso_router import router as sso_router
@@ -131,7 +132,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Ostiari Control Plane",
     description="Centralized management for Ostiari gateway fleet",
-    version="0.1.0",
+    version=__version__,
     lifespan=lifespan,
 )
 
