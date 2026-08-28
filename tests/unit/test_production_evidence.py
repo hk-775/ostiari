@@ -193,6 +193,10 @@ def test_retention_workflow_is_protected_and_fail_closed() -> None:
     assert job["environment"] == "production-evidence"
     assert workflow["permissions"] == {"actions": "read", "contents": "read"}
     assert "gh run view \"$REHEARSAL_RUN_ID\"" in text
+    assert (
+        'python tools/check_release_versions.py --release-tag "$RELEASE_TAG"'
+        in text
+    )
     assert "--max-age-hours 24" in text
     assert "retention-days: 90" in text
     assert "if-no-files-found: error" in text

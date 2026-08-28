@@ -112,12 +112,23 @@ The current deployment contract supports:
 
 ## Remaining Ostiari gates
 
-1. **Sign the exact public release.** The official registry authorization,
+1. **Activate the protected public-release controls.** The repository's
+   `production-signing` and `production-evidence` environments are restricted
+   to `main`, but the required-reviewer rules cannot be enabled on the current
+   private-repository plan. Before any public release job runs, make those
+   reviewer rules active, create an equally protected `pypi` environment, and
+   configure pending PyPI Trusted Publishers for `ostiari`,
+   `ostiari-gateway`, `ostiari-control-plane`, and `axon-llm` using
+   `.github/workflows/publish.yml` and the `pypi` environment. The release tag
+   must exactly match the canonical Python version; for this beta it is
+   `v0.3.0b2`.
+
+2. **Sign the exact public release.** The official registry authorization,
    keyless signing workflow, verification policy, and evidence retention are
    configured. Run it for the immutable public release tag and all published
    image digests before claiming a maintainer-hosted container install path.
 
-2. **Run the retained production-evidence gate.** The verifier and protected
+3. **Run the retained production-evidence gate.** The verifier and protected
    90-day retention workflow are complete. Before release approval, execute the
    dedicated rehearsal for the exact release digest and retain passing scan,
    load/failure, PostgreSQL restore, rollback, alarm-delivery, authenticated

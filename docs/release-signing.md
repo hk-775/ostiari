@@ -55,11 +55,12 @@ cfn-guard validate \
 
 ## GitHub environments
 
-Create `production-signing` and `production-evidence`, restrict both to `main`,
-and require reviewer approval before a job may start. Required-reviewer
-environment rules may be unavailable for private repositories on some GitHub
-billing tiers; do not perform a public signing or evidence-retention run until
-the reviewer rule is active.
+Create `production-signing`, `production-evidence`, and `pypi`; restrict all
+three to `main`, disable administrator bypass where the plan supports it, and
+require reviewer approval before a job may start. Required-reviewer environment
+rules may be unavailable for private repositories on some GitHub billing tiers;
+do not perform a public signing, evidence-retention, or package-publication run
+until the reviewer rule is active.
 
 Set these non-secret variables on `production-signing`:
 
@@ -72,9 +73,27 @@ Set these non-secret variables on `production-signing`:
 
 Do not add AWS access keys, Cosign private keys, or signing passwords.
 
+## PyPI trusted publishing
+
+Before publishing the first GitHub release, create pending Trusted Publishers
+for all four distributions:
+
+| PyPI project | GitHub owner | Repository | Workflow | Environment |
+|---|---|---|---|---|
+| `ostiari` | `hk-775` | `ostiari` | `publish.yml` | `pypi` |
+| `ostiari-gateway` | `hk-775` | `ostiari` | `publish.yml` | `pypi` |
+| `ostiari-control-plane` | `hk-775` | `ostiari` | `publish.yml` | `pypi` |
+| `axon-llm` | `hk-775` | `ostiari` | `publish.yml` | `pypi` |
+
+The release workflow publishes the reviewed bundled AxonLLM distribution
+before the three first-party distributions, then attaches all four
+distributions and the SBOM to the GitHub release. Do not add a PyPI API token.
+
 ## Sign a release
 
-1. Create the immutable release tag and GitHub release for the exact commit.
+1. Create the immutable release tag and a draft GitHub release for the exact
+   commit. The tag is `v` followed by the canonical PEP 440 package version;
+   for this beta use `v0.3.0b2`, not `v0.3.0-beta.2`.
 2. Publish the images with `./deploy/ostiari aws publish-images`; retain the
    resulting digest references.
 3. Run `Sign official Ostiari images` from `main`, supplying the exact release
@@ -88,9 +107,10 @@ Do not add AWS access keys, Cosign private keys, or signing passwords.
 5. Retain the workflow artifact and the copies attached to the immutable GitHub
    release.
 
-The workflow refuses non-semantic release tags, non-SHA release commits,
-malformed digests, ECR digests that do not match the release commit tag, missing
-releases, unexpected workflow refs, and missing signer configuration.
+The workflow refuses a tag that differs from the canonical package version,
+non-SHA release commits, malformed digests, ECR digests that do not match the
+release commit tag, missing releases, unexpected workflow refs, and missing
+signer configuration.
 
 ## Verify as a consumer
 

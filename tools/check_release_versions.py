@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import ast
 import json
 import re
@@ -68,7 +69,17 @@ def _semver(version: str) -> str:
     return f"{match.group('base')}-{label}.{match.group('number')}"
 
 
-def main() -> int:
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--release-tag",
+        help="Require the immutable Git tag to equal v<canonical PEP 440 version>",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
     canonical = _module_version("src/ostiari/__init__.py")
     semver = _semver(canonical)
 
@@ -133,6 +144,8 @@ def main() -> int:
             canonical,
         ),
     ]
+    if args.release_tag is not None:
+        checks.append(("release tag", args.release_tag, f"v{canonical}"))
 
     failures = [
         f"{label}: found {actual!r}, expected {expected!r}"

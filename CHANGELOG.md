@@ -26,6 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - High-severity dependency findings in Cryptography, Nano ID, PostCSS, Vite,
   Babel, and React Router were upgraded to fixed releases.
 
+### Fixed
+- The release publisher, image signer, and production-evidence retention
+  workflow now enforce one exact Git tag derived from the canonical PEP 440
+  package version (`v0.3.0b2` for this beta).
+- The protected PyPI release publishes the reviewed bundled
+  `axon-llm==0.3.1` distribution before publishing the gateway that requires
+  it, so a clean public installation can resolve the complete dependency set.
+
 ### Added
 - **Boundary-crossing and control-plane target parameter signals.** Process
   calls carrying explicit host/sandbox escape semantics now score at block

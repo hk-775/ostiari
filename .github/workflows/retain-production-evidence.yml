@@ -47,6 +47,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          python tools/check_release_versions.py --release-tag "$RELEASE_TAG"
           test "$(gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}" --jq .sha)" = "$RELEASE_SHA"
 
       - name: Download protected rehearsal evidence
