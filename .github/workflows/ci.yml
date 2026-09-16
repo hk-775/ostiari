@@ -32,7 +32,7 @@ jobs:
           pip install pytest pytest-asyncio anyio hypothesis httpx starlette ruff
 
       - name: Lint
-        run: ruff check src/ gateway/ control-plane/backend/control_plane/ control-plane/backend/tests/
+        run: ruff check src/ gateway/ evals/ control-plane/backend/control_plane/ control-plane/backend/tests/
 
       - name: Type check
         run: mypy src/ostiari
@@ -43,6 +43,37 @@ jobs:
           --cov=ostiari
           --cov-report=term-missing
           --cov-fail-under=70
+
+  eval-harness:
+    name: Model evaluation harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11"
+
+      - name: Install evaluation dependencies
+        run: |
+          python -m pip install uv==0.10.7
+          uv sync --project evals --locked --group dev
+
+      - name: Validate datasets and scorers
+        run: uv run --project evals --locked pytest evals/tests/test_model_evals.py -v --tb=short
+
+      - name: Verify Inspect task discovery
+        run: uv run --project evals --locked inspect list tasks evals
+
+      - name: Run credential-free harness smoke test
+        run: >-
+          uv run --project evals --locked
+          inspect eval evals/tasks.py@ostiari_contract
+          --model mockllm/model
+          --limit 1
+          --display none
+          --ctl-server=false
+          --log-dir "${RUNNER_TEMP}/inspect-logs"
 
   gateway:
     name: Gateway

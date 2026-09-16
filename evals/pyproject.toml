@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ostiari-evals"
+version = "0.1.0"
+description = "Reproducible model evaluations for Ostiari"
+requires-python = ">=3.11"
+dependencies = [
+    "inspect-ai==0.3.251",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["ostiari_eval"]

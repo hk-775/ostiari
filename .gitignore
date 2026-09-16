@@ -38,6 +38,7 @@ Thumbs.db
 coverage.xml
 htmlcov/
 .hypothesis/
+evals/logs/
 
 # Typing
 .mypy_cache/

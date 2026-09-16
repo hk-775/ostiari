@@ -314,10 +314,12 @@ production controls.
 git clone https://github.com/hk-775/ostiari.git
 cd ostiari
 make install
+uv sync --project evals --locked              # isolated model-evaluation harness
 
 pytest tests/                                   # root (Guard) suite
 cd control-plane/backend && PYTHONPATH=. pytest tests/    # control plane
 cd gateway && PYTHONPATH=. pytest tests/                  # gateway
+make eval-contract                              # fixed-dataset model contracts
 
 ruff check src/ gateway/
 mypy --strict src/
@@ -332,6 +334,7 @@ control-plane/
   backend/            # FastAPI control plane — routers, models, services
   frontend/           # React dashboard (Vite + Tailwind + TanStack Query)
 vendor/axonllm/       # pinned MIT-0 AxonLLM v0.3.1 routing source + config
+evals/                # Inspect AI fixed-dataset model evaluation harness
 docs/                 # architecture + the control plane guide
 ```
 
@@ -341,6 +344,8 @@ docs/                 # architecture + the control plane guide
   AgentCore, and production architecture
 - [`docs/features-and-flows.md`](docs/features-and-flows.md) — canonical feature
   inventory and end-to-end flows, grounded in the current code
+- [`evals/README.md`](evals/README.md) — deterministic, quality, and safety
+  model evaluations through the governed gateway
 - [`STARTUP.md`](STARTUP.md) — full startup & deployment guide: local (no demo),
   local (full demo), and enterprise service, with per-feature config and diagrams
 - [`QUICKSTART.md`](QUICKSTART.md) — condensed quick-start cheat-sheet
